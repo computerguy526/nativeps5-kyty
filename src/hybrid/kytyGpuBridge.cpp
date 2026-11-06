@@ -14,16 +14,31 @@
 #include "hybrid/kytyGpuApi.h"
 
 #include "common/abi.h"
+#include "common/emulatorConfig.h"
+#include "common/logging/log.h"
+#include "common/profiler.h"
+#include "common/subsystems.h"
+#include "common/threads.h"
+#include "graphics/presentation/window.h"
+#include "kernel/memory.h"
+#include "kernel/pthread.h"
 #include "kytyGitVersion.h"
 #include "libs/agc.h"
+#include "libs/controller.h"
 #include "loader/symbolDatabase.h"
+#include "loader/timer.h"
+
+#include <SDL3/SDL.h>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -193,17 +208,82 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 	return KYTY_GPU_OK;
 }
 
+// Kyty's renderer runs on a thread of its own inside the host process. That thread is Kyty's
+// "main thread": it brings the subsystems up in kyty_emulator's order (emulator.cpp Init, minus
+// the ones AnyPS5 keeps: network, file system, audio), then runs the window loop, which presents
+// frames and pumps SDL events until shutdown posts SDL_EVENT_QUIT. The subsystems are destroyed on
+// the same thread, in reverse order, when the loop returns.
+std::thread             g_renderer_thread;
+std::mutex              g_renderer_mutex;
+std::condition_variable g_renderer_ready;
+int                     g_renderer_result = 1;
+
+uint32_t EnvironmentSize(const char* name, uint32_t fallback) {
+	const char* text = std::getenv(name);
+	const long  value = text != nullptr ? std::strtol(text, nullptr, 10) : 0;
+	return value >= 320 && value <= 7680 ? static_cast<uint32_t>(value) : fallback;
+}
+
+void RendererThread() {
+	Common::InitializeThreads();
+	{
+		Common::Subsystems subsystems(true);
+		Config::ConfigOptions options {};
+		options.screen_width  = EnvironmentSize("KYTY_GPU_WIDTH", options.screen_width);
+		options.screen_height = EnvironmentSize("KYTY_GPU_HEIGHT", options.screen_height);
+		subsystems.Initialize<Config::Lifecycle>();
+		Config::Load(options);
+		subsystems.Initialize<Log::Lifecycle>();
+		subsystems.Initialize<Loader::Timer::Lifecycle>();
+		subsystems.Initialize<Libs::LibKernel::PthreadLifecycle>();
+		subsystems.Initialize<Profiler::Lifecycle>();
+		subsystems.Initialize<Libs::LibKernel::Memory::Lifecycle>();
+		subsystems.Initialize<Libs::Controller::Lifecycle>();
+		subsystems.Initialize<Libs::Graphics::Lifecycle>();
+		{
+			std::lock_guard lock(g_renderer_mutex);
+			g_renderer_result = 0;
+		}
+		g_renderer_ready.notify_all();
+		Libs::Graphics::WindowRun();
+		Log(0, "renderer: window loop ended, shutting the subsystems down");
+	}
+	Log(0, "renderer: stopped");
+}
+
 int ApiStartGraphics() {
+	std::lock_guard lifecycle(g_lifecycle);
 	if (g_state.load() != State::Initialized) {
 		return KYTY_GPU_E_STATE;
 	}
-	Log(2, "start_graphics: Kyty's renderer start-up inside the host process is milestone 2 "
-	       "(Config/Log/Timer/Pthread/Memory/Graphics lifecycles, window thread, memory adapter)");
-	return KYTY_GPU_E_NOT_IMPLEMENTED;
+	g_renderer_result = 1;
+	g_renderer_thread = std::thread(RendererThread);
+	std::unique_lock lock(g_renderer_mutex);
+	const auto started = std::chrono::steady_clock::now();
+	if (!g_renderer_ready.wait_for(lock, std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
+		Log(2, "start_graphics: Kyty's renderer did not come up within 120 s");
+		return KYTY_GPU_E_STATE;
+	}
+	g_state.store(State::Graphics);
+	Log(0, "start_graphics: Kyty renderer running (%lld ms)",
+	    static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                               std::chrono::steady_clock::now() - started)
+	                               .count()));
+	return KYTY_GPU_OK;
 }
 
 void ApiShutdown() {
 	std::lock_guard lock(g_lifecycle);
+	if (g_state.load() == State::Graphics) {
+		SDL_Event quit {};
+		quit.type = SDL_EVENT_QUIT;
+		if (!SDL_PushEvent(&quit)) {
+			Log(2, "shutdown: SDL_PushEvent failed: %s", SDL_GetError());
+		}
+	}
+	if (g_renderer_thread.joinable()) {
+		g_renderer_thread.join();
+	}
 	g_state.store(State::Stopped);
 }
 

@@ -10,7 +10,10 @@
  *      exact arguments, Kyty functions return their AGC results
  *   6. lifecycle errors: start_graphics is not implemented yet, submit before graphics is refused
  *
- * Usage: kytyGpuLoadTest <kyty_gpu.dll> [<libwinpthread-1.dll to load first>]
+ *   7. --graphics: start_graphics brings Kyty's renderer up on its own thread (window and Vulkan
+ *      device), DCB submission is accepted, shutdown stops the thread
+ *
+ * Usage: kytyGpuLoadTest <kyty_gpu.dll> [--preload <libwinpthread-1.dll>] [--graphics]
  * Exit code 0 when every check passes. */
 
 #include "../../src/hybrid/kytyGpuApi.h"
@@ -87,20 +90,32 @@ static int VisitExport(const char* name, void* context) {
 
 int main(int argc, char** argv) {
 	if (argc < 2) {
-		printf("usage: %s <kyty_gpu.dll> [<libwinpthread-1.dll to load first>]\n", argv[0]);
+		printf("usage: %s <kyty_gpu.dll> [--preload <libwinpthread-1.dll>] [--graphics]\n", argv[0]);
 		return 2;
 	}
-	if (argc >= 3) {
-		HMODULE pthread = LoadLibraryA(argv[2]);
-		CHECK(pthread != NULL, "preloading %s failed (%lu)", argv[2], GetLastError());
-		printf("preloaded %s\n", argv[2]);
+	const char* preload = NULL;
+	int graphics = 0;
+	for (int i = 2; i < argc; ++i) {
+		if (strcmp(argv[i], "--preload") == 0 && i + 1 < argc) {
+			preload = argv[++i];
+		} else if (strcmp(argv[i], "--graphics") == 0) {
+			graphics = 1;
+		} else {
+			printf("unknown argument %s\n", argv[i]);
+			return 2;
+		}
+	}
+	if (preload != NULL) {
+		HMODULE pthread = LoadLibraryA(preload);
+		CHECK(pthread != NULL, "preloading %s failed (%lu)", preload, GetLastError());
+		printf("preloaded %s\n", preload);
 	}
 	HMODULE dll = LoadLibraryA(argv[1]);
 	if (dll == NULL) {
 		printf("FAIL: LoadLibrary(%s) failed with error %lu\n", argv[1], GetLastError());
 		return 1;
 	}
-	if (argc >= 3) {
+	if (preload != NULL) {
 		char loaded[MAX_PATH] = {0};
 		GetModuleFileNameA(GetModuleHandleA("libwinpthread-1.dll"), loaded, MAX_PATH);
 		printf("libwinpthread-1.dll in the process: %s\n", loaded);
@@ -176,9 +191,20 @@ int main(int argc, char** argv) {
 
 	KytyGpuPacket packet = {NULL, 0, 0, {0, 0, 0}};
 	CHECK(api->submit_dcb(&packet) == KYTY_GPU_E_STATE, "submit_dcb before start_graphics was accepted");
-	CHECK(api->start_graphics() == KYTY_GPU_E_NOT_IMPLEMENTED, "start_graphics did not report it is not implemented yet");
 	CHECK(api->register_memory(0x10000, 0x1000, KYTY_GPU_MEMORY_GPU_READ, NULL) == KYTY_GPU_E_NOT_IMPLEMENTED, "register_memory did not report it is not implemented yet");
-	api->shutdown();
+	if (graphics) {
+		const DWORD started = GetTickCount();
+		const int start = api->start_graphics();
+		CHECK(start == KYTY_GPU_OK, "start_graphics returned %d", start);
+		printf("start_graphics: %d after %lu ms\n", start, GetTickCount() - started);
+		CHECK(api->start_graphics() == KYTY_GPU_E_STATE, "a second start_graphics was accepted");
+		Sleep(3000);
+		const DWORD stopping = GetTickCount();
+		api->shutdown();
+		printf("shutdown: %lu ms\n", GetTickCount() - stopping);
+	} else {
+		api->shutdown();
+	}
 
 	printf("%d checks, %d failed\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
