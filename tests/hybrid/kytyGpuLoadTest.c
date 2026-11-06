@@ -168,7 +168,7 @@ int main(int argc, char** argv) {
 	}
 
 	const uint32_t count = api->nid_count();
-	CHECK(count == 97, "%u NIDs in the table, expected 97 (82 graphics imports of AstroBot.exe, 2 imported by AnyPS5 modules, 13 libkernel direct-memory)", count);
+	CHECK(count == 101, "%u NIDs in the table, expected 101 (82 graphics imports of AstroBot.exe, 2 imported by AnyPS5 modules, 17 libkernel memory exports)", count);
 	uint32_t per_library[4] = {0, 0, 0, 0};
 	for (uint32_t i = 0; i < count; ++i) {
 		const KytyGpuNidInfo* info = api->nid_info(i);
@@ -178,7 +178,7 @@ int main(int argc, char** argv) {
 		CHECK(info->bound == 0, "%s is bound before init", info->nid);
 		per_library[strcmp(info->library, "libSceAgc.prx") == 0 ? 0 : strcmp(info->library, "libSceAgcDriver.prx") == 0 ? 1 : strcmp(info->library, "libSceVideoOut.prx") == 0 ? 2 : 3]++;
 	}
-	CHECK(per_library[0] == 66 && per_library[1] == 7 && per_library[2] == 11 && per_library[3] == 13, "per library %u/%u/%u/%u, expected 66/7/11/13", per_library[0], per_library[1], per_library[2], per_library[3]);
+	CHECK(per_library[0] == 66 && per_library[1] == 7 && per_library[2] == 11 && per_library[3] == 17, "per library %u/%u/%u/%u, expected 66/7/11/17", per_library[0], per_library[1], per_library[2], per_library[3]);
 	CHECK(api->nid_info(count) == NULL, "nid_info past the end is not null");
 	CHECK(api->find_nid("UglJIZjGssM") != NULL && api->find_nid("notAnExport") == NULL, "find_nid");
 	CHECK(CountExports(dll, VisitExport, (void*)api) == count + 1, "the DLL exports %zu names, expected %u NIDs + KytyGpuGetApi", CountExports(dll, NULL, NULL), count);
@@ -198,6 +198,7 @@ int main(int argc, char** argv) {
 	host.struct_size = sizeof(host);
 	const int init = api->init(&host);
 	CHECK(init == KYTY_GPU_OK, "init returned %d", init);
+	if (init != KYTY_GPU_OK) return 1;
 	CHECK(api->init(&host) == KYTY_GPU_E_STATE, "a second init was accepted");
 	uint32_t bound = 0;
 	for (uint32_t i = 0; i < count; ++i) bound += api->nid_info(i)->bound != 0;
