@@ -29,6 +29,7 @@
 #include "kytyGitVersion.h"
 #include "libs/agc.h"
 #include "libs/controller.h"
+#include "libs/padData.h"
 #include "loader/symbolDatabase.h"
 #include "loader/timer.h"
 
@@ -214,6 +215,52 @@ void Pump() {
 	}
 }
 
+// Input. Kyty's window turns keyboard and gamepad events into Kyty pad state (the same path
+// kyty_emulator uses); the relay reads that state and publishes it to the host's pad library,
+// which the game reads.
+std::thread       g_relay;
+std::atomic<bool> g_relay_stop {false};
+
+void Relay() {
+	namespace Controller = Libs::Controller;
+	if (Controller::PadInit() != 0) {
+		Log(2, "input relay: Kyty's PadInit failed");
+		return;
+	}
+	const int user = Config::GetUserId();
+	int handle = Controller::PadOpen(user, 0, 0, nullptr);
+	if (handle < 0) {
+		handle = Controller::PadGetHandle(user, 0, 0);
+	}
+	if (handle < 0) {
+		Log(2, "input relay: Kyty opened no pad for user %d (0x%x)", user, static_cast<unsigned>(handle));
+		return;
+	}
+	Log(0, "input relay: Kyty pad %d for user %d -> host port 0", handle, user);
+	while (!g_relay_stop.load(std::memory_order_acquire)) {
+		Controller::PadData data {};
+		if (Controller::PadReadState(handle, &data) == 0) {
+			KytyGpuPadState state {};
+			state.buttons   = data.buttons;
+			state.sticks[0] = data.left_stick_x;
+			state.sticks[1] = data.left_stick_y;
+			state.sticks[2] = data.right_stick_x;
+			state.sticks[3] = data.right_stick_y;
+			state.l2        = data.analog_buttons_l2;
+			state.r2        = data.analog_buttons_r2;
+			state.connected = data.connected ? 1 : 0;
+			for (int i = 0; i < 2; ++i) {
+				state.touch[i].active = i < data.touch_data.touch_num ? 1 : 0;
+				state.touch[i].x      = data.touch_data.touch[i].x;
+				state.touch[i].y      = data.touch_data.touch[i].y;
+				state.touch[i].id     = data.touch_data.touch[i].id;
+			}
+			g_host.publish_pad(g_host.user, 0, &state);
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(4));
+	}
+}
+
 bool StartProxy() {
 	if (EventQueue::KernelCreateEqueue(&g_proxy, "AstroHybridProxy") != 0 ||
 	    EventQueue::KernelAddUserEvent(g_proxy, ProxyWakeId) != 0) {
@@ -222,6 +269,14 @@ bool StartProxy() {
 	}
 	g_pump = std::thread(Pump);
 	return true;
+}
+
+void StopRelay() {
+	if (!g_relay.joinable()) {
+		return;
+	}
+	g_relay_stop.store(true, std::memory_order_release);
+	g_relay.join();
 }
 
 void StopProxy() {
@@ -462,6 +517,9 @@ int ApiStartGraphics() {
 	if (g_host.deliver_event != nullptr && !StartProxy()) {
 		return KYTY_GPU_E_STATE;
 	}
+	if (g_host.publish_pad != nullptr) {
+		g_relay = std::thread(Relay);
+	}
 	if (!Common::HostException::InstallFirstAccessHandler(BridgeGuestAccessFault)) {
 		Log(2, "start_graphics: Kyty's guest memory fault handler could not be installed");
 		return KYTY_GPU_E_STATE;
@@ -483,6 +541,7 @@ void ApiShutdown() {
 			Log(2, "shutdown: SDL_PushEvent failed: %s", SDL_GetError());
 		}
 	}
+	StopRelay();
 	StopProxy();
 	if (g_renderer_thread.joinable()) {
 		g_renderer_thread.join();

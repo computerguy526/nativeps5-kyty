@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define KYTY_GPU_ABI_VERSION_MAJOR 1u
-#define KYTY_GPU_ABI_VERSION_MINOR 1u
+#define KYTY_GPU_ABI_VERSION_MINOR 2u
 #define KYTY_GPU_ABI_VERSION ((KYTY_GPU_ABI_VERSION_MAJOR << 16u) | KYTY_GPU_ABI_VERSION_MINOR)
 
 #if defined(_WIN32)
@@ -69,6 +69,25 @@ typedef struct KytyGpuNidInfo {
 #define KYTY_GPU_EVENT_FLIP          2u /* ident: video out handle, data: flip argument */
 #define KYTY_GPU_EVENT_VBLANK        3u /* ident: video out handle */
 
+/* ABI 1.2: one pad's state as Kyty's window reads it (keyboard and gamepads, SCE button bits). */
+typedef struct KytyGpuPadTouch {
+	uint16_t x;
+	uint16_t y;
+	uint8_t  id;
+	uint8_t  active;
+	uint8_t  reserved[2];
+} KytyGpuPadTouch;
+
+typedef struct KytyGpuPadState {
+	uint32_t        buttons;
+	uint8_t         sticks[4]; /* left x, left y, right x, right y; 128 is centred */
+	uint8_t         l2;
+	uint8_t         r2;
+	uint8_t         connected;
+	uint8_t         reserved;
+	KytyGpuPadTouch touch[2];
+} KytyGpuPadState;
+
 typedef struct KytyGpuHostCallbacks {
 	uint32_t struct_size; /* sizeof(KytyGpuHostCallbacks) on the host */
 	uint32_t abi_version; /* KYTY_GPU_ABI_VERSION of the host */
@@ -100,6 +119,10 @@ typedef struct KytyGpuHostCallbacks {
 	 * reserved placeholder (MEM_RESERVE_PLACEHOLDER) with its own boundaries, never MEM_FREE:
 	 * Kyty adopts it as it is. */
 	int (*donate_guest_range)(void* user, uint64_t size, uint64_t* base);
+
+	/* ABI 1.2. Kyty owns the window, so it reads the keyboard and the gamepads; the game reads pads
+	 * through the host's pad library. The DLL publishes each pad's state here, about every 4 ms. */
+	void (*publish_pad)(void* user, int port, const KytyGpuPadState* state);
 } KytyGpuHostCallbacks;
 
 /* The host module kyty_gpu.dll looks for when game code reaches an export before any host called
@@ -151,6 +174,7 @@ typedef const KytyGpuApi* (*KytyGpuGetApiFn)(uint32_t abi_version);
 #endif
 
 #if defined(__cplusplus)
+static_assert(sizeof(KytyGpuPadState) == 28, "KytyGpuPadState layout");
 static_assert(sizeof(KytyGpuPacket) == 16, "KytyGpuPacket layout");
 static_assert(offsetof(KytyGpuPacket, dw_num) == 8, "KytyGpuPacket layout");
 static_assert(offsetof(KytyGpuPacket, flags) == 12, "KytyGpuPacket layout");
