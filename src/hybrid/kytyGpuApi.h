@@ -95,7 +95,10 @@ typedef struct KytyGpuHostCallbacks {
 
 	/* ABI 1.1. Kyty's kernel memory owns the GPU-visible (direct) memory and reserves the free
 	 * guest address space when the renderer starts. The host's own guest arena holds that space,
-	 * so it releases one range of `size` bytes for Kyty first and returns its base. */
+	 * so it hands one range of `size` bytes to Kyty first and returns its base. A nonzero *base
+	 * on input asks for exactly that range (Kyty's fixed-address mappings). The range stays a
+	 * reserved placeholder (MEM_RESERVE_PLACEHOLDER) with its own boundaries, never MEM_FREE:
+	 * Kyty adopts it as it is. */
 	int (*donate_guest_range)(void* user, uint64_t size, uint64_t* base);
 } KytyGpuHostCallbacks;
 

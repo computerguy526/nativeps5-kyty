@@ -15,6 +15,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+# Kyty core sources the hybrid branch changes: compiled here with kyty_emulator's flags, their
+# objects replace the emulator's in the link (the emulator build directory stays as it is).
+HYBRID_SOURCES = ("src/kernel/memory.cpp",)
 LLVM = pathlib.Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin")
 
 
@@ -71,9 +74,16 @@ def main():
             compile_cmd.append("/imsvc" + system.replace("$:", ":"))
         else:
             compile_cmd.append("/I" + (quoted or plain).replace("$:", ":"))
-    compile_cmd += [f"/Fo{bridge_obj}", str(ROOT / "src/hybrid/kytyGpuBridge.cpp")]
-    print("compile:", " ".join(compile_cmd[:3]), "...", flush=True)
-    subprocess.run(compile_cmd, cwd=build, env=env, check=True)
+    print("compile: src/hybrid/kytyGpuBridge.cpp", flush=True)
+    subprocess.run(compile_cmd + [f"/Fo{bridge_obj}", str(ROOT / "src/hybrid/kytyGpuBridge.cpp")], cwd=build, env=env, check=True)
+    for source in HYBRID_SOURCES:
+        replaced = "CMakeFiles\\kyty_emulator.dir\\" + source.replace("/", "\\") + ".obj"
+        if replaced not in objects:
+            sys.exit(f"{source}: no kyty_emulator object to replace")
+        own = out / (pathlib.Path(source).name + ".hybrid.obj")
+        print(f"compile: {source} (hybrid change, replaces {replaced})", flush=True)
+        subprocess.run(compile_cmd + [f"/Fo{own}", str(ROOT / source)], cwd=build, env=env, check=True)
+        objects[objects.index(replaced)] = str(own)
 
     response = out / "kyty_gpu.link.rsp"
     lines = ["/NOLOGO", "/DLL", "/MACHINE:X64", "/INCREMENTAL:NO", "/DEBUG:FULL", "/OPT:REF", "/OPT:ICF",

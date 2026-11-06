@@ -5,7 +5,8 @@ imports it from) and Kyty's HLE registrations (LIB_FUNC lines in src/libs). Outp
   src/hybrid/kytyGpuNids.inc  KYTY_GPU_NID(index, "nid", "library", "function", binding) rows
   src/hybrid/kyty_gpu.def     the DLL's exports: KytyGpuGetApi and one thunk per NID
 
-Usage: python tools/hybrid/gen_kyty_gpu_exports.py <AstroBot.registry.json>
+Usage: python tools/hybrid/gen_kyty_gpu_exports.py <AstroBot.registry.json> [<module registry.json> ...]
+(AstroBot.exe's own registry, then those of the game modules it bundles, e.g. the guest libc)
 """
 
 import collections
@@ -19,7 +20,7 @@ LIBRARIES = ("libSceAgc.prx", "libSceAgcDriver.prx", "libSceVideoOut.prx", "libk
 KYTY_SOURCES = ("src/libs/libAgcDriver.cpp", "src/libs/libVideoOut.cpp", "src/libs/libKernel.cpp")
 # libkernel: only the direct-memory side moves to Kyty (it owns GPU-visible memory in the hybrid);
 # flexible memory, files, threads and the rest stay in AnyPS5's libkernel.
-KERNEL_MEMORY = re.compile(r"Memory::Kernel(AllocateDirectMemory|AllocateMainDirectMemory|DirectMemoryQuery|GetDirectMemorySize|MapDirectMemory|MapDirectMemory2|MapNamedDirectMemory|ReleaseDirectMemory|Mprotect|Munmap|VirtualQuery|SetVirtualRangeName|ClearVirtualRangeName)$")
+KERNEL_MEMORY = re.compile(r"Memory::Kernel(MapFlexibleMemory|MapNamedFlexibleMemory|AvailableFlexibleMemorySize|ConfiguredFlexibleMemorySize|AllocateDirectMemory|AllocateMainDirectMemory|DirectMemoryQuery|GetDirectMemorySize|MapDirectMemory|MapDirectMemory2|MapNamedDirectMemory|ReleaseDirectMemory|Mprotect|Munmap|VirtualQuery|SetVirtualRangeName|ClearVirtualRangeName)$")
 
 # Argument layouts compared with AnyPS5's declarations (Submit/include/Dcb.hpp, Acb.hpp,
 # Resource/src/Registration.cpp): same Packet struct, same return values.
@@ -55,13 +56,13 @@ def kyty_functions():
 
 
 def main():
-    if len(sys.argv) != 2:
+    if len(sys.argv) < 2:
         sys.exit(__doc__)
-    registry = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
     imported = collections.defaultdict(set)
-    for entry in registry:
-        if entry["library"] in LIBRARIES:
-            imported[entry["library"]].add(entry["nid"].split("#")[0])
+    for path in sys.argv[1:]:
+        for entry in json.loads(pathlib.Path(path).read_text(encoding="utf-8")):
+            if entry["library"] in LIBRARIES:
+                imported[entry["library"]].add(entry["nid"].split("#")[0])
     for library, nids in EXTRA.items():
         imported[library] |= nids
     kyty = kyty_functions()

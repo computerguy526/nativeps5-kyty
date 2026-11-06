@@ -13,6 +13,11 @@ enum class PageFaultAccess;
 namespace Libs::LibKernel::Memory {
 
 void Initialize();
+// AstroHybrid: placeholder ranges another owner of the process's guest address space (AnyPS5's
+// guest arena in AstroBot.exe) hands over before Initialize. They are adopted as owned free space
+// as they are, never released to MEM_FREE (where unrelated allocations could land first), and left
+// to that owner at teardown.
+void AdoptHostPlaceholders(uint64_t vaddr, uint64_t size);
 void Shutdown();
 
 // Guest memory usage for the performance panel. Takes only bookkeeping locks, so it never

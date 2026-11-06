@@ -15,6 +15,8 @@
 
 #include "common/abi.h"
 #include "common/emulatorConfig.h"
+#include "common/hostException.h"
+#include "graphics/host_gpu/pageManager.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/subsystems.h"
@@ -288,6 +290,9 @@ void* BridgeFunction(const char* name) {
 
 // ---- C API ----
 
+void* g_staged[g_row_count];
+bool  g_stage_only = false;
+
 int ApiInit(const KytyGpuHostCallbacks* host) {
 	if (host == nullptr) {
 		return KYTY_GPU_E_ARGUMENT;
@@ -325,8 +330,11 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 			++missing;
 			continue;
 		}
-		g_kyty_gpu_slots[i] = target;
-		g_info[i].bound     = 1;
+		g_staged[i] = target;
+		if (!g_stage_only) {
+			g_kyty_gpu_slots[i] = target;
+			g_info[i].bound     = 1;
+		}
 	}
 	if (missing != 0) {
 		return KYTY_GPU_E_UNKNOWN_NID;
@@ -345,6 +353,28 @@ std::thread             g_renderer_thread;
 std::mutex              g_renderer_mutex;
 std::condition_variable g_renderer_ready;
 int                     g_renderer_result = 1;
+
+// Kyty tracks CPU writes to GPU-visible guest memory with page protection: the first write to a
+// watched page faults, and Kyty's handler records it and lifts the protection. kyty_emulator
+// installs that handler when it loads the game (runtimeLinker.cpp); in AstroBot.exe nothing loads
+// through Kyty, so the bridge installs it, as a first-chance handler: AnyPS5's crash reporter is a
+// first-chance handler too and would treat these expected faults as crashes. Faults outside Kyty's
+// tracked memory are not handled here and still reach AnyPS5's handlers.
+bool BridgeGuestAccessFault(const Common::HostException::ExceptionInfo& info) {
+	if (info.type != Common::HostException::ExceptionType::AccessViolation) {
+		return false;
+	}
+	using CoreAccess = Common::HostException::AccessViolationType;
+	using GpuAccess  = Libs::Graphics::PageFaultAccess;
+	GpuAccess access {};
+	switch (info.access_violation_type) {
+		case CoreAccess::Read: access = GpuAccess::Read; break;
+		case CoreAccess::Write: access = GpuAccess::Write; break;
+		case CoreAccess::Execute: access = GpuAccess::Execute; break;
+		default: return false;
+	}
+	return Libs::LibKernel::Memory::HandleGpuFault(access, info.access_violation_vaddr);
+}
 
 uint32_t EnvironmentSize(const char* name, uint32_t fallback) {
 	const char* text = std::getenv(name);
@@ -385,6 +415,29 @@ int ApiStartGraphics() {
 		return KYTY_GPU_E_STATE;
 	}
 	if (g_host.donate_guest_range != nullptr) {
+		// Kyty's AGC driver maps its own direct memory at the PS5 address 0x0fe0000000 (agc.cpp
+		// DriverDmemBase, 2 MiB). Kyty's address space only keeps free gaps above 16 MiB, so the
+		// host releases the top of the system-reserved range around it.
+		constexpr uint64_t FixedBase = 0x0fe0000000ull;
+		constexpr uint64_t FixedSize = 0x20000000ull;
+		uint64_t           fixed     = FixedBase;
+		if (g_host.donate_guest_range(g_host.user, FixedSize, &fixed) != 0 || fixed != FixedBase) {
+			Log(2, "start_graphics: the host could not release 0x%llx + 0x%llx for Kyty's driver memory",
+			    static_cast<unsigned long long>(FixedBase), static_cast<unsigned long long>(FixedSize));
+			return KYTY_GPU_E_HOST_CALLBACK;
+		}
+		Libs::LibKernel::Memory::AdoptHostPlaceholders(FixedBase, FixedSize);
+		// PS5 titles map fixed addresses in the system-managed area (Astro Bot: 2 GiB of direct
+		// memory at 0x300000000 with MAP_FIXED), the range Kyty's own maps default to as well.
+		constexpr uint64_t LowBase = 0x200000000ull;
+		constexpr uint64_t LowSize = 0x7ffff0000ull - LowBase;
+		uint64_t           low     = LowBase;
+		if (g_host.donate_guest_range(g_host.user, LowSize, &low) != 0 || low != LowBase) {
+			Log(2, "start_graphics: the host could not release 0x%llx + 0x%llx (the PS5 system-managed area)",
+			    static_cast<unsigned long long>(LowBase), static_cast<unsigned long long>(LowSize));
+			return KYTY_GPU_E_HOST_CALLBACK;
+		}
+		Libs::LibKernel::Memory::AdoptHostPlaceholders(LowBase, LowSize);
 		const uint64_t gib     = EnvironmentSize("KYTY_GPU_GUEST_GIB", 64);
 		uint64_t       base    = 0;
 		const int      donated = g_host.donate_guest_range(g_host.user, gib << 30u, &base);
@@ -393,8 +446,10 @@ int ApiStartGraphics() {
 			    static_cast<unsigned long long>(gib), donated);
 			return KYTY_GPU_E_HOST_CALLBACK;
 		}
-		Log(0, "start_graphics: Kyty's guest memory window 0x%llx + %llu GiB",
-		    static_cast<unsigned long long>(base), static_cast<unsigned long long>(gib));
+		Libs::LibKernel::Memory::AdoptHostPlaceholders(base, gib << 30u);
+		Log(0, "start_graphics: Kyty's guest memory window 0x%llx + %llu GiB, driver memory 0x%llx",
+		    static_cast<unsigned long long>(base), static_cast<unsigned long long>(gib),
+		    static_cast<unsigned long long>(FixedBase));
 	}
 	g_renderer_result = 1;
 	g_renderer_thread = std::thread(RendererThread);
@@ -405,6 +460,10 @@ int ApiStartGraphics() {
 		return KYTY_GPU_E_STATE;
 	}
 	if (g_host.deliver_event != nullptr && !StartProxy()) {
+		return KYTY_GPU_E_STATE;
+	}
+	if (!Common::HostException::InstallFirstAccessHandler(BridgeGuestAccessFault)) {
+		Log(2, "start_graphics: Kyty's guest memory fault handler could not be installed");
 		return KYTY_GPU_E_STATE;
 	}
 	g_state.store(State::Graphics);
@@ -536,8 +595,13 @@ extern "C" void* KytyGpuLazyResolve(uint32_t index) {
 				             g_rows[index].nid, KYTY_GPU_HOST_MODULE_DEFAULT, KYTY_GPU_HOST_ENTRY);
 				KytyGpuUnboundNid(index);
 			}
+			g_stage_only = true;
 			if (ApiInit(host) != KYTY_GPU_OK || ApiStartGraphics() != KYTY_GPU_OK) {
 				KytyGpuUnboundNid(index);
+			}
+			for (uint32_t i = 0; i < g_row_count; ++i) {
+				g_kyty_gpu_slots[i] = g_staged[i];
+				g_info[i].bound     = 1;
 			}
 		}
 	}

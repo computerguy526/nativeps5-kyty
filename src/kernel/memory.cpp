@@ -235,6 +235,8 @@ static callback_func_t g_test_before_backing_map                   = nullptr;
 static callback_func_t g_test_backing_read                         = nullptr;
 #endif
 
+static std::vector<std::pair<uint64_t, uint64_t>> g_host_placeholders;
+
 #include "memoryAddressSpace.inc"
 
 enum class VirtualRangeType {
@@ -1847,6 +1849,12 @@ static bool SelfTestSub64SharedPlaceholderAlias() {
 }
 
 static bool ReplaceFixedRangeWithReserved(uint64_t start, uint64_t size);
+
+void AdoptHostPlaceholders(uint64_t vaddr, uint64_t size) {
+	EXIT_IF(g_guest_address_space != nullptr);
+	EXIT_IF(size == 0);
+	g_host_placeholders.emplace_back(vaddr, size);
+}
 
 void Initialize() {
 	g_flexible_memory_size_frozen = true;

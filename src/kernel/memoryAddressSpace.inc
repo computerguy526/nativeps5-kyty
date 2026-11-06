@@ -1207,6 +1207,9 @@ public:
 		m_backing = nullptr;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		for (const auto& [start, size]: m_owned) {
+			if (std::find(m_adopted.begin(), m_adopted.end(), std::make_pair(start, size)) != m_adopted.end()) {
+				continue;
+			}
 			const auto end     = start + size;
 			auto       current = start;
 			while (current < end) {
@@ -1876,6 +1879,19 @@ private:
 		const auto         guest_end         = HOST_USER_MAX + 1u;
 		auto               next_addr         = HOST_SYSTEM_MANAGED_MIN;
 
+		for (const auto& [start, size]: g_host_placeholders) {
+			MEMORY_BASIC_INFORMATION info {};
+			EXIT_IF(VirtualQuery(reinterpret_cast<const void*>(start), &info, sizeof(info)) == 0);
+			EXIT_IF(info.State != MEM_RESERVE || reinterpret_cast<uint64_t>(info.BaseAddress) != start ||
+			        static_cast<uint64_t>(info.RegionSize) < size);
+			AddFreeUnlocked(start, size);
+			m_owned.emplace_back(start, size);
+			m_adopted.emplace_back(start, size);
+		}
+		if (!g_host_placeholders.empty()) {
+			next_addr = guest_end;
+		}
+
 		while (next_addr < guest_end) {
 			MEMORY_BASIC_INFORMATION info {};
 			if (VirtualQuery(reinterpret_cast<const void*>(next_addr), &info, sizeof(info)) == 0) {
@@ -2146,6 +2162,7 @@ private:
 	std::map<uint64_t, uint64_t>               m_free;
 	std::map<uint64_t, MappedRegion>            m_mapped;
 	std::vector<std::pair<uint64_t, uint64_t>> m_owned;
+	std::vector<std::pair<uint64_t, uint64_t>> m_adopted;
 	uint64_t                                   m_granularity = 0x10000;
 	GuestBackingStore*                         m_backing     = nullptr;
 };
