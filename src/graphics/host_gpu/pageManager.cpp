@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/pageManager.h"
 
 #include "common/alignment.h"
+#include "common/astroHybrid.h"
 #include "common/liveSwitch.h"
 #include "common/profiler.h"
 #include "common/virtualMemory.h"
@@ -639,7 +640,37 @@ struct PageManager::Impl {
 	// Brings the host protection of pages [first, last) to what their counts ask, calling the
 	// host only for the runs whose recorded protection differs (a run may bridge pages already at
 	// its level). Takes both locks itself. Returns the host calls made.
+	// ASTROHYBRID_OPT_1: is [first, last) already settled? Under `lock` only (never held across a host
+	// call): no page pending and every page's recorded protection is what its counts ask. `applied`
+	// is written only after the host call it records has returned (ProtectRun, ProtectRuns), so a
+	// settled span is on the host as recorded and ApplySpan would make no call; any racing change of
+	// the counts is applied by the thread making it, which holds host_lock and reads them afterwards.
+	// Lets a write fault whose pages another thread's fault already made writable return without
+	// queueing behind every in-flight VirtualProtect of the 4 MiB region (Sky Garden on a Ryzen 5 5500:
+	// ~147 us of a fault's ~180 us was that wait, at 0.57 host calls per fault).
+	bool SpanSettled(Region& region, size_t first, size_t last) noexcept {
+		SpinGuard counts(region.lock);
+		if (region.pending_count != 0) {
+			return false;
+		}
+		for (size_t page = first; page < last; page++) {
+			if (ToLevel(region.pages[page].Perms()) != region.applied[page]) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	uint32_t ApplySpan(Region& region, uint64_t base_addr, size_t first, size_t last) noexcept {
+		if (AstroHybrid::Opt1() && GetDeferMode() != DeferMode::Verify && SpanSettled(region, first, last)) {
+			static std::atomic<uint64_t> skipped {0};
+			const auto                   count = skipped.fetch_add(1, std::memory_order_relaxed) + 1;
+			if ((count & 0xfffu) == 0) {
+				std::printf("AstroHybrid OPT_1: %" PRIu64 " settled spans skipped host_lock\n", count);
+				std::fflush(stdout);
+			}
+			return 0;
+		}
 		SpinGuard host(region.host_lock, FaultCost::Split::HostLock);
 		RunList   runs;
 		uint32_t  calls = 0;
