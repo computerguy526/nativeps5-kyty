@@ -18,7 +18,14 @@ VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Aux
 # Kyty core sources the hybrid branch changes: compiled here with kyty_emulator's flags, their
 # objects replace the emulator's in the link (the emulator build directory stays as it is).
 HYBRID_SOURCES = ("src/kernel/memory.cpp",)
-LLVM = pathlib.Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin")
+LLVM_DEFAULT = pathlib.Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin")
+
+
+def cache_value(build, name):
+    for line in (build / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(name + ":"):
+            return line.split("=", 1)[1]
+    return None
 
 
 def vs_environment():
@@ -65,9 +72,13 @@ def main():
     objects = [p for p in ninja_paths(inputs)[1:] if p.endswith(".obj") and not p.endswith("main.cpp.obj")]
     libraries = ninja_paths(link_vars["LINK_LIBRARIES"])
 
+    compiler = cache_value(build, "CMAKE_CXX_COMPILER")
+    llvm = pathlib.Path(compiler).parent if compiler else LLVM_DEFAULT
+    source_root = pathlib.Path(cache_value(build, "CMAKE_HOME_DIRECTORY") or ROOT)
+    print(f"toolchain {llvm}, sources {source_root}", flush=True)
     env = vs_environment()
     bridge_obj = out / "kytyGpuBridge.obj"
-    compile_cmd = [str(LLVM / "clang-cl.exe"), "/nologo", "/c"] + compile_block["DEFINES"].split() + compile_block["FLAGS"].split()
+    compile_cmd = [str(llvm / "clang-cl.exe"), "/nologo", "/c"] + compile_block["DEFINES"].split() + compile_block["FLAGS"].split()
     compile_cmd += [f"/DKYTY_GPU_BUILD_ID={compile_block.get('CONFIG', 'Release')}"]
     for quoted, plain, system in re.findall(r'-I"([^"]+)"|-I(\S+)|-imsvc(\S+)', compile_block["INCLUDES"]):
         if system:
@@ -75,14 +86,14 @@ def main():
         else:
             compile_cmd.append("/I" + (quoted or plain).replace("$:", ":"))
     print("compile: src/hybrid/kytyGpuBridge.cpp", flush=True)
-    subprocess.run(compile_cmd + [f"/Fo{bridge_obj}", str(ROOT / "src/hybrid/kytyGpuBridge.cpp")], cwd=build, env=env, check=True)
+    subprocess.run(compile_cmd + [f"/Fo{bridge_obj}", str(source_root / "src/hybrid/kytyGpuBridge.cpp")], cwd=build, env=env, check=True)
     for source in HYBRID_SOURCES:
         replaced = "CMakeFiles\\kyty_emulator.dir\\" + source.replace("/", "\\") + ".obj"
         if replaced not in objects:
             sys.exit(f"{source}: no kyty_emulator object to replace")
         own = out / (pathlib.Path(source).name + ".hybrid.obj")
         print(f"compile: {source} (hybrid change, replaces {replaced})", flush=True)
-        subprocess.run(compile_cmd + [f"/Fo{own}", str(ROOT / source)], cwd=build, env=env, check=True)
+        subprocess.run(compile_cmd + [f"/Fo{own}", str(source_root / source)], cwd=build, env=env, check=True)
         objects[objects.index(replaced)] = str(own)
 
     response = out / "kyty_gpu.link.rsp"
@@ -95,7 +106,7 @@ def main():
         lines.append(f'"{path if path.is_absolute() or len(path.parts) == 1 else build / path}"')
     response.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"link: {len(objects)} emulator objects + bridge, {len(libraries)} libraries", flush=True)
-    subprocess.run([str(LLVM / "lld-link.exe"), f"@{response}"], cwd=build, env=env, check=True)
+    subprocess.run([str(llvm / "lld-link.exe"), f"@{response}"], cwd=build, env=env, check=True)
     winpthread = ROOT / "3rdparty/winpthread/bin/libwinpthread-1.dll"
     target = out / "libwinpthread-1.dll"
     if winpthread.exists() and not target.exists():

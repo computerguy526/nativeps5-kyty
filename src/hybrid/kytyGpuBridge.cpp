@@ -99,7 +99,7 @@ void Log(int level, const char* format, ...) {
 extern "C" {
 
 // One slot per export; the thunks read them with a RIP-relative indirect jump.
-void* g_kyty_gpu_slots[g_row_count];
+__attribute__((used)) void* g_kyty_gpu_slots[g_row_count];
 
 [[noreturn]] void KytyGpuUnboundNid(uint32_t index) {
 	const char* nid      = index < g_row_count ? g_rows[index].nid : "?";
@@ -437,6 +437,30 @@ uint32_t EnvironmentSize(const char* name, uint32_t fallback) {
 	return value > 0 && value <= 7680 ? static_cast<uint32_t>(value) : fallback;
 }
 
+// kyty_emulator takes these from its command line; the AstroHybrid launcher's choice matches the
+// Kyty launcher's (Immediate presentation, Performance shader optimization, 60 Hz vblank).
+Config::PresentMode PresentModeFromEnvironment() {
+	const char* text = std::getenv("KYTY_GPU_PRESENT_MODE");
+	if (text != nullptr && std::strcmp(text, "Fifo") == 0) {
+		return Config::PresentMode::Fifo;
+	}
+	if (text != nullptr && std::strcmp(text, "Mailbox") == 0) {
+		return Config::PresentMode::Mailbox;
+	}
+	return Config::PresentMode::Immediate;
+}
+
+Config::ShaderOptimizationType ShaderOptimizationFromEnvironment() {
+	const char* text = std::getenv("KYTY_GPU_SHADER_OPTIMIZATION");
+	if (text != nullptr && std::strcmp(text, "None") == 0) {
+		return Config::ShaderOptimizationType::None;
+	}
+	if (text != nullptr && std::strcmp(text, "Size") == 0) {
+		return Config::ShaderOptimizationType::Size;
+	}
+	return Config::ShaderOptimizationType::Performance;
+}
+
 void RendererThread() {
 	Common::InitializeThreads();
 	{
@@ -444,6 +468,9 @@ void RendererThread() {
 		Config::ConfigOptions options {};
 		options.screen_width  = EnvironmentSize("KYTY_GPU_WIDTH", options.screen_width);
 		options.screen_height = EnvironmentSize("KYTY_GPU_HEIGHT", options.screen_height);
+		options.present_mode  = PresentModeFromEnvironment();
+		options.shader_optimization_type = ShaderOptimizationFromEnvironment();
+		options.vblank_frequency         = EnvironmentSize("KYTY_GPU_VBLANK_HZ", 60);
 		subsystems.Initialize<Config::Lifecycle>();
 		Config::Load(options);
 		subsystems.Initialize<Log::Lifecycle>();
@@ -641,7 +668,7 @@ const KytyGpuApi g_api = {
 
 // Game code reached an export no host has bound yet: AstroBot.exe loads the shims and calls
 // straight in. Find the host module, bind the exports and start the renderer, once.
-extern "C" void* KytyGpuLazyResolve(uint32_t index) {
+extern "C" __attribute__((used)) void* KytyGpuLazyResolve(uint32_t index) {
 	if (index >= g_row_count) {
 		KytyGpuUnboundNid(index);
 	}
