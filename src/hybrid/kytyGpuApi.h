@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define KYTY_GPU_ABI_VERSION_MAJOR 1u
-#define KYTY_GPU_ABI_VERSION_MINOR 0u
+#define KYTY_GPU_ABI_VERSION_MINOR 1u
 #define KYTY_GPU_ABI_VERSION ((KYTY_GPU_ABI_VERSION_MAJOR << 16u) | KYTY_GPU_ABI_VERSION_MINOR)
 
 #if defined(_WIN32)
@@ -92,7 +92,18 @@ typedef struct KytyGpuHostCallbacks {
 
 	/* The title's app0 directory (UTF-8), for shader and pipeline caches. May be null. */
 	const char* (*app0_path)(void* user);
+
+	/* ABI 1.1. Kyty's kernel memory owns the GPU-visible (direct) memory and reserves the free
+	 * guest address space when the renderer starts. The host's own guest arena holds that space,
+	 * so it releases one range of `size` bytes for Kyty first and returns its base. */
+	int (*donate_guest_range)(void* user, uint64_t size, uint64_t* base);
 } KytyGpuHostCallbacks;
+
+/* The host module kyty_gpu.dll looks for when game code reaches an export before any host called
+ * init: LoadLibrary(KYTY_GPU_HOST_MODULE or "libAstroHybridHost.prx"), then this function. */
+#define KYTY_GPU_HOST_MODULE_DEFAULT "libAstroHybridHost.prx"
+#define KYTY_GPU_HOST_ENTRY "AstroHybridHostCallbacks_nid_no_patch"
+typedef const KytyGpuHostCallbacks* (*KytyGpuHostEntryFn)(void);
 
 typedef struct KytyGpuPacket { /* identical to AGC's Packet and AnyPS5's Packet */
 	uint32_t* addr;

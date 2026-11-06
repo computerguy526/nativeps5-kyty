@@ -13,7 +13,10 @@
  *   7. --graphics: start_graphics brings Kyty's renderer up on its own thread (window and Vulkan
  *      device), DCB submission is accepted, shutdown stops the thread
  *
- * Usage: kytyGpuLoadTest <kyty_gpu.dll> [--preload <libwinpthread-1.dll>] [--graphics]
+ *   8. --lazy: without init, the first call through an export loads the host module
+ *      (libAstroHybridHost.prx, here kytyGpuTestHost.c), starts Kyty and returns the right result
+ *
+ * Usage: kytyGpuLoadTest <kyty_gpu.dll> [--preload <libwinpthread-1.dll>] [--graphics | --lazy]
  * Exit code 0 when every check passes. */
 
 #include "../../src/hybrid/kytyGpuApi.h"
@@ -64,6 +67,13 @@ static int HostAddGpuEvent(void* user, int64_t equeue, uint32_t kind, int64_t id
 	return 42;
 }
 
+static void HostDeliverEvent(void* user, uint32_t kind, int64_t ident, uint64_t data) {
+	(void)user;
+	(void)kind;
+	(void)ident;
+	(void)data;
+}
+
 typedef int (SYSV *AddEqEventFn)(int64_t equeue, int id, void* udata);
 typedef int (SYSV *RegisterOwnerFn)(uint32_t* owner, const char* name);
 typedef uint32_t (SYSV *NopGetSizeFn)(uint32_t dwords);
@@ -95,11 +105,14 @@ int main(int argc, char** argv) {
 	}
 	const char* preload = NULL;
 	int graphics = 0;
+	int lazy = 0;
 	for (int i = 2; i < argc; ++i) {
 		if (strcmp(argv[i], "--preload") == 0 && i + 1 < argc) {
 			preload = argv[++i];
 		} else if (strcmp(argv[i], "--graphics") == 0) {
 			graphics = 1;
+		} else if (strcmp(argv[i], "--lazy") == 0) {
+			lazy = 1;
 		} else {
 			printf("unknown argument %s\n", argv[i]);
 			return 2;
@@ -132,18 +145,40 @@ int main(int argc, char** argv) {
 	CHECK(api->abi_version == KYTY_GPU_ABI_VERSION, "DLL ABI %#x, header %#x", api->abi_version, KYTY_GPU_ABI_VERSION);
 	printf("kyty_gpu %s, ABI %u.%u\n", api->build, api->abi_version >> 16u, api->abi_version & 0xffffu);
 
+	if (lazy) {
+		/* No init: the first call reaches the trap, which loads the host module, starts Kyty and
+		 * then runs the call with its original System V arguments. */
+		NopGetSizeFn lazy_nop = (NopGetSizeFn)(void*)GetProcAddress(dll, "t7PlZ9nt5Lc");
+		const DWORD started = GetTickCount();
+		const uint32_t lazy_bytes = lazy_nop(16);
+		printf("lazy first call: sceAgcCbNopGetSize(16) = %u after %lu ms\n", lazy_bytes, GetTickCount() - started);
+		CHECK(lazy_bytes == 64, "the lazily bound sceAgcCbNopGetSize(16) returned %u, expected 64", lazy_bytes);
+		uint32_t lazy_bound = 0;
+		for (uint32_t i = 0; i < api->nid_count(); ++i) lazy_bound += api->nid_info(i)->bound != 0;
+		CHECK(lazy_bound == api->nid_count(), "%u of %u exports bound after the lazy start", lazy_bound, api->nid_count());
+		AddEqEventFn lazy_add = (AddEqEventFn)(void*)GetProcAddress(dll, "w2rJhmD+dsE");
+		CHECK(lazy_add(0x77, 0, NULL) == 0, "sceAgcDriverAddEqEvent with the Kyty proxy failed");
+		HMODULE host = GetModuleHandleA(KYTY_GPU_HOST_MODULE_DEFAULT);
+		long (*added)(void) = host != NULL ? (long (*)(void))(void*)GetProcAddress(host, "TestHostAdded") : NULL;
+		CHECK(added != NULL && added() == 1, "the host saw %ld registrations, expected 1", added != NULL ? added() : -1);
+		Sleep(2000);
+		api->shutdown();
+		printf("%d checks, %d failed\n", g_checks, g_failures);
+		return g_failures == 0 ? 0 : 1;
+	}
+
 	const uint32_t count = api->nid_count();
-	CHECK(count == 82, "%u NIDs in the table, expected the 82 graphics imports of AstroBot.exe", count);
-	uint32_t per_library[3] = {0, 0, 0};
+	CHECK(count == 97, "%u NIDs in the table, expected 97 (82 graphics imports of AstroBot.exe, 2 imported by AnyPS5 modules, 13 libkernel direct-memory)", count);
+	uint32_t per_library[4] = {0, 0, 0, 0};
 	for (uint32_t i = 0; i < count; ++i) {
 		const KytyGpuNidInfo* info = api->nid_info(i);
 		CHECK(info != NULL && info->nid != NULL, "entry %u is empty", i);
 		if (info == NULL) continue;
 		CHECK(GetProcAddress(dll, info->nid) != NULL, "%s (%s) is not exported", info->nid, info->function);
 		CHECK(info->bound == 0, "%s is bound before init", info->nid);
-		per_library[strcmp(info->library, "libSceAgc.prx") == 0 ? 0 : strcmp(info->library, "libSceAgcDriver.prx") == 0 ? 1 : 2]++;
+		per_library[strcmp(info->library, "libSceAgc.prx") == 0 ? 0 : strcmp(info->library, "libSceAgcDriver.prx") == 0 ? 1 : strcmp(info->library, "libSceVideoOut.prx") == 0 ? 2 : 3]++;
 	}
-	CHECK(per_library[0] == 65 && per_library[1] == 6 && per_library[2] == 11, "per library %u/%u/%u, expected 65/6/11", per_library[0], per_library[1], per_library[2]);
+	CHECK(per_library[0] == 66 && per_library[1] == 7 && per_library[2] == 11 && per_library[3] == 13, "per library %u/%u/%u/%u, expected 66/7/11/13", per_library[0], per_library[1], per_library[2], per_library[3]);
 	CHECK(api->nid_info(count) == NULL, "nid_info past the end is not null");
 	CHECK(api->find_nid("UglJIZjGssM") != NULL && api->find_nid("notAnExport") == NULL, "find_nid");
 	CHECK(CountExports(dll, VisitExport, (void*)api) == count + 1, "the DLL exports %zu names, expected %u NIDs + KytyGpuGetApi", CountExports(dll, NULL, NULL), count);
@@ -155,6 +190,7 @@ int main(int argc, char** argv) {
 	host.user = &g_record;
 	host.log = HostLog;
 	host.add_gpu_event = HostAddGpuEvent;
+	host.deliver_event = HostDeliverEvent;
 	CHECK(api->init(&host) == KYTY_GPU_E_VERSION, "init accepted a host of another major version");
 	host.abi_version = KYTY_GPU_ABI_VERSION;
 	host.struct_size = 8;

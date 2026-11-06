@@ -15,8 +15,11 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-LIBRARIES = ("libSceAgc.prx", "libSceAgcDriver.prx", "libSceVideoOut.prx")
-KYTY_SOURCES = ("src/libs/libAgcDriver.cpp", "src/libs/libVideoOut.cpp")
+LIBRARIES = ("libSceAgc.prx", "libSceAgcDriver.prx", "libSceVideoOut.prx", "libkernel.prx")
+KYTY_SOURCES = ("src/libs/libAgcDriver.cpp", "src/libs/libVideoOut.cpp", "src/libs/libKernel.cpp")
+# libkernel: only the direct-memory side moves to Kyty (it owns GPU-visible memory in the hybrid);
+# flexible memory, files, threads and the rest stay in AnyPS5's libkernel.
+KERNEL_MEMORY = re.compile(r"Memory::Kernel(AllocateDirectMemory|AllocateMainDirectMemory|DirectMemoryQuery|GetDirectMemorySize|MapDirectMemory|MapDirectMemory2|MapNamedDirectMemory|ReleaseDirectMemory|Mprotect|Munmap|VirtualQuery|SetVirtualRangeName|ClearVirtualRangeName)$")
 
 # Argument layouts compared with AnyPS5's declarations (Submit/include/Dcb.hpp, Acb.hpp,
 # Resource/src/Registration.cpp): same Packet struct, same return values.
@@ -30,7 +33,14 @@ VERIFIED = {
 # Take an event queue handle from AnyPS5's libkernel: implemented by the bridge.
 BRIDGE = {
     "w2rJhmD+dsE": "BridgeAgcDriverAddEqEvent",
+    "DL2RXaXOy88": "BridgeAgcDriverDeleteEqEvent",
     "HXzjK9yI30k": "BridgeVideoOutAddFlipEvent",
+}
+# Imported from the three graphics libraries by AnyPS5's own modules (libSceJobManager,
+# libSceSystemService) but not by the game: they must exist or those modules do not load.
+EXTRA = {
+    "libSceAgc.prx": {"DwICrVxerkY"},
+    "libSceAgcDriver.prx": {"DL2RXaXOy88"},
 }
 
 
@@ -39,7 +49,7 @@ def kyty_functions():
     for source in KYTY_SOURCES:
         for line in (ROOT / source).read_text(encoding="utf-8", errors="replace").splitlines():
             match = re.search(r'LIB_FUNC\("([^"]+)",\s*([\w:]+)\)', line)
-            if match:
+            if match and (not source.endswith("libKernel.cpp") or KERNEL_MEMORY.search(match.group(2))):
                 found.setdefault(match.group(1), match.group(2).split("::")[-1])
     return found
 
@@ -52,12 +62,16 @@ def main():
     for entry in registry:
         if entry["library"] in LIBRARIES:
             imported[entry["library"]].add(entry["nid"].split("#")[0])
+    for library, nids in EXTRA.items():
+        imported[library] |= nids
     kyty = kyty_functions()
     rows = []
     for library in LIBRARIES:
         for nid in sorted(imported[library]):
             if nid in BRIDGE:
                 rows.append((nid, library, BRIDGE[nid], "KYTY_GPU_BINDING_BRIDGE"))
+            elif library == "libkernel.prx" and nid not in kyty:
+                continue
             elif nid in kyty:
                 binding = "KYTY_GPU_BINDING_KYTY_VERIFIED" if nid in VERIFIED else "KYTY_GPU_BINDING_KYTY"
                 rows.append((nid, library, kyty[nid], binding))

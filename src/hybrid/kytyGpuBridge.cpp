@@ -20,6 +20,8 @@
 #include "common/subsystems.h"
 #include "common/threads.h"
 #include "graphics/presentation/window.h"
+#include "graphics/presentation/videoOut.h"
+#include "kernel/eventQueue.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "kytyGitVersion.h"
@@ -38,6 +40,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <set>
 #include <thread>
 
 #if defined(_WIN32)
@@ -46,6 +49,7 @@
 
 namespace Libs {
 void InitAgcDriver_1(Loader::SymbolDatabase* s);
+void InitLibKernel_1_Mem(Loader::SymbolDatabase* s);
 namespace LibGen5 {
 void InitVideoOut_1(Loader::SymbolDatabase* s);
 } // namespace LibGen5
@@ -109,11 +113,50 @@ void* g_kyty_gpu_slots[g_row_count];
 	std::abort();
 }
 
-// Reached from a thunk with the export index in r11d. Jumps (does not call) to the reporter, so
-// the stack is exactly as at the guest's call.
+void* KytyGpuLazyResolve(uint32_t index);
+
+// Reached from a thunk with the export index in r11d, as the guest's System V call left it. Saves
+// every System V argument register (rdi rsi rdx rcx r8 r9, al for varargs, xmm0-7), calls the
+// Microsoft x64 resolver with a 16-byte aligned stack and its shadow space, restores the
+// registers and jumps to the bound implementation, so the call proceeds as if it had gone there
+// directly. The resolver starts Kyty on first use or stops the process with the NID's name.
 __attribute__((naked)) void KytyGpuUnboundTrap() {
-	__asm__ volatile("movl %r11d, %ecx\n\t"
-	                 "jmp KytyGpuUnboundNid\n\t");
+	__asm__ volatile("pushq %rdi\n\t"
+	                 "pushq %rsi\n\t"
+	                 "pushq %rdx\n\t"
+	                 "pushq %rcx\n\t"
+	                 "pushq %r8\n\t"
+	                 "pushq %r9\n\t"
+	                 "pushq %rax\n\t"
+	                 "subq $160, %rsp\n\t"
+	                 "movdqu %xmm0, 32(%rsp)\n\t"
+	                 "movdqu %xmm1, 48(%rsp)\n\t"
+	                 "movdqu %xmm2, 64(%rsp)\n\t"
+	                 "movdqu %xmm3, 80(%rsp)\n\t"
+	                 "movdqu %xmm4, 96(%rsp)\n\t"
+	                 "movdqu %xmm5, 112(%rsp)\n\t"
+	                 "movdqu %xmm6, 128(%rsp)\n\t"
+	                 "movdqu %xmm7, 144(%rsp)\n\t"
+	                 "movl %r11d, %ecx\n\t"
+	                 "callq KytyGpuLazyResolve\n\t"
+	                 "movq %rax, %r11\n\t"
+	                 "movdqu 32(%rsp), %xmm0\n\t"
+	                 "movdqu 48(%rsp), %xmm1\n\t"
+	                 "movdqu 64(%rsp), %xmm2\n\t"
+	                 "movdqu 80(%rsp), %xmm3\n\t"
+	                 "movdqu 96(%rsp), %xmm4\n\t"
+	                 "movdqu 112(%rsp), %xmm5\n\t"
+	                 "movdqu 128(%rsp), %xmm6\n\t"
+	                 "movdqu 144(%rsp), %xmm7\n\t"
+	                 "addq $160, %rsp\n\t"
+	                 "popq %rax\n\t"
+	                 "popq %r9\n\t"
+	                 "popq %r8\n\t"
+	                 "popq %rcx\n\t"
+	                 "popq %rdx\n\t"
+	                 "popq %rsi\n\t"
+	                 "popq %rdi\n\t"
+	                 "jmpq *%r11\n\t");
 }
 
 #define KYTY_GPU_NID(index, nid, library, function, binding)                                       \
@@ -133,25 +176,109 @@ namespace {
 constexpr int SceAgcErrorInvalidArgument = static_cast<int>(0x8A6C0002u);
 constexpr int SceVideoOutErrorInvalidEventQueue = static_cast<int>(0x80290012u);
 
+// GPU events. The game's event queues are AnyPS5 queues (host handles), but Kyty raises its EOP
+// interrupts and flips on Kyty queues. Each registration therefore goes to the host, which adds
+// the event to the game's queue, and, once per event id or video out handle, to one Kyty proxy
+// queue. A pump thread waits on the proxy and hands every event it receives to the host, which
+// triggers the matching game events.
+namespace EventQueue = Libs::LibKernel::EventQueue;
+
+constexpr int            ProxyWakeId = 0x7f0000;
+EventQueue::KernelEqueue g_proxy     = EventQueue::KERNEL_EQUEUE_INVALID;
+std::mutex               g_proxy_mutex;
+std::set<int>            g_proxy_eop;
+std::set<int>            g_proxy_flip;
+std::thread              g_pump;
+std::atomic<bool>        g_pump_stop {false};
+
+void Pump() {
+	EventQueue::KernelEvent events[16];
+	while (!g_pump_stop.load(std::memory_order_acquire)) {
+		int received = 0;
+		if (EventQueue::KernelWaitEqueue(g_proxy, events, 16, &received, nullptr) != 0) {
+			Log(2, "event pump: KernelWaitEqueue failed, stopping");
+			return;
+		}
+		for (int i = 0; i < received; ++i) {
+			const auto& event = events[i];
+			if (event.filter == EventQueue::KERNEL_EVFILT_GRAPHICS) {
+				g_host.deliver_event(g_host.user, KYTY_GPU_EVENT_EOP_INTERRUPT,
+				                     static_cast<int64_t>(event.ident), static_cast<uint64_t>(event.data));
+			} else if (event.filter == EventQueue::KERNEL_EVFILT_VIDEO_OUT) {
+				g_host.deliver_event(g_host.user, KYTY_GPU_EVENT_FLIP, static_cast<int64_t>(event.ident),
+				                     static_cast<uint64_t>(event.data));
+			}
+		}
+	}
+}
+
+bool StartProxy() {
+	if (EventQueue::KernelCreateEqueue(&g_proxy, "AstroHybridProxy") != 0 ||
+	    EventQueue::KernelAddUserEvent(g_proxy, ProxyWakeId) != 0) {
+		Log(2, "event proxy: Kyty did not create its proxy queue");
+		return false;
+	}
+	g_pump = std::thread(Pump);
+	return true;
+}
+
+void StopProxy() {
+	if (!g_pump.joinable()) {
+		return;
+	}
+	g_pump_stop.store(true, std::memory_order_release);
+	EventQueue::KernelTriggerUserEvent(g_proxy, ProxyWakeId, nullptr);
+	g_pump.join();
+}
+
 int KYTY_SYSV_ABI BridgeAgcDriverAddEqEvent(int64_t equeue, int id, void* udata) {
-	if (g_host.add_gpu_event == nullptr) {
-		Log(2, "sceAgcDriverAddEqEvent: the host registered no add_gpu_event callback");
+	if (g_host.add_gpu_event == nullptr || g_host.deliver_event == nullptr) {
+		Log(2, "sceAgcDriverAddEqEvent: the host registered no GPU event callbacks");
 		return SceAgcErrorInvalidArgument;
 	}
-	return g_host.add_gpu_event(g_host.user, equeue, KYTY_GPU_EVENT_EOP_INTERRUPT, id, udata);
+	const int added = g_host.add_gpu_event(g_host.user, equeue, KYTY_GPU_EVENT_EOP_INTERRUPT, id, udata);
+	if (added != 0 || g_proxy == EventQueue::KERNEL_EQUEUE_INVALID) {
+		return added;
+	}
+	std::lock_guard lock(g_proxy_mutex);
+	if (g_proxy_eop.insert(id).second &&
+	    Libs::Graphics::Gen5Driver::AgcDriverAddEqEvent(g_proxy, id, nullptr) != 0) {
+		Log(2, "sceAgcDriverAddEqEvent: Kyty refused the proxy registration for id %d", id);
+	}
+	return added;
+}
+
+int KYTY_SYSV_ABI BridgeAgcDriverDeleteEqEvent(int64_t equeue, int id) {
+	if (g_host.delete_gpu_event == nullptr) {
+		Log(2, "sceAgcDriverDeleteEqEvent: the host registered no delete_gpu_event callback");
+		return SceAgcErrorInvalidArgument;
+	}
+	return g_host.delete_gpu_event(g_host.user, equeue, KYTY_GPU_EVENT_EOP_INTERRUPT, id);
 }
 
 int KYTY_SYSV_ABI BridgeVideoOutAddFlipEvent(int64_t equeue, int handle, void* udata) {
-	if (g_host.add_gpu_event == nullptr) {
-		Log(2, "sceVideoOutAddFlipEvent: the host registered no add_gpu_event callback");
+	if (g_host.add_gpu_event == nullptr || g_host.deliver_event == nullptr) {
+		Log(2, "sceVideoOutAddFlipEvent: the host registered no GPU event callbacks");
 		return SceVideoOutErrorInvalidEventQueue;
 	}
-	return g_host.add_gpu_event(g_host.user, equeue, KYTY_GPU_EVENT_FLIP, handle, udata);
+	const int added = g_host.add_gpu_event(g_host.user, equeue, KYTY_GPU_EVENT_FLIP, handle, udata);
+	if (added != 0 || g_proxy == EventQueue::KERNEL_EQUEUE_INVALID) {
+		return added;
+	}
+	std::lock_guard lock(g_proxy_mutex);
+	if (g_proxy_flip.insert(handle).second &&
+	    Libs::VideoOut::VideoOutAddFlipEvent(g_proxy, handle, nullptr) != 0) {
+		Log(2, "sceVideoOutAddFlipEvent: Kyty refused the proxy registration for handle %d", handle);
+	}
+	return added;
 }
 
 void* BridgeFunction(const char* name) {
 	if (std::strcmp(name, "BridgeAgcDriverAddEqEvent") == 0) {
 		return reinterpret_cast<void*>(&BridgeAgcDriverAddEqEvent);
+	}
+	if (std::strcmp(name, "BridgeAgcDriverDeleteEqEvent") == 0) {
+		return reinterpret_cast<void*>(&BridgeAgcDriverDeleteEqEvent);
 	}
 	if (std::strcmp(name, "BridgeVideoOutAddFlipEvent") == 0) {
 		return reinterpret_cast<void*>(&BridgeVideoOutAddFlipEvent);
@@ -181,6 +308,7 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 	Loader::SymbolDatabase symbols;
 	Libs::InitAgcDriver_1(&symbols);
 	Libs::LibGen5::InitVideoOut_1(&symbols);
+	Libs::InitLibKernel_1_Mem(&symbols);
 
 	uint32_t missing = 0;
 	for (uint32_t i = 0; i < g_row_count; ++i) {
@@ -221,7 +349,7 @@ int                     g_renderer_result = 1;
 uint32_t EnvironmentSize(const char* name, uint32_t fallback) {
 	const char* text = std::getenv(name);
 	const long  value = text != nullptr ? std::strtol(text, nullptr, 10) : 0;
-	return value >= 320 && value <= 7680 ? static_cast<uint32_t>(value) : fallback;
+	return value > 0 && value <= 7680 ? static_cast<uint32_t>(value) : fallback;
 }
 
 void RendererThread() {
@@ -256,12 +384,27 @@ int ApiStartGraphics() {
 	if (g_state.load() != State::Initialized) {
 		return KYTY_GPU_E_STATE;
 	}
+	if (g_host.donate_guest_range != nullptr) {
+		const uint64_t gib     = EnvironmentSize("KYTY_GPU_GUEST_GIB", 64);
+		uint64_t       base    = 0;
+		const int      donated = g_host.donate_guest_range(g_host.user, gib << 30u, &base);
+		if (donated != 0) {
+			Log(2, "start_graphics: the host could not release %llu GiB of guest address space (%d)",
+			    static_cast<unsigned long long>(gib), donated);
+			return KYTY_GPU_E_HOST_CALLBACK;
+		}
+		Log(0, "start_graphics: Kyty's guest memory window 0x%llx + %llu GiB",
+		    static_cast<unsigned long long>(base), static_cast<unsigned long long>(gib));
+	}
 	g_renderer_result = 1;
 	g_renderer_thread = std::thread(RendererThread);
 	std::unique_lock lock(g_renderer_mutex);
 	const auto started = std::chrono::steady_clock::now();
 	if (!g_renderer_ready.wait_for(lock, std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
 		Log(2, "start_graphics: Kyty's renderer did not come up within 120 s");
+		return KYTY_GPU_E_STATE;
+	}
+	if (g_host.deliver_event != nullptr && !StartProxy()) {
 		return KYTY_GPU_E_STATE;
 	}
 	g_state.store(State::Graphics);
@@ -281,6 +424,7 @@ void ApiShutdown() {
 			Log(2, "shutdown: SDL_PushEvent failed: %s", SDL_GetError());
 		}
 	}
+	StopProxy();
 	if (g_renderer_thread.joinable()) {
 		g_renderer_thread.join();
 	}
@@ -345,6 +489,19 @@ const KytyGpuNidInfo* ApiFindNid(const char* nid) {
 	return nullptr;
 }
 
+std::mutex g_lazy;
+
+const KytyGpuHostCallbacks* FindHost() {
+	const char* name   = std::getenv("KYTY_GPU_HOST_MODULE");
+	HMODULE     module = LoadLibraryA(name != nullptr ? name : KYTY_GPU_HOST_MODULE_DEFAULT);
+	if (module == nullptr) {
+		return nullptr;
+	}
+	const auto entry = reinterpret_cast<KytyGpuHostEntryFn>(
+	    reinterpret_cast<void*>(GetProcAddress(module, KYTY_GPU_HOST_ENTRY)));
+	return entry != nullptr ? entry() : nullptr;
+}
+
 struct Tables {
 	Tables() {
 		for (uint32_t i = 0; i < g_row_count; ++i) {
@@ -363,6 +520,32 @@ const KytyGpuApi g_api = {
 };
 
 } // namespace
+
+// Game code reached an export no host has bound yet: AstroBot.exe loads the shims and calls
+// straight in. Find the host module, bind the exports and start the renderer, once.
+extern "C" void* KytyGpuLazyResolve(uint32_t index) {
+	if (index >= g_row_count) {
+		KytyGpuUnboundNid(index);
+	}
+	{
+		std::lock_guard lock(g_lazy);
+		if (g_state.load() == State::Loaded) {
+			const auto* host = FindHost();
+			if (host == nullptr) {
+				std::fprintf(stderr, "kyty_gpu: %s was called, and no host module (%s) provides %s\n",
+				             g_rows[index].nid, KYTY_GPU_HOST_MODULE_DEFAULT, KYTY_GPU_HOST_ENTRY);
+				KytyGpuUnboundNid(index);
+			}
+			if (ApiInit(host) != KYTY_GPU_OK || ApiStartGraphics() != KYTY_GPU_OK) {
+				KytyGpuUnboundNid(index);
+			}
+		}
+	}
+	if (g_info[index].bound == 0) {
+		KytyGpuUnboundNid(index);
+	}
+	return g_kyty_gpu_slots[index];
+}
 
 extern "C" KYTY_GPU_EXPORT const KytyGpuApi* KytyGpuGetApi(uint32_t abi_version) {
 	return (abi_version >> 16u) == KYTY_GPU_ABI_VERSION_MAJOR ? &g_api : nullptr;
