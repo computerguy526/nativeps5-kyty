@@ -112,11 +112,28 @@ void TextureBindingMemo::ReportRevalidateMismatch() {
 	}
 }
 
+// ASTROHYBRID_OPT_1=1 (startup, default 0): the memo defaults to 32768 entries (~31 MiB host RAM,
+// no VRAM) instead of 4096. Sky Garden binds more distinct textures per frame than 4096 entries
+// hold, so run-start draws (~24% of draws, ~18 us each against ~5 us for a continuation) resolve
+// their ~11 textures from scratch every frame. An explicit KYTY_TEXTURE_MEMO_SLOTS still wins.
+// =0 or unset: the original default (4096).
+static bool AstroHybridOpt1() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("ASTROHYBRID_OPT_1");
+		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		std::printf("AstroHybrid: ASTROHYBRID_OPT_1=%d (texture binding memo default %u entries)\n", on ? 1 : 0,
+		            on ? 32768u : 4096u);
+		return on;
+	}();
+	return enabled;
+}
+
 uint32_t TextureBindingMemo::SlotCount() {
 	static const uint32_t slots = [] {
-		const auto* value = std::getenv("KYTY_TEXTURE_MEMO_SLOTS");
-		const auto  count = value != nullptr && value[0] != '\0' ? std::strtoul(value, nullptr, 10) : 0ul;
-		return count >= 64 && count <= (1ul << 22u) ? static_cast<uint32_t>(count) : 4096u;
+		const uint32_t fallback = AstroHybridOpt1() ? 32768u : 4096u;
+		const auto*    value    = std::getenv("KYTY_TEXTURE_MEMO_SLOTS");
+		const auto     count = value != nullptr && value[0] != '\0' ? std::strtoul(value, nullptr, 10) : 0ul;
+		return count >= 64 && count <= (1ul << 22u) ? static_cast<uint32_t>(count) : fallback;
 	}();
 	return slots;
 }
