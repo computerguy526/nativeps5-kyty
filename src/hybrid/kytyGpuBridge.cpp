@@ -35,6 +35,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -221,6 +222,51 @@ void Pump() {
 std::thread       g_relay;
 std::atomic<bool> g_relay_stop {false};
 
+// ABI 1.4: the game's pad requests reach the host's pad library; Kyty owns the controller, so the
+// relay applies them through Kyty's own pad functions, which scale them by the controller settings
+// and convert trigger effects for a DualSense. Only what changed is sent again.
+void ApplyPadOutput(int handle, uint32_t& seen, KytyGpuPadOutput& applied) {
+	namespace Controller = Libs::Controller;
+	if (g_host.fetch_pad_output == nullptr) {
+		return;
+	}
+	KytyGpuPadOutput out {};
+	if (g_host.fetch_pad_output(g_host.user, 0, &seen, &out) <= 0) {
+		return;
+	}
+	const uint8_t motor_large = std::max(out.vibration_large, out.audio_vibration_large);
+	const uint8_t motor_small = std::max(out.vibration_small, out.audio_vibration_small);
+	if (motor_large != std::max(applied.vibration_large, applied.audio_vibration_large) ||
+	    motor_small != std::max(applied.vibration_small, applied.audio_vibration_small) || applied.sequence == 0) {
+		const uint8_t vibration[2] = {motor_large, motor_small};
+		(void)Controller::PadSetVibration(handle, reinterpret_cast<const Controller::PadVibrationParam*>(vibration));
+	}
+	if (out.light_bar_valid != applied.light_bar_valid ||
+	    std::memcmp(out.light_bar, applied.light_bar, sizeof(out.light_bar)) != 0) {
+		if (out.light_bar_valid != 0) {
+			const uint8_t color[4] = {out.light_bar[0], out.light_bar[1], out.light_bar[2], 0};
+			(void)Controller::PadSetLightBar(handle, reinterpret_cast<const Controller::PadLightBarParam*>(color));
+		} else {
+			(void)Controller::PadResetLightBar(handle);
+		}
+	}
+	// scePadSetTriggerEffect's parameter: trigger mask, 7 bytes of padding, two 56-byte commands.
+	alignas(8) uint8_t param[120] {};
+	for (int trigger = 0; trigger < 2; ++trigger) {
+		if (out.trigger_set[trigger] != 0 &&
+		    (applied.trigger_set[trigger] == 0 ||
+		     std::memcmp(out.trigger_command[trigger], applied.trigger_command[trigger], 56) != 0)) {
+			param[0] |= static_cast<uint8_t>(1u << trigger);
+			std::memcpy(param + 8 + 56 * trigger, out.trigger_command[trigger], 56);
+		}
+	}
+	if (param[0] != 0) {
+		(void)Controller::PadSetTriggerEffect(handle, reinterpret_cast<const Controller::PadTriggerEffectParam*>(param));
+	}
+	out.sequence = out.sequence != 0 ? out.sequence : 1;
+	applied      = out;
+}
+
 void Relay() {
 	namespace Controller = Libs::Controller;
 	if (Controller::PadInit() != 0) {
@@ -236,7 +282,10 @@ void Relay() {
 		Log(2, "input relay: Kyty opened no pad for user %d (0x%x)", user, static_cast<unsigned>(handle));
 		return;
 	}
-	Log(0, "input relay: Kyty pad %d for user %d -> host port 0", handle, user);
+	Log(0, "input relay: Kyty pad %d for user %d -> host port 0%s", handle, user,
+	    g_host.fetch_pad_output != nullptr ? ", rumble, light bar and trigger effects <- host" : "");
+	uint32_t         output_seen = 0;
+	KytyGpuPadOutput output_applied {};
 	while (!g_relay_stop.load(std::memory_order_acquire)) {
 		Controller::PadData data {};
 		if (Controller::PadReadState(handle, &data) == 0) {
@@ -257,6 +306,7 @@ void Relay() {
 			}
 			g_host.publish_pad(g_host.user, 0, &state);
 		}
+		ApplyPadOutput(handle, output_seen, output_applied);
 		std::this_thread::sleep_for(std::chrono::milliseconds(4));
 	}
 }
@@ -353,17 +403,19 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 		return KYTY_GPU_E_ARGUMENT;
 	}
 	if ((host->abi_version >> 16u) != KYTY_GPU_ABI_VERSION_MAJOR ||
-	    host->struct_size < sizeof(KytyGpuHostCallbacks)) {
+	    host->struct_size < KYTY_GPU_HOST_CALLBACKS_SIZE_1_3) {
 		Log(2, "init: host ABI %u.%u with %u-byte callbacks, this DLL needs %u.x and %zu bytes",
 		    host->abi_version >> 16u, host->abi_version & 0xffffu, host->struct_size,
-		    KYTY_GPU_ABI_VERSION_MAJOR, sizeof(KytyGpuHostCallbacks));
+		    KYTY_GPU_ABI_VERSION_MAJOR, static_cast<size_t>(KYTY_GPU_HOST_CALLBACKS_SIZE_1_3));
 		return KYTY_GPU_E_VERSION;
 	}
 	std::lock_guard lock(g_lifecycle);
 	if (g_state.load() != State::Loaded) {
 		return KYTY_GPU_E_STATE;
 	}
-	g_host = *host;
+	// A smaller (older) table leaves the fields it does not have null.
+	g_host = {};
+	std::memcpy(&g_host, host, std::min<size_t>(host->struct_size, sizeof(KytyGpuHostCallbacks)));
 
 	Loader::SymbolDatabase symbols;
 	Libs::InitAgcDriver_1(&symbols);

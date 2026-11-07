@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define KYTY_GPU_ABI_VERSION_MAJOR 1u
-#define KYTY_GPU_ABI_VERSION_MINOR 3u
+#define KYTY_GPU_ABI_VERSION_MINOR 4u
 #define KYTY_GPU_ABI_VERSION ((KYTY_GPU_ABI_VERSION_MAJOR << 16u) | KYTY_GPU_ABI_VERSION_MINOR)
 
 #if defined(_WIN32)
@@ -88,6 +88,22 @@ typedef struct KytyGpuPadState {
 	KytyGpuPadTouch touch[2];
 } KytyGpuPadState;
 
+/* ABI 1.4: what the game asked of a pad through the host's pad library: rumble (game and
+ * audio-driven), the light bar, and each trigger's last effect command as the game passed it to
+ * scePadSetTriggerEffect (56 bytes: mode, then its parameters at +8). */
+typedef struct KytyGpuPadOutput {
+	uint32_t sequence;
+	uint8_t  vibration_large;
+	uint8_t  vibration_small;
+	uint8_t  audio_vibration_large;
+	uint8_t  audio_vibration_small;
+	uint8_t  light_bar_valid;
+	uint8_t  light_bar[3];
+	uint8_t  trigger_set[2]; /* the game set a command for this trigger */
+	uint8_t  reserved[2];
+	uint8_t  trigger_command[2][56];
+} KytyGpuPadOutput;
+
 typedef struct KytyGpuHostCallbacks {
 	uint32_t struct_size; /* sizeof(KytyGpuHostCallbacks) on the host */
 	uint32_t abi_version; /* KYTY_GPU_ABI_VERSION of the host */
@@ -129,7 +145,15 @@ typedef struct KytyGpuHostCallbacks {
 	 * game may still submit work while it shuts down. May be null: then the window close is ignored
 	 * until the host calls shutdown. */
 	void (*request_exit)(void* user, int code);
+
+	/* ABI 1.4. The pad output the game requested since *seen: returns 1 and fills `out` (and
+	 * *seen) when it changed, 0 when not. Kyty owns the physical controller, so the DLL applies it
+	 * (rumble, light bar, DualSense trigger effects). May be null, as in a 1.3 host's table. */
+	int (*fetch_pad_output)(void* user, int port, uint32_t* seen, KytyGpuPadOutput* out);
 } KytyGpuHostCallbacks;
+
+/* The callback table of a 1.3 host, the oldest the DLL accepts. */
+#define KYTY_GPU_HOST_CALLBACKS_SIZE_1_3 offsetof(KytyGpuHostCallbacks, fetch_pad_output)
 
 /* The host module kyty_gpu.dll looks for when game code reaches an export before any host called
  * init: LoadLibrary(KYTY_GPU_HOST_MODULE or "libAstroHybridHost.prx"), then this function. */
