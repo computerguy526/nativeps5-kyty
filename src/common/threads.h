@@ -15,6 +15,8 @@ void InitializeThreads();
 // 2 = highest. Also opts the thread out of Windows power throttling (EcoQoS). No-op elsewhere.
 void RaiseCurrentThreadPriority();
 
+void RaiseDrawPrepThreadPriority();
+
 // The same for the short-running service threads the command processor waits on: the video-out
 // present thread, the Vulkan queue-submission worker and the command schedulers' priority
 // (completion) threads. They block between bursts and never spin. At the guest threads' priority

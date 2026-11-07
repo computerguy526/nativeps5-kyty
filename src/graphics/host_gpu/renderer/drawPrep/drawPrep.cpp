@@ -8,6 +8,7 @@
 #include "common/hangWatchdog.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "common/threads.h"
 #include "graphics/guest_gpu/command_processor/cpOps.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/pm4.h"
@@ -1198,6 +1199,7 @@ struct Engine::Workers {
 		char name[32];
 		std::snprintf(name, sizeof(name), "DrawPrep#%u", index + 1u);
 		Profiler::SetThreadName(name);
+		Common::RaiseDrawPrepThreadPriority();
 		t_worker_thread = true;
 		uint32_t placement_count = 0; // placement samples (common/cpuPlacement.h), every 64th slot
 		t_worker_number = index + 1u;

@@ -282,6 +282,13 @@ void RaiseCurrentThreadPriority() {
 #endif
 }
 
+void RaiseDrawPrepThreadPriority() {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	static const int level = PriorityLevelFromEnv("KYTY_DRAW_PREP_PRIORITY", 0);
+	RaiseCurrentThreadPriorityLevel(level);
+#endif
+}
+
 int ServiceThreadPriorityLevel() {
 	static const int level = PriorityLevelFromEnv("KYTY_SERVICE_PRIORITY", 2);
 	return level;
