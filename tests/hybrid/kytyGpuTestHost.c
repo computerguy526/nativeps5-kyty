@@ -43,7 +43,7 @@ static void HostDeliver(void* user, uint32_t kind, int64_t ident, uint64_t data)
 }
 
 static KytyGpuHostCallbacks g_callbacks = {
-    sizeof(KytyGpuHostCallbacks), KYTY_GPU_ABI_VERSION, NULL, HostLog, HostAdd, HostDelete, HostDeliver, NULL, NULL, NULL, NULL,
+    sizeof(KytyGpuHostCallbacks), KYTY_GPU_ABI_VERSION, NULL, HostLog, HostAdd, HostDelete, HostDeliver, NULL, NULL, NULL, NULL, NULL,
 };
 
 __declspec(dllexport) const KytyGpuHostCallbacks* AstroHybridHostCallbacks_nid_no_patch(void) {

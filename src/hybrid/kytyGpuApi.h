@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define KYTY_GPU_ABI_VERSION_MAJOR 1u
-#define KYTY_GPU_ABI_VERSION_MINOR 2u
+#define KYTY_GPU_ABI_VERSION_MINOR 3u
 #define KYTY_GPU_ABI_VERSION ((KYTY_GPU_ABI_VERSION_MAJOR << 16u) | KYTY_GPU_ABI_VERSION_MINOR)
 
 #if defined(_WIN32)
@@ -123,6 +123,12 @@ typedef struct KytyGpuHostCallbacks {
 	/* ABI 1.2. Kyty owns the window, so it reads the keyboard and the gamepads; the game reads pads
 	 * through the host's pad library. The DLL publishes each pad's state here, about every 4 ms. */
 	void (*publish_pad)(void* user, int port, const KytyGpuPadState* state);
+
+	/* ABI 1.3. The player closed Kyty's window: the host ends the process its usual way (AnyPS5:
+	 * LibcRequestExit, as its own window does). Kyty's renderer keeps running meanwhile, because the
+	 * game may still submit work while it shuts down. May be null: then the window close is ignored
+	 * until the host calls shutdown. */
+	void (*request_exit)(void* user, int code);
 } KytyGpuHostCallbacks;
 
 /* The host module kyty_gpu.dll looks for when game code reaches an export before any host called

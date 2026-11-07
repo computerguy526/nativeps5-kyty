@@ -405,6 +405,7 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 // frames and pumps SDL events until shutdown posts SDL_EVENT_QUIT. The subsystems are destroyed on
 // the same thread, in reverse order, when the loop returns.
 std::thread             g_renderer_thread;
+std::atomic<bool>       g_shutdown_requested {false};
 std::mutex              g_renderer_mutex;
 std::condition_variable g_renderer_ready;
 int                     g_renderer_result = 1;
@@ -486,6 +487,17 @@ void RendererThread() {
 		}
 		g_renderer_ready.notify_all();
 		Libs::Graphics::WindowRun();
+		if (!g_shutdown_requested.load(std::memory_order_acquire)) {
+			if (g_host.request_exit != nullptr) {
+				Log(0, "renderer: the window was closed, asking the host to exit");
+				g_host.request_exit(g_host.user, 0);
+			} else {
+				Log(1, "renderer: the window was closed; the host has no request_exit, waiting for shutdown");
+			}
+			while (!g_shutdown_requested.load(std::memory_order_acquire)) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			}
+		}
 		Log(0, "renderer: window loop ended, shutting the subsystems down");
 	}
 	Log(0, "renderer: stopped");
@@ -561,6 +573,7 @@ int ApiStartGraphics() {
 
 void ApiShutdown() {
 	std::lock_guard lock(g_lifecycle);
+	g_shutdown_requested.store(true, std::memory_order_release);
 	if (g_state.load() == State::Graphics) {
 		SDL_Event quit {};
 		quit.type = SDL_EVENT_QUIT;
