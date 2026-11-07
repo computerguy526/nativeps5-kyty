@@ -69,6 +69,7 @@ struct Event {
 	bool   used = false; // publisher mutex only; tombstones keep probing chains intact
 	Record record;
 	std::array<std::atomic<char>, 64> name {};
+	std::atomic_flag writing; // ASTROHYBRID_WATCHDOG_FAST_EVENTS: one publisher at a time
 };
 struct GuestModule {
 	Record                            range;
@@ -725,12 +726,60 @@ void UpdateTimeline(uint32_t slot, uint64_t current, uint64_t gpu, uint64_t disp
 	t.gpu.store(gpu, std::memory_order_relaxed);
 	t.dispatched.store(dispatched, std::memory_order_relaxed);
 }
+// ASTROHYBRID_WATCHDOG_FAST_EVENTS=1 (startup, default off): a thread that publishes an event it
+// published before (same queue, ident and filter, still in the slot it found last time) updates the
+// record without g_event_mutex. KYTY_HANG_WATCHDOG=auto turns the watchdog on for RTX 50 GPUs, and
+// there the mutex and probe cost the command processor ~1,000 events per frame (Sky Garden on an
+// RTX 5060: NoteEvent 2.6% of the CP thread's samples; watchdog off: ~1.2 ms less CP gap per frame).
+// A new event, a deletion or a slot that changed takes the locked path. Each record is written by
+// one publisher at a time (`writing`); a publisher that finds it taken skips that one update,
+// counted as an overflow, as NotePacket does. Records are diagnostics only.
+namespace {
+bool FastEvents() {
+	static const bool on = [] {
+		const auto* value = std::getenv("ASTROHYBRID_WATCHDOG_FAST_EVENTS");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return on;
+}
+struct EventCacheEntry {
+	uint64_t queue  = 0;
+	uint64_t ident  = 0;
+	int16_t  filter = 0;
+	Event*   event  = nullptr;
+};
+thread_local std::array<EventCacheEntry, 16> t_event_cache {};
+void StoreEvent(Event& target, uint64_t queue, uint64_t ident, int16_t filter, bool triggered,
+                uint64_t data, uint64_t udata, bool deleted, bool exclusive) {
+	if (exclusive && target.writing.test_and_set(std::memory_order_acquire)) {
+		++g_overflow;
+		return;
+	}
+	const auto cp_queue = t_thread ? t_thread->queue.load() : UINT32_MAX;
+	Store(target.record, deleted ? nullptr : "event",
+	      {queue, ident, static_cast<uint64_t>(filter), triggered, data, udata, cp_queue});
+	if (exclusive) target.writing.clear(std::memory_order_release);
+}
+} // namespace
 void NoteEvent(uint64_t queue, std::string_view name, uint64_t ident, int16_t filter,
                bool triggered, uint64_t data, uint64_t udata, bool deleted) {
 	if (!Enabled()) return;
+	const auto hash = (queue >> 4) ^ ident ^ (ident >> 32) ^ static_cast<uint16_t>(filter);
+	const bool fast = FastEvents();
+	auto&      cached = t_event_cache[hash % t_event_cache.size()];
+	if (fast && !deleted && cached.event != nullptr && cached.queue == queue && cached.ident == ident &&
+	    cached.filter == filter) {
+		auto& e = *cached.event;
+		if (e.record.kind.load(std::memory_order_relaxed) != nullptr &&
+		    e.record.args[0].load(std::memory_order_relaxed) == queue &&
+		    e.record.args[1].load(std::memory_order_relaxed) == ident &&
+		    static_cast<int16_t>(e.record.args[2].load(std::memory_order_relaxed)) == filter) {
+			StoreEvent(e, queue, ident, filter, triggered, data, udata, false, true);
+			return;
+		}
+	}
 	std::lock_guard lock(g_event_mutex);
 	Event*          target = nullptr;
-	const auto      hash   = (queue >> 4) ^ ident ^ (ident >> 32) ^ static_cast<uint16_t>(filter);
 	for (size_t probe = 0; probe < MaxEvents; ++probe) {
 		auto&      e    = g_events[(hash + probe) % MaxEvents];
 		const auto kind = e.record.kind.load(std::memory_order_relaxed);
@@ -748,10 +797,11 @@ void NoteEvent(uint64_t queue, std::string_view name, uint64_t ident, int16_t fi
 	}
 	if (deleted && !target->record.kind.load()) return;
 	if (!target->record.kind.load()) CopyName(target->name, name);
-	target->used        = true;
-	const auto cp_queue = t_thread ? t_thread->queue.load() : UINT32_MAX;
-	Store(target->record, deleted ? nullptr : "event",
-	      {queue, ident, static_cast<uint64_t>(filter), triggered, data, udata, cp_queue});
+	target->used = true;
+	StoreEvent(*target, queue, ident, filter, triggered, data, udata, deleted, fast);
+	if (fast) {
+		cached = deleted ? EventCacheEntry {} : EventCacheEntry {queue, ident, filter, target};
+	}
 }
 void DebugDelay(const char* site, uint64_t key) {
 	static const auto* selected = std::getenv("KYTY_HANG_DELAY_SITE");
