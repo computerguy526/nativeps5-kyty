@@ -1035,6 +1035,11 @@ void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
 	if (const auto* limit = VideoOut::FrameLimitLabel()) {
 		text += fmt::format(" | FPS limit: {}", limit);
 	}
+	// ASTROHYBRID_WINDOW_TITLE (default unset): a fixed window title instead of the diagnostic one.
+	static const char* fixed_title = std::getenv("ASTROHYBRID_WINDOW_TITLE");
+	if (fixed_title != nullptr && fixed_title[0] != '\0') {
+		text = fixed_title;
+	}
 
 	SDL_SetWindowTitle(window, text.c_str());
 }
