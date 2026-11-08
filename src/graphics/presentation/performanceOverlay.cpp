@@ -1,4 +1,5 @@
 #include "graphics/presentation/performanceOverlay.h"
+#include "graphics/presentation/videoOut.h"
 
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -716,6 +717,10 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 			ImGui::TextColored(Color(BAD), "No frames for %.0f s", shown.stalled_s);
 		} else {
 			ImGui::TextDisabled("Waiting for frames");
+		}
+		if (const auto* limit = VideoOut::FrameLimitLabel()) {
+			ImGui::TextUnformatted("Frame-rate limit");
+			ImGui::Text("%s  (Ctrl+F2 to change)", limit);
 		}
 		DrawFrameGraph(shown.history, shown.history_count, (details ? 330.0f : 260.0f) * scale,
 		               46.0f * scale);

@@ -36,6 +36,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <fmt/format.h>
 #include <list>
 #include <thread>
@@ -869,6 +871,46 @@ void VideoOutDriver::Impl::VblankEnd() {
 // refresh rate changes. Independent of KYTY_PRESENT_PORT_UNLOCKED, which only changes FlipQueue::Flip.
 static Live::Switch g_present_abs_vblank("KYTY_PRESENT_ABS_VBLANK", Live::ParseDefaultOff);
 
+namespace {
+
+constexpr uint32_t FRAME_LIMIT_DISABLED = UINT32_MAX;
+constexpr std::array<uint32_t, 4> FRAME_LIMITS {30, 60, 120, 0};
+constexpr std::array<const char*, 4> FRAME_LIMIT_LABELS {"30 FPS", "60 FPS", "120 FPS",
+                                                       "No limit"};
+
+std::atomic<uint32_t>& FrameLimitChoice() {
+	static std::atomic<uint32_t> choice {[] {
+		const char* value = std::getenv("ASTROHYBRID_FPS_LIMIT");
+		if (value != nullptr) {
+			constexpr std::array<const char*, 4> options {"30", "60", "120", "unlimited"};
+			for (uint32_t i = 0; i < options.size(); ++i) {
+				if (std::strcmp(value, options[i]) == 0) {
+					return i;
+				}
+			}
+		}
+		return FRAME_LIMIT_DISABLED;
+	}()};
+	return choice;
+}
+
+} // namespace
+
+const char* FrameLimitLabel() {
+	const auto choice = FrameLimitChoice().load(std::memory_order_relaxed);
+	return choice == FRAME_LIMIT_DISABLED ? nullptr : FRAME_LIMIT_LABELS[choice];
+}
+
+bool CycleFrameLimit() {
+	auto& setting = FrameLimitChoice();
+	const auto choice = setting.load(std::memory_order_relaxed);
+	if (choice == FRAME_LIMIT_DISABLED) {
+		return false;
+	}
+	setting.store((choice + 1) % FRAME_LIMITS.size(), std::memory_order_relaxed);
+	return true;
+}
+
 void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 	// A 120 Hz timer loop that blocks between vblanks; it presents and fires the flip events the
 	// guest waits for. Its only spin is the last <= 50 us of a vblank wait (SleepMicro).
@@ -894,13 +936,35 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 	uint64_t abs_origin  = 0;
 	uint64_t abs_index   = 0;
 	uint32_t abs_refresh = 0;
+	uint32_t previous_limit = FRAME_LIMIT_DISABLED;
+	uint64_t next_flip = 0;
+
+	const auto flip = [&](uint32_t limit) {
+		if (limit == 0) {
+			return m_flip_queue.Flip(0);
+		}
+		const auto now = Common::Timer::QueryPerformanceCounter();
+		if (now < next_flip || !m_flip_queue.Flip(0)) {
+			return false;
+		}
+		next_flip = now + (frequency + limit - 1) / limit;
+		return true;
+	};
 
 	uint32_t placement_count = 0; // placement samples (common/cpuPlacement.h), every 8th vblank
 	while (!token.stop_requested()) {
 		if ((++placement_count & 7u) == 0u) {
 			Common::SamplePlacement(Common::ThreadRole::Host);
 		}
-		const bool absolute    = g_present_abs_vblank.On();
+		const auto choice = FrameLimitChoice().load(std::memory_order_relaxed);
+		if (choice != previous_limit) {
+			previous_limit = choice;
+			next_flip = 0;
+		}
+		const bool limit_enabled = choice != FRAME_LIMIT_DISABLED;
+		const auto limit = limit_enabled ? FRAME_LIMITS[choice] : 0;
+		const bool absolute = g_present_abs_vblank.On() ||
+		                      (limit_enabled && Config::GetPresentMode() == Config::PresentMode::Immediate);
 		bool       behind      = false; // a vblank deadline was missed: may present a blank frame
 		uint64_t   frame_begin = 0;
 		uint64_t   period      = 1;
@@ -932,12 +996,16 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 				// Present each ready flip as it arrives; the guest's vblank events keep their clock.
 				while (!token.stop_requested() &&
 				       Common::Timer::QueryPerformanceCounter() < deadline) {
-					if (m_flip_queue.Flip(0)) {
+					if (flip(limit)) {
 						continue;
 					}
 					const auto current = Common::Timer::QueryPerformanceCounter();
 					if (current >= deadline) {
 						break;
+					}
+					if (limit != 0 && current < next_flip) {
+						sleep_until(std::min(deadline, next_flip));
+						continue;
 					}
 					const auto remaining_us =
 					    ((deadline - current) * 1000000u + frequency - 1) / frequency;
@@ -988,7 +1056,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		}
 
 		VblankBegin();
-		bool presented = m_flip_queue.Flip(0);
+		bool presented = flip(limit);
 		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
 			if (m_presenter.PresentLastFrame()) {
 				presented = true;

@@ -17,6 +17,7 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/systemOverlay.h"
+#include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kytyGitVersion.h"
@@ -532,7 +533,11 @@ void WindowContext::ProcessEvent(double time_s) {
 #endif
 			case SDLK_F2:
 				if (pressed) {
-					if ((event->key.mod & SDL_KMOD_SHIFT) != 0) {
+					if ((event->key.mod & SDL_KMOD_CTRL) != 0 && VideoOut::CycleFrameLimit()) {
+						if (!PerformanceOverlayEnabled()) {
+							TogglePerformanceOverlay();
+						}
+					} else if ((event->key.mod & SDL_KMOD_SHIFT) != 0) {
 						TogglePerformanceOverlayDetails();
 					} else {
 						TogglePerformanceOverlay();
@@ -1027,6 +1032,9 @@ void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
 	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
 	    device_name, processor_name, frame_num, current_fps);
+	if (const auto* limit = VideoOut::FrameLimitLabel()) {
+		text += fmt::format(" | FPS limit: {}", limit);
+	}
 
 	SDL_SetWindowTitle(window, text.c_str());
 }
