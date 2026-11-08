@@ -279,10 +279,47 @@ enum class Event : uint8_t {
 constexpr size_t EventCount = static_cast<size_t>(Event::Count);
 
 // The GPU thread's ledger (null on every other thread, and while the diagnostic is off).
+struct DrawPassKey {
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t colors = 0;
+	uint32_t color_format = 0;
+	uint32_t depth_format = 0;
+
+	bool operator==(const DrawPassKey&) const = default;
+};
+
+struct DrawPassSample {
+	DrawPassKey key;
+	uint64_t binding_ticks = 0;
+	uint64_t descriptor_ticks = 0;
+	uint64_t rebind_ticks = 0;
+	uint64_t shader_table_bindings = 0;
+	uint64_t shader_table_bytes = 0;
+	int64_t shader_table_reduction = 0;
+	int64_t shader_byte_reduction = 0;
+};
+
+struct DrawPassTotals {
+	DrawPassKey key;
+	uint64_t draws = 0;
+	uint64_t ticks = 0;
+	uint64_t binding_ticks = 0;
+	uint64_t descriptor_ticks = 0;
+	uint64_t rebind_ticks = 0;
+	uint64_t shader_table_bindings = 0;
+	uint64_t shader_table_bytes = 0;
+	int64_t shader_table_reduction = 0;
+	int64_t shader_byte_reduction = 0;
+};
+
 struct ThreadState {
 	Ledger                           ledger;
 	double                           ticks_per_ns = 1.0;
 	std::array<uint64_t, EventCount> events {};
+	DrawPassSample* draw_pass_sample = nullptr;
+	// Last entry is the overflow bucket.
+	std::array<DrawPassTotals, 33> draw_pass_totals {};
 };
 inline constinit thread_local ThreadState* t_state = nullptr;
 
@@ -307,6 +344,27 @@ public:
 private:
 	ThreadState* m_state = nullptr;
 };
+
+// KYTY_CP_PASS_STATS=1 with KYTY_CP_GAP_STATS=1 records the same inclusive commit
+// boundary by the final draw's attachment signature. Non-draw commits remain unclassified.
+class DrawCommitScope {
+public:
+	DrawCommitScope() noexcept;
+	~DrawCommitScope();
+	DrawCommitScope(const DrawCommitScope&) = delete;
+	DrawCommitScope& operator=(const DrawCommitScope&) = delete;
+
+private:
+	Scope m_gap {Cat::Commit};
+	ThreadState* m_state = nullptr;
+	DrawPassSample* m_previous = nullptr;
+	DrawPassSample m_sample;
+	uint64_t m_start = 0;
+};
+
+[[nodiscard]] inline DrawPassSample* CurrentDrawPassSample() noexcept {
+	return t_state != nullptr ? t_state->draw_pass_sample : nullptr;
+}
 
 // The innermost scope continues as `cat` (dispatch phases).
 inline void Phase(Cat cat) noexcept {

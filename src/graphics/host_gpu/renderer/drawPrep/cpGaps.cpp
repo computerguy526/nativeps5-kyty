@@ -4,10 +4,51 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <span>
 #include <string>
 #include <utility>
 
 namespace Libs::Graphics::CpGaps {
+
+DrawCommitScope::DrawCommitScope() noexcept {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CP_PASS_STATS");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	if (enabled && t_state != nullptr) {
+		m_state = t_state;
+		m_previous = m_state->draw_pass_sample;
+		m_state->draw_pass_sample = &m_sample;
+		m_start = Tsc();
+	}
+}
+
+DrawCommitScope::~DrawCommitScope() {
+	if (m_state == nullptr) {
+		return;
+	}
+	const auto elapsed = Tsc() - m_start;
+	m_state->draw_pass_sample = m_previous;
+	auto& totals = m_state->draw_pass_totals;
+	auto* bucket = &totals.back();
+	for (auto& candidate: std::span(totals).first(totals.size() - 1)) {
+		if (candidate.draws == 0 || candidate.key == m_sample.key) {
+			bucket = &candidate;
+			bucket->key = m_sample.key;
+			break;
+		}
+	}
+	++bucket->draws;
+	bucket->ticks += elapsed;
+	bucket->binding_ticks += m_sample.binding_ticks;
+	bucket->descriptor_ticks += m_sample.descriptor_ticks;
+	bucket->rebind_ticks += m_sample.rebind_ticks;
+	bucket->shader_table_bindings += m_sample.shader_table_bindings;
+	bucket->shader_table_bytes += m_sample.shader_table_bytes;
+	bucket->shader_table_reduction += m_sample.shader_table_reduction;
+	bucket->shader_byte_reduction += m_sample.shader_byte_reduction;
+}
+
 
 const char* CatName(Cat cat) noexcept {
 	static constexpr const char* names[] = {
@@ -122,10 +163,34 @@ void Print(ThreadState& state, Report& report, uint64_t now_ns, uint64_t now_tsc
 		line += text;
 	}
 	std::printf("%s\n", line.c_str());
-	std::fflush(stdout);
 	ledger.ResetTotals();
 	report.start_ns  = now_ns;
 	report.start_tsc = now_tsc;
+	for (size_t i = 0; i < state.draw_pass_totals.size(); ++i) {
+		auto& pass = state.draw_pass_totals[i];
+		if (pass.draws == 0) {
+			continue;
+		}
+		const auto& key = pass.key;
+		std::printf("CpPass: %s %ux%u c%u color0=%u depth=%u draws/frame=%.1f "
+		            "commit_ms/frame=%.3f bindings_ms/frame=%.3f descriptors_ms/frame=%.3f "
+		            "rebind_ms/frame=%.3f shader_tables/frame=%.1f shader_bytes/frame=%.0f "
+		            "potential_tables_saved/frame=%.1f potential_bytes_saved/frame=%.0f\n",
+		            i + 1 == state.draw_pass_totals.size() ? "overflow" :
+		                key.width == 0 ? "unclassified" : "attachments",
+		            key.width, key.height, key.colors, key.color_format, key.depth_format,
+		            static_cast<double>(pass.draws) / frames,
+		            static_cast<double>(pass.ticks) * ms_tick,
+		            static_cast<double>(pass.binding_ticks) * ms_tick,
+		            static_cast<double>(pass.descriptor_ticks) * ms_tick,
+		            static_cast<double>(pass.rebind_ticks) * ms_tick,
+		            static_cast<double>(pass.shader_table_bindings) / frames,
+		            static_cast<double>(pass.shader_table_bytes) / frames,
+		            static_cast<double>(pass.shader_table_reduction) / frames,
+		            static_cast<double>(pass.shader_byte_reduction) / frames);
+		pass = {};
+	}
+	std::fflush(stdout);
 	report.frames    = 0;
 }
 

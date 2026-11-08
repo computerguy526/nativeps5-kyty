@@ -30,6 +30,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
+#include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/xframeReuse.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
@@ -2076,6 +2077,8 @@ static const std::vector<GuestRange>* ResolveWrittenRanges(RenderContext&       
 
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
+	auto* pass = CpGaps::CurrentDrawPassSample();
+	const auto start = pass != nullptr ? CpGaps::Tsc() : 0;
 	prepared.write_preparation_tick = BufferCache::ShaderWriteRetickEnabled()
 	                                      ? m_context.GetCommandScheduler().CurrentTick()
 	                                      : UINT64_MAX;
@@ -2163,6 +2166,9 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		BufferLookupStats::NoteStage(SyncEpoch::Current());
 	}
 	CommitStats::StepMark(CommitStats::Step::RbTables);
+	if (pass != nullptr) [[unlikely]] {
+		pass->rebind_ticks += CpGaps::Tsc() - start;
+	}
 }
 
 void RenderExecutor::RebindImages(PreparedBindings& prepared) {
@@ -2976,6 +2982,9 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 				Profiler::CountFrameEvent(E::DescriptorOffsetAuditOverLimit);
 			}
 		}
+		auto* pass = pipeline_bind_point == vk::PipelineBindPoint::eGraphics
+		                 ? CpGaps::CurrentDrawPassSample() : nullptr;
+		const auto descriptor_start = pass != nullptr ? CpGaps::Tsc() : 0;
 		if (pipeline.uses_push_descriptors) {
 			const CommitStats::SubScope desc_scope(CommitStats::Sub::DescPush);
 			// KYTY_PUSH_SHADOW_FRESH_SKIP: a stage's shader data or flattened SRT was uploaded for
@@ -2994,6 +3003,9 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 			const bool fresh = std::ranges::any_of(
 			    prepared_bindings, [](const auto* prepared) { return prepared->fresh_upload; });
 			CommitDescriptorSet(buffer, pipeline_bind_point, pipeline, fresh);
+		}
+		if (pass != nullptr) [[unlikely]] {
+			pass->descriptor_ticks += CpGaps::Tsc() - descriptor_start;
 		}
 	}
 	CommitStats::StepMark(CommitStats::Step::CbDescriptors);

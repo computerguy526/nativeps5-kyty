@@ -25,6 +25,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
+#include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
@@ -3826,6 +3827,42 @@ static CommitStats::DrawShape MakeCommitShape(
 	return shape;
 }
 
+static void AuditGraphicsPushBudget(CpGaps::DrawPassSample& sample,
+                                    std::span<PreparedBindings* const> stages,
+                                    uint32_t reserved_dwords, uint32_t budget_bytes) {
+	uint32_t cursor = reserved_dwords;
+	const auto budget = std::min(budget_bytes / 4u, 64u);
+	uint64_t proposed_tables = 0;
+	uint64_t proposed_bytes = 0;
+	const auto measure = [&](const PreparedBindings& stage) {
+		const auto dwords = stage.runtime->program->bindings.ShaderDataDwords();
+		if (stage.shader_data_buffer.buffer != nullptr) {
+			++sample.shader_table_bindings;
+			sample.shader_table_bytes += stage.shader_data_buffer.range;
+		}
+		if (dwords != 0) {
+			if (cursor <= budget && dwords <= budget - cursor) {
+				cursor += dwords;
+			} else {
+				++proposed_tables;
+				proposed_bytes += uint64_t {dwords} * 4;
+			}
+		}
+	};
+	// The program cache assigns the pixel stage first, then the vertex stages.
+	if (!stages.empty() && stages.back()->runtime->program->stage == ShaderType::Pixel) {
+		measure(*stages.back());
+		stages = stages.first(stages.size() - 1);
+	}
+	for (const auto* stage: stages) {
+		measure(*stage);
+	}
+	sample.shader_table_reduction = static_cast<int64_t>(sample.shader_table_bindings) -
+	                               static_cast<int64_t>(proposed_tables);
+	sample.shader_byte_reduction = static_cast<int64_t>(sample.shader_table_bytes) -
+	                              static_cast<int64_t>(proposed_bytes);
+}
+
 void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buffer,
                                          const DrawCallInfo& draw, DrawRenderState& state,
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
@@ -4328,7 +4365,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	{
 		KYTY_PROFILER_DETAIL_BLOCK("Draw::CommitBindings");
 		const CommitStats::SubScope push_scope(CommitStats::Sub::Push);
+		auto* pass = CpGaps::CurrentDrawPassSample();
+		const auto start = pass != nullptr ? CpGaps::Tsc() : 0;
 		CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages, m_run_active);
+		if (pass != nullptr) [[unlikely]] {
+			pass->binding_ticks += CpGaps::Tsc() - start;
+			using PushData = ShaderRecompiler::IR::PushData;
+			const auto reserved = PushData::GraphicsPushStart(
+			    mesh_active ? PushData::MeshDrawDwords(state.vertex_info[0].mesh.split_groups != 0)
+			                : 0,
+			    vertex_stages.back().user_clip_planes);
+			AuditGraphicsPushBudget(
+			    *pass, stages, reserved,
+			    m_context.GetGraphics().GetPhysicalDeviceProperties().limits.maxPushConstantsSize);
+			pass->key = {rendering.width, rendering.height, rendering.num_color_attachments,
+			             state.color_count != 0 ? static_cast<uint32_t>(state.color_info[0].desc.info.pixel_format) : 0,
+			             rendering.depth_stencil_attachment.image_view != nullptr
+			                 ? static_cast<uint32_t>(state.depth_info.desc.info.pixel_format) : 0};
+		}
 	}
 	if (run_verify_push) {
 		OwnedCounters::Add(DrawRun::GetTotals().partial_pushes, 1);
