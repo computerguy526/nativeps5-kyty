@@ -524,6 +524,12 @@ void RendererThread() {
 		options.present_mode  = PresentModeFromEnvironment();
 		options.shader_optimization_type = ShaderOptimizationFromEnvironment();
 		options.vblank_frequency         = EnvironmentSize("KYTY_GPU_VBLANK_HZ", 60);
+		// KYTY_GPU_FULLSCREEN=1: start in desktop fullscreen with the cursor hidden (F11 or Alt+Enter
+		// still toggles it).
+		if (const char* fullscreen = std::getenv("KYTY_GPU_FULLSCREEN"); fullscreen != nullptr && fullscreen[0] == '1') {
+			options.fullscreen_enabled  = true;
+			options.hide_cursor_enabled = true;
+		}
 		subsystems.Initialize<Config::Lifecycle>();
 		Config::Load(options);
 		subsystems.Initialize<Log::Lifecycle>();

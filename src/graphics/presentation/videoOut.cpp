@@ -870,19 +870,23 @@ void VideoOutDriver::Impl::VblankEnd() {
 // <= 500 us) instead of only at a vblank. The timeline restarts when the switch turns on or the
 // refresh rate changes. Independent of KYTY_PRESENT_PORT_UNLOCKED, which only changes FlipQueue::Flip.
 static Live::Switch g_present_abs_vblank("KYTY_PRESENT_ABS_VBLANK", Live::ParseDefaultOff);
+// ASTROHYBRID_FPS_PACING (default on; =0 off): with a frame-rate limit, presents keep a fixed cadence
+// (each due time is the previous due time plus the interval) instead of restarting the interval at
+// every present, which let timer overshoots accumulate (30 FPS limit measured 29.76 FPS, uneven gaps).
+static Live::Switch g_frame_limit_pacing("ASTROHYBRID_FPS_PACING", Live::ParseDefaultOn);
 
 namespace {
 
 constexpr uint32_t FRAME_LIMIT_DISABLED = UINT32_MAX;
-constexpr std::array<uint32_t, 4> FRAME_LIMITS {30, 60, 120, 0};
-constexpr std::array<const char*, 4> FRAME_LIMIT_LABELS {"30 FPS", "60 FPS", "120 FPS",
-                                                       "No limit"};
+constexpr std::array<uint32_t, 6> FRAME_LIMITS {30, 40, 45, 60, 120, 0};
+constexpr std::array<const char*, 6> FRAME_LIMIT_LABELS {"30 FPS", "40 FPS", "45 FPS", "60 FPS",
+                                                       "120 FPS", "No limit"};
 
 std::atomic<uint32_t>& FrameLimitChoice() {
 	static std::atomic<uint32_t> choice {[] {
 		const char* value = std::getenv("ASTROHYBRID_FPS_LIMIT");
 		if (value != nullptr) {
-			constexpr std::array<const char*, 4> options {"30", "60", "120", "unlimited"};
+			constexpr std::array<const char*, 6> options {"30", "40", "45", "60", "120", "unlimited"};
 			for (uint32_t i = 0; i < options.size(); ++i) {
 				if (std::strcmp(value, options[i]) == 0) {
 					return i;
@@ -947,7 +951,11 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		if (now < next_flip || !m_flip_queue.Flip(0)) {
 			return false;
 		}
-		next_flip = now + (frequency + limit - 1) / limit;
+		// Carry small timer overshoots forward without accumulating them. After a late frame,
+		// start a fresh interval so the next frame cannot arrive in a catch-up burst.
+		const bool on_cadence = g_frame_limit_pacing.On() && next_flip != 0 &&
+		                        now - next_flip <= frequency / 1000;
+		next_flip = (on_cadence ? next_flip : now) + (frequency + limit - 1) / limit;
 		return true;
 	};
 
