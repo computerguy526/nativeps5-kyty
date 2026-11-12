@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 #define KYTY_GPU_ABI_VERSION_MAJOR 1u
-#define KYTY_GPU_ABI_VERSION_MINOR 4u
+#define KYTY_GPU_ABI_VERSION_MINOR 5u
 #define KYTY_GPU_ABI_VERSION ((KYTY_GPU_ABI_VERSION_MAJOR << 16u) | KYTY_GPU_ABI_VERSION_MINOR)
 
 #if defined(_WIN32)
@@ -104,6 +104,13 @@ typedef struct KytyGpuPadOutput {
 	uint8_t  trigger_command[2][56];
 } KytyGpuPadOutput;
 
+/* ABI 1.5: one pad's motion sensors as the controller reports them (SDL axes): acceleration in
+ * m/s^2 including gravity, angular velocity in rad/s. */
+typedef struct KytyGpuPadMotion {
+	float acceleration[3];
+	float angular_velocity[3];
+} KytyGpuPadMotion;
+
 typedef struct KytyGpuHostCallbacks {
 	uint32_t struct_size; /* sizeof(KytyGpuHostCallbacks) on the host */
 	uint32_t abi_version; /* KYTY_GPU_ABI_VERSION of the host */
@@ -150,6 +157,10 @@ typedef struct KytyGpuHostCallbacks {
 	 * *seen) when it changed, 0 when not. Kyty owns the physical controller, so the DLL applies it
 	 * (rumble, light bar, DualSense trigger effects). May be null, as in a 1.3 host's table. */
 	int (*fetch_pad_output)(void* user, int port, uint32_t* seen, KytyGpuPadOutput* out);
+
+	/* ABI 1.5. The pad's motion sensors, called right before publish_pad for the same port; the
+	 * host's pad library derives the orientation. May be null, as in a 1.4 host's table. */
+	void (*publish_pad_motion)(void* user, int port, const KytyGpuPadMotion* motion);
 } KytyGpuHostCallbacks;
 
 /* The callback table of a 1.3 host, the oldest the DLL accepts. */

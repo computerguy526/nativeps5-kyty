@@ -287,6 +287,12 @@ void Relay() {
 	}
 	Log(0, "input relay: Kyty pad %d for user %d -> host port 0%s", handle, user,
 	    g_host.fetch_pad_output != nullptr ? ", rumble, light bar and trigger effects <- host" : "");
+	// ASTROHYBRID_PAD_MOTION=1: the controller's accelerometer and gyroscope reach the host's pad
+	// library too (ABI 1.5), for games that read shaking or tilting. Off by default.
+	const char* motion_env = std::getenv("ASTROHYBRID_PAD_MOTION");
+	const bool  motion     = motion_env != nullptr && motion_env[0] == '1' && g_host.publish_pad_motion != nullptr;
+	bool        motion_seen = false;
+	Log(0, "input relay: motion sensors %s", motion ? "-> host" : "not relayed");
 	uint32_t         output_seen = 0;
 	KytyGpuPadOutput output_applied {};
 	while (!g_relay_stop.load(std::memory_order_acquire)) {
@@ -306,6 +312,24 @@ void Relay() {
 				state.touch[i].x      = data.touch_data.touch[i].x;
 				state.touch[i].y      = data.touch_data.touch[i].y;
 				state.touch[i].id     = data.touch_data.touch[i].id;
+			}
+			if (motion) {
+				constexpr float  gravity = 9.80665f;
+				KytyGpuPadMotion sensors {};
+				sensors.acceleration[0]     = data.acceleration_x * gravity;
+				sensors.acceleration[1]     = data.acceleration_y * gravity;
+				sensors.acceleration[2]     = data.acceleration_z * gravity;
+				sensors.angular_velocity[0] = data.angular_velocity_x;
+				sensors.angular_velocity[1] = data.angular_velocity_y;
+				sensors.angular_velocity[2] = data.angular_velocity_z;
+				if (!motion_seen && (sensors.angular_velocity[0] != 0.0f || sensors.angular_velocity[1] != 0.0f ||
+				                     sensors.angular_velocity[2] != 0.0f)) {
+					motion_seen = true;
+					Log(0, "input relay: first motion sample, accel %.2f %.2f %.2f m/s^2, gyro %.3f %.3f %.3f rad/s",
+					    sensors.acceleration[0], sensors.acceleration[1], sensors.acceleration[2],
+					    sensors.angular_velocity[0], sensors.angular_velocity[1], sensors.angular_velocity[2]);
+				}
+				g_host.publish_pad_motion(g_host.user, 0, &sensors);
 			}
 			g_host.publish_pad(g_host.user, 0, &state);
 		}
