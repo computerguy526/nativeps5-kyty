@@ -32,6 +32,7 @@
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/lowLatency.h"
+#include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -1465,6 +1466,12 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	auto result = physical_device.createDevice(&create_info, nullptr, &device);
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkCreateDevice failed: %s\n", vk::to_string(result).c_str());
+		std::printf("vkCreateDevice failed: %s (%zu extensions)\n", vk::to_string(result).c_str(),
+		            device_extensions.size());
+		for (const auto* name: device_extensions) {
+			std::printf("  device extension: %s\n", name);
+		}
+		std::fflush(stdout);
 		return nullptr;
 	}
 
@@ -1602,6 +1609,18 @@ static void VulkanGetExtensions(VulkanExtensions& r) {
 	    HasExtension(r.available_extensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME) &&
 	    !HasExtension(r.required_extensions, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
 		r.required_extensions.push_back(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME);
+	}
+
+	// ASTROHYBRID_DLSS (renderer/dlss.h): NGX's instance extensions, where available.
+	{
+		std::vector<const char*> ngx_instance;
+		std::vector<const char*> ngx_device;
+		Dlss::RequiredExtensions(ngx_instance, ngx_device);
+		for (const auto* name: ngx_instance) {
+			if (HasExtension(r.available_extensions, name) && !HasExtension(r.required_extensions, name)) {
+				r.required_extensions.push_back(name);
+			}
+		}
 	}
 
 	if (HasExtension(r.available_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
@@ -2124,6 +2143,26 @@ void WindowContext::CreateVulkan() {
 				device_extensions.push_back(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
 			}
 		}
+		// ASTROHYBRID_DLSS (renderer/dlss.h): NGX's device extensions, where available.
+		{
+			std::vector<const char*> ngx_instance;
+			std::vector<const char*> ngx_device;
+			Dlss::RequiredExtensions(ngx_instance, ngx_device);
+			for (const auto* name: ngx_device) {
+				// The EXT form may not be enabled with the core bufferDeviceAddress feature Kyty
+				// enables; the core feature serves NGX the same way.
+				if (std::strcmp(name, "VK_EXT_buffer_device_address") == 0) {
+					std::printf("DLSS: device extension %s covered by core buffer device address\n", name);
+					continue;
+				}
+				if (HasExtension(available_extensions, name) && !HasExtension(device_extensions, name)) {
+					std::printf("DLSS: device extension %s enabled\n", name);
+					device_extensions.push_back(name);
+				} else if (!HasExtension(available_extensions, name)) {
+					std::printf("DLSS: device extension %s unavailable\n", name);
+				}
+			}
+		}
 		// ASTROHYBRID_LOW_LATENCY (lowLatency.h): VK_NV_low_latency2 with present IDs.
 		if (LowLatency::WantExtensions(
 		        HasExtension(available_extensions, VK_NV_LOW_LATENCY_2_EXTENSION_NAME),
@@ -2155,6 +2194,7 @@ void WindowContext::CreateVulkan() {
 		Vr::OpenXrAppendExtensions(device_extensions, available_extensions, true);
 	}
 
+	Dlss::ProbeBinaryImport("before device creation");
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions);
 	if (graphic_ctx.device == nullptr) {
 		EXIT("Could not create device");

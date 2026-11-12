@@ -11,6 +11,7 @@
 // bridge functions below, which forward to the host callbacks.
 
 #define KYTY_GPU_BUILDING_DLL
+#include "graphics/host_gpu/renderer/dlss.h"
 #include "hybrid/kytyGpuApi.h"
 
 #include "common/abi.h"
@@ -429,6 +430,7 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 	if (host == nullptr) {
 		return KYTY_GPU_E_ARGUMENT;
 	}
+	Libs::Graphics::Dlss::ProbeBinaryImport("bridge init");
 	if ((host->abi_version >> 16u) != KYTY_GPU_ABI_VERSION_MAJOR ||
 	    host->struct_size < KYTY_GPU_HOST_CALLBACKS_SIZE_1_3) {
 		Log(2, "init: host ABI %u.%u with %u-byte callbacks, this DLL needs %u.x and %zu bytes",
