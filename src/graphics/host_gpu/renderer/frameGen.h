@@ -26,6 +26,9 @@
 //  - the presenter marks present start and end with the presented flip's frame.
 // ASTROHYBRID_DLSSG_FRAMES=n (default 1): frames generated per rendered frame, clamped to what the
 // runtime reports (numFramesToGenerateMax). Dynamic multi frame generation is not used (D3D12 only).
+// ASTROHYBRID_DLSSG_TARGET=n (default 0 = fixed): adaptive whole multiplier instead: every half second
+// the smallest multiplier keeping the screen at or above n FPS for the game's measured rate (up at
+// once, down after 2 s), at most ASTROHYBRID_DLSSG_MAX_FRAMES (default 3) generated frames.
 // One "DLSS-G 10s:" console line every 10 s with the runtime's status and frames presented.
 namespace Libs::Graphics::FrameGen {
 
