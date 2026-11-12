@@ -822,6 +822,64 @@ private:
 		uint64_t verify_mismatches = 0;
 	};
 	WrittenSyncTotals m_written_sync_totals;
+	// ASTROHYBRID_COMMIT_EPOCH_FASTPATH (default 0; 1 on, verify, exit; GPU thread): a writable
+	// binding (ObtainBuffer written, not texel; ObtainWrittenBuffer) of a key seen before
+	// (range, written ranges, caller's buffer id) is accepted from generations instead of running
+	// its synchronization again, while
+	//  - the range's MemoryTracker::RangeSignature is the one taken after the recorded binding,
+	//    when no page of the range was CPU-dirty or hot and every written range was GPU-owned and
+	//    in m_gpu_modified_ranges: every tracker bit the synchronizations read is unchanged, so
+	//    the read synchronization uploads nothing and the written ones are skips;
+	//  - the buffer structure (m_bda_structure_epoch) is unchanged: the same buffer and offset;
+	//  - no range left m_gpu_modified_ranges since (m_gpu_range_removals): the dirty-range add
+	//    and its clean-verdict invalidation stay no-ops;
+	//  - image writeback on GPU writes is off (PreserveImagesForGpuWrite does nothing).
+	// The binding's remaining effects (LRU touch, content version, write ticks, known fills, hang
+	// trace) run as on the full path, in the same order. Anything else misses and takes the full
+	// path, which records the key again. verify: every accepted binding also runs the full path,
+	// whose result is used; a different buffer or offset, a range missing from the GPU-modified
+	// set, or a tracker transition the full path made itself (the range's dirtying serials did
+	// not move, so no guest write raced it) is a mismatch; exit stops at the first.
+	struct WrittenEpochMemo {
+		uint64_t vaddr     = 0;
+		uint64_t size      = 0;
+		uint64_t ranges    = 0;
+		uint64_t signature = 0;
+		uint64_t structure = 0;
+		uint64_t removals  = 0;
+		BufferId caller {};
+		BufferId id {};
+		bool     narrowed = false;
+		bool     valid    = false;
+	};
+	static constexpr size_t WrittenEpochSlots = 4096;
+	struct WrittenEpochTotals {
+		uint64_t lookups           = 0;
+		uint64_t hits              = 0;
+		uint64_t records           = 0;
+		uint64_t verify_checks     = 0;
+		uint64_t verify_mismatches = 0;
+		uint64_t verify_races      = 0;
+		int64_t  printed_ns        = 0;
+	};
+	std::unique_ptr<WrittenEpochMemo[]> m_written_epoch;
+	int                                 m_written_epoch_mode = 0;
+	WrittenEpochTotals                  m_written_epoch_totals;
+	std::atomic_uint64_t                m_gpu_range_removals {1};
+	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainWrittenEpoch(uint64_t vaddr, uint64_t size,
+	                                                              std::span<const GuestRange> written,
+	                                                              bool narrowed, BufferId id);
+	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainWrittenBufferNow(
+	    uint64_t vaddr, uint64_t size, std::span<const GuestRange> written, BufferId id,
+	    BufferId* obtained);
+	[[nodiscard]] std::pair<Buffer*, uint64_t> ApplyWrittenEpochHit(BufferId id, uint64_t vaddr,
+	                                                                uint64_t size,
+	                                                                std::span<const GuestRange> written,
+	                                                                bool narrowed);
+	void RecordWrittenEpoch(WrittenEpochMemo& slot, uint64_t vaddr, uint64_t size, uint64_t key,
+	                        bool narrowed, BufferId caller, BufferId obtained, uint64_t structure,
+	                        uint64_t removals, std::span<const GuestRange> written);
+	void PrintWrittenEpochSummary();
 	// KYTY_FALSE_SHARING_WRITES (TryFalseSharingWrite): switch, verify mode, the releases whose
 	// publication has not been seen landed yet (GPU thread), and the outcomes (tests read them;
 	// the verify counts are updated by the publications).

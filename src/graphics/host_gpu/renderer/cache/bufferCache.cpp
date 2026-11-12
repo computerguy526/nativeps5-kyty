@@ -726,6 +726,18 @@ bool BindingMemoCrossEpochEnabled() {
 	return ParseEnvU64("KYTY_BINDING_MEMO_CROSS_EPOCH", 1) != 0;
 }
 
+// ASTROHYBRID_COMMIT_EPOCH_FASTPATH (bufferCache.h): 0 off (default), 1 on, 2 verify, 3 exit.
+int CommitEpochFastPathMode() {
+	const char* value = std::getenv("ASTROHYBRID_COMMIT_EPOCH_FASTPATH");
+	if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
+		return 0;
+	}
+	if (std::strcmp(value, "verify") == 0) {
+		return 2;
+	}
+	return std::strcmp(value, "exit") == 0 ? 3 : 1;
+}
+
 // KYTY_WRITTEN_SYNC_SKIP (default on; =0 off): a written synchronization of a range that is
 // entirely GPU-owned does nothing and is skipped (BufferCache::SynchronizeBuffer).
 // KYTY_WRITTEN_SYNC_SKIP_VERIFY=1|exit runs the normal path anyway and counts skips it would
@@ -1275,6 +1287,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		    });
 		    // Ownership moves to the backing publication registered below (which bumps again).
 		    CleanVerdict::Invalidate(address, bytes, Coherence::Source::BufferDirtySubtract);
+		    m_gpu_range_removals.fetch_add(1, std::memory_order_acq_rel);
 		    m_gpu_modified_ranges.Subtract(address, bytes);
 	    });
 	if (copies.empty()) {
@@ -1523,6 +1536,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 	m_written_sync_skip = WrittenSyncSkipEnabled();
 	if (m_written_sync_skip) {
 		m_written_sync_skip_verify = EnvVerifyMode("KYTY_WRITTEN_SYNC_SKIP_VERIFY");
+	}
+	m_written_epoch_mode = CommitEpochFastPathMode();
+	if (m_written_epoch_mode != 0 && m_written_sync_skip) {
+		m_written_epoch = std::make_unique<WrittenEpochMemo[]>(WrittenEpochSlots);
 	}
 	m_false_sharing = FalseSharingWritesEnabled();
 	if (m_false_sharing) {
@@ -2420,6 +2437,7 @@ BufferCache::SideIssueResult BufferCache::TryIssueSideReadback(
 		CleanVerdict::Invalidate(range.address, range.size, Coherence::Source::BufferDirtySubtract);
 	}
 	for (const auto& range: dirty) {
+		m_gpu_range_removals.fetch_add(1, std::memory_order_acq_rel);
 		m_gpu_modified_ranges.Subtract(range.address, range.size);
 	}
 	m_memory_tracker.MarkReadbackPending(chosen->begin, chosen->end - chosen->begin);
@@ -2938,6 +2956,7 @@ EagerReadbackPages::IssueResult BufferCache::TryIssueEagerReadback(uint64_t page
 		CleanVerdict::Invalidate(range.address, range.size, Coherence::Source::BufferDirtySubtract);
 	}
 	for (const auto& range: dirty) {
+		m_gpu_range_removals.fetch_add(1, std::memory_order_acq_rel);
 		m_gpu_modified_ranges.Subtract(range.address, range.size);
 	}
 	m_memory_tracker.MarkReadbackPending(page, TRACKER_PAGE_SIZE);
@@ -3676,7 +3695,213 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	    GuestGpu::IsGpuThread()) {
 		return ObtainReadBinding(vaddr, size, id);
 	}
+	if (is_written && !is_texel_buffer && m_written_epoch != nullptr && GuestGpu::IsGpuThread()) {
+		return ObtainWrittenEpoch(vaddr, size, {}, false, id);
+	}
 	return ObtainBufferNow(vaddr, size, is_written, is_texel_buffer, id, nullptr);
+}
+
+namespace {
+uint64_t WrittenRangesKey(std::span<const GuestRange> written) {
+	uint64_t hash = 0xcbf29ce484222325ull;
+	for (const auto& range: written) {
+		hash = (hash ^ range.address) * 0x100000001b3ull;
+		hash = (hash ^ range.size) * 0x100000001b3ull;
+	}
+	return hash ^ written.size();
+}
+} // namespace
+
+std::pair<Buffer*, uint64_t> BufferCache::ObtainWrittenEpoch(uint64_t vaddr, uint64_t size,
+                                                             std::span<const GuestRange> written,
+                                                             bool narrowed, BufferId id) {
+	const auto full = [&](BufferId* obtained) {
+		return narrowed ? ObtainWrittenBufferNow(vaddr, size, written, id, obtained)
+		                : ObtainBufferNow(vaddr, size, true, false, id, obtained);
+	};
+	auto& totals = m_written_epoch_totals;
+	if ((++totals.lookups & 0xfffu) == 0) {
+		PrintWrittenEpochSummary();
+	}
+	const uint64_t key  = narrowed ? WrittenRangesKey(written) : 0;
+	const auto     hash = (vaddr >> 4u) * 0x9e3779b97f4a7c15ull ^ size * 0xc2b2ae3d27d4eb4full ^
+	                  key * 0xff51afd7ed558ccdull;
+	auto& slot = m_written_epoch[static_cast<size_t>(hash >> 52u) & (WrittenEpochSlots - 1)];
+	// Loaded before the full path, so a record taken from them is never newer than its binding.
+	const auto structure = m_bda_structure_epoch.load(std::memory_order_acquire);
+	const auto removals  = m_gpu_range_removals.load(std::memory_order_acquire);
+	const bool key_match = slot.valid && slot.vaddr == vaddr && slot.size == size &&
+	                       slot.ranges == key && slot.narrowed == narrowed && slot.caller == id;
+	if (key_match && structure != UINT64_MAX && slot.structure == structure &&
+	    slot.removals == removals && !ImageWritebackOnGpuWriteEnabled()) {
+		const auto signature = m_memory_tracker.RangeSignature(vaddr, size);
+		if (signature != 0 && signature == slot.signature && !IsBufferInvalid(slot.id) &&
+		    m_slot_buffers[slot.id].IsInBounds(vaddr, size)) {
+			totals.hits++;
+			if (m_written_epoch_mode == 1) {
+				return ApplyWrittenEpochHit(slot.id, vaddr, size, written, narrowed);
+			}
+			// verify / exit: the full path decides; the accepted binding must equal it.
+			totals.verify_checks++;
+			auto&      expected_buffer = m_slot_buffers[slot.id];
+			const std::pair<Buffer*, uint64_t> expected {&expected_buffer,
+			                                             expected_buffer.Offset(vaddr)};
+			bool contained = true;
+			if (narrowed) {
+				for (const auto& range: written) {
+					contained = contained && m_gpu_modified_ranges.Contains(range.address, range.size);
+				}
+			} else {
+				contained = m_gpu_modified_ranges.Contains(vaddr, size);
+			}
+			// The invariant the record proved, under the region locks now: no CPU-dirty or hot
+			// page in the range and every written range GPU-owned. Failing while the signature
+			// still reads the recorded value is a transition that did not advance a serial; with
+			// the signature moved, a transition landed after the acceptance (a race).
+			bool clean = !m_memory_tracker.IsRegionCpuModified(vaddr, size);
+			if (narrowed) {
+				for (const auto& range: written) {
+					clean = clean && m_memory_tracker.IsRangeGpuOwned(range.address, range.size);
+				}
+			} else {
+				clean = clean && m_memory_tracker.IsRangeGpuOwned(vaddr, size);
+			}
+			const bool  quiet    = m_memory_tracker.RangeSignature(vaddr, size) == slot.signature;
+			BufferId    obtained {};
+			const auto  fresh    = full(&obtained);
+			bool        raced    = false;
+			const char* problem  = nullptr;
+			if (fresh != expected) {
+				problem = "a different buffer or offset";
+			} else if (!contained) {
+				problem = "a written range outside the GPU-modified ranges";
+			} else if (!clean) {
+				problem = "the range is CPU-dirty or not GPU-owned";
+				raced   = !quiet;
+			}
+			if (problem != nullptr && raced) {
+				totals.verify_races++;
+			} else if (problem != nullptr) {
+				totals.verify_mismatches++;
+				static std::atomic<uint32_t> logged {0};
+				if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+					std::printf("CommitEpochFastVerify: %s: addr=0x%016" PRIx64 " size=0x%" PRIx64
+					            " narrowed=%d\n",
+					            problem, vaddr, size, narrowed ? 1 : 0);
+					std::fflush(stdout);
+				}
+				if (m_written_epoch_mode == 3) {
+					EXIT("CommitEpochFastVerify: %s: addr=0x%016" PRIx64 " size=0x%" PRIx64 "\n",
+					     problem, vaddr, size);
+				}
+			}
+			RecordWrittenEpoch(slot, vaddr, size, key, narrowed, id, obtained, structure, removals,
+			                   written);
+			return fresh;
+		}
+	}
+	BufferId   obtained {};
+	const auto result = full(&obtained);
+	RecordWrittenEpoch(slot, vaddr, size, key, narrowed, id, obtained, structure, removals,
+	                   written);
+	return result;
+}
+
+std::pair<Buffer*, uint64_t> BufferCache::ApplyWrittenEpochHit(BufferId id, uint64_t vaddr,
+                                                               uint64_t size,
+                                                               std::span<const GuestRange> written,
+                                                               bool narrowed) {
+	// The full path's order without its no-op synchronizations, image walk and dirty-range add.
+	auto& buffer = m_slot_buffers[id];
+	TouchBuffer(buffer);
+	buffer.MarkContentWritten();
+	if (!narrowed) {
+		NoteBufferContentWrite(vaddr, size);
+		ForgetKnownFills(vaddr, size);
+		HangTrace::NoteGpuWrite(vaddr, size);
+	} else {
+		for (const auto& range: written) {
+			NoteBufferContentWrite(range.address, range.size);
+			ForgetKnownFills(range.address, range.size);
+			HangTrace::NoteGpuWrite(range.address, range.size);
+		}
+	}
+	return {&buffer, buffer.Offset(vaddr)};
+}
+
+void BufferCache::RecordWrittenEpoch(WrittenEpochMemo& slot, uint64_t vaddr, uint64_t size,
+                                     uint64_t key, bool narrowed, BufferId caller,
+                                     BufferId obtained, uint64_t structure, uint64_t removals,
+                                     std::span<const GuestRange> written) {
+	slot.valid = false;
+	if (structure == UINT64_MAX || IsBufferInvalid(obtained) ||
+	    !m_slot_buffers[obtained].IsInBounds(vaddr, size) || ImageWritebackOnGpuWriteEnabled()) {
+		return;
+	}
+	const auto signature = m_memory_tracker.RangeSignature(vaddr, size);
+	if (signature == 0) {
+		return;
+	}
+	// Nothing the read synchronization would upload (no CPU-dirty or hot page), and every written
+	// range GPU-owned (a written synchronization skips) and already in the GPU-modified set.
+	MemoryTracker::DirtyState state;
+	if (!m_memory_tracker.QueryDirtyRelaxed(vaddr, size, state) || state.cpu) {
+		return;
+	}
+	const auto owned = [&](uint64_t address, uint64_t bytes) {
+		return m_memory_tracker.IsRangeGpuOwned(address, bytes) &&
+		       m_gpu_modified_ranges.Contains(address, bytes);
+	};
+	if (narrowed) {
+		for (const auto& range: written) {
+			if (!owned(range.address, range.size)) {
+				return;
+			}
+		}
+	} else if (!owned(vaddr, size)) {
+		return;
+	}
+	if (m_memory_tracker.RangeSignature(vaddr, size) != signature) {
+		return;
+	}
+	slot.vaddr     = vaddr;
+	slot.size      = size;
+	slot.ranges    = key;
+	slot.signature = signature;
+	slot.structure = structure;
+	slot.removals  = removals;
+	slot.caller    = caller;
+	slot.id        = obtained;
+	slot.narrowed  = narrowed;
+	slot.valid     = true;
+	m_written_epoch_totals.records++;
+}
+
+void BufferCache::PrintWrittenEpochSummary() {
+	auto&      totals = m_written_epoch_totals;
+	const auto now    = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+	if (totals.printed_ns == 0) {
+		totals.printed_ns = now;
+		return;
+	}
+	if (now - totals.printed_ns < 10'000'000'000LL) {
+		return;
+	}
+	const double lookups = static_cast<double>(std::max<uint64_t>(1, totals.lookups));
+	std::printf("CommitEpochFast 10s: written bindings %llu, accepted %llu (%.1f%%), records %llu | "
+	            "verify %llu checks, %llu mismatches, %llu races\n",
+	            static_cast<unsigned long long>(totals.lookups),
+	            static_cast<unsigned long long>(totals.hits),
+	            100.0 * static_cast<double>(totals.hits) / lookups,
+	            static_cast<unsigned long long>(totals.records),
+	            static_cast<unsigned long long>(totals.verify_checks),
+	            static_cast<unsigned long long>(totals.verify_mismatches),
+	            static_cast<unsigned long long>(totals.verify_races));
+	std::fflush(stdout);
+	totals            = {};
+	totals.printed_ns = now;
 }
 
 void BufferCache::PrefetchReadBinding(uint64_t vaddr, uint64_t size, bool at_find) const noexcept {
@@ -4342,8 +4567,20 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainWrittenBuffer(uint64_t vaddr, ui
 			     range.address, range.size, vaddr, size);
 		}
 	}
+	if (m_written_epoch != nullptr && GuestGpu::IsGpuThread()) {
+		return ObtainWrittenEpoch(vaddr, size, written, true, id);
+	}
+	return ObtainWrittenBufferNow(vaddr, size, written, id, nullptr);
+}
+
+std::pair<Buffer*, uint64_t> BufferCache::ObtainWrittenBufferNow(uint64_t vaddr, uint64_t size,
+                                                                 std::span<const GuestRange> written,
+                                                                 BufferId id, BufferId* obtained) {
 	if (IsBufferInvalid(id) || !m_slot_buffers[id].IsInBounds(vaddr, size)) {
 		id = FindBuffer(vaddr, size);
+	}
+	if (obtained != nullptr) {
+		*obtained = id;
 	}
 	auto& buffer = m_slot_buffers[id];
 	TouchBuffer(buffer);
