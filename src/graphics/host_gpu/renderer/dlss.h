@@ -23,6 +23,10 @@
 // Anything missing or inconsistent (no NGX, DLSS unavailable, another size, no depth, the game
 // not using motion vectors this frame) leaves the game's pass to run as before.
 //
+// NGX on Vulkan needs VK_NVX_binary_import, whose CUDA backing reserves a 48 GiB window below
+// 1 TiB when the device is created. The PS5 guest arena fills that range unless the host leaves
+// it free: run with ASTROHYBRID_CUDA_HOLE=1 (AnyPS5 libc, 0xDC00000000-0xEC00000000), otherwise
+// device creation fails with the extension (ASTROHYBRID_DLSS_PROBE=1 reports it).
 // Options: ASTROHYBRID_DLSS_QUALITY=quality|balanced|performance|dlaa (the DLSS preset family;
 // default quality); ASTROHYBRID_DLSS_JITTER_SIGN=1|-1 (default 1); ASTROHYBRID_DLSS_DEPTH_INVERTED=1|0
 // (default 1); ASTROHYBRID_DLSS_PATH: the folder holding nvngx_dlss.dll.
