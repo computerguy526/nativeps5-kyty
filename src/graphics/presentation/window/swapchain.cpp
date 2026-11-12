@@ -12,6 +12,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/window/lowLatency.h"
 #include "graphics/presentation/openxrHeadset.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
@@ -524,9 +525,11 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
+	create_info.pNext   = LowLatency::SwapchainCreateNext(create_info.pNext);
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
+	LowLatency::OnSwapchainCreated(static_cast<VkSwapchainKHR>(m_handle));
 	LOGF("Vulkan presentation: %s\n", m_hdr_active ? "HDR10 (PQ)" : "SDR");
 
 	m_images = EnumerateVulkan<vk::Image>(
@@ -622,6 +625,7 @@ void Swapchain::Destroy() {
 		}
 	}
 	if (m_handle != nullptr) {
+		LowLatency::OnSwapchainDestroyed(static_cast<VkSwapchainKHR>(m_handle));
 		graphics.device.destroySwapchainKHR(m_handle, nullptr);
 	}
 
@@ -1197,6 +1201,14 @@ Swapchain::Status Swapchain::Present() {
 	present.waitSemaphoreCount = 1;
 
 	vk::Result result;
+	// ASTROHYBRID_LOW_LATENCY (lowLatency.h): the presented flip's frame number as present ID.
+	const auto            latency_id = LowLatency::BeginPresent(static_cast<VkSwapchainKHR>(m_handle));
+	vk::PresentIdKHR      present_id {};
+	if (latency_id != 0) {
+		present_id.swapchainCount = 1;
+		present_id.pPresentIds    = &latency_id;
+		present.pNext             = &present_id;
+	}
 	{
 		// The blit this present waits for goes ahead of game batches still waiting for their
 		// texture copies: the present never waits for them, nor for a signal not yet submitted.
@@ -1204,6 +1216,7 @@ Swapchain::Status Swapchain::Present() {
 		m_window.graphic_ctx.submission_queue.DrainReadyForPresentLocked();
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
+	LowLatency::EndPresent(static_cast<VkSwapchainKHR>(m_handle), latency_id);
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:

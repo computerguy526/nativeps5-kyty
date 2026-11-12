@@ -32,6 +32,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
+#include "graphics/presentation/window/lowLatency.h"
 #include "graphics/presentation/renderDoc.h"
 #include "kernel/eventQueueFilters.h"
 #include "kernel/pthread.h"
@@ -257,6 +258,7 @@ private:
 		RequestState                state;
 		Graphics::Presenter::Frame* frame;
 		bool                        premultiplied_alpha;
+		uint64_t                    latency_frame; // ASTROHYBRID_LOW_LATENCY frame number
 	};
 
 	Graphics::Presenter& m_presenter;
@@ -1241,6 +1243,8 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	r.submit_ptc = LibKernel::KernelGetProcessTimeCounter();
 	r.source     = source;
 	r.state      = RequestState::Reserved;
+	r.latency_frame = source == FlipRequestSource::GpuEop ? Graphics::LowLatency::OnGpuFlipReserved()
+	                                                      : Graphics::LowLatency::TakeCpuFlipFrame();
 	if (cfg.slave_count != 0) {
 		for (auto* queue: {&m_requests, &m_cpu_requests}) {
 			for (auto& slave: *queue) {
@@ -1589,6 +1593,11 @@ bool FlipQueue::Flip(uint32_t micros) {
 			m_presenter.Discard(*hidden);
 		}
 		if (layer_count != 0) {
+			for (size_t i = 0; i < count; i++) {
+				if (requests[i].cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN) {
+					Graphics::LowLatency::SetNextPresentFrame(requests[i].latency_frame);
+				}
+			}
 			m_presenter.Present(std::span(layers.data(), layer_count));
 		}
 		pace_cost = pace_tick != 0 ? PaceLog::NowNs() - present_begin : 0;
@@ -1980,9 +1989,10 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64_t flip_arg) {
 	PRINT_NAME();
 
-	uint64_t  request_id = 0;
-	const int result     = ReserveFlipRequest(DriverState(), handle, index, flip_mode, flip_arg,
-	                                          FlipRequestSource::Cpu, request_id);
+	uint64_t   request_id    = 0;
+	const auto latency_frame = Graphics::LowLatency::BeginCpuFlip();
+	const int  result        = ReserveFlipRequest(DriverState(), handle, index, flip_mode, flip_arg,
+	                                              FlipRequestSource::Cpu, request_id);
 	if (result == VIDEO_OUT_ERROR_INVALID_FLIP_MODE) {
 		LOGF("\t unsupported flip_mode = %d\n", flip_mode);
 	}
@@ -1990,6 +2000,7 @@ KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64
 		return result;
 	}
 	g_video_out_driver->SubmitFlipPreparation(request_id);
+	Graphics::LowLatency::EndCpuFlip(latency_frame);
 
 	return OK;
 }
