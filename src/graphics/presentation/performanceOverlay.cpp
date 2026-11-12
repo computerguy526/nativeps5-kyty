@@ -5,6 +5,7 @@
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/frameGen.h"
 #include "imgui.h"
 #include "kernel/memory.h"
 
@@ -737,14 +738,26 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 		ImGui::SetNextWindowBgAlpha(0.55f);
 	}
 	const bool open = ImGui::Begin("##kyty_performance_overlay", nullptr, FLAGS);
+	// ASTROHYBRID_DLSSG (frameGen.h): with frame generation the screen shows more frames than the
+	// game renders; both are shown.
+	const double generated = Graphics::FrameGen::ShownPerGameFrame();
+	const bool   frame_gen = generated > 1.05;
 	if (open && fps_only) {
-		if (shown.fps > 0.0) {
+		if (shown.fps > 0.0 && frame_gen) {
+			ImGui::TextColored(Color(GOOD), "%.0f FPS on screen", shown.fps * generated);
+			ImGui::TextDisabled("%.0f game x%.1f frame gen", shown.fps, generated);
+		} else if (shown.fps > 0.0) {
 			ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)), "%.0f FPS", shown.fps);
 		} else {
 			ImGui::TextDisabled("-- FPS");
 		}
 	} else if (open) {
-		if (shown.fps > 0.0) {
+		if (shown.fps > 0.0 && frame_gen) {
+			ImGui::TextColored(Color(GOOD), "%.0f FPS on screen (frame gen x%.1f)", shown.fps * generated,
+			                   generated);
+			ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)), "Game %.1f FPS   %.1f ms",
+			                   shown.fps, shown.frame_ms);
+		} else if (shown.fps > 0.0) {
 			ImGui::TextColored(Color(FrameTimeColor(shown.frame_ms)), "%.1f FPS   %.1f ms",
 			                   shown.fps, shown.frame_ms);
 		} else if (shown.stalled_s >= 1.0) {

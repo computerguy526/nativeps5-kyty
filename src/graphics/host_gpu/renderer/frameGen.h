@@ -39,6 +39,9 @@ namespace Libs::Graphics::FrameGen {
 // After the device: Reflex, DLSS-G options and the runtime state.
 void OnDeviceReady();
 [[nodiscard]] bool Active();
+// Frames on screen per game frame, averaged over recent presents (1 when generation is off or
+// paused, e.g. the window lost focus); for the performance overlay. Any thread.
+[[nodiscard]] double ShownPerGameFrame();
 
 // Frame events (frame numbers as in lowLatency.h).
 void GuestFrameEnd(uint64_t frame);

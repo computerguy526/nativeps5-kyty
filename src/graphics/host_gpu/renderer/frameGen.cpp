@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/frameGen.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -60,6 +61,9 @@ uint64_t CurrentFrame() {
 }
 bool CameraWanted() {
 	return false;
+}
+double ShownPerGameFrame() {
+	return 1.0;
 }
 void SetCamera(const float*) {}
 bool TagFrame(VkCommandBuffer, const ImageInput&, const ImageInput&, const float*, uint32_t, uint32_t) {
@@ -156,6 +160,7 @@ struct State {
 	uint32_t              mvec_width = 0, mvec_height = 0;
 	uint64_t              tags = 0, tag_failures = 0, sleeps = 0;
 	uint64_t              presents = 0, presented_frames = 0;
+	std::atomic<double>   shown_ratio {1.0};
 	int64_t               print_ns = 0;
 };
 
@@ -386,6 +391,9 @@ void PresentEnd(uint64_t frame) {
 		if (s.api.dlssg_get_state(viewport, state, nullptr) == sl::Result::eOk) {
 			s.presents++;
 			s.presented_frames += state.numFramesActuallyPresented;
+			const double shown = std::max(1u, state.numFramesActuallyPresented);
+			const double old   = s.shown_ratio.load(std::memory_order_relaxed);
+			s.shown_ratio.store(old + (shown - old) * 0.1, std::memory_order_relaxed);
 		}
 		Summary();
 	}
@@ -393,6 +401,10 @@ void PresentEnd(uint64_t frame) {
 
 uint64_t CurrentFrame() {
 	return Get().cp_frame.load(std::memory_order_acquire) + 1;
+}
+
+double ShownPerGameFrame() {
+	return Active() ? Get().shown_ratio.load(std::memory_order_relaxed) : 1.0;
 }
 
 bool CameraWanted() {
