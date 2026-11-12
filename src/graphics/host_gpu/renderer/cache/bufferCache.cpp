@@ -3891,14 +3891,19 @@ void BufferCache::PrintWrittenEpochSummary() {
 	}
 	const double lookups = static_cast<double>(std::max<uint64_t>(1, totals.lookups));
 	std::printf("CommitEpochFast 10s: written bindings %llu, accepted %llu (%.1f%%), records %llu | "
-	            "verify %llu checks, %llu mismatches, %llu races\n",
+	            "verify %llu checks, %llu mismatches, %llu races | read cross-epoch from clean memo "
+	            "%llu, verify %llu checks, %llu mismatches, %llu races\n",
 	            static_cast<unsigned long long>(totals.lookups),
 	            static_cast<unsigned long long>(totals.hits),
 	            100.0 * static_cast<double>(totals.hits) / lookups,
 	            static_cast<unsigned long long>(totals.records),
 	            static_cast<unsigned long long>(totals.verify_checks),
 	            static_cast<unsigned long long>(totals.verify_mismatches),
-	            static_cast<unsigned long long>(totals.verify_races));
+	            static_cast<unsigned long long>(totals.verify_races),
+	            static_cast<unsigned long long>(totals.read_fast),
+	            static_cast<unsigned long long>(totals.read_verify_checks),
+	            static_cast<unsigned long long>(totals.read_verify_mismatches),
+	            static_cast<unsigned long long>(totals.read_verify_races));
 	std::fflush(stdout);
 	totals            = {};
 	totals.printed_ns = now;
@@ -4059,10 +4064,44 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainReadBindingMemo(uint64_t vaddr, 
 			// changed its bits yet.
 			MemoryTracker::DirtyState relaxed;
 			bool                     cpu_only = false;
-			cross = !stream && m_binding_memo_cross &&
-			        QueryUploadSnapshot(m_memory_tracker, vaddr, size, relaxed, cpu_only) &&
-			        !relaxed.cpu && !m_memory_tracker.IsRegionCpuModified(vaddr, size) &&
-			        m_memory_tracker.RangeSignature(vaddr, size) == before;
+			// ASTROHYBRID_COMMIT_EPOCH_FASTPATH (BindingMemo::clean): the signature equals
+			// memo.signature (checked above), under which the locked query below once passed.
+			const bool fast = !stream && m_binding_memo_cross && memo.clean &&
+			                  m_written_epoch_mode != 0;
+			if (fast && m_written_epoch_mode == 1) {
+				cross = true;
+				m_written_epoch_totals.read_fast++;
+			} else {
+				cross = !stream && m_binding_memo_cross &&
+				        QueryUploadSnapshot(m_memory_tracker, vaddr, size, relaxed, cpu_only) &&
+				        !relaxed.cpu && !m_memory_tracker.IsRegionCpuModified(vaddr, size) &&
+				        m_memory_tracker.RangeSignature(vaddr, size) == before;
+				if (fast) {
+					auto& totals = m_written_epoch_totals;
+					totals.read_fast++;
+					totals.read_verify_checks++;
+					if (!cross) {
+						if (m_memory_tracker.RangeSignature(vaddr, size) != before) {
+							totals.read_verify_races++;
+						} else {
+							totals.read_verify_mismatches++;
+							static std::atomic<uint32_t> logged {0};
+							if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+								std::printf("CommitEpochFastVerify: a clean read memo has CPU-dirty "
+								            "pages: addr=0x%016" PRIx64 " size=0x%" PRIx64 "\n",
+								            vaddr, size);
+								std::fflush(stdout);
+							}
+							if (m_written_epoch_mode == 3) {
+								EXIT("CommitEpochFastVerify: a clean read memo has CPU-dirty pages\n");
+							}
+						}
+					}
+				}
+				if (cross && m_written_epoch_mode != 0) {
+					memo.clean = true;
+				}
+			}
 			if (!cross) {
 				if (stats != nullptr) {
 					stats->epoch++;

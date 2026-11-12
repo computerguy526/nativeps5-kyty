@@ -498,6 +498,12 @@ private:
 		uint64_t        vaddr     = 0;
 		uint32_t        size      = 0;
 		BindingMemoKind kind      = BindingMemoKind::Empty;
+		// ASTROHYBRID_COMMIT_EPOCH_FASTPATH: a cached memo recorded while no page of the range
+		// was CPU-dirty or hot, with `signature` read before and after that check. While the
+		// signature still holds no page has turned CPU-dirty since (every such transition advances
+		// a region serial first), which is what the cross-epoch locked query establishes, so a
+		// cross-epoch hit is accepted from the signature alone. verify runs the locked query too.
+		bool            clean     = false;
 		uint64_t        epoch     = 0;
 		uint64_t        signature = 0;
 		uint64_t        guard     = 0; // stream: tick; cached: buffer structure epoch
@@ -860,6 +866,10 @@ private:
 		uint64_t verify_checks     = 0;
 		uint64_t verify_mismatches = 0;
 		uint64_t verify_races      = 0;
+		uint64_t read_fast              = 0; // cross-epoch read hits taken from BindingMemo::clean
+		uint64_t read_verify_checks     = 0;
+		uint64_t read_verify_mismatches = 0;
+		uint64_t read_verify_races      = 0;
 		int64_t  printed_ns        = 0;
 	};
 	std::unique_ptr<WrittenEpochMemo[]> m_written_epoch;
