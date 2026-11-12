@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -535,6 +536,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	CpGaps::Phase(CpGaps::Cat::DispatchRebind);
 	RebindImages(bindings);
+	if (PassTrace::Active()) [[unlikely]] {
+		PreparedBindings* traced = &bindings;
+		TracePass(m_context.GetTextureCache(), "dispatch", std::span<PreparedBindings* const>(&traced, 1), {});
+	}
 	BindComputeLds(input_info, bindings, input_info.workgroup_counts);
 	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	RebindBuffers(bindings);
@@ -818,6 +823,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	CpGaps::Phase(CpGaps::Cat::DispatchRebind);
 	BindComputeLds(input_info, bindings, nullptr);
 	RebindImages(bindings);
+	if (PassTrace::Active()) [[unlikely]] {
+		PreparedBindings* traced = &bindings;
+		TracePass(m_context.GetTextureCache(), "dispatch", std::span<PreparedBindings* const>(&traced, 1), {});
+	}
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
 	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(

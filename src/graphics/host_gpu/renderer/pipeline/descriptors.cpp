@@ -24,6 +24,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/hostMemory.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/debug.h"
@@ -2075,6 +2076,72 @@ static const std::vector<GuestRange>* ResolveWrittenRanges(RenderContext&       
 	return narrowed ? &scratch.ranges : nullptr;
 }
 
+void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings* const> stages,
+               std::span<const RenderColorInfo> colors) {
+	std::string line;
+	char        part[256];
+	std::snprintf(part, sizeof(part), "PassTrace %llu %s",
+	              static_cast<unsigned long long>(PassTrace::NextSeq()), kind);
+	line += part;
+	const auto image_text = [&](char tag, ImageId id) {
+		if (!id) {
+			line += " -";
+			return;
+		}
+		const auto& image = cache.GetImage(id);
+		std::snprintf(part, sizeof(part), " %c:%llx:%s:%ux%u%s", tag,
+		              static_cast<unsigned long long>(image.info.data.address),
+		              vk::to_string(image.info.pixel_format).c_str(), image.info.extent.width,
+		              image.info.extent.height, image.info.IsDepth() ? ":depth" : "");
+		line += part;
+	};
+	for (auto* stage: stages) {
+		if (stage == nullptr || stage->runtime == nullptr || !*stage->runtime) {
+			continue;
+		}
+		const auto& program = *stage->runtime->program;
+		std::snprintf(part, sizeof(part), " | st%d %016llx", static_cast<int>(program.stage),
+		              static_cast<unsigned long long>(program.shader_hash));
+		line += part;
+		for (const auto& binding: stage->images) {
+			image_text(binding.desc.type == TextureCache::BindingType::Storage ? 'S' : 'T',
+			           binding.image_id);
+		}
+		// ASTROHYBRID_PASS_TRACE_CB=<hex hash>: that shader's buffers, first 24 dwords each.
+		static const uint64_t cb_hash = [] {
+			const char* value = std::getenv("ASTROHYBRID_PASS_TRACE_CB");
+			return value != nullptr ? std::strtoull(value, nullptr, 16) : uint64_t {0};
+		}();
+		if (cb_hash != 0 && program.shader_hash == cb_hash) {
+			for (const auto& source: stage->buffer_sources) {
+				if (source.address == 0 || source.size < 4) {
+					continue;
+				}
+				std::snprintf(part, sizeof(part), " | B:%llx:%llu",
+				              static_cast<unsigned long long>(source.address),
+				              static_cast<unsigned long long>(source.size));
+				line += part;
+				const auto* words = reinterpret_cast<const uint32_t*>(source.address);
+				const auto  count = std::min<uint64_t>(24, source.size / 4);
+				for (uint64_t i = 0; i < count; i++) {
+					float value = 0;
+					std::memcpy(&value, &words[i], 4);
+					std::snprintf(part, sizeof(part), " [%llu]%08x=%g", static_cast<unsigned long long>(i * 4),
+					              words[i], static_cast<double>(value));
+					line += part;
+				}
+			}
+		}
+	}
+	if (!colors.empty()) {
+		line += " | RT";
+		for (const auto& color: colors) {
+			image_text('C', color.image_id);
+		}
+	}
+	std::printf("%s\n", line.c_str());
+}
+
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
 	auto* pass = CpGaps::CurrentDrawPassSample();
@@ -2415,6 +2482,9 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 			target.image_id = cache.FindImage(target.desc);
 			BindRenderTarget(target.image_id);
 		}
+	}
+	if (PassTrace::Active()) [[unlikely]] {
+		TracePass(cache, "draw", stages, colors);
 	}
 	CommitStats::StepMark(CommitStats::Step::Images);
 	CommitStats::Mark(CommitStats::Phase::RebindImages);

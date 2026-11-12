@@ -146,6 +146,11 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
                             const ShaderTextureResource& descriptor, uint64_t size,
                             bool fatal = true);
 
+struct RenderColorInfo;
+// ASTROHYBRID_PASS_TRACE (passTrace.h): one line for a traced draw or dispatch.
+void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings* const> stages,
+               std::span<const RenderColorInfo> colors);
+
 } // namespace Libs::Graphics
 
 #endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DESCRIPTORS_H_

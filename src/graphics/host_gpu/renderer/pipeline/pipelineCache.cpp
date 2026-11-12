@@ -986,6 +986,50 @@ private:
 	bool m_recordable = false;
 };
 
+// ASTROHYBRID_SHADER_DUMP=<hex hash>,<hex hash>,... (diagnostic, default off): the guest code and
+// its RDNA2 disassembly of those shaders are written to ASTROHYBRID_SHADER_DUMP_DIR (default
+// E:/AstroHybrid-Work/shaderdump) when they are compiled (run with KYTY_PROGRAM_CACHE=0 so they are).
+static bool AstroShaderDumpWanted(uint64_t shader_hash) {
+	static const std::vector<uint64_t> hashes = [] {
+		std::vector<uint64_t> list;
+		const char* value = std::getenv("ASTROHYBRID_SHADER_DUMP");
+		while (value != nullptr && *value != '\0') {
+			char* end = nullptr;
+			const auto hash = std::strtoull(value, &end, 16);
+			if (end == value) {
+				break;
+			}
+			list.push_back(hash);
+			value = *end == ',' ? end + 1 : end;
+		}
+		return list;
+	}();
+	return std::find(hashes.begin(), hashes.end(), shader_hash) != hashes.end();
+}
+
+static void AstroShaderDump(const char* stage_name, uint64_t shader_hash,
+                            std::span<const uint32_t> code, const std::string& decoded_dump) {
+	if (!AstroShaderDumpWanted(shader_hash)) {
+		return;
+	}
+	const char* dir_value = std::getenv("ASTROHYBRID_SHADER_DUMP_DIR");
+	const std::filesystem::path dir = dir_value != nullptr ? dir_value : "E:/AstroHybrid-Work/shaderdump";
+	std::error_code error;
+	std::filesystem::create_directories(dir, error);
+	const auto base = dir / fmt::format("{}_{:016x}", stage_name, shader_hash);
+	if (auto* file = std::fopen((base.string() + ".bin").c_str(), "wb"); file != nullptr) {
+		std::fwrite(code.data(), 1, code.size_bytes(), file);
+		std::fclose(file);
+	}
+	if (auto* file = std::fopen((base.string() + ".rdna2.txt").c_str(), "wb"); file != nullptr) {
+		std::fwrite(decoded_dump.data(), 1, decoded_dump.size(), file);
+		std::fclose(file);
+	}
+	std::printf("AstroShaderDump: %s %016llx -> %s\n", stage_name,
+	            static_cast<unsigned long long>(shader_hash), base.string().c_str());
+	std::fflush(stdout);
+}
+
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
 	if (!Config::GraphicsDebugDumpEnabled()) {
@@ -1868,6 +1912,7 @@ struct PipelineCache::ProgramCache {
 		DumpMatchedShaderInputs(params, options, stage_name, static_state,
 		                        push_data_start_dword, result.spirv, result.ir_dump);
 		DumpShaderOriginal(stage_name, options.shader_hash, params.code, result.decoded_dump);
+		AstroShaderDump(stage_name, options.shader_hash, params.code, result.decoded_dump);
 		return {.spirv       = std::move(result.spirv),
 		        .spirv_plain = std::move(result.spirv_plain),
 		        .info        = std::move(result.program).TakeCompiledInfo()};
@@ -2835,8 +2880,9 @@ struct PipelineCache::ProgramCache {
 		options.shader_hash = params.hash;
 		options.user_data   = runtime.user_data;
 		options.back_code      = params.back_code;
-		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent;
-		options.early_dump  = options.dump_ir;
+		options.dump_ir     = Config::GetShaderLogDirection() != Config::LogDirection::Silent ||
+		                      AstroShaderDumpWanted(params.hash);
+		options.early_dump  = Config::GetShaderLogDirection() != Config::LogDirection::Silent;
 		options.dump_label  = label;
 		options.input_info  = stage_input;
 		options.plain_mip_stats_variant =

@@ -33,6 +33,7 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/window/lowLatency.h"
+#include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/presentation/renderDoc.h"
 #include "kernel/eventQueueFilters.h"
 #include "kernel/pthread.h"
@@ -1243,6 +1244,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	r.submit_ptc = LibKernel::KernelGetProcessTimeCounter();
 	r.source     = source;
 	r.state      = RequestState::Reserved;
+	Graphics::PassTrace::NoteFlip();
 	r.latency_frame = source == FlipRequestSource::GpuEop ? Graphics::LowLatency::OnGpuFlipReserved()
 	                                                      : Graphics::LowLatency::TakeCpuFlipFrame();
 	if (cfg.slave_count != 0) {
