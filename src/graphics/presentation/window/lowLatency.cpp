@@ -1,5 +1,6 @@
 #include "graphics/presentation/window/lowLatency.h"
 
+#include "graphics/host_gpu/renderer/frameGen.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <atomic>
@@ -74,6 +75,10 @@ void Mark(uint64_t frame, VkLatencyMarkerNV marker) {
 // The end of guest frame `frame`: its marker, the driver's sleep, the next frame's start.
 void EndGuestFrame(uint64_t frame) {
 	auto& s = Get();
+	if (FrameGen::Active()) {
+		FrameGen::GuestFrameEnd(frame);
+		return;
+	}
 	Mark(frame, VK_LATENCY_MARKER_SIMULATION_END_NV);
 	uint64_t value = 0;
 	{
@@ -199,6 +204,10 @@ bool WantExtensions(bool has_low_latency2, bool has_present_id) {
 	if (!Requested()) {
 		return false;
 	}
+	if (FrameGen::Requested()) {
+		std::printf("LowLatency: DLSS-G takes over the markers through Streamline's Reflex\n");
+		return false;
+	}
 	if (!has_low_latency2 || !has_present_id) {
 		std::printf("LowLatency: requested but unavailable (VK_NV_low_latency2 %d, VK_KHR_present_id "
 		            "%d): off\n",
@@ -285,14 +294,20 @@ void OnSwapchainDestroyed(VkSwapchainKHR swapchain) {
 	}
 }
 
+namespace {
+bool Counting() {
+	return Enabled() || FrameGen::Active();
+}
+} // namespace
+
 void NoteFlipPacket() {
-	if (Enabled()) {
+	if (Counting()) {
 		Get().flips_set.fetch_add(1, std::memory_order_acq_rel);
 	}
 }
 
 void AfterDcbSubmit() {
-	if (!Enabled()) {
+	if (!Counting()) {
 		return;
 	}
 	auto&      s   = Get();
@@ -314,7 +329,7 @@ thread_local uint64_t t_cpu_flip_frame = 0;
 } // namespace
 
 uint64_t BeginCpuFlip() {
-	if (!Enabled()) {
+	if (!Counting()) {
 		return 0;
 	}
 	t_cpu_flip_frame = Get().guest_frame.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -328,30 +343,45 @@ uint64_t TakeCpuFlipFrame() {
 }
 
 void EndCpuFlip(uint64_t frame) {
-	if (Enabled() && frame != 0) {
+	if (Counting() && frame != 0) {
 		EndGuestFrame(frame);
 	}
 }
 
 uint64_t OnGpuFlipReserved() {
-	if (!Enabled()) {
+	if (!Counting()) {
 		return 0;
 	}
 	auto&      s     = Get();
 	const auto frame = s.gpu_frame.fetch_add(1, std::memory_order_acq_rel) + 1;
+	if (FrameGen::Active()) {
+		FrameGen::RenderSubmitted(frame);
+		return frame;
+	}
 	std::lock_guard<std::mutex> lock(s.mutex);
 	MarkLocked(s, frame, VK_LATENCY_MARKER_RENDERSUBMIT_END_NV);
 	MarkLocked(s, frame + 1, VK_LATENCY_MARKER_RENDERSUBMIT_START_NV);
 	return frame;
 }
 
+namespace {
+thread_local uint64_t t_frame_gen_present = 0;
+} // namespace
+
 void SetNextPresentFrame(uint64_t frame) {
-	if (Enabled()) {
+	if (Counting()) {
 		Get().next_present_frame = frame;
 	}
 }
 
 uint64_t BeginPresent(VkSwapchainKHR swapchain) {
+	if (FrameGen::Active()) {
+		auto& s              = Get();
+		t_frame_gen_present  = s.next_present_frame;
+		s.next_present_frame = 0;
+		FrameGen::PresentStart(t_frame_gen_present);
+		return 0;
+	}
 	if (!Enabled()) {
 		return 0;
 	}
@@ -372,6 +402,11 @@ uint64_t BeginPresent(VkSwapchainKHR swapchain) {
 }
 
 void EndPresent(VkSwapchainKHR swapchain, uint64_t present_id) {
+	if (FrameGen::Active()) {
+		FrameGen::PresentEnd(t_frame_gen_present);
+		t_frame_gen_present = 0;
+		return;
+	}
 	if (!Enabled()) {
 		return;
 	}

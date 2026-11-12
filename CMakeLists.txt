@@ -2594,6 +2594,13 @@ if(KYTY_NGX_SDK_DIR)
 	target_include_directories(kyty_emulator PRIVATE "${KYTY_NGX_SDK_DIR}/include")
 	target_link_libraries(kyty_emulator "${KYTY_NGX_SDK_DIR}/lib/Windows_x86_64/nvsdk_ngx_d.lib")
 endif()
+# AstroHybrid: DLSS Frame Generation through Streamline (renderer/frameGen.cpp), headers only;
+# sl.interposer.dll is loaded at run time. Empty: not built in.
+set(KYTY_STREAMLINE_DIR "" CACHE PATH "NVIDIA Streamline SDK folder (DLSS-G); empty to build without it")
+if(KYTY_STREAMLINE_DIR)
+	target_compile_definitions(kyty_emulator PRIVATE KYTY_STREAMLINE=1)
+	target_include_directories(kyty_emulator PRIVATE "${KYTY_STREAMLINE_DIR}/include")
+endif()
 target_include_directories(kyty_emulator PRIVATE ${inc_headers})
 
 clang_tidy_check(kyty_emulator "" "${check_headers}" "${inc_headers}")

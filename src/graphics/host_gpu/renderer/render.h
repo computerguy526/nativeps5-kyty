@@ -1187,6 +1187,10 @@ private:
 	void NoteDlssTargets(std::span<const RenderColorInfo> colors, ImageId depth);
 	[[nodiscard]] bool TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pixel,
 	                                  ImageId output);
+	// ASTROHYBRID_DLSSG (frameGen.h): the camera from a draw's bound constants, and the frame's
+	// depth, motion vectors and constants at the temporal upscale pass.
+	void NoteFrameGenCamera(const PreparedBindings& stage);
+	void TagFrameGen(CommandBuffer& buffer, PreparedBindings& pixel);
 	void                      ResetBindings();
 	// `site` names the caller's stage and table kind; it only selects the entry checked first.
 	// *fresh (optional): set when the returned range was allocated by this call (no earlier upload

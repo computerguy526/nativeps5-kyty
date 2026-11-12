@@ -2107,6 +2107,60 @@ void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings
 			image_text(binding.desc.type == TextureCache::BindingType::Storage ? 'S' : 'T',
 			           binding.image_id);
 		}
+		// ASTROHYBRID_PASS_TRACE_MATRIX=1: every bound buffer (first 64 KiB) is scanned for
+		// perspective projections (two scales whose ratio is 1.6-1.9, a +-1 in the w row or column,
+		// zero w-w); each new hit prints its address and the 48 floats from it.
+		static const bool scan_matrices = [] {
+			const char* value = std::getenv("ASTROHYBRID_PASS_TRACE_MATRIX");
+			return value != nullptr && value[0] == '1';
+		}();
+		if (scan_matrices) {
+			static std::vector<uint64_t> seen;
+			for (const auto& source: stage->buffer_sources) {
+				if (source.address == 0 || source.size < 64) {
+					continue;
+				}
+				const auto* f     = reinterpret_cast<const float*>(source.address);
+				const auto  count = std::min<uint64_t>(source.size, 65536) / 4;
+				for (uint64_t i = 0; i + 16 <= count; i++) {
+					const float* m      = f + i;
+					const auto   near_0 = [](float v) { return std::fabs(v) < 1e-6f; };
+					const auto   unit   = [](float v) { return std::fabs(std::fabs(v) - 1.0f) < 1e-5f; };
+					const float  sx = m[0], sy = m[5];
+					if (!(sx > 0.2f && sx < 20.0f && sy > 0.2f && sy < 20.0f)) {
+						continue;
+					}
+					const float ratio = sy / sx;
+					if (ratio < 1.6f || ratio > 1.9f || !near_0(m[15]) || !near_0(m[1]) ||
+					    !near_0(m[4])) {
+						continue;
+					}
+					const bool row_w = unit(m[14]) && near_0(m[12]) && near_0(m[13]);
+					const bool col_w = unit(m[11]) && near_0(m[3]) && near_0(m[7]);
+					if (!row_w && !col_w) {
+						continue;
+					}
+					const uint64_t key = source.address + i * 4;
+					if (std::find(seen.begin(), seen.end(), key) != seen.end() || seen.size() > 64) {
+						continue;
+					}
+					seen.push_back(key);
+					std::string text;
+					const auto  around = std::min<uint64_t>(48, count - i);
+					for (uint64_t k = 0; k < around; k++) {
+						std::snprintf(part, sizeof(part), " %g", static_cast<double>(m[k]));
+						text += part;
+					}
+					std::printf("PassTrace matrix st%d %016llx buffer %llx+%llu offset %llu (%s):%s\n",
+					            static_cast<int>(program.stage),
+					            static_cast<unsigned long long>(program.shader_hash),
+					            static_cast<unsigned long long>(source.address),
+					            static_cast<unsigned long long>(source.size),
+					            static_cast<unsigned long long>(i * 4), row_w ? "w row" : "w column",
+					            text.c_str());
+				}
+			}
+		}
 		// ASTROHYBRID_PASS_TRACE_CB=<hex hash>: that shader's buffers, first 24 dwords each.
 		static const uint64_t cb_hash = [] {
 			const char* value = std::getenv("ASTROHYBRID_PASS_TRACE_CB");

@@ -29,7 +29,7 @@
 // device creation fails with the extension (ASTROHYBRID_DLSS_PROBE=1 reports it).
 // Options: ASTROHYBRID_DLSS_QUALITY=quality|balanced|performance|dlaa (the DLSS preset family;
 // default quality); ASTROHYBRID_DLSS_JITTER_SIGN=1|-1 (default 1); ASTROHYBRID_DLSS_DEPTH_INVERTED=1|0
-// (default 1); ASTROHYBRID_DLSS_PATH: the folder holding nvngx_dlss.dll.
+// (default 0: the game's projection maps the near plane to depth 0); ASTROHYBRID_DLSS_PATH: the folder holding nvngx_dlss.dll.
 // One "DLSS 10s:" console line every 10 s with evaluations and fallbacks by reason.
 namespace Libs::Graphics::Dlss {
 

@@ -25,6 +25,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/dlss.h"
+#include "graphics/host_gpu/renderer/frameGen.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
@@ -4165,10 +4166,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// ASTROHYBRID_DLSS (dlss.h): depth attachments by colour target, and the game's temporal
 	// upscale replaced by DLSS Super Resolution. A replaced draw records nothing else; like a
 	// skipped one (KYTY_PIPELINE_SKIP below) no run record may be continued across it.
-	if (Dlss::Requested()) [[unlikely]] {
+	if (Dlss::Requested() || FrameGen::Requested()) [[unlikely]] {
 		NoteDlssTargets(std::span<const RenderColorInfo> {state.color_info, state.color_count},
 		                state.depth_info.image_id);
-		if (state.ps_active && bindings.pixel.has_value() && state.color_count != 0 &&
+		if (FrameGen::Active() && state.ps_active && bindings.pixel.has_value()) {
+			NoteFrameGenCamera(*bindings.pixel);
+			TagFrameGen(buffer, *bindings.pixel);
+		}
+		if (Dlss::Requested() && state.ps_active && bindings.pixel.has_value() && state.color_count != 0 &&
 		    TryDlssUpscale(buffer, *bindings.pixel, state.color_info[0].image_id)) {
 			m_run.valid        = false;
 			m_run_active       = false;

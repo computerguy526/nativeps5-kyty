@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/dlss.h"
+#include "graphics/host_gpu/renderer/frameGen.h"
 
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -24,6 +25,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -199,7 +201,7 @@ struct DepthPair {
 struct State {
 	uint64_t pass_hash = 0x2936e5eca99d75e7ull;
 	float    jitter_sign = 1.0f;
-	bool     depth_inverted = true;
+	bool     depth_inverted = false;
 	int      quality = 0; // 0 quality, 1 balanced, 2 performance, 3 dlaa
 	std::array<DepthPair, 16> depth_pairs {};
 	uint32_t depth_next = 0;
@@ -279,8 +281,105 @@ bool Fail(State& s, Fallback reason) {
 
 } // namespace
 
+void RenderExecutor::NoteFrameGenCamera(const PreparedBindings& stage) {
+	if (!FrameGen::CameraWanted()) {
+		return;
+	}
+	// The game's per-view constants: a perspective projection (16:9) at offset 128 of a 576-byte
+	// buffer, followed by the view matrix and the inverse projection (frameGen.h).
+	for (const auto& source: stage.buffer_sources) {
+		if (source.address == 0 || source.size != 576) {
+			continue;
+		}
+		const auto* m = reinterpret_cast<const float*>(source.address + 128);
+		const auto zero = [](float v) { return std::fabs(v) < 1e-6f; };
+		if (!(m[0] > 0.2f && m[5] > 0.2f) || m[5] / m[0] < 1.6f || m[5] / m[0] > 1.9f || !zero(m[1]) ||
+		    !zero(m[4]) || !zero(m[15]) || std::fabs(std::fabs(m[11]) - 1.0f) > 1e-5f) {
+			continue;
+		}
+		FrameGen::SetCamera(m);
+		return;
+	}
+}
+
+void RenderExecutor::TagFrameGen(CommandBuffer& buffer, PreparedBindings& pixel) {
+	if (!FrameGen::Active() || pixel.runtime == nullptr || !*pixel.runtime) {
+		return;
+	}
+	auto& s = Get();
+	if (pixel.runtime->program->shader_hash != s.pass_hash || pixel.images.size() < 2 ||
+	    pixel.buffer_sources.empty() || pixel.buffer_sources[0].address == 0 ||
+	    pixel.buffer_sources[0].size < 56) {
+		return;
+	}
+	const auto* cb = reinterpret_cast<const uint32_t*>(pixel.buffer_sources[0].address);
+	float       jitter_uv[2];
+	std::memcpy(jitter_uv, cb, sizeof(jitter_uv));
+	const uint32_t in_w = cb[6], in_h = cb[7];
+	auto&      cache    = m_context.GetTextureCache();
+	const auto mv_id    = pixel.images[0].image_id;
+	ImageId    depth_id {};
+	for (const auto& pair: s.depth_pairs) {
+		if (pair.color == mv_id) {
+			depth_id = pair.depth;
+		}
+	}
+	if (!depth_id || cache.m_slot_images.try_get(depth_id) == nullptr) {
+		return;
+	}
+	auto& mv    = cache.GetImage(mv_id);
+	auto& depth = cache.GetImage(depth_id);
+	if (mv.backing.image == nullptr || depth.backing.image == nullptr || mv.info.extent.width != in_w ||
+	    depth.info.extent.width != in_w) {
+		return;
+	}
+	buffer.EndRendering();
+	const auto cmd = buffer.Handle();
+	mv.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
+	depth.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {},
+	              cmd);
+	const auto device = m_context.GetGraphics().device;
+	const auto make_view = [&](const Image& image, vk::ImageAspectFlags aspect) {
+		vk::ImageViewCreateInfo view_info {};
+		view_info.image            = image.backing.image;
+		view_info.viewType         = vk::ImageViewType::e2D;
+		view_info.format           = image.backing.format;
+		view_info.subresourceRange = vk::ImageSubresourceRange {aspect, 0, 1, 0, 1};
+		vk::ImageView view;
+		return device.createImageView(&view_info, nullptr, &view) == vk::Result::eSuccess
+		           ? view
+		           : vk::ImageView {};
+	};
+	const std::array<vk::ImageView, 2> views {make_view(depth, vk::ImageAspectFlagBits::eDepth),
+	                                          make_view(mv, vk::ImageAspectFlagBits::eColor)};
+	const auto input = [](const Image& image, vk::ImageView view) {
+		FrameGen::ImageInput in;
+		in.image  = static_cast<VkImage>(image.backing.image);
+		in.view   = static_cast<VkImageView>(view);
+		in.format = static_cast<VkFormat>(image.backing.format);
+		in.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		in.width  = image.info.extent.width;
+		in.height = image.info.extent.height;
+		in.usage  = static_cast<uint32_t>(static_cast<VkImageUsageFlags>(image.backing.usage));
+		in.flags  = static_cast<uint32_t>(static_cast<VkImageCreateFlags>(image.backing.flags));
+		return in;
+	};
+	if (views[0] && views[1]) {
+		(void)FrameGen::TagFrame(static_cast<VkCommandBuffer>(cmd), input(depth, views[0]),
+		                         input(mv, views[1]), jitter_uv, in_w, in_h);
+	}
+	buffer.ForgetBoundState();
+	m_context.GetCommandScheduler().DeferOperation([device, views]() {
+		for (const auto view: views) {
+			if (view) {
+				device.destroyImageView(view);
+			}
+		}
+	});
+}
+
 void RenderExecutor::NoteDlssTargets(std::span<const RenderColorInfo> colors, ImageId depth) {
-	if (!Dlss::Requested() || !depth) {
+	if ((!Dlss::Requested() && !FrameGen::Requested()) || !depth) {
 		return;
 	}
 	auto& s = Get();

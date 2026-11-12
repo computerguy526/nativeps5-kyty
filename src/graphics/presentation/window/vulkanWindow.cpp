@@ -33,6 +33,7 @@
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/lowLatency.h"
 #include "graphics/host_gpu/renderer/dlss.h"
+#include "graphics/host_gpu/renderer/frameGen.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -1858,6 +1859,39 @@ static void VulkanCheckInstanceVersion() {
 	}
 }
 
+// ASTROHYBRID_DLSSG (renderer/frameGen.h): with Streamline as the loader, the window surface is
+// created through it (from SDL's window handles), so Streamline knows which window a swapchain
+// presents to; otherwise SDL creates it as before.
+static bool CreateWindowSurface(SDL_Window* sdl_window, vk::Instance instance, VkSurfaceKHR* out) {
+	if (!FrameGen::Loaded()) {
+		return SDL_Vulkan_CreateSurface(sdl_window, static_cast<vk::Instance::CType>(instance), nullptr,
+		                                out);
+	}
+	struct Win32SurfaceCreateInfo {
+		VkStructureType sType;
+		const void*     pNext;
+		VkFlags         flags;
+		void*           hinstance;
+		void*           hwnd;
+	};
+	using CreateWin32Surface = VkResult(VKAPI_PTR*)(VkInstance, const Win32SurfaceCreateInfo*,
+	                                                const VkAllocationCallbacks*, VkSurfaceKHR*);
+	const auto properties = SDL_GetWindowProperties(sdl_window);
+	Win32SurfaceCreateInfo info {};
+	info.sType     = static_cast<VkStructureType>(1000009000); // VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
+	info.hinstance = SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, nullptr);
+	info.hwnd      = SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+	const auto create = reinterpret_cast<CreateWin32Surface>(VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr(
+	    static_cast<VkInstance>(instance), "vkCreateWin32SurfaceKHR"));
+	if (create == nullptr || info.hwnd == nullptr) {
+		std::printf("DLSS-G: no window handle or vkCreateWin32SurfaceKHR for the surface\n");
+		return false;
+	}
+	const auto result = create(static_cast<VkInstance>(instance), &info, nullptr, out);
+	std::printf("DLSS-G: window surface created through Streamline -> %d\n", static_cast<int>(result));
+	return result == VK_SUCCESS;
+}
+
 void WindowContext::CreateVulkan() {
 	EXIT_IF(window == nullptr);
 	EXIT_IF(graphic_ctx.instance != nullptr);
@@ -1867,6 +1901,10 @@ void WindowContext::CreateVulkan() {
 
 	auto get_instance_proc_addr =
 	    reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+	// ASTROHYBRID_DLSSG (renderer/frameGen.h): Vulkan through Streamline's interposer.
+	if (const auto streamline = FrameGen::LoaderBeforeInstance(); streamline != nullptr) {
+		get_instance_proc_addr = streamline;
+	}
 	if (get_instance_proc_addr == nullptr) {
 		EXIT("Could not load Vulkan: %s\n", SDL_GetError());
 	}
@@ -1968,8 +2006,7 @@ void WindowContext::CreateVulkan() {
 	}
 
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
+	if (!CreateWindowSurface(window, graphic_ctx.instance, &native_surface)) {
 		EXIT("Could not create a Vulkan surface");
 	}
 	surface = native_surface;
@@ -2203,6 +2240,7 @@ void WindowContext::CreateVulkan() {
 	if (HasExtension(device_extensions, VK_NV_LOW_LATENCY_2_EXTENSION_NAME)) {
 		LowLatency::OnDeviceCreated(static_cast<VkDevice>(graphic_ctx.device));
 	}
+	FrameGen::OnDeviceReady();
 	// Diagnostic only (KYTY_GPU_OP_PROFILE / KYTY_GPU_OP_COUNTERS): wraps dispatcher entries.
 	GpuOpProfiler::InstallHooks(graphic_ctx);
 	// KYTY_CP_RECORDER_VERIFY ownership hooks wrap the GpuOpProfiler's.
@@ -2259,8 +2297,7 @@ void WindowContext::RecreateSurface() {
 		surface = nullptr;
 	}
 	vk::SurfaceKHR::CType native_surface = VK_NULL_HANDLE;
-	if (!SDL_Vulkan_CreateSurface(window, static_cast<vk::Instance::CType>(graphic_ctx.instance),
-	                              nullptr, &native_surface)) {
+	if (!CreateWindowSurface(window, graphic_ctx.instance, &native_surface)) {
 		EXIT("Could not recreate the Vulkan surface: %s\n", SDL_GetError());
 	}
 	surface = native_surface;
