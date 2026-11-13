@@ -316,6 +316,9 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 		}
 	}
 
+	if (f.down) {
+		Controller::PadPressed(f.id);
+	}
 	if (f.down || f.up) {
 		HostInputPadButton(f.id, f.button, f.down);
 	}

@@ -74,6 +74,8 @@ inline int controller_get_axis(int min, int max, int value) {
 
 void Connect(int id);
 void Disconnect(int id);
+// A host pad button went down (ASTROHYBRID_PAD_PREFER in controller.cpp).
+void PadPressed(int id);
 // Moves the keyboard to the next player (shared with player 1, then 1-4) while the game runs.
 void CycleKeyboardPlayer();
 void SetButton(int id, uint32_t button, bool down);

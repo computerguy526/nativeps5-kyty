@@ -909,6 +909,29 @@ static void StopHostPad(SDL_Gamepad* pad) {
 	(void)SDL_SetGamepadLED(pad, 0, 0, 0);
 }
 
+// ASTROHYBRID_RUMBLE_SCALE=percent (default 100, 0..200): rumble strength for pads other than a
+// DualSense. ASTROHYBRID_RUMBLE_SWITCH_FLOOR=n (default 0, 0..255): on Switch-type pads a motor that
+// is on runs at least at n, for pads (third-party ones above all) that ignore weak rumble.
+static uint16_t HostRumble(int id, uint8_t motor) {
+	static const int scale = [] {
+		const char* value = std::getenv("ASTROHYBRID_RUMBLE_SCALE");
+		return value != nullptr ? std::clamp(std::atoi(value), 0, 200) : 100;
+	}();
+	static const int floor = [] {
+		const char* value = std::getenv("ASTROHYBRID_RUMBLE_SWITCH_FLOOR");
+		return value != nullptr ? std::clamp(std::atoi(value), 0, 255) : 0;
+	}();
+	if (motor == 0) {
+		return 0;
+	}
+	int value = motor * scale / 100;
+	if (floor > 0 && SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(id)) >= SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
+	    SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(id)) <= SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR) {
+		value = std::max(value, floor);
+	}
+	return static_cast<uint16_t>(std::clamp(value, 0, 255) * 0x101);
+}
+
 void GameController::SetVibration(uint8_t large_motor, uint8_t small_motor) {
 	Common::LockGuard lock(m_mutex);
 	m_vibration       = {large_motor, small_motor};
@@ -938,8 +961,8 @@ void GameController::ApplyVibration() {
 		return;
 	}
 
-	const auto large = static_cast<uint16_t>(large_motor * 0x101U);
-	const auto small = static_cast<uint16_t>(small_motor * 0x101U);
+	const auto large = HostRumble(m_active_id, large_motor);
+	const auto small = HostRumble(m_active_id, small_motor);
 	if (!SDL_RumbleGamepad(pad, large, small, duration)) {
 		LOGF("\t rumble failed: %s\n", SDL_GetError());
 	}
@@ -1157,6 +1180,135 @@ static void RefreshPlayers() {
 	}
 }
 
+// ASTROHYBRID_PAD_PREFER (default unset: the first pad connected stays player 1, the only player
+// the relay sends to the game): which pad plays. "auto": the pad last connected or pressed takes
+// player 1; "ps", "xbox", "switch" or "generic": a pad of that family takes player 1 whenever one is
+// connected, any other pad only while none is. Pads connected are logged to stderr, and a pad that
+// is not a DualSense gives a short buzz when it takes player 1.
+enum class PadFamily { PlayStation, Xbox, Switch, Generic };
+
+static PadFamily FamilyOf(int id) {
+	switch (SDL_GetGamepadTypeForID(static_cast<SDL_JoystickID>(id))) {
+		case SDL_GAMEPAD_TYPE_PS3:
+		case SDL_GAMEPAD_TYPE_PS4:
+		case SDL_GAMEPAD_TYPE_PS5: return PadFamily::PlayStation;
+		case SDL_GAMEPAD_TYPE_XBOX360:
+		case SDL_GAMEPAD_TYPE_XBOXONE: return PadFamily::Xbox;
+		case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+		case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+		case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+		case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR: return PadFamily::Switch;
+		default: return PadFamily::Generic;
+	}
+}
+
+// -1: off; 0: auto; 1 + PadFamily: that family.
+static int PadPreference() {
+	static const int mode = [] {
+		const char* value = std::getenv("ASTROHYBRID_PAD_PREFER");
+		if (value == nullptr || value[0] == 0) {
+			return -1;
+		}
+		const std::string_view v(value);
+		if (v == "ps" || v == "ps5") {
+			return 1 + static_cast<int>(PadFamily::PlayStation);
+		}
+		if (v == "xbox") {
+			return 1 + static_cast<int>(PadFamily::Xbox);
+		}
+		if (v == "switch") {
+			return 1 + static_cast<int>(PadFamily::Switch);
+		}
+		if (v == "generic") {
+			return 1 + static_cast<int>(PadFamily::Generic);
+		}
+		return 0;
+	}();
+	return mode;
+}
+
+static const char* FamilyName(PadFamily family) {
+	switch (family) {
+		case PadFamily::PlayStation: return "PlayStation";
+		case PadFamily::Xbox: return "Xbox";
+		case PadFamily::Switch: return "Switch";
+		default: return "generic";
+	}
+}
+
+static void LogPad(int id) {
+	auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(id));
+	if (pad == nullptr) {
+		return;
+	}
+	const auto props = SDL_GetGamepadProperties(pad);
+	std::fprintf(stderr,
+	             "[astrohybrid 0] controller %d: '%s' (%s, type %s, %04x:%04x), rumble %s, motion %s\n", id,
+	             SDL_GetGamepadName(pad), FamilyName(FamilyOf(id)),
+	             SDL_GetGamepadStringForType(SDL_GetGamepadType(pad)), SDL_GetGamepadVendor(pad),
+	             SDL_GetGamepadProduct(pad),
+	             SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "no",
+	             SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) ? "yes" : "no (Back/View toggles right-stick tilt)");
+	std::fflush(stderr);
+}
+
+// Caller holds g_router_mutex.
+static bool MakePlayerOne(int id) {
+	if (g_keyboard_player == 1) {
+		return false;
+	}
+	auto self = std::find_if(g_pad_players.begin(), g_pad_players.end(),
+	                         [id](const auto& pad) { return pad.first == id; });
+	if (self == g_pad_players.end() || self->second == 0) {
+		return false;
+	}
+	auto owner = std::find_if(g_pad_players.begin(), g_pad_players.end(),
+	                          [](const auto& pad) { return pad.second == 0; });
+	if (owner != g_pad_players.end()) {
+		owner->second = self->second;
+	}
+	self->second = 0;
+	RefreshPlayers();
+	std::fprintf(stderr, "[astrohybrid 0] controller %d is player 1 now\n", id);
+	std::fflush(stderr);
+	if (FamilyOf(id) != PadFamily::PlayStation) {
+		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(id))) {
+			(void)SDL_RumbleGamepad(pad, 0x6000, 0x6000, 150);
+		}
+	}
+	return true;
+}
+
+// Caller holds g_router_mutex.
+static bool PreferredPadConnected(PadFamily family) {
+	return std::any_of(g_pad_players.begin(), g_pad_players.end(),
+	                   [family](const auto& pad) { return FamilyOf(pad.first) == family; });
+}
+
+// Caller holds g_router_mutex. A pad was connected or pressed.
+static void FollowPad(int id, bool connected) {
+	const int mode = PadPreference();
+	if (mode < 0 || id == HOST_INPUT_CONTROLLER_ID) {
+		return;
+	}
+	if (mode == 0) {
+		(void)MakePlayerOne(id);
+		return;
+	}
+	const auto preferred = static_cast<PadFamily>(mode - 1);
+	if (FamilyOf(id) == preferred || (!connected && !PreferredPadConnected(preferred))) {
+		(void)MakePlayerOne(id);
+	}
+}
+
+void PadPressed(int id) {
+	if (PadPreference() < 0) {
+		return;
+	}
+	Common::LockGuard lock(g_router_mutex);
+	FollowPad(id, false);
+}
+
 void Connect(int id) {
 	// KYTY_HOST_INPUT_ONLY=1: real pads are ignored; the host keyboard/mouse input drives player 1.
 	if (HostInputOnly() && id != HOST_INPUT_CONTROLLER_ID) {
@@ -1169,6 +1321,10 @@ void Connect(int id) {
 	}
 	g_pad_players.emplace_back(id, -1);
 	RefreshPlayers();
+	if (PadPreference() >= 0) {
+		LogPad(id);
+		FollowPad(id, true);
+	}
 }
 
 void Disconnect(int id) {
