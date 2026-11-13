@@ -293,6 +293,13 @@ void Relay() {
 	const char* motion_env = std::getenv("ASTROHYBRID_PAD_MOTION");
 	const bool  motion     = motion_env != nullptr && motion_env[0] == '1' && g_host.publish_pad_motion != nullptr;
 	bool        motion_seen = false;
+	// A pad without a gyroscope (Kyty's emulated tilt: View/Back, then the right stick) reports its
+	// tilt as an orientation and accelerometer only, with angular velocity at rest; the host's pad
+	// library turns angular velocity into orientation, so the rate is derived here from the change
+	// of orientation between two reads whenever the pad reports none.
+	float prev_q[4]  = {0.0f, 0.0f, 0.0f, 1.0f};
+	auto  prev_time  = std::chrono::steady_clock::now();
+	bool  prev_valid = false;
 	Log(0, "input relay: motion sensors %s", motion ? "-> host" : "not relayed");
 	uint32_t         output_seen = 0;
 	KytyGpuPadOutput output_applied {};
@@ -323,6 +330,26 @@ void Relay() {
 				sensors.angular_velocity[0] = data.angular_velocity_x;
 				sensors.angular_velocity[1] = data.angular_velocity_y;
 				sensors.angular_velocity[2] = data.angular_velocity_z;
+				const float q[4] = {data.orientation_x, data.orientation_y, data.orientation_z, data.orientation_w};
+				const auto  now  = std::chrono::steady_clock::now();
+				if (prev_valid && sensors.angular_velocity[0] == 0.0f && sensors.angular_velocity[1] == 0.0f &&
+				    sensors.angular_velocity[2] == 0.0f) {
+					const float dt = std::chrono::duration<float>(now - prev_time).count();
+					// Body-frame rate from conj(prev) * q.
+					const float w = prev_q[3] * q[3] + prev_q[0] * q[0] + prev_q[1] * q[1] + prev_q[2] * q[2];
+					float       d[3] = {prev_q[3] * q[0] - prev_q[0] * q[3] - prev_q[1] * q[2] + prev_q[2] * q[1],
+					                    prev_q[3] * q[1] + prev_q[0] * q[2] - prev_q[1] * q[3] - prev_q[2] * q[0],
+					                    prev_q[3] * q[2] - prev_q[0] * q[1] + prev_q[1] * q[0] - prev_q[2] * q[3]};
+					const float sign = w < 0.0f ? -1.0f : 1.0f;
+					if (dt > 0.0005f && dt < 0.1f) {
+						for (int i = 0; i < 3; ++i) {
+							sensors.angular_velocity[i] = sign * 2.0f * d[i] / dt;
+						}
+					}
+				}
+				std::memcpy(prev_q, q, sizeof(prev_q));
+				prev_time  = now;
+				prev_valid = true;
 				if (!motion_seen && (sensors.angular_velocity[0] != 0.0f || sensors.angular_velocity[1] != 0.0f ||
 				                     sensors.angular_velocity[2] != 0.0f)) {
 					motion_seen = true;
