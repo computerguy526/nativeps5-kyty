@@ -17,7 +17,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 VCVARS = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 # Kyty core sources the hybrid branch changes: compiled here with kyty_emulator's flags, their
 # objects replace the emulator's in the link (the emulator build directory stays as it is).
-HYBRID_SOURCES = ("src/kernel/memory.cpp",)
+HYBRID_SOURCES = (
+    "src/kernel/memory.cpp",
+    "src/libs/dualSenseBluetooth.cpp",
+    "src/libs/dualSenseHaptics.cpp",
+)
 LLVM_DEFAULT = pathlib.Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin")
 
 

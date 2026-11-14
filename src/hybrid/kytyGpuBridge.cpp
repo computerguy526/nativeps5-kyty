@@ -32,6 +32,7 @@
 #include "kytyGitVersion.h"
 #include "libs/agc.h"
 #include "libs/controller.h"
+#include "libs/dualSenseHaptics.h"
 #include "libs/padData.h"
 #include "loader/symbolDatabase.h"
 #include "loader/timer.h"
@@ -612,6 +613,10 @@ void RendererThread() {
 			options.fullscreen_enabled  = true;
 			options.hide_cursor_enabled = true;
 		}
+		if (const char* rumble = std::getenv("ASTROHYBRID_RUMBLE_SCALE"); rumble != nullptr && rumble[0] != '\0') {
+			options.controller_vibration_intensity =
+			    static_cast<uint32_t>(std::clamp(std::atoi(rumble), 0, 100));
+		}
 		subsystems.Initialize<Config::Lifecycle>();
 		Config::Load(options);
 		subsystems.Initialize<Log::Lifecycle>();
@@ -711,9 +716,30 @@ int ApiStartGraphics() {
 	return KYTY_GPU_OK;
 }
 
+std::mutex                                     g_pad_audio_mutex;
+Libs::Controller::DualSenseHaptics::Stream*    g_pad_speaker_stream = nullptr;
+uint32_t                                       g_pad_speaker_freq   = 0;
+Libs::Controller::DualSenseHaptics::Stream*    g_pad_haptics_stream = nullptr;
+uint32_t                                       g_pad_haptics_freq   = 0;
+
+void ClosePadAudioStreams() {
+	std::lock_guard lock(g_pad_audio_mutex);
+	if (g_pad_speaker_stream != nullptr) {
+		Libs::Controller::DualSenseHaptics::Close(g_pad_speaker_stream);
+		g_pad_speaker_stream = nullptr;
+		g_pad_speaker_freq   = 0;
+	}
+	if (g_pad_haptics_stream != nullptr) {
+		Libs::Controller::DualSenseHaptics::Close(g_pad_haptics_stream);
+		g_pad_haptics_stream = nullptr;
+		g_pad_haptics_freq   = 0;
+	}
+}
+
 void ApiShutdown() {
 	std::lock_guard lock(g_lifecycle);
 	g_shutdown_requested.store(true, std::memory_order_release);
+	ClosePadAudioStreams();
 	if (g_state.load() == State::Graphics) {
 		SDL_Event quit {};
 		quit.type = SDL_EVENT_QUIT;
@@ -852,4 +878,83 @@ extern "C" __attribute__((used)) void* KytyGpuLazyResolve(uint32_t index) {
 
 extern "C" KYTY_GPU_EXPORT const KytyGpuApi* KytyGpuGetApi(uint32_t abi_version) {
 	return (abi_version >> 16u) == KYTY_GPU_ABI_VERSION_MAJOR ? &g_api : nullptr;
+}
+
+static int ResolvePadAudioController(bool prefer_ps5) {
+	int controller = Libs::Controller::GetActiveControllerId();
+	if (controller > 0) {
+		SDL_LockJoysticks();
+		auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
+		const bool valid = pad != nullptr && (!prefer_ps5 || SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5);
+		SDL_UnlockJoysticks();
+		if (valid) {
+			return controller;
+		}
+	}
+	if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
+		(void)SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+	}
+	SDL_UpdateGamepads();
+	int   count    = 0;
+	auto* pads     = SDL_GetGamepads(&count);
+	int   chosen   = -1;
+	int   fallback = -1;
+	if (pads != nullptr) {
+		for (int i = 0; i < count; i++) {
+			const SDL_JoystickID id = pads[i];
+			if (SDL_GetGamepadFromID(id) == nullptr) {
+				(void)SDL_OpenGamepad(id);
+			}
+			if (fallback < 0) {
+				fallback = static_cast<int>(id);
+			}
+			if (SDL_GetGamepadTypeForID(id) == SDL_GAMEPAD_TYPE_PS5) {
+				chosen = static_cast<int>(id);
+				break;
+			}
+		}
+		SDL_free(pads);
+	}
+	if (chosen > 0) {
+		return chosen;
+	}
+	return controller > 0 ? controller : fallback;
+}
+
+extern "C" KYTY_GPU_EXPORT uint64_t KytyGpuQueuePadAudio(uint32_t freq, int is_speaker,
+                                                         const void* data, uint32_t frames,
+                                                         uint32_t channels, int is_float,
+                                                         float gain) {
+	if (data == nullptr || frames == 0 || channels == 0 || freq == 0) {
+		return 0;
+	}
+	std::lock_guard lock(g_pad_audio_mutex);
+	const int controller = ResolvePadAudioController(is_speaker != 0);
+	if (controller <= 0) {
+		return 0;
+	}
+	auto*& stream_slot = is_speaker != 0 ? g_pad_speaker_stream : g_pad_haptics_stream;
+	auto&  freq_slot   = is_speaker != 0 ? g_pad_speaker_freq : g_pad_haptics_freq;
+	if (stream_slot != nullptr && freq_slot != freq) {
+		Libs::Controller::DualSenseHaptics::Close(stream_slot);
+		stream_slot = nullptr;
+		freq_slot   = 0;
+	}
+	if (stream_slot == nullptr) {
+		stream_slot = Libs::Controller::DualSenseHaptics::Open(freq, is_speaker != 0);
+		if (stream_slot == nullptr) {
+			return 0;
+		}
+		freq_slot = freq;
+	}
+	const float setting_scale = Libs::Controller::GetSettingScale(
+	    is_speaker != 0 ? Libs::Controller::Setting::SpeakerVolume
+	                    : Libs::Controller::Setting::VibrationIntensity);
+	static constexpr int kUnityVolume[8] = {32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768};
+	return Libs::Controller::DualSenseHaptics::Queue(
+	    stream_slot, controller, data, frames, channels, is_float != 0, kUnityVolume,
+	    gain * setting_scale, nullptr);
 }

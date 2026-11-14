@@ -102,9 +102,10 @@ bool RouteSpeaker(int controller, bool speaker) { // Caller holds g_mutex.
 	report[0] = 0x80; // Audio control valid
 	if (speaker) {
 		report[0] |= 0x20; // Speaker volume valid
-		report[1]  = 0x80; // Audio control 2 valid
+		report[1]  = 0x82; // Audio control 2 valid + audio mute bits valid
 		report[5]  = 0x64; // Speaker volume
 		report[7]  = 0x30; // Output path: right channel to the speaker, headphones muted
+		report[9]  = 0x10; // Mute headphones, unmute internal speaker
 		report[37] = 0x02; // Speaker preamp +6 dB
 	}
 	bool routed = false;
@@ -177,9 +178,22 @@ bool IsWireless(int controller) {
 	SDL_LockJoysticks();
 	auto*      pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
 	const bool wireless =
-	    pad != nullptr && SDL_GetGamepadConnectionState(pad) == SDL_JOYSTICK_CONNECTION_WIRELESS;
+	    pad != nullptr && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5 &&
+	    SDL_GetGamepadConnectionState(pad) != SDL_JOYSTICK_CONNECTION_WIRED;
 	SDL_UnlockJoysticks();
 	return wireless;
+}
+
+bool WirelessFeatureEnabled(bool speaker) {
+	static const bool speaker_enabled = [] {
+		const char* value = std::getenv("ASTROHYBRID_DS_WIRELESS_SPEAKER");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	static const bool haptics_enabled = [] {
+		const char* value = std::getenv("ASTROHYBRID_DS_WIRELESS_HAPTICS");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return speaker ? speaker_enabled : haptics_enabled;
 }
 
 bool CanUseDevice(int controller) {
@@ -391,6 +405,10 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 		return static_cast<uint64_t>(frames) * 1000000 / stream->freq;
 	}
 	const bool wireless = IsWireless(controller);
+	if (wireless && !WirelessFeatureEnabled(stream->speaker)) {
+		CloseDevice(stream);
+		return 0;
+	}
 	if (!wireless && !CanUseDevice(controller)) {
 		CloseDevice(stream);
 		stream->next_check = 0; // Look for the device as soon as a DualSense is active again.
@@ -417,12 +435,24 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 	stream->buffer.assign(static_cast<size_t>(frames) * output_channels, 0.0f);
 	bool audible = false;
 	for (uint32_t frame = 0; frame < frames; frame++) {
+		float values[2] {};
 		for (uint32_t ch = 0; ch < 2; ch++) {
 			const auto src_ch = channels == 1 ? 0 : ch;
 			const auto index  = (static_cast<size_t>(first_frame) + frame) * channels + src_ch;
 			float      value  = is_float ? static_cast<const float*>(data)[index]
 			                             : static_cast<const int16_t*>(data)[index] / 32768.0f;
 			value *= volume[src_ch] / 32768.0f * gain * (gains != nullptr ? gains[src_ch] : 1.0f);
+			values[ch] = value;
+		}
+		if (stream->speaker && channels >= 2) {
+			const float mono = (values[0] != 0.0f && values[1] != 0.0f)
+			                       ? 0.5f * (values[0] + values[1])
+			                       : (values[0] + values[1]);
+			values[0] = mono;
+			values[1] = mono;
+		}
+		for (uint32_t ch = 0; ch < 2; ch++) {
+			const float value = values[ch];
 			// USB places the speaker in front and the actuators in back; Bluetooth takes stereo.
 			stream->buffer[static_cast<size_t>(frame) * output_channels + ch + channel_offset] =
 			    value;

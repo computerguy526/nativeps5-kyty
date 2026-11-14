@@ -931,11 +931,37 @@ int KYTY_SYSV_ABI SaveDataTransferringMount(const SaveDataTransferringMount* mou
 		return SAVE_DATA_ERROR_MOUNT_FULL;
 	}
 
+	// If the directory doesn't exist, create it with a default block size.
+	// This handles game versions (like 01.007.000) that call SaveDataTransferringMount
+	// before the save directory has been created by SaveDataMount3.
 	if (!Common::File::IsDirectoryExisting(mount_dir)) {
-		return SAVE_DATA_ERROR_NOT_FOUND;
+		constexpr uint64_t default_blocks = 256; // Reasonable default for game saves
+		if (default_blocks < SAVE_DATA_BLOCKS_MIN || default_blocks > SAVE_DATA_BLOCKS_MAX) {
+			return SAVE_DATA_ERROR_PARAMETER;
+		}
+		const auto metadata = mount_dir / "sce_sys";
+		std::error_code error;
+		std::filesystem::create_directories(metadata, error);
+		if (error) {
+			return SAVE_DATA_ERROR_INTERNAL;
+		}
+		const int status = write_save_file(metadata / "blocks.bin", &default_blocks,
+		                                   sizeof(default_blocks));
+		if (status != OK) {
+			std::filesystem::remove_all(mount_dir, error);
+			return status;
+		}
+		const SaveDataParam initial {};
+		const int param_status = write_save_file(save_param_path(mount_dir), &initial,
+		                                         sizeof(initial));
+		if (param_status != OK) {
+			std::filesystem::remove_all(mount_dir, error);
+			return param_status;
+		}
+		LOGF("\t created save directory at %s\n", Common::PathToString(mount_dir).c_str());
 	}
 
-	return mount_save_data(slot, mount_dir, 0, mount_result);
+	return mount_save_data(slot, mount_dir, 1, mount_result); // 1 = newly created
 }
 
 int KYTY_SYSV_ABI SaveDataUmount2(uint32_t mode, const SaveDataMountPoint* mount_point) {
