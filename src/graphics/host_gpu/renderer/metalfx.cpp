@@ -63,6 +63,7 @@ constexpr std::array<uint64_t, 1> KNOWN_PASSES {0x2936e5eca99d75e7ull};
 struct State {
 	Mode     mode           = Mode::Off;
 	bool     find           = false;
+	bool     find_all       = false;
 	bool     pass_auto      = false;
 	uint64_t pass_hash      = 0; // 0: KNOWN_PASSES
 	float    jitter_sign    = 1.0f;
@@ -79,7 +80,7 @@ struct State {
 	uint64_t resets      = 0;
 	std::array<uint64_t, static_cast<size_t>(Fallback::Count)> fallbacks {};
 	int64_t  print_ns = 0;
-	std::array<uint64_t, 16> logged_hashes {};
+	std::array<uint64_t, 64> logged_hashes {};
 	uint32_t                 logged_count = 0;
 	uint32_t                 find_cb_logged = 0;
 };
@@ -93,7 +94,8 @@ State& Get() {
 			                                                                               : Mode::Off;
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_FIND"); value != nullptr) {
-			s.find = std::strcmp(value, "1") == 0;
+			s.find     = std::strcmp(value, "1") == 0 || std::strcmp(value, "2") == 0;
+			s.find_all = std::strcmp(value, "2") == 0;
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_PASS"); value != nullptr) {
 			if (std::strcmp(value, "auto") == 0) {
@@ -263,6 +265,40 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 		       !in.info.IsDepth() && in.backing.format == out.backing.format &&
 		       out.backing.format == vk::Format::eR16G16B16A16Sfloat;
 	};
+	// KYTY_METALFX_FIND=2: every pixel shader that draws into two colour targets, the first an
+	// RGBA16F one, with its images and the first words of its constant buffers (once per shader).
+	if (s.find_all && color_count == 2 && output && cache.m_slot_images.try_get(output) != nullptr &&
+	    cache.GetImage(output).backing.format == vk::Format::eR16G16B16A16Sfloat &&
+	    LogOnce(s, hash ^ 0x5555555555555555ull)) {
+		const auto& out = cache.GetImage(output);
+		std::string text;
+		for (const auto& binding: pixel.images) {
+			if (binding.image_id && cache.m_slot_images.try_get(binding.image_id) != nullptr) {
+				const auto& image = cache.GetImage(binding.image_id);
+				text += fmt::format(" {}x{}:{}{}", image.info.extent.width, image.info.extent.height,
+				                    vk::to_string(image.backing.format), image.info.IsDepth() ? "(depth)" : "");
+			} else {
+				text += " -";
+			}
+		}
+		std::printf("MetalFX find2: pixel shader %016llx output %ux%u images:%s\n",
+		            static_cast<unsigned long long>(hash), out.info.extent.width, out.info.extent.height,
+		            text.c_str());
+		for (const auto& source: pixel.buffer_sources) {
+			if (source.address == 0 || source.size < 64) {
+				continue;
+			}
+			const auto* w = Guest::Ptr<const uint32_t>(source.address);
+			const auto* f = reinterpret_cast<const float*>(w);
+			std::string words;
+			for (uint32_t i = 0; i < 16 && (i + 1) * 4 <= source.size; i++) {
+				words += fmt::format(" {}:{:08x}({:.6g})", i, w[i], static_cast<double>(f[i]));
+			}
+			std::printf("MetalFX find2:   buffer %llx+%u:%s\n", static_cast<unsigned long long>(source.address),
+			            static_cast<unsigned>(source.size), words.c_str());
+		}
+		std::fflush(stdout);
+	}
 	const bool structural = (s.find || s.pass_auto) && !known && shape_matches();
 	// The pass's constants (metalfx.h).
 	const bool has_cb = (known || structural) && pixel.images.size() >= 2 && output &&

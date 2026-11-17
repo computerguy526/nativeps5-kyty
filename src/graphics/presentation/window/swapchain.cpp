@@ -701,7 +701,9 @@ public:
 		if (!m_pending.empty() && m_flips >= m_pending_flip + m_delay) {
 			Write(graphics);
 		}
-		if (!m_pending.empty() || m_dumped >= m_limit || m_flips < m_from ||
+		// A series with KYTY_DUMP_TARGETS_EVERY below the delay (consecutive flips for a flicker
+		// check) is recorded whole and written after its last dump.
+		if ((!m_pending.empty() && m_every >= m_delay) || m_dumped >= m_limit || m_flips < m_from ||
 		    (m_flips - m_from) % m_every != 0) {
 			return;
 		}
@@ -720,7 +722,7 @@ public:
 			const bool  blit    = wanted && info.samples == 1 && !integer &&
 			                      static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
 			                                        vk::FormatFeatureFlagBits::eBlitSrc) &&
-			                      m_pending.size() < 64;
+			                      m_pending.size() < 256;
 			if (wanted) {
 				std::fprintf(stderr,
 				             "[kyty-target] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile %u samples %u "
