@@ -111,6 +111,8 @@ struct State {
 	uint64_t    cycle_from  = 1;
 	std::string cycle_list;
 	int         cycle_index = -1;
+	uint64_t    win_draws = 0, win_scene = 0; // pass draws of the current cycle window; those with a scene-size input
+	uint32_t    win_in_w = 0, win_in_h = 0;
 	uint32_t jitter_index   = 0;
 	float    jitter_px[2] {}; // the viewport offset of the frame being drawn
 	float    jitter_sign    = 1.0f;
@@ -589,11 +591,29 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 		                       : static_cast<int>(((flips - s.cycle_from) / s.cycle_every) % s.cycle_list.size());
 		config = s.cycle_list[static_cast<size_t>(index)];
 		if (index != s.cycle_index) {
-			std::printf("MetalFX cycle: flip %llu t_us %lld config %c\n", static_cast<unsigned long long>(flips),
-			            static_cast<long long>(NowNs() / 1000), config);
+			// "prev": the window that just ended (pass draws, those upscaling from a scene size, the last
+			// input size), so an analysis can tell level windows from loading screens.
+			std::printf("MetalFX cycle: flip %llu t_us %lld config %c prev draws %llu scene %llu in %ux%u\n",
+			            static_cast<unsigned long long>(flips), static_cast<long long>(NowNs() / 1000), config,
+			            static_cast<unsigned long long>(s.win_draws), static_cast<unsigned long long>(s.win_scene),
+			            s.win_in_w, s.win_in_h);
+			s.win_draws = 0;
+			s.win_scene = 0;
 			std::fflush(stdout);
 			s.cycle_index = index;
 			changed       = true;
+		}
+	}
+	if (s.cycle_every != 0) {
+		s.win_draws++;
+		if (v1007 && !pixel.buffer_sources.empty() && pixel.buffer_sources[0].address != 0 &&
+		    pixel.buffer_sources[0].size >= 40u) {
+			const auto* sizes = Guest::Ptr<const uint32_t>(pixel.buffer_sources[0].address);
+			s.win_in_w        = sizes[2];
+			s.win_in_h        = sizes[3];
+			if (sizes[2] != 0 && sizes[2] < sizes[0] && sizes[3] < sizes[1] && sizes[2] <= s.max_in_w) {
+				s.win_scene++;
+			}
 		}
 	}
 	const bool jittered = config >= 'a' && config <= 'd';
