@@ -13,6 +13,8 @@
 #define KYTY_GPU_BUILDING_DLL
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "hybrid/kytyGpuApi.h"
+#include "hybrid/mainLoopGate.h"
+#include "hybrid/pendingMemory.h"
 
 #include "common/abi.h"
 #include "common/latTrace.h"
@@ -61,6 +63,7 @@
 #include <dlfcn.h>
 #if defined(__APPLE__)
 #include <mach/mach.h>
+#include <pthread.h>
 #include <unistd.h>
 #endif
 #endif
@@ -736,27 +739,26 @@ Config::ShaderOptimizationType ShaderOptimizationFromEnvironment() {
 
 // Memory the host registered before the renderer exists (a 1.6 host registers everything mapped
 // between init and start_graphics): applied once Kyty's memory subsystem is up.
-struct PendingMemory {
-	uint64_t    base  = 0;
-	uint64_t    size  = 0;
-	uint32_t    flags = 0;
-	const void* alias = nullptr;
-	bool        add   = true;
-};
-std::mutex                 g_pending_memory_mutex;
-std::vector<PendingMemory> g_pending_memory;
-std::atomic<bool>          g_memory_ready {false};
+// (hybrid/pendingMemory.h)
+Hybrid::PendingMemory g_pending_memory;
+std::atomic<bool>     g_memory_ready {false};
 
 // winresize: the renderer in three parts so a host with a main queue can run the window loop one
 // step per main-queue block (a single never-returning block starves AppKit's own main-queue work:
 // fullscreen/zoom completion, which is what hung a maximised window).
-std::unique_ptr<Common::Subsystems> g_subsystems;
-bool                                g_stepped_loop = false;
+// The subsystems are deleted by RendererEnd only, never by a static destructor: when the process
+// exits without a clean end of the window loop, the renderer's threads are still running and a
+// teardown from exit()'s destructor pass would race them.
+Common::Subsystems* g_subsystems   = nullptr;
+bool                g_stepped_loop = false;
+// The window loop runs on the host's main queue (no g_renderer_thread to join): shutdown waits here.
+bool                 g_main_queue_loop = false;
+Hybrid::MainLoopGate g_loop_gate;
 
 void RendererBegin() {
 	Common::InitializeThreads();
 	{
-		g_subsystems = std::make_unique<Common::Subsystems>(true);
+		g_subsystems = new Common::Subsystems(true);
 		auto& subsystems = *g_subsystems;
 		Config::ConfigOptions options {};
 		options.screen_width  = EnvironmentSize("KYTY_GPU_WIDTH", options.screen_width);
@@ -789,16 +791,17 @@ void RendererBegin() {
 		subsystems.Initialize<Libs::Controller::Lifecycle>();
 		subsystems.Initialize<Libs::Graphics::Lifecycle>();
 		if (g_hosted_memory) {
-			std::lock_guard lock(g_pending_memory_mutex);
-			for (const auto& memory: g_pending_memory) {
-				if (memory.add) {
-					Libs::LibKernel::Memory::HostedRegister(memory.base, memory.size, memory.flags, memory.alias);
-				} else {
-					Libs::LibKernel::Memory::HostedUnregister(memory.base, memory.size);
+			using Kind = Hybrid::PendingMemory::Kind;
+			const auto count = g_pending_memory.Drain([](const Hybrid::PendingMemory::Note& note) {
+				switch (note.kind) {
+					case Kind::Register:
+						Libs::LibKernel::Memory::HostedRegister(note.base, note.size, note.flags, note.alias);
+						break;
+					case Kind::Unregister: Libs::LibKernel::Memory::HostedUnregister(note.base, note.size); break;
+					case Kind::Protect: Libs::LibKernel::Memory::HostedProtect(note.base, note.size, note.flags); break;
 				}
-			}
-			Log(0, "renderer: %zu guest memory notifications applied", g_pending_memory.size());
-			g_pending_memory.clear();
+			});
+			Log(0, "renderer: %zu guest memory notifications applied", count);
 			g_memory_ready.store(true, std::memory_order_release);
 		}
 		{
@@ -824,29 +827,76 @@ void RendererEnd() {
 		}
 		Log(0, "renderer: window loop ended, shutting the subsystems down");
 	}
-	g_subsystems.reset();
+	delete g_subsystems;
+	g_subsystems = nullptr;
 	Log(0, "renderer: stopped");
 }
 
 void RendererStepOnMain(void*);
 
-void ScheduleRendererStep() {
-	if (g_host.run_on_main_thread(g_host.user, RendererStepOnMain, nullptr, 0) != 0) {
-		Log(2, "renderer: the host could not queue the next window-loop step; running the rest inline");
-		while (Libs::Graphics::WindowRunStep(1000)) {
-		}
-		Libs::Graphics::WindowRunEnd();
-		RendererEnd();
-	}
-}
-
-void RendererStepOnMain(void*) {
-	if (Libs::Graphics::WindowRunStep(8)) {
-		ScheduleRendererStep();
+// Main thread: ends the stepped window loop and the renderer, once (the loop's last step, or a
+// shutdown on the main thread; never after a shutdown gave the loop up).
+void FinishSteppedLoop() {
+	if (!g_loop_gate.TryBeginEnd()) {
 		return;
 	}
 	Libs::Graphics::WindowRunEnd();
 	RendererEnd();
+	g_loop_gate.FinishEnd();
+}
+
+void ScheduleRendererStep() {
+	if (g_host.run_on_main_thread(g_host.user, RendererStepOnMain, nullptr, 0) != 0) {
+		Log(2, "renderer: the host could not queue the next window-loop step; running the rest inline");
+		while (g_loop_gate.Running() && Libs::Graphics::WindowRunStep(1000)) {
+		}
+		FinishSteppedLoop();
+	}
+}
+
+void RendererStepOnMain(void*) {
+	if (!g_loop_gate.Running()) {
+		return; // ended by a shutdown on this thread, or given up by one that could not wait
+	}
+	if (Libs::Graphics::WindowRunStep(8)) {
+		ScheduleRendererStep();
+		return;
+	}
+	FinishSteppedLoop();
+}
+
+bool OnMainThread() {
+#if defined(__APPLE__)
+	return pthread_main_np() != 0;
+#else
+	return false;
+#endif
+}
+
+// shutdown() with the window loop on the host's main queue: what joining g_renderer_thread is in
+// thread mode. The quit event is already queued.
+void EndMainQueueLoop() {
+	if (OnMainThread()) {
+		// Nobody else can run the loop's last steps. (When this is the loop's own step, further up
+		// this stack, the gate is no longer Running and nothing happens here.)
+		if (g_stepped_loop) {
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+			while (g_loop_gate.Running() && Libs::Graphics::WindowRunStep(0) &&
+			       std::chrono::steady_clock::now() < deadline) {
+			}
+			FinishSteppedLoop();
+		}
+		return;
+	}
+	const long wait_ms = [] {
+		const char* v = std::getenv("KYTY_SHUTDOWN_WAIT_MS");
+		const long  n = v != nullptr && v[0] != '\0' ? std::atol(v) : 5000;
+		return n >= 0 && n <= 600000 ? n : 5000L;
+	}();
+	if (g_loop_gate.WaitEnded(std::chrono::milliseconds(wait_ms)) == Hybrid::MainLoopGate::State::Abandoned) {
+		Log(1, "shutdown: the main thread did not end the window loop within %ld ms (KYTY_SHUTDOWN_WAIT_MS); "
+		       "the renderer is left as it is", wait_ms);
+	}
 }
 
 // Thread mode (no host main queue): the whole loop on this thread, as before.
@@ -868,7 +918,7 @@ void StartSelfMemoryLimit() {
 		return;
 	}
 	const char* text  = std::getenv("NPS5_SELF_MEM_LIMIT_MB");
-	const long  limit = text != nullptr && text[0] != '\0' ? std::strtol(text, nullptr, 10) : 18944;
+	const long  limit = Hybrid::SelfMemLimitMb(text);
 	std::fprintf(stderr, "[selfguard] kyty: self memory limit %ld MiB (NPS5_SELF_MEM_LIMIT_MB, 0 = off)\n", limit);
 	if (limit <= 0) {
 		return;
@@ -948,15 +998,26 @@ int ApiStartGraphics() {
 		if (stepped) {
 			g_stepped_loop = true;
 		}
+		g_main_queue_loop = true;
 		if (g_host.run_on_main_thread(g_host.user, [](void*) {
+			    // Running from here on: start_graphics returns (and a shutdown on another thread can
+			    // come) as soon as RendererBegin reports the renderer ready, before the first step.
+			    g_loop_gate.Start();
 			    if (!g_stepped_loop) {
-				    RendererThread();
+				    // One block for the whole loop (KYTY_WINDOW_STEPPED=0).
+				    RendererBegin();
+				    Libs::Graphics::WindowRun();
+				    if (g_loop_gate.TryBeginEnd()) {
+					    RendererEnd();
+					    g_loop_gate.FinishEnd();
+				    }
 				    return;
 			    }
 			    RendererBegin();
 			    Libs::Graphics::WindowRunBegin();
 			    ScheduleRendererStep();
 		    }, nullptr, 0) != 0) {
+			g_main_queue_loop = false;
 			Log(2, "start_graphics: the host could not run Kyty's window loop on its main thread");
 			return KYTY_GPU_E_HOST_CALLBACK;
 		}
@@ -1028,6 +1089,8 @@ void ApiShutdown() {
 	StopProxy();
 	if (g_renderer_thread.joinable()) {
 		g_renderer_thread.join();
+	} else if (g_main_queue_loop) {
+		EndMainQueueLoop();
 	}
 	g_state.store(State::Stopped);
 }
@@ -1038,12 +1101,9 @@ int ApiRegisterMemory(uint64_t base, uint64_t size, uint32_t flags, const void* 
 		    static_cast<unsigned long long>(base), static_cast<unsigned long long>(size), flags, alias);
 		return KYTY_GPU_E_NOT_IMPLEMENTED;
 	}
-	if (!g_memory_ready.load(std::memory_order_acquire)) {
-		std::lock_guard lock(g_pending_memory_mutex);
-		if (!g_memory_ready.load(std::memory_order_acquire)) {
-			g_pending_memory.push_back({base, size, flags, alias, true});
-			return KYTY_GPU_OK;
-		}
+	if (!g_memory_ready.load(std::memory_order_acquire) &&
+	    g_pending_memory.Queue({Hybrid::PendingMemory::Kind::Register, base, size, flags, alias})) {
+		return KYTY_GPU_OK;
 	}
 	return Libs::LibKernel::Memory::HostedRegister(base, size, flags, alias) ? KYTY_GPU_OK : KYTY_GPU_E_ARGUMENT;
 }
@@ -1052,12 +1112,9 @@ int ApiUnregisterMemory(uint64_t base, uint64_t size) {
 	if (!g_hosted_memory) {
 		return KYTY_GPU_E_NOT_IMPLEMENTED;
 	}
-	if (!g_memory_ready.load(std::memory_order_acquire)) {
-		std::lock_guard lock(g_pending_memory_mutex);
-		if (!g_memory_ready.load(std::memory_order_acquire)) {
-			g_pending_memory.push_back({base, size, 0, nullptr, false});
-			return KYTY_GPU_OK;
-		}
+	if (!g_memory_ready.load(std::memory_order_acquire) &&
+	    g_pending_memory.Queue({Hybrid::PendingMemory::Kind::Unregister, base, size, 0, nullptr})) {
+		return KYTY_GPU_OK;
 	}
 	(void)Libs::LibKernel::Memory::HostedUnregister(base, size);
 	return KYTY_GPU_OK;
@@ -1075,8 +1132,9 @@ int ApiProtectMemory(uint64_t base, uint64_t size, uint32_t flags) {
 	if (!g_hosted_memory) {
 		return KYTY_GPU_E_NOT_IMPLEMENTED;
 	}
-	if (!g_memory_ready.load(std::memory_order_acquire)) {
-		return KYTY_GPU_OK; // nothing is watched yet; the flags only matter to the tracker's resync
+	if (!g_memory_ready.load(std::memory_order_acquire) &&
+	    g_pending_memory.Queue({Hybrid::PendingMemory::Kind::Protect, base, size, flags, nullptr})) {
+		return KYTY_GPU_OK;
 	}
 	return Libs::LibKernel::Memory::HostedProtect(base, size, flags) ? KYTY_GPU_OK : KYTY_GPU_E_ARGUMENT;
 }
@@ -1228,14 +1286,7 @@ const KytyGpuApi g_api = {
 // For Gen5Driver::Initialize (libs/agc.cpp), which runs inside the Graphics lifecycle step, before the
 // pending notifications are applied: the last notification that touches the range decides.
 extern "C" __attribute__((used)) bool KytyGpuHostedPendingCovers(uint64_t base, uint64_t size) {
-	std::lock_guard lock(g_pending_memory_mutex);
-	bool            covered = false;
-	for (const auto& memory: g_pending_memory) {
-		if (memory.base < base + size && base < memory.base + memory.size) {
-			covered = memory.add && memory.base <= base && base + size <= memory.base + memory.size;
-		}
-	}
-	return covered;
+	return g_pending_memory.Covers(base, size);
 }
 
 // Game code reached an export no host has bound yet: AstroBot.exe loads the shims and calls
