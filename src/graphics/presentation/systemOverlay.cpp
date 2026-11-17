@@ -1964,19 +1964,12 @@ struct SystemOverlay::Impl {
 				const double fraction = static_cast<double>(view.done) / static_cast<double>(view.total);
 				std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(std::lround(fraction * 100.0)));
 				draw->AddText(font, small_size, {left + bar_w - text_width(small_size, text), y}, col(255, 255, 255), text);
-				FormatEta(text, sizeof(text), view.eta_seconds);
-				draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, y + small_size + gap * 0.5f},
-				              col(255, 255, 255), text);
-				float line_y = y + (small_size + gap * 0.5f) * 2.0f;
+				// card3: count-based only (X / T and the bar); no time-based ETA.
+				float line_y = y + small_size + gap * 0.5f;
 				if (view.live > 0) {
 					std::snprintf(text, sizeof(text), "+%d new", view.live);
 					draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, line_y}, col(255, 199, 51), text);
 					line_y += small_size + gap * 0.5f;
-				}
-				if (lib_total != 0 && lib_done < lib_total) {
-					std::snprintf(text, sizeof(text), "libraries %llu / %llu", static_cast<unsigned long long>(lib_done),
-					              static_cast<unsigned long long>(lib_total));
-					draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, line_y}, col(176, 180, 192), text);
 				}
 			}
 			return;

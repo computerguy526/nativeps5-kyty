@@ -1,6 +1,8 @@
 #include "graphics/compileProgress.h"
 
 #include <cstdio>
+#include <thread>
+#include <vector>
 
 using namespace Libs::Graphics::CompileProgress;
 
@@ -59,6 +61,49 @@ int main() {
 	ClearPipelineReplay();
 	CHECK(FormatStatus(Read()).empty());
 
+	{
+		// card3 unit: every compile path feeds one total/done pair; total never shrinks, done never above total,
+		// monotonic reads while several threads add events; a finished session restarts at 0.
+		namespace CP = Libs::Graphics::CompileProgress;
+		auto& c = CP::Get();
+		c.shader_total.store(819); c.shader_done.store(0);
+		CP::UnitAddTotal(819);               // library replay starts
+		CP::UnitAddTotal(1396);              // pipeline list known (Start)
+		c.pipeline_total.store(1396);
+		auto snap = CP::Read();
+		CHECK(snap.list_total == 2215 && snap.list_done == 0);
+		std::atomic<bool> stop {false};
+		uint64_t last_done = 0, last_total = 0; bool mono = true;
+		std::thread reader([&] {
+			while (!stop.load()) {
+				const auto s2 = CP::Read();
+				if (s2.list_done < last_done || s2.list_total < last_total || s2.list_done > s2.list_total) mono = false;
+				last_done = s2.list_done; last_total = s2.list_total;
+			}
+		});
+		std::vector<std::thread> workers;
+		for (int t = 0; t < 4; t++) workers.emplace_back([&] { for (int i = 0; i < 819 / 4 + 1 && i < 205; i++) { c.shader_done.fetch_add(1); CP::UnitAddDone(1); } });
+		for (int t = 0; t < 3; t++) workers.emplace_back([&] { for (int i = 0; i < 400; i++) { c.pipeline_done.fetch_add(1); CP::UnitAddDone(1); } });
+		for (int i = 0; i < 100; i++) CP::PrewarmRequested(); // discovered extra work grows the total
+		for (int t = 0; t < 2; t++) workers.emplace_back([&] { for (int i = 0; i < 50; i++) CP::PrewarmFinished(); });
+		for (auto& w: workers) w.join();
+		stop = true; reader.join();
+		CHECK(mono);
+		snap = CP::Read();
+		CHECK(snap.list_total == 2315);
+		CHECK(snap.list_done == 820 + 1200 + 100); // 4*205 shader + 3*400 pipelines + 100 prewarm
+		CHECK(snap.replay_total == 819 + 1396 + 100 && snap.replay_done == 820 + 1200 + 100);
+		// Stopped replays: the unit completes through the Clear functions.
+		CP::ClearPipelineReplay();
+		CP::ClearShaderReplay();
+		snap = CP::Read();
+		CHECK(snap.list_total == 2315 && snap.list_done == 2315); // 196 + 0 never-ran entries added as done
+		CP::UnitAddTotal(10); // new session: restarts from 0
+		snap = CP::Read();
+		CHECK(snap.list_total == 10 && snap.list_done == 0);
+		CP::UnitAddDone(10);
+		c.prewarm_total.store(0); c.prewarm_done.store(0);
+	}
 	if (g_failed == 0) std::printf("compile_progress_tests: all passed\n");
 	return g_failed == 0 ? 0 : 1;
 }

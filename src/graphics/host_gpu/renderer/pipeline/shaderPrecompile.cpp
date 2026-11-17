@@ -786,6 +786,7 @@ ShaderPrecompiler::ShaderPrecompiler(const ShaderJournal& journal, Settings sett
 	m_workers_running  = threads;
 	CompileProgress::Get().shader_done.store(0, std::memory_order_relaxed);
 	CompileProgress::Get().shader_total.store(m_total, std::memory_order_relaxed);
+	CompileProgress::UnitAddTotal(m_total);
 	if (m_settings.log) {
 		m_settings.log("Shader precompile: replaying " + std::to_string(m_total) + " permutations of " +
 		               std::to_string(m_journal.Sources().size()) + " sources on " +
@@ -834,6 +835,7 @@ void ShaderPrecompiler::NoteDone(Outcome outcome) {
 	}
 	const auto done = m_done.fetch_add(1, std::memory_order_relaxed) + 1;
 	CompileProgress::Get().shader_done.fetch_add(1, std::memory_order_relaxed);
+	CompileProgress::UnitAddDone(1);
 	if (!m_settings.log) return;
 	const auto now = NowNs();
 	std::scoped_lock lock(m_mutex);

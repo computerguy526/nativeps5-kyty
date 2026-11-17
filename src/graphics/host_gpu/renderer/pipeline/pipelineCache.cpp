@@ -4934,13 +4934,22 @@ struct PipelineCache::ComputePrewarm {
 		if (stopped.exchange(true)) return;
 		queue.DropPending();
 		queue.Stop();
+		SettlePrewarmProgress();
 		LogTotals();
+	}
+
+	// card3: requests dropped without running still complete the card's unit.
+	static void SettlePrewarmProgress() {
+		auto&      c = CompileProgress::Get();
+		const auto t = c.prewarm_total.load(std::memory_order_relaxed), d = c.prewarm_done.load(std::memory_order_relaxed);
+		if (t > d) CompileProgress::PrewarmFinished(t - d);
 	}
 
 	// Builds everything requested so far, then stops (KYTY_PIPELINE_LIST_PREPARE).
 	void Drain() {
 		if (stopped.exchange(true)) return;
 		queue.Stop();
+		SettlePrewarmProgress();
 		LogTotals();
 	}
 
@@ -4958,12 +4967,18 @@ struct PipelineCache::ComputePrewarm {
 		if (stopped.load(std::memory_order_acquire)) return;
 		auto info             = std::make_shared<ShaderComputeInputInfo>(input);
 		info->stage.resources = &NoPrewarmResources();
+		CompileProgress::PrewarmRequested(); // before Submit: the worker may finish before this thread continues
 		if (queue.Submit([this, id, info, module] { Build(id, *info, module); })) {
 			requested.fetch_add(1, std::memory_order_relaxed);
+		} else {
+			CompileProgress::PrewarmFinished();
 		}
 	}
 
 	void Build(uint64_t id, const ShaderComputeInputInfo& info, vk::ShaderModule module) {
+		struct ProgressDone {
+			~ProgressDone() { CompileProgress::PrewarmFinished(); }
+		} progress_done; // card3: every path (dropped, failed, built) completes one unit
 		static thread_local bool named = false;
 		if (!named) {
 			named = true;
@@ -5079,6 +5094,7 @@ struct PipelineCache::JournalReplay {
 		begin_ns = CompileClockNs();
 		running  = std::max<uint32_t>(1, thread_count);
 		CompileProgress::Get().list_total.store(items.size(), std::memory_order_relaxed); // exact value at BuildOrder
+		CompileProgress::UnitAddTotal(items.size()); // card3: the unit counts the list from the start; never shrinks
 		for (uint32_t i = 0; i < running; i++) threads.emplace_back([this] { Worker(); });
 	}
 
@@ -5103,6 +5119,7 @@ struct PipelineCache::JournalReplay {
 		total.store(order.size(), std::memory_order_release);
 		CompileProgress::Get().pipeline_total.store(order.size(), std::memory_order_relaxed);
 		CompileProgress::Get().list_total.store(order.size(), std::memory_order_relaxed);
+		CompileProgress::UnitAddDone(items.size() - order.size()); // undecodable records: resolved at once
 	}
 
 	// Once, before the shader precompile replay goes (its Wait is what the workers block in).
@@ -5171,6 +5188,7 @@ struct PipelineCache::JournalReplay {
 			Replay(items[order[index]]);
 			done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
+			CompileProgress::UnitAddDone(1);
 			MaybeReport();
 		}
 		if (running.fetch_sub(1, std::memory_order_acq_rel) == 1) {

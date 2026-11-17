@@ -32,11 +32,39 @@ struct Counters {
 	std::atomic<int32_t> waiting {0};
 	// load card: cumulative live compiles started / finished (the load card's N / M).
 	std::atomic<uint64_t> live_started {0}, live_finished {0};
+	// card3: compute prewarm (requested / finished builds). Counted as replay work for Pending().
+	std::atomic<uint64_t> prewarm_total {0}, prewarm_done {0};
+	// card3: ONE progress unit for the opening card, fed by every compile path (library replay, pipeline list
+	// replay, compute prewarm): total only grows within a session, done counts completions (cache/archive hits at
+	// once, skipped/failed/dropped too). A new session starts (both reset) when work is added after all finished.
+	std::atomic<uint64_t> unit_total {0}, unit_done {0};
 };
 
 inline Counters& Get() {
 	static Counters counters;
 	return counters;
+}
+
+inline void UnitAddTotal(uint64_t n) {
+	if (n == 0) return;
+	auto& c  = Get();
+	auto  t  = c.unit_total.load(std::memory_order_relaxed);
+	if (const auto d = c.unit_done.load(std::memory_order_relaxed); d >= t && (t != 0 || d != 0)) {
+		// Everything finished: a new session. (Benign race: a lost reset only keeps the old, finished counts.)
+		if (c.unit_total.compare_exchange_strong(t, 0, std::memory_order_relaxed)) c.unit_done.store(0, std::memory_order_relaxed);
+	}
+	c.unit_total.fetch_add(n, std::memory_order_relaxed);
+}
+inline void UnitAddDone(uint64_t n) {
+	if (n != 0) Get().unit_done.fetch_add(n, std::memory_order_relaxed);
+}
+inline void PrewarmRequested() {
+	Get().prewarm_total.fetch_add(1, std::memory_order_relaxed);
+	UnitAddTotal(1);
+}
+inline void PrewarmFinished(uint64_t n = 1) {
+	Get().prewarm_done.fetch_add(n, std::memory_order_relaxed);
+	UnitAddDone(n);
 }
 
 // True on the replay/prewarm worker threads: their compiles are not "live".
@@ -79,11 +107,15 @@ struct WaitScope {
 // A replay finished or stopped: it no longer counts.
 inline void ClearShaderReplay() {
 	auto& c = Get();
+	const auto t = c.shader_total.load(std::memory_order_relaxed), d = c.shader_done.load(std::memory_order_relaxed);
+	if (t > d) UnitAddDone(t - d); // entries that never ran (stopped): the unit still completes
 	c.shader_total.store(0, std::memory_order_relaxed);
 	c.shader_done.store(0, std::memory_order_relaxed);
 }
 inline void ClearPipelineReplay() {
 	auto& c = Get();
+	const auto t = c.pipeline_total.load(std::memory_order_relaxed), d = c.pipeline_done.load(std::memory_order_relaxed);
+	if (t > d) UnitAddDone(t - d);
 	c.pipeline_total.store(0, std::memory_order_relaxed);
 	c.pipeline_done.store(0, std::memory_order_relaxed);
 	c.list_total.store(0, std::memory_order_relaxed);
@@ -101,12 +133,14 @@ struct Snapshot {
 inline Snapshot Read() {
 	const auto& c = Get();
 	Snapshot    s;
-	s.replay_total = c.shader_total.load(std::memory_order_relaxed) + c.pipeline_total.load(std::memory_order_relaxed);
-	s.replay_done  = c.shader_done.load(std::memory_order_relaxed) + c.pipeline_done.load(std::memory_order_relaxed);
+	const auto pw_total = c.prewarm_total.load(std::memory_order_relaxed), pw_done = c.prewarm_done.load(std::memory_order_relaxed);
+	s.replay_total = c.shader_total.load(std::memory_order_relaxed) + c.pipeline_total.load(std::memory_order_relaxed) + pw_total;
+	s.replay_done  = c.shader_done.load(std::memory_order_relaxed) + c.pipeline_done.load(std::memory_order_relaxed) + pw_done;
 	s.live         = c.live.load(std::memory_order_relaxed);
 	s.waiting      = c.waiting.load(std::memory_order_relaxed);
-	s.list_total   = c.list_total.load(std::memory_order_relaxed);
-	s.list_done    = std::min<uint64_t>(c.pipeline_done.load(std::memory_order_relaxed), s.list_total);
+	// card3: the card's unit = every compile path (never shrinks, done never above total, never goes backwards).
+	s.list_total   = c.unit_total.load(std::memory_order_relaxed);
+	s.list_done    = std::min<uint64_t>(c.unit_done.load(std::memory_order_relaxed), s.list_total);
 	s.lib_total    = c.shader_total.load(std::memory_order_relaxed);
 	s.lib_done     = c.shader_done.load(std::memory_order_relaxed);
 	return s;

@@ -6,7 +6,7 @@
 // Two looks, both drawn by SystemOverlay (graphics/presentation/systemOverlay.cpp) from this state:
 //  - Card: full screen, from the moment the window presents until the first real game frame (the
 //    replay shows the bar; afterwards "LOADING" with a sweeping bar). Dark panel, spinner, "COMPILING SHADERS", amber rounded bar, "N / M",
-//    percent and ETA (the look of the AnyPS5 prebuild screen, ProgressScreen.cpp).
+//    percent, count-based, no ETA (the look of the AnyPS5 prebuild screen, ProgressScreen.cpp).
 //  - Badge: small corner pill with a spinner during gameplay while live compiles are in flight or a
 //    draw waits. It appears only after kBadgeDelayMs of continuous need (no flicker for short
 //    compiles), stays at least kBadgeHoldMs and fades out when idle.
