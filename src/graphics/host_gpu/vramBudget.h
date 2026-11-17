@@ -81,6 +81,26 @@ struct BufferPass {
 	return {true, BufferPassLimit * std::min<uint64_t>(deferred + 1, BufferPassLimitMaxScale), 0};
 }
 
+// nps5 cpcommit2, KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL=<passes> (BufferCache::RunGarbageCollector):
+// the same putting-off at or above the critical mark. In a level the device memory stays above
+// that mark for good (the planning budget is smaller than what the level needs), so every
+// completed submission ran a pass that first waited for the GPU: the command processor and the
+// GPU then took turns instead of overlapping (Sky Garden: 6-7 waits, 31 of 88 ms per frame).
+// A waiting pass is put off at most `max_deferred` times in a row (the retirement must not stop
+// above the critical mark), then runs with the wait; a late pass may retire as many buffers as
+// the passes it replaces (capped), so the retirement rate holds.
+inline constexpr uint64_t BufferSettleMaxDeferredCriticalLimit = 64;
+
+[[nodiscard]] constexpr BufferPass PlanBufferPassLazyCritical(bool settle_waits, uint64_t deferred,
+                                                              uint64_t max_deferred) noexcept {
+	max_deferred = std::min(max_deferred, BufferSettleMaxDeferredCriticalLimit);
+	if (settle_waits && deferred < max_deferred) {
+		return {false, 0, deferred + 1};
+	}
+	return {true, BufferPassLimitCritical * std::min<uint64_t>(deferred + 1, BufferPassLimitMaxScale),
+	        0};
+}
+
 struct ImagePlan {
 	bool     retire     = false;
 	uint64_t age_frames = 0; // free clean images unused for more than this many frames

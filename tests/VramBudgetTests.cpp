@@ -202,10 +202,87 @@ void TestChurn() {
 
 } // namespace
 
+// KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL: PlanBufferPassLazyCritical (nps5 cpcommit2).
+void TestBufferPassLazyCritical() {
+	// Nothing to wait for: runs at once; the limit makes up for the passes put off (capped).
+	for (uint64_t max = 0; max <= 2 * BufferSettleMaxDeferredCriticalLimit; max++) {
+		for (uint64_t deferred = 0; deferred <= 80; deferred++) {
+			const auto pass = PlanBufferPassLazyCritical(false, deferred, max);
+			Expect(pass.run && pass.deferred == 0, "critical lazy, no wait: runs");
+			Expect(pass.limit == BufferPassLimitCritical *
+			                         std::min<uint64_t>(deferred + 1, BufferPassLimitMaxScale),
+			       "critical lazy, no wait: late pass limit");
+		}
+	}
+	// max 0: every pass runs with the critical limit, as PlanBufferPass does at the critical mark.
+	for (int waits = 0; waits < 2; waits++) {
+		const auto pass = PlanBufferPassLazyCritical(waits != 0, 0, 0);
+		const auto old  = PlanBufferPass(false, true, waits != 0, 0);
+		Expect(pass.run == old.run && pass.limit == old.limit && pass.deferred == old.deferred,
+		       "critical lazy with max 0 equals the old critical pass");
+	}
+	// Would wait: put off exactly max times in a row (clamped), then forced.
+	for (uint64_t max = 1; max <= 2 * BufferSettleMaxDeferredCriticalLimit; max++) {
+		const auto clamped  = std::min(max, BufferSettleMaxDeferredCriticalLimit);
+		uint64_t   deferred = 0, put_off = 0;
+		for (;;) {
+			const auto pass = PlanBufferPassLazyCritical(true, deferred, max);
+			if (pass.run) {
+				Expect(pass.deferred == 0, "critical lazy: a forced pass resets the count");
+				Expect(pass.limit == BufferPassLimitCritical *
+				                         std::min<uint64_t>(clamped + 1, BufferPassLimitMaxScale),
+				       "critical lazy: forced pass limit");
+				break;
+			}
+			Expect(pass.limit == 0 && pass.deferred == deferred + 1, "critical lazy: put off, counted");
+			deferred = pass.deferred;
+			if (++put_off > 1000) {
+				Expect(false, "critical lazy: a waiting pass is never put off forever");
+				break;
+			}
+		}
+		Expect(put_off == clamped, "critical lazy: exactly max passes put off");
+	}
+	// Retirement capacity: over any run of passes, with max <= BufferPassLimitMaxScale - 1 the
+	// passes that run may retire as many buffers as every pass running would have (64 each).
+	uint64_t seed = 0x2545f4914f6cdd1dull;
+	const auto next = [&seed] {
+		seed ^= seed << 13;
+		seed ^= seed >> 7;
+		seed ^= seed << 17;
+		return seed;
+	};
+	for (int walk = 0; walk < 2000; walk++) {
+		const uint64_t max  = 1 + next() % (BufferPassLimitMaxScale - 1);
+		const uint64_t bias = next() % 101;
+		uint64_t state = 0, capacity = 0, streak = 0, runs = 0;
+		const int steps = 400;
+		for (int step = 0; step < steps; step++) {
+			const bool waits = next() % 100 < bias;
+			const auto pass  = PlanBufferPassLazyCritical(waits, state, max);
+			if (pass.run) {
+				capacity += pass.limit;
+				runs++;
+				Expect(!waits || streak == max, "critical lazy: a waiting pass runs only when forced");
+				streak = 0;
+			} else {
+				Expect(waits, "critical lazy: only a waiting pass is put off");
+				streak++;
+				Expect(streak <= max, "critical lazy: at most max passes in a row put off");
+			}
+			state = pass.deferred;
+		}
+		Expect(capacity + streak * BufferPassLimitCritical == uint64_t {steps} * BufferPassLimitCritical,
+		       "critical lazy: retirement capacity equals every pass running");
+		Expect(runs * (max + 1) + max >= uint64_t {steps}, "critical lazy: at least one run per max+1 passes");
+	}
+}
+
 int main() {
 	TestMarks();
 	TestPlans();
 	TestBufferPass();
+	TestBufferPassLazyCritical();
 	TestChurn();
 	if (g_failures != 0) {
 		std::printf("%d failure(s)\n", g_failures);

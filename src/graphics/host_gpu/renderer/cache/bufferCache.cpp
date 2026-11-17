@@ -296,6 +296,55 @@ Live::Switch g_readback_flush_side("KYTY_READBACK_FLUSH_SIDE", Live::ParseDefaul
 // KYTY_GC_SIDE_SETTLE_LAZY (live, default 0; nps5 slowlvl): see BufferCache::RunGarbageCollector.
 Live::Switch g_gc_side_settle_lazy("KYTY_GC_SIDE_SETTLE_LAZY", Live::ParseDefaultOff);
 std::atomic<uint64_t> g_gc_settle_deferred_passes {0};
+// nps5 cpcommit2, KYTY_GC_SETTLE_SKIP_EMPTY (live, default on; =0 off): a collection pass with no
+// buffer old enough to look at returns before it settles the pending side readbacks. Settling is
+// only the preparation of the pass's ownership checks and downloads (RetireUnusedBuffers does the
+// same: candidates first); without a candidate it was a wait for the GPU and nothing else.
+Live::Switch g_gc_settle_skip_empty("KYTY_GC_SETTLE_SKIP_EMPTY", Live::ParseDefaultOn);
+// KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL=<passes> (live, default 0 = off; vramBudget.h
+// PlanBufferPassLazyCritical): at or above the critical mark a pass that would wait for the GPU
+// is put off at most that many times in a row.
+int64_t ParseGcLazyCritical(const char* value) {
+	if (value == nullptr || value[0] == '\0') {
+		return 0;
+	}
+	const auto passes = std::strtoll(value, nullptr, 10);
+	return std::clamp<int64_t>(passes, 0,
+	                           static_cast<int64_t>(VramBudget::BufferSettleMaxDeferredCriticalLimit));
+}
+Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL", ParseGcLazyCritical);
+// "BufferGc 10s" line (with KYTY_CP_GAP_STATS): what the collection passes did. GPU thread only.
+struct BufferGcStats {
+	uint64_t passes = 0, below = 0, empty = 0, deferred = 0, ran = 0, waited = 0, wait_ns = 0,
+	         retired = 0, downloads = 0, critical = 0;
+	std::chrono::steady_clock::time_point last {};
+};
+BufferGcStats g_buffer_gc_stats;
+void PrintBufferGcStats() {
+	auto& st = g_buffer_gc_stats;
+	if (!CpGaps::Enabled() || (st.passes & 63u) != 0) {
+		return;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (st.last.time_since_epoch().count() == 0) {
+		st.last = now;
+		return;
+	}
+	if (now - st.last < std::chrono::seconds(10)) {
+		return;
+	}
+	std::printf("BufferGc 10s: passes %llu (critical %llu) | below trigger %llu, no candidate %llu, put "
+	            "off %llu, ran %llu | settle waited %llu times, %.1f ms | retired %llu, downloads %llu\n",
+	            static_cast<unsigned long long>(st.passes), static_cast<unsigned long long>(st.critical),
+	            static_cast<unsigned long long>(st.below), static_cast<unsigned long long>(st.empty),
+	            static_cast<unsigned long long>(st.deferred), static_cast<unsigned long long>(st.ran),
+	            static_cast<unsigned long long>(st.waited), static_cast<double>(st.wait_ns) * 1e-6,
+	            static_cast<unsigned long long>(st.retired),
+	            static_cast<unsigned long long>(st.downloads));
+	std::fflush(stdout);
+	st      = {};
+	st.last = now;
+}
 std::atomic<uint64_t> g_readback_flush_side_copies {0};
 
 // KYTY_READBACK_SIDE_WRITES (live, default on; =0 drains as before): a write fault on a GPU-owned
@@ -5396,7 +5445,11 @@ void BufferCache::RunGarbageCollector() {
 		trigger  = m_budget_trigger;
 		critical = m_budget_critical;
 	}
+	auto& gc_stats = g_buffer_gc_stats;
+	gc_stats.passes++;
+	PrintBufferGcStats();
 	if (m_total_used_memory < trigger) {
+		gc_stats.below++;
 		return;
 	}
 	if (m_pressure_frames != 0) {
@@ -5418,7 +5471,24 @@ void BufferCache::RunGarbageCollector() {
 	static uint64_t gc_settle_deferred = 0;
 	const bool      lazy               = g_gc_side_settle_lazy.On();
 	bool            settle_waits       = false;
-	if (lazy && !aggressive && m_side != nullptr &&
+	const uint64_t  age                = std::min<uint64_t>(aggressive ? 80 : 160, tick);
+	gc_stats.critical += aggressive ? 1u : 0u;
+	if (g_gc_settle_skip_empty.On()) {
+		// KYTY_GC_SETTLE_SKIP_EMPTY: the loop below visits nothing.
+		bool candidate = false;
+		m_lru_cache.ForEachItemBelow(tick - age, [&](BufferId) {
+			candidate = true;
+			return true;
+		});
+		if (!candidate) {
+			gc_settle_deferred = 0; // as after a pass that ran and retired nothing
+			gc_stats.empty++;
+			return;
+		}
+	}
+	const auto lazy_critical =
+	    aggressive ? static_cast<uint64_t>(g_gc_side_settle_lazy_critical.Get()) : uint64_t {0};
+	if (((lazy && !aggressive) || lazy_critical != 0) && m_side != nullptr &&
 	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
 		// CompleteAllSideReadbacks does not wait when every pending readback is published or is
 		// an eager copy whose recording (master tick `value`) has completed.
@@ -5433,17 +5503,34 @@ void BufferCache::RunGarbageCollector() {
 			}
 		}
 	}
-	const auto pass = VramBudget::PlanBufferPass(lazy, aggressive, settle_waits, gc_settle_deferred);
+	const auto pass =
+	    lazy_critical != 0
+	        ? VramBudget::PlanBufferPassLazyCritical(settle_waits, gc_settle_deferred, lazy_critical)
+	        : VramBudget::PlanBufferPass(lazy, aggressive, settle_waits, gc_settle_deferred);
 	gc_settle_deferred = pass.deferred;
 	if (!pass.run) {
 		g_gc_settle_deferred_passes.fetch_add(1, std::memory_order_relaxed);
+		gc_stats.deferred++;
 		return;
 	}
 	// Pending side readbacks keep tracker pages GPU-owned without exact dirty bytes; settle
 	// them so the ownership checks and downloads below see a consistent state.
-	CompleteAllSideReadbacks();
+	gc_stats.ran++;
+	if (CpGaps::Enabled() && m_side != nullptr &&
+	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
+		const auto settle_start = std::chrono::steady_clock::now();
+		CompleteAllSideReadbacks();
+		const auto settle_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                           std::chrono::steady_clock::now() - settle_start)
+		                           .count();
+		if (settle_ns >= 50'000) {
+			gc_stats.waited++;
+			gc_stats.wait_ns += static_cast<uint64_t>(settle_ns);
+		}
+	} else {
+		CompleteAllSideReadbacks();
+	}
 
-	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
 	const size_t   limit      = static_cast<size_t>(pass.limit);
 
 	std::vector<BufferId> dirty_buffers;
@@ -5460,11 +5547,13 @@ void BufferCache::RunGarbageCollector() {
 		if (dirty) {
 			EXIT_IF(!DownloadBufferMemory(buffer, buffer.CpuAddress(), buffer.Size()));
 			dirty_buffers.push_back(id);
+			gc_stats.downloads++;
 		} else {
 			m_memory_tracker.UntrackMemory(buffer.CpuAddress(), buffer.Size());
 			DeleteBuffer(id);
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferEvictions);
 		}
+		gc_stats.retired++;
 		return ++retire_count == limit;
 	});
 	if (dirty_buffers.empty()) {
