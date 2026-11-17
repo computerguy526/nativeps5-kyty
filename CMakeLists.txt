@@ -1045,6 +1045,12 @@ add_executable(host_input_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostInputTes
 target_link_libraries(host_input_tests common fmt::fmt SDL3::SDL3-static)
 target_include_directories(host_input_tests PRIVATE ${inc_headers})
 
+# Motion relay helpers (hybrid/padMotion.h): conversion per controller type, rate, trace replay. SDL headers only.
+add_executable(pad_motion_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PadMotionTests.cpp")
+target_include_directories(pad_motion_tests PRIVATE "${KYTY_SOURCE_DIR}" ${inc_headers})
+target_link_libraries(pad_motion_tests SDL3::SDL3-static)
+target_compile_definitions(pad_motion_tests PRIVATE PAD_MOTION_TRACE="${KYTY_TESTS_DIR}/data/pad_motion_trace.txt")
+
 add_executable(save_data_memory_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/SaveDataMemoryTests.cpp"
 )
@@ -1456,6 +1462,7 @@ if(BUILD_TESTING)
 	add_test(NAME pad_haptics COMMAND $<TARGET_FILE:pad_haptics_tests>)
 	add_test(NAME controller_settings COMMAND $<TARGET_FILE:controller_settings_tests>)
 	add_test(NAME host_input COMMAND $<TARGET_FILE:host_input_tests>)
+	add_test(NAME pad_motion COMMAND $<TARGET_FILE:pad_motion_tests>)
 	add_test(NAME save_data_memory COMMAND $<TARGET_FILE:save_data_memory_tests>)
 	add_test(NAME png_enc COMMAND $<TARGET_FILE:png_enc_tests>)
 	add_test(NAME ces COMMAND $<TARGET_FILE:ces_tests>)
@@ -2592,6 +2599,7 @@ if(BUILD_TESTING)
 		pad_haptics_tests
 		controller_settings_tests
 		host_input_tests
+		pad_motion_tests
 		present_geometry_tests
 		save_data_memory_tests
 		png_enc_tests

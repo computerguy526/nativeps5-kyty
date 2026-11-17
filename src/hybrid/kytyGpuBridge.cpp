@@ -14,6 +14,7 @@
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "hybrid/kytyGpuApi.h"
 #include "hybrid/mainLoopGate.h"
+#include "hybrid/padMotion.h"
 #include "hybrid/pendingMemory.h"
 
 #include "common/abi.h"
@@ -54,6 +55,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <set>
 #include <thread>
 
@@ -362,23 +364,65 @@ void Relay() {
 	}
 	Log(0, "input relay: Kyty pad %d for user %d -> host port 0%s", handle, user,
 	    g_host.fetch_pad_output != nullptr ? ", rumble, light bar and trigger effects <- host" : "");
-	// ASTROHYBRID_PAD_MOTION=1: the controller's accelerometer and gyroscope reach the host's pad
-	// library too (ABI 1.5), for games that read shaking or tilting. Off by default.
-	const char* motion_env = std::getenv("ASTROHYBRID_PAD_MOTION");
-	const bool  motion     = motion_env != nullptr && motion_env[0] == '1' && g_host.publish_pad_motion != nullptr;
-	bool        motion_seen = false;
-	// A pad without a gyroscope (Kyty's emulated tilt: View/Back, then the right stick) reports its
-	// tilt as an orientation and accelerometer only, with angular velocity at rest; the host's pad
-	// library turns angular velocity into orientation, so the rate is derived here from the change
-	// of orientation between two reads whenever the pad reports none.
+	// Motion sensors (gyro + accelerometer) of the host pad reach the host's pad library (ABI 1.5), for games that
+	// read shaking or tilting. ON by default when the active pad has sensors (any SDL gamepad: DualSense, DualShock 4,
+	// Switch Pro Controller, Joy-Cons; SDL normalises the axes); ASTROHYBRID_PAD_MOTION=0 turns it off, =1 forces it
+	// (Kyty's emulated tilt, View/Back then the right stick, on a pad without sensors).
+	// ASTROHYBRID_PAD_MOTION_LOG=1: a '[pad] motion' line at 1 Hz (controller type, sensor rate, last sample).
+	// ASTROHYBRID_PAD_MOTION_REC=<file>: record the samples (trace format of hybrid/padMotion.h) for replay tests.
+	namespace PM = Hybrid::PadMotion;
+	auto pad_sensors = [](int* type, float* rate_hz) {
+		bool has = false;
+		SDL_LockJoysticks();
+		const int id = Controller::GetActiveControllerId();
+		if (auto* sdl_pad = id > 0 ? SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(id)) : nullptr) {
+			has = SDL_GamepadHasSensor(sdl_pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(sdl_pad, SDL_SENSOR_ACCEL);
+			*type = static_cast<int>(SDL_GetGamepadType(sdl_pad));
+			*rate_hz = SDL_GetGamepadSensorDataRate(sdl_pad, SDL_SENSOR_GYRO);
+		}
+		SDL_UnlockJoysticks();
+		return has;
+	};
+	int          pad_type = 0;
+	float        pad_rate = 0.0f;
+	const bool   has_sensors = pad_sensors(&pad_type, &pad_rate);
+	const char*  motion_env  = std::getenv("ASTROHYBRID_PAD_MOTION");
+	// Re-evaluated twice a second: the pad may connect (or change) after the relay started.
+	bool         motion      = PM::Wanted(motion_env, has_sensors) && g_host.publish_pad_motion != nullptr;
+	auto         motion_check = std::chrono::steady_clock::now();
+	const char*  motion_log_env = std::getenv("ASTROHYBRID_PAD_MOTION_LOG");
+	const bool   motion_log     = motion_log_env != nullptr && motion_log_env[0] == '1';
+	std::FILE*   motion_rec     = nullptr;
+	if (const char* rec = std::getenv("ASTROHYBRID_PAD_MOTION_REC"); rec != nullptr && rec[0] != '\0') {
+		motion_rec = std::fopen(rec, "w");
+	}
+	PM::RateEstimator motion_rate;
+	PM::Sample        motion_last;
+	uint64_t          motion_n = 0;
+	auto              motion_log_time = std::chrono::steady_clock::now();
+	bool              motion_seen = false;
+	// A pad without a gyroscope (Kyty's emulated tilt) reports its tilt as an orientation and accelerometer only,
+	// with angular velocity at rest; the host's pad library turns angular velocity into orientation, so the rate is
+	// derived here from the change of orientation between two reads whenever the pad reports none.
 	float prev_q[4]  = {0.0f, 0.0f, 0.0f, 1.0f};
 	auto  prev_time  = std::chrono::steady_clock::now();
 	bool  prev_valid = false;
-	Log(0, "input relay: motion sensors %s", motion ? "-> host" : "not relayed");
+	Log(0, "input relay: motion sensors %s (pad type %s, %s%s, %.0f Hz)", motion ? "-> host" : "not relayed",
+	    PM::TypeName(pad_type), has_sensors ? "has gyro+accel" : "no sensors",
+	    motion_env != nullptr ? ", ASTROHYBRID_PAD_MOTION set" : "", static_cast<double>(pad_rate));
 	uint32_t         output_seen = 0;
 	KytyGpuPadOutput output_applied {};
 	while (!g_relay_stop.load(std::memory_order_acquire)) {
 		Controller::PadData data {};
+		if (const auto t = std::chrono::steady_clock::now(); t - motion_check >= std::chrono::milliseconds(500)) {
+			motion_check = t;
+			const bool now_has = pad_sensors(&pad_type, &pad_rate);
+			const bool want    = PM::Wanted(motion_env, now_has) && g_host.publish_pad_motion != nullptr;
+			if (want != motion) {
+				motion = want;
+				Log(0, "input relay: motion sensors %s (pad type %s)", motion ? "-> host" : "not relayed", PM::TypeName(pad_type));
+			}
+		}
 		if (Controller::PadReadState(handle, &data) == 0) {
 			KytyGpuPadState state {};
 			state.buttons   = data.buttons;
@@ -396,42 +440,42 @@ void Relay() {
 				state.touch[i].id     = data.touch_data.touch[i].id;
 			}
 			if (motion) {
-				constexpr float  gravity = 9.80665f;
-				KytyGpuPadMotion sensors {};
-				sensors.acceleration[0]     = data.acceleration_x * gravity;
-				sensors.acceleration[1]     = data.acceleration_y * gravity;
-				sensors.acceleration[2]     = data.acceleration_z * gravity;
-				sensors.angular_velocity[0] = data.angular_velocity_x;
-				sensors.angular_velocity[1] = data.angular_velocity_y;
-				sensors.angular_velocity[2] = data.angular_velocity_z;
-				const float q[4] = {data.orientation_x, data.orientation_y, data.orientation_z, data.orientation_w};
-				const auto  now  = std::chrono::steady_clock::now();
-				if (prev_valid && sensors.angular_velocity[0] == 0.0f && sensors.angular_velocity[1] == 0.0f &&
-				    sensors.angular_velocity[2] == 0.0f) {
-					const float dt = std::chrono::duration<float>(now - prev_time).count();
-					// Body-frame rate from conj(prev) * q.
-					const float w = prev_q[3] * q[3] + prev_q[0] * q[0] + prev_q[1] * q[1] + prev_q[2] * q[2];
-					float       d[3] = {prev_q[3] * q[0] - prev_q[0] * q[3] - prev_q[1] * q[2] + prev_q[2] * q[1],
-					                    prev_q[3] * q[1] + prev_q[0] * q[2] - prev_q[1] * q[3] - prev_q[2] * q[0],
-					                    prev_q[3] * q[2] - prev_q[0] * q[1] + prev_q[1] * q[0] - prev_q[2] * q[3]};
-					const float sign = w < 0.0f ? -1.0f : 1.0f;
-					if (dt > 0.0005f && dt < 0.1f) {
-						for (int i = 0; i < 3; ++i) {
-							sensors.angular_velocity[i] = sign * 2.0f * d[i] / dt;
-						}
-					}
+				const auto now      = std::chrono::steady_clock::now();
+				const auto now_us   = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count());
+				float      gyro[3]  = {data.angular_velocity_x, data.angular_velocity_y, data.angular_velocity_z};
+				const float q[4]    = {data.orientation_x, data.orientation_y, data.orientation_z, data.orientation_w};
+				if (prev_valid && gyro[0] == 0.0f && gyro[1] == 0.0f && gyro[2] == 0.0f) {
+					(void)PM::RateFromOrientation(prev_q, q, std::chrono::duration<float>(now - prev_time).count(), gyro);
 				}
 				std::memcpy(prev_q, q, sizeof(prev_q));
 				prev_time  = now;
 				prev_valid = true;
-				if (!motion_seen && (sensors.angular_velocity[0] != 0.0f || sensors.angular_velocity[1] != 0.0f ||
-				                     sensors.angular_velocity[2] != 0.0f)) {
-					motion_seen = true;
-					Log(0, "input relay: first motion sample, accel %.2f %.2f %.2f m/s^2, gyro %.3f %.3f %.3f rad/s",
-					    sensors.acceleration[0], sensors.acceleration[1], sensors.acceleration[2],
-					    sensors.angular_velocity[0], sensors.angular_velocity[1], sensors.angular_velocity[2]);
+				const float accel_g[3] = {data.acceleration_x, data.acceleration_y, data.acceleration_z};
+				PM::Sample  sample;
+				if (PM::FromPadData(accel_g, gyro, now_us, &sample)) {
+					KytyGpuPadMotion sensors {};
+					std::memcpy(sensors.acceleration, sample.accel, sizeof(sensors.acceleration));
+					std::memcpy(sensors.angular_velocity, sample.gyro, sizeof(sensors.angular_velocity));
+					g_host.publish_pad_motion(g_host.user, 0, &sensors);
+					motion_last = sample;
+					++motion_n;
+					motion_rate.Add(now_us);
+					if (motion_rec != nullptr) {
+						const std::string text = PM::FormatTraceLine(sample);
+						std::fwrite(text.data(), 1, text.size(), motion_rec);
+					}
+					if (!motion_seen && (sample.gyro[0] != 0.0f || sample.gyro[1] != 0.0f || sample.gyro[2] != 0.0f)) {
+						motion_seen = true;
+						Log(0, "input relay: first motion sample, accel %.2f %.2f %.2f m/s^2, gyro %.3f %.3f %.3f rad/s",
+						    sample.accel[0], sample.accel[1], sample.accel[2], sample.gyro[0], sample.gyro[1], sample.gyro[2]);
+					}
 				}
-				g_host.publish_pad_motion(g_host.user, 0, &sensors);
+				if (motion_log && now - motion_log_time >= std::chrono::seconds(1)) {
+					motion_log_time = now;
+					pad_sensors(&pad_type, &pad_rate);
+					Log(0, "%s sensor_rate=%.0fHz", PM::FormatLogLine(PM::TypeName(pad_type), motion_rate.Hz(), motion_last, motion_n).c_str(),
+					    static_cast<double>(pad_rate));
+				}
 			}
 			static uint32_t last_buttons = 0;
 			if (state.buttons != last_buttons) {
@@ -442,6 +486,9 @@ void Relay() {
 		}
 		ApplyPadOutput(handle, output_seen, output_applied);
 		std::this_thread::sleep_for(std::chrono::microseconds(g_relay_period_us));
+	}
+	if (motion_rec != nullptr) {
+		std::fclose(motion_rec);
 	}
 }
 
@@ -1338,6 +1385,9 @@ static int ResolvePadAudioController(bool prefer_ps5) {
 	if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
+		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_JOY_CONS, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
 		(void)SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 	}
