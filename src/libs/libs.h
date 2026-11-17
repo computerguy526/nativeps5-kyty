@@ -43,10 +43,64 @@
 		const char* dbg_name    = "" #f;                                                           \
 		s->Add(sr, func, dbg_name);                                                                \
 	}
+// The function as it is (no guest-pointer entry): for exports whose types are incomplete here.
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_FUNC_RAW(n, f) LIB_ADD(n, f, Loader::SymbolType::Func)
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LIB_OBJECT(n, f) LIB_ADD(n, f, Loader::SymbolType::Object)
+#if defined(KYTY_GPU_DYLIB) && defined(KYTY_LIB_GUEST_POINTERS)
+// nps5 (kyty_gpu.dylib, hybrid ABI 1.6, KYTY_GPU_POINTERS_GUEST): the host's thunks pass the
+// guest's register values untouched, so a pointer parameter of an export holds a GUEST address.
+// Each export is registered through an entry that adds Guest::Bias() to its data-pointer
+// arguments and takes it off a data-pointer result; the HLE function itself sees host pointers,
+// as in kyty_emulator. Pointers INSIDE guest data (and function pointers) stay guest values: the
+// functions that read or write those translate them (Guest::Host / Guest::Value).
+#include "common/guestAddress.h"
+
+#include <type_traits>
+
+namespace Libs::GuestCall {
+
+template <typename T>
+inline constexpr bool IsDataPointer =
+    std::is_pointer_v<T> && !std::is_function_v<std::remove_pointer_t<T>>;
+
+template <typename T>
+[[nodiscard]] inline T In(T value) noexcept {
+	if constexpr (IsDataPointer<T>) {
+		return Guest::Host(value);
+	} else {
+		return value;
+	}
+}
+
+template <typename R, typename F, typename... Args>
+inline R Call(F function, Args... args) {
+	if constexpr (std::is_void_v<R>) {
+		function(In(args)...);
+	} else if constexpr (IsDataPointer<R>) {
+		return Guest::Value(function(In(args)...));
+	} else {
+		return function(In(args)...);
+	}
+}
+
+template <auto Function>
+struct Entry;
+
+template <typename R, typename... Args, R (*Function)(Args...)>
+struct Entry<Function> {
+	static R Invoke(Args... args) { return Call<R>(Function, args...); }
+};
+
+} // namespace Libs::GuestCall
+
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define LIB_FUNC(n, f) LIB_ADD(n, &Libs::GuestCall::Entry<&f>::Invoke, Loader::SymbolType::Func)
+#else
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define LIB_FUNC(n, f) LIB_ADD(n, f, Loader::SymbolType::Func)
+#endif
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define PRINT_NAME()                                                                               \

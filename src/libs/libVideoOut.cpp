@@ -1,7 +1,10 @@
+// nps5: exports take guest-valued pointers in kyty_gpu.dylib (libs.h GuestCall).
+#define KYTY_LIB_GUEST_POINTERS 1
 #include "common/abi.h"
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
+#include "libs/guestCallTrace.h" // nps5: KYTY_GPU_CALL_TRACE
 #include "loader/symbolDatabase.h"
 
 namespace Libs {

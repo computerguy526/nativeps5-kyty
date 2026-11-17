@@ -1,4 +1,5 @@
 #include "kernel/memory.h"
+#include "common/guestAddress.h"
 #include "common/prepPhases.h"
 
 #include "common/assert.h"
@@ -38,6 +39,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include "kernel/hostedGuard.h"
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1090,6 +1092,206 @@ static void                               MemoryPoolSubtractCommitted(uint64_t l
 // Keep host mappings, physical blocks, placeholders, and virtual ranges in step.
 static std::recursive_mutex g_memory_operation_mutex;
 
+// ---- nps5 hosted memory (memory.h HostedEnable) ----
+namespace Hosted {
+
+struct Range {
+	uint64_t       size  = 0;
+	uint32_t       flags = 0;
+	const uint8_t* alias = nullptr; // host view of the range's first byte, or null
+};
+
+static bool                      g_active = false;
+static HostedCallbacks           g_callbacks;
+static std::shared_mutex         g_mutex;
+static std::map<uint64_t, Range> g_ranges; // by guest base, never overlapping
+static std::atomic<uint64_t>     g_map_generation {1};
+
+// nps5 slowlvl (kernel/hostedGuard.h): readers of g_ranges announce themselves in a per-thread slot
+// instead of taking the pthread rwlock for every recorded guest read; writers wait for them.
+// KYTY_HOSTED_READ_LOCK=1 keeps the lock for every reader.
+static Common::ReaderSlots<128> g_reader_slots;
+static const bool               g_reader_slots_off = [] {
+	const char* value = std::getenv("KYTY_HOSTED_READ_LOCK");
+	return value != nullptr && value[0] == '1';
+}();
+struct SharedGuard: Common::ReaderSlots<128>::Shared {
+	SharedGuard(): Shared(g_reader_slots, g_mutex, !g_reader_slots_off) {}
+};
+struct ExclusiveGuard: Common::ReaderSlots<128>::Exclusive {
+	ExclusiveGuard(): Exclusive(g_reader_slots, g_mutex) {}
+};
+
+constexpr uint32_t FlagCpuRead  = 0x10u;
+constexpr uint32_t FlagCpuWrite = 0x20u;
+constexpr uint32_t FlagFlexible = 0x8u;
+
+// Visits the registered pieces of [vaddr, vaddr + size) in order: visit(piece address, host bytes,
+// piece size). False when any byte of the range is not registered. Caller holds g_mutex.
+template <typename Visit>
+static bool ForEachPieceUnlocked(uint64_t vaddr, uint64_t size, Visit&& visit) {
+	if (size == 0 || UINT64_MAX - vaddr < size) {
+		return false;
+	}
+	const auto end     = vaddr + size;
+	auto       current = vaddr;
+	auto       it      = g_ranges.upper_bound(vaddr);
+	if (it == g_ranges.begin()) {
+		return false;
+	}
+	--it;
+	while (current < end) {
+		if (it == g_ranges.end() || it->first > current || current - it->first >= it->second.size) {
+			return false;
+		}
+		const auto     offset = current - it->first;
+		const auto     bytes  = std::min(end - current, it->second.size - offset);
+		const uint8_t* host   = it->second.alias != nullptr ? it->second.alias + offset
+		                                                    : Guest::Ptr<const uint8_t>(current);
+		visit(current, host, bytes);
+		current += bytes;
+		++it;
+	}
+	return true;
+}
+
+static bool Covered(uint64_t vaddr, uint64_t size) {
+	const SharedGuard lock;
+	return ForEachPieceUnlocked(vaddr, size, [](uint64_t, const uint8_t*, uint64_t) {});
+}
+
+// The registered range holding all of [vaddr, vaddr + size), from this thread's last few lookups
+// (valid for the map generation they were made under) or the map. Caller holds a guard.
+struct RangeHit {
+	uint64_t       base  = 0;
+	uint64_t       size  = 0;
+	const uint8_t* alias = nullptr;
+};
+static const RangeHit* FindSingleRangeUnlocked(uint64_t vaddr, uint64_t size) {
+	struct Cache {
+		uint64_t generation = 0;
+		uint32_t next       = 0;
+		RangeHit hits[4];
+	};
+	static thread_local Cache cache;
+	const auto generation = g_map_generation.load(std::memory_order_acquire);
+	if (cache.generation != generation) {
+		cache            = {};
+		cache.generation = generation;
+	}
+	for (const auto& hit: cache.hits) {
+		if (vaddr >= hit.base && size <= hit.size && vaddr - hit.base <= hit.size - size) {
+			return &hit;
+		}
+	}
+	auto it = g_ranges.upper_bound(vaddr);
+	if (it == g_ranges.begin()) {
+		return nullptr;
+	}
+	--it;
+	if (vaddr - it->first >= it->second.size || size > it->second.size ||
+	    vaddr - it->first > it->second.size - size) {
+		return nullptr; // not registered, or spanning ranges: the piecewise path
+	}
+	auto& slot = cache.hits[cache.next++ & 3u];
+	slot       = {it->first, it->second.size, it->second.alias};
+	return &slot;
+}
+
+static bool Read(uint64_t vaddr, void* data, uint64_t size) {
+	const SharedGuard lock;
+	if (size != 0 && UINT64_MAX - vaddr >= size) {
+		if (const auto* hit = FindSingleRangeUnlocked(vaddr, size); hit != nullptr) {
+			const uint8_t* host = hit->alias != nullptr ? hit->alias + (vaddr - hit->base)
+			                                            : Guest::Ptr<const uint8_t>(vaddr);
+			std::memcpy(data, host, size);
+			return true;
+		}
+	}
+	if (!ForEachPieceUnlocked(vaddr, size, [](uint64_t, const uint8_t*, uint64_t) {})) {
+		return false;
+	}
+	return ForEachPieceUnlocked(vaddr, size, [&](uint64_t at, const uint8_t* host, uint64_t bytes) {
+		std::memcpy(static_cast<uint8_t*>(data) + (at - vaddr), host, bytes);
+	});
+}
+
+static bool Write(uint64_t vaddr, const void* data, uint64_t size) {
+	const SharedGuard lock;
+	if (!ForEachPieceUnlocked(vaddr, size, [](uint64_t, const uint8_t*, uint64_t) {})) {
+		return false;
+	}
+	return ForEachPieceUnlocked(vaddr, size, [&](uint64_t at, const uint8_t* host, uint64_t bytes) {
+		std::memcpy(const_cast<uint8_t*>(host), static_cast<const uint8_t*>(data) + (at - vaddr), bytes);
+	});
+}
+
+// The host bytes of the range when one registered range holds all of it (alias or biased view).
+static const uint8_t* Single(uint64_t vaddr, uint64_t size, bool alias_only) {
+	const SharedGuard lock;
+	const uint8_t*   result = nullptr;
+	uint32_t         pieces = 0;
+	if (!ForEachPieceUnlocked(vaddr, size, [&](uint64_t, const uint8_t* host, uint64_t) {
+		    result = host;
+		    pieces++;
+	    }) ||
+	    pieces != 1) {
+		return nullptr;
+	}
+	if (alias_only && result == Guest::Ptr<const uint8_t>(vaddr) && Guest::Bias() != 0) {
+		// Without an alias the guest view is the only one; it can be watch-protected.
+		return nullptr;
+	}
+	return result;
+}
+
+// KYTY_DRAW_PREP_DIRECT_READS, hosted: the alias bytes of a guest page (null without an alias: the
+// guest view can be watch-protected) and the map generation they are valid for.
+static const uint8_t* PageAlias(uint64_t page, uint64_t& generation) {
+	const SharedGuard lock;
+	const auto* hit = FindSingleRangeUnlocked(page, 4096u);
+	if (hit == nullptr || hit->alias == nullptr) {
+		return nullptr;
+	}
+	generation = g_map_generation.load(std::memory_order_acquire);
+	return hit->alias + (page - hit->base);
+}
+
+template <typename Inspect>
+static bool InspectBytes(uint64_t vaddr, uint64_t size, Inspect& inspect) {
+	const SharedGuard lock;
+	const uint8_t*   single = nullptr;
+	uint32_t         pieces = 0;
+	if (!ForEachPieceUnlocked(vaddr, size, [&](uint64_t, const uint8_t* host, uint64_t) {
+		    single = host;
+		    pieces++;
+	    })) {
+		return false;
+	}
+	if (pieces == 1) {
+		inspect(single);
+		return true;
+	}
+	static thread_local std::vector<uint8_t> gathered;
+	gathered.resize(size);
+	ForEachPieceUnlocked(vaddr, size, [&](uint64_t at, const uint8_t* host, uint64_t bytes) {
+		std::memcpy(gathered.data() + (at - vaddr), host, bytes);
+	});
+	inspect(static_cast<const uint8_t*>(gathered.data()));
+	return true;
+}
+
+static bool Protect(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+	if (g_callbacks.protect_guest == nullptr) {
+		return false;
+	}
+	const auto bits  = static_cast<uint32_t>(mode);
+	const auto watch = (bits & 2u) != 0 ? 0u : ((bits & 1u) != 0 ? 1u : 2u);
+	return g_callbacks.protect_guest(g_callbacks.user, vaddr, size, watch) == 0;
+}
+
+} // namespace Hosted
+
 // The base address the PS5 kernel hands out for hint-less user mappings. Guest code can
 // assume mappings it did not place explicitly are at or above this (Sony's libc rejects a
 // heap below it), so hint-less searches must not fall back to the low system-managed range.
@@ -1132,21 +1334,33 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
 	// KYTY_STREAM_COPY_DEFER: a pending recorder copy of these bytes runs first.
 	Graphics::StreamCopyDefer::NoteGuestWrite(vaddr, size);
+	if (Hosted::g_active) {
+		return Hosted::Write(vaddr, data, size);
+	}
 	return g_guest_address_space != nullptr &&
 	       g_guest_address_space->TryWriteBacking(vaddr, data, size);
 }
 
 bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
+	if (Hosted::g_active) {
+		return Hosted::Read(vaddr, data, size);
+	}
 	return g_guest_address_space != nullptr &&
 	       g_guest_address_space->TryReadBacking(vaddr, data, size);
 }
 
 bool TryReadBackingDirect(uint64_t vaddr, void* data, uint64_t size) {
+	if (Hosted::g_active) {
+		return Hosted::Read(vaddr, data, size);
+	}
 	return g_guest_address_space != nullptr &&
 	       g_guest_address_space->TryReadBackingDirect(vaddr, data, size);
 }
 
 const void* GuestBackingAlias(uint64_t vaddr, uint64_t size) {
+	if (Hosted::g_active) {
+		return Hosted::Single(vaddr, size, true);
+	}
 	return g_guest_address_space != nullptr ? g_guest_address_space->BackingAlias(vaddr, size)
 	                                        : nullptr;
 }
@@ -1265,8 +1479,10 @@ template <typename Inspect>
 static bool TryInspectBacking(uint64_t vaddr, uint64_t size, Inspect& inspect,
                               InPlaceStats* stats) {
 	bool       locked = false;
-	const bool done   = g_guest_address_space != nullptr &&
-	                  g_guest_address_space->TryInspectBacking(vaddr, size, inspect, &locked);
+	const bool done   = Hosted::g_active
+	                        ? Hosted::InspectBytes(vaddr, size, inspect)
+	                        : (g_guest_address_space != nullptr &&
+	                           g_guest_address_space->TryInspectBacking(vaddr, size, inspect, &locked));
 	if (stats != nullptr) {
 		stats->inspected++;
 		stats->locked += locked ? 1u : 0u;
@@ -1506,12 +1722,26 @@ static void VerifyDirectRead(uint64_t vaddr, const void* data, uint64_t size) {
 static bool TryReadForDrawPrep(Graphics::DrawPrep::Recorder& recorder, uint64_t vaddr, void* data,
                                uint64_t size, uint64_t caller) {
 	constexpr uint64_t PageMask = 4095u;
-	const bool direct = !recorder.exact && g_guest_address_space != nullptr && Graphics::DrawPrep::DirectReadsMode() != 0;
+	// nps5 slowlvl: also with hosted guest memory (the host's alias views; Hosted::PageAlias).
+	const bool hosted = Hosted::g_active;
+	const bool direct = !recorder.exact && (hosted || g_guest_address_space != nullptr) &&
+	                    Graphics::DrawPrep::DirectReadsMode() != 0;
 	if (direct && (vaddr >> 12u) == recorder.direct_page && size <= 64u &&
 	    (vaddr & PageMask) + size <= 4096u && !recorder.reads->Failed()) {
-		std::memcpy(data, recorder.direct_host + (vaddr & PageMask), static_cast<size_t>(size));
-		std::atomic_thread_fence(std::memory_order_acquire);
-		if (GuestAddressSpace::BackingMappingTag(vaddr) == recorder.direct_generation) {
+		bool same_map = false;
+		if (hosted) {
+			// The map (and with it the alias) cannot change inside the guard.
+			const Hosted::SharedGuard guard;
+			same_map = Hosted::g_map_generation.load(std::memory_order_acquire) == recorder.direct_generation;
+			if (same_map) {
+				std::memcpy(data, recorder.direct_host + (vaddr & PageMask), static_cast<size_t>(size));
+			}
+		} else {
+			std::memcpy(data, recorder.direct_host + (vaddr & PageMask), static_cast<size_t>(size));
+			std::atomic_thread_fence(std::memory_order_acquire);
+			same_map = GuestAddressSpace::BackingMappingTag(vaddr) == recorder.direct_generation;
+		}
+		if (same_map) {
 			if (Graphics::DrawPrep::DirectReadsMode() >= 2) [[unlikely]] {
 				VerifyDirectRead(vaddr, data, size);
 			}
@@ -1525,7 +1755,8 @@ static bool TryReadForDrawPrep(Graphics::DrawPrep::Recorder& recorder, uint64_t 
 	if (direct && (vaddr & PageMask) + size <= 4096u && (vaddr >> 12u) != recorder.direct_page) {
 		const auto page       = vaddr & ~PageMask;
 		uint64_t   generation = 0;
-		const auto* host      = g_guest_address_space->BackingAliasCached(page, 4096u, generation);
+		const auto* host      = hosted ? Hosted::PageAlias(page, generation)
+		                               : g_guest_address_space->BackingAliasCached(page, 4096u, generation);
 		if (host != nullptr && DrawPrepHintClean(page, 4096u)) {
 			recorder.direct_page       = vaddr >> 12u;
 			recorder.direct_host       = host;
@@ -1784,6 +2015,9 @@ static bool IsInPrtAperture(uint64_t address, uint64_t size = 1) {
 }
 
 bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
+	if (Hosted::g_active) {
+		return Hosted::Read(vaddr, data, size);
+	}
 	std::vector<VirtualRanges::Range> ranges;
 	if (g_guest_address_space == nullptr || g_virtual_ranges == nullptr ||
 	    !g_virtual_ranges->QuerySpan(vaddr, size, &ranges)) {
@@ -1801,6 +2035,9 @@ bool TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size) {
 // Upstream 40692dfb6: TryReadSparseBacking plus the private mappings in the backing gaps, read
 // in place (reservations and unmapped gaps read as zeros).
 bool CopySparseMemory(uint64_t vaddr, void* data, uint64_t size) {
+	if (Hosted::g_active) {
+		return Hosted::Read(vaddr, data, size);
+	}
 	if (g_guest_address_space == nullptr) {
 		return false;
 	}
@@ -1856,7 +2093,130 @@ void AdoptHostPlaceholders(uint64_t vaddr, uint64_t size) {
 	g_host_placeholders.emplace_back(vaddr, size);
 }
 
+void HostedEnable(const HostedCallbacks& callbacks) {
+	EXIT_IF(g_guest_address_space != nullptr || g_virtual_ranges != nullptr);
+	Hosted::g_callbacks = callbacks;
+	Hosted::g_active    = true;
+}
+
+bool HostedActive() noexcept {
+	return Hosted::g_active;
+}
+
+bool HostedRegister(uint64_t base, uint64_t size, uint32_t flags, const void* alias) {
+	if (!Hosted::g_active || g_virtual_ranges == nullptr || size == 0 || UINT64_MAX - base < size) {
+		return false;
+	}
+	(void)HostedUnregister(base, size);
+	{
+		const Hosted::ExclusiveGuard lock;
+		Hosted::g_ranges[base] = {size, flags, static_cast<const uint8_t*>(alias)};
+		Hosted::g_map_generation.fetch_add(1, std::memory_order_relaxed);
+	}
+	int protection = 0;
+	protection |= (flags & Hosted::FlagCpuRead) != 0 ? PROT_CPU_READ : 0;
+	protection |= (flags & Hosted::FlagCpuWrite) != 0 ? PROT_CPU_WRITE : 0;
+	protection |= (flags & 0x1u) != 0 ? PROT_GPU_READ : 0;
+	protection |= (flags & 0x2u) != 0 ? PROT_GPU_WRITE : 0;
+	const auto type = (flags & Hosted::FlagFlexible) != 0 ? VirtualRangeType::Flexible : VirtualRangeType::Direct;
+	g_virtual_ranges->Add(base, size, 0, protection, 0, type, "hosted", true);
+	MapGpuRange(base, size);
+	return true;
+}
+
+bool HostedUnregister(uint64_t base, uint64_t size) {
+	if (!Hosted::g_active || g_virtual_ranges == nullptr || size == 0 || UINT64_MAX - base < size) {
+		return false;
+	}
+	const auto end = base + size;
+	std::vector<std::pair<uint64_t, uint64_t>> removed; // the parts of registered ranges inside [base, end)
+	{
+		const Hosted::ExclusiveGuard lock;
+		auto             it = Hosted::g_ranges.upper_bound(base);
+		if (it != Hosted::g_ranges.begin()) {
+			--it;
+		}
+		while (it != Hosted::g_ranges.end() && it->first < end) {
+			const auto start = it->first;
+			const auto range = it->second;
+			const auto stop  = start + range.size;
+			if (stop <= base) {
+				++it;
+				continue;
+			}
+			it = Hosted::g_ranges.erase(it);
+			if (start < base) {
+				Hosted::g_ranges[start] = {base - start, range.flags, range.alias};
+			}
+			if (stop > end) {
+				Hosted::g_ranges[end] = {stop - end, range.flags,
+				                         range.alias != nullptr ? range.alias + (end - start) : nullptr};
+			}
+			removed.emplace_back(std::max(start, base), std::min(stop, end) - std::max(start, base));
+			it = Hosted::g_ranges.lower_bound(std::min(stop, end));
+		}
+		if (!removed.empty()) {
+			Hosted::g_map_generation.fetch_add(1, std::memory_order_relaxed);
+		}
+	}
+	for (const auto& [start, bytes]: removed) {
+		UnmapGpuRange(start, bytes);
+		g_virtual_ranges->Remove(start, bytes);
+	}
+	return !removed.empty();
+}
+
+bool HostedProtect(uint64_t base, uint64_t size, uint32_t flags) {
+	if (!Hosted::g_active || g_virtual_ranges == nullptr || !Hosted::Covered(base, size)) {
+		return false;
+	}
+	int protection = 0;
+	protection |= (flags & Hosted::FlagCpuRead) != 0 ? PROT_CPU_READ : 0;
+	protection |= (flags & Hosted::FlagCpuWrite) != 0 ? PROT_CPU_WRITE : 0;
+	protection |= (flags & 0x1u) != 0 ? PROT_GPU_READ : 0;
+	protection |= (flags & 0x2u) != 0 ? PROT_GPU_WRITE : 0;
+	g_virtual_ranges->Protect(base, size, protection);
+	ResyncGpuRangeProtection(base, size);
+	return true;
+}
+
+const void* GuestReadPtr(uint64_t vaddr, uint64_t size) noexcept {
+	if (!Hosted::g_active || vaddr == 0) {
+		return Guest::Ptr<const void>(vaddr);
+	}
+	struct Cache {
+		uint64_t       generation = 0;
+		uint64_t       base       = 0;
+		uint64_t       size       = 0;
+		const uint8_t* alias      = nullptr;
+	};
+	static thread_local Cache cache;
+	const auto generation = Hosted::g_map_generation.load(std::memory_order_acquire);
+	if (cache.generation != generation || vaddr < cache.base || size > cache.size ||
+	    vaddr - cache.base > cache.size - size) {
+		const Hosted::SharedGuard lock;
+		cache = {};
+		auto it = Hosted::g_ranges.upper_bound(vaddr);
+		if (it != Hosted::g_ranges.begin()) {
+			--it;
+			if (vaddr - it->first < it->second.size) {
+				cache = {generation, it->first, it->second.size, it->second.alias};
+			}
+		}
+		if (cache.generation == 0 || size > cache.size || vaddr - cache.base > cache.size - size) {
+			return Guest::Ptr<const void>(vaddr); // not registered, or spanning ranges
+		}
+	}
+	return cache.alias != nullptr ? cache.alias + (vaddr - cache.base) : Guest::Ptr<const uint8_t>(vaddr);
+}
+
 void Initialize() {
+	if (Hosted::g_active) {
+		// The host owns guest memory: no address space, backing store or physical pools here.
+		g_flexible_memory_size_frozen = true;
+		g_virtual_ranges              = std::make_unique<VirtualRanges>();
+		return;
+	}
 	g_flexible_memory_size_frozen = true;
 	VirtualMemory::Init();
 	g_guest_address_space = std::make_unique<GuestAddressSpace>(PhysicalMemory::TotalSize());
@@ -4697,6 +5057,9 @@ bool ProtectGuestMemory(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode,
 }
 
 bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode) {
+	if (Hosted::g_active) {
+		return Hosted::Protect(vaddr, size, mode);
+	}
 	return g_guest_address_space != nullptr &&
 	       g_guest_address_space->ProtectTransient(vaddr, size, mode);
 }

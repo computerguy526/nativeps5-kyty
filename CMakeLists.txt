@@ -225,6 +225,15 @@ endif()
 
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
 
+# nps5: native arm64 (kyty_gpu.dylib on Apple silicon). Kyty's own targets (declared below) find
+# x86 intrinsic headers in src/compat/arm64 first; third-party code keeps the compiler's.
+set(KYTY_HOST_ARM64 OFF)
+if(CMAKE_OSX_ARCHITECTURES STREQUAL "arm64" OR (NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$"))
+	set(KYTY_HOST_ARM64 ON)
+	include_directories(BEFORE "${KYTY_SOURCE_DIR}/compat/arm64")
+	message(STATUS "nps5: arm64 host, x86 intrinsic shims from src/compat/arm64")
+endif()
+
 # Profile-guided optimization (clang and clang-cl). Use a separate build directory for each step:
 # 1. KYTY_PGO_GENERATE=ON builds an instrumented emulator. Run it with KYTY_PGO_FILE=<x.profraw>:
 #    it writes its counters every KYTY_PGO_DUMP_SECONDS (default 20) to that file (main.cpp), so a
@@ -638,6 +647,52 @@ add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 target_link_libraries(scalar_provenance_tests common fmt::fmt xbyak::xbyak)
 target_include_directories(scalar_provenance_tests PRIVATE ${inc_headers})
 
+# nps5 kprogress: window-title compile progress formatting and throttle (header only), no GPU.
+add_executable(compile_progress_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CompileProgressTests.cpp")
+target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# nps5 kprogress2: on-screen compile progress state/animation timing (header only), no GPU.
+add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ProgressOverlayTests.cpp")
+target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# nps5 kmem: trimmed native images of partially resident textures (residentTrim.h), no GPU.
+add_executable(resident_trim_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/ResidentTrimTests.cpp"
+)
+target_include_directories(resident_trim_tests PRIVATE ${inc_headers})
+
+# nps5 kshaders: KosmicKrisp fallbacks (64-bit buffer atomic forms, min-LOD view range), no GPU.
+add_executable(kk_lowering_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/KkLoweringTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Block.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Value.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Type.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Program.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.cpp"
+)
+target_link_libraries(kk_lowering_tests common fmt::fmt)
+target_include_directories(kk_lowering_tests PRIVATE ${inc_headers})
+
+# nps5 kart: raw-vertex pixel inputs through a generated geometry stage (KYTY_PS_PER_VERTEX=gs) and, kart2,
+# as unpacked smooth fields without one (KYTY_PS_PER_VERTEX=unpack); no GPU.
+add_executable(per_vertex_geometry_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/PerVertexGeometryTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/perVertexShader.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/spirv/SpirvBuilder.cpp"
+	# KYTY_PS_PER_VERTEX=unpack (kart2): the pass and the IR it works on.
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/RawVertexUnpack.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Block.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Value.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Type.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/Program.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/opcodes/ValueOpcodes.cpp"
+)
+target_link_libraries(per_vertex_geometry_tests common fmt::fmt SPIRV-Tools-static)
+target_include_directories(per_vertex_geometry_tests PRIVATE ${inc_headers})
+
 # KYTY_LANE_LOCAL: the wave64 lane-locality proof on hand-assembled programs (chenxiao07/KytyPS5 9907780e1).
 add_executable(lane_local_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/LaneLocalTests.cpp"
@@ -693,6 +748,13 @@ add_executable(bit_array_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/BitArrayTests.cpp"
 )
 target_include_directories(bit_array_tests PRIVATE ${inc_headers})
+
+add_executable(gpu_safety_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/GpuSafetyTests.cpp")
+target_link_libraries(gpu_safety_tests common)
+target_include_directories(gpu_safety_tests PRIVATE ${inc_headers})
+if(LINUX)
+	target_link_libraries(gpu_safety_tests Threads::Threads)
+endif()
 
 add_executable(hang_watchdog_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HangWatchdogTests.cpp")
 target_link_libraries(hang_watchdog_tests common)
@@ -1053,6 +1115,9 @@ target_include_directories(clear_register_decode_tests PRIVATE ${inc_headers})
 add_executable(host_input_pulse_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostInputPulseTests.cpp")
 target_include_directories(host_input_pulse_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+add_executable(present_geometry_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PresentGeometryTests.cpp")
+target_include_directories(present_geometry_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 add_executable(eop_timestamp_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/EopTimestampTests.cpp"
 )
@@ -1214,6 +1279,7 @@ if(BUILD_TESTING)
 	add_test(NAME draw_prep COMMAND $<TARGET_FILE:draw_prep_tests>)
 	add_test(NAME eop_timestamp COMMAND $<TARGET_FILE:eop_timestamp_tests>)
 	add_test(NAME host_input_pulse COMMAND $<TARGET_FILE:host_input_pulse_tests>)
+	add_test(NAME present_geometry COMMAND $<TARGET_FILE:present_geometry_tests>)
 	add_test(NAME repeat_trace COMMAND $<TARGET_FILE:repeat_trace_tests>)
 	add_test(NAME binding_path COMMAND $<TARGET_FILE:binding_path_tests>)
 	add_test(NAME cp_recorder COMMAND $<TARGET_FILE:cp_recorder_tests>)
@@ -2499,6 +2565,7 @@ if(BUILD_TESTING)
 		pad_haptics_tests
 		controller_settings_tests
 		host_input_tests
+		present_geometry_tests
 		save_data_memory_tests
 		png_enc_tests
 		ces_tests
@@ -2643,6 +2710,41 @@ if(APPLE)
 			--entitlements "${KYTY_SOURCE_DIR}/macos_jit.entitlements"
 			$<TARGET_FILE:kyty_emulator>
 		COMMENT "Codesign kyty_emulator with JIT entitlements (macOS)")
+endif()
+
+# nps5: kyty_gpu.dylib, Kyty's GPU stack for a host process (AstroHybrid's kyty_gpu.dll, built here
+# as a native arm64 macOS dylib for the nativeps5 runtime). It links kyty_emulator's objects with
+# the hybrid bridge, as tools/hybrid/build_kyty_gpu.py does on Windows, minus main.cpp and the
+# sources that only make sense with x86-64 guest code in the process (KYTY_GPU_X86_ONLY_SOURCES);
+# src/hybrid/arm64Stubs.cpp stands in for what the rest still references from them.
+#   cmake --build <dir> --target kyty_gpu
+if(APPLE)
+	set(KYTY_GPU_X86_ONLY_SOURCES
+		"${KYTY_SOURCE_DIR}/libs/guestPrintf.cpp"
+		"${KYTY_SOURCE_DIR}/libs/libC.cpp"
+		"${KYTY_SOURCE_DIR}/loader/guestInstructionPatcher.cpp"
+		"${KYTY_SOURCE_DIR}/loader/x64InstructionEmulator.cpp"
+	)
+	set(kyty_gpu_src ${kyty_emulator_src})
+	if(KYTY_HOST_ARM64)
+		list(REMOVE_ITEM kyty_gpu_src ${KYTY_GPU_X86_ONLY_SOURCES})
+		list(APPEND kyty_gpu_src "${KYTY_SOURCE_DIR}/hybrid/arm64Stubs.cpp")
+	endif()
+	add_library(kyty_gpu SHARED EXCLUDE_FROM_ALL "${KYTY_SOURCE_DIR}/hybrid/kytyGpuBridge.cpp" ${kyty_gpu_src})
+	target_compile_definitions(kyty_gpu PRIVATE KYTY_GPU_BUILDING_DLL=1 KYTY_GPU_DYLIB=1)
+	# nps5: the host process already carries an SDL3 (Homebrew libSDL3 through sdl2-compat for the pad):
+	# a second, static copy in the dylib duplicates its Objective-C classes. KYTY_GPU_SDL3_DYLIB
+	# (default: Homebrew's) links that shared library instead; set it empty for the static one.
+	set(KYTY_GPU_SDL3_DYLIB "/opt/homebrew/lib/libSDL3.0.dylib" CACHE FILEPATH "shared SDL3 for kyty_gpu.dylib")
+	set(kyty_gpu_link_libraries ${kyty_emulator_link_libraries})
+	if(KYTY_GPU_SDL3_DYLIB AND EXISTS "${KYTY_GPU_SDL3_DYLIB}")
+		list(REMOVE_ITEM kyty_gpu_link_libraries SDL3::SDL3-static)
+		list(APPEND kyty_gpu_link_libraries SDL3::Headers "${KYTY_GPU_SDL3_DYLIB}")
+	endif()
+	target_link_libraries(kyty_gpu PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
+	target_include_directories(kyty_gpu PRIVATE ${inc_headers})
+	set_target_properties(kyty_gpu PROPERTIES PREFIX "" OUTPUT_NAME "kyty_gpu" SUFFIX ".dylib")
+	target_link_options(kyty_gpu PRIVATE -Wl,-undefined,error)
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)

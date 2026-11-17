@@ -26,6 +26,9 @@
 #include <thread>
 #include <tracy/Tracy.hpp>
 #include <vector>
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 #ifdef _WIN32
 #include <fcntl.h>
@@ -1286,6 +1289,19 @@ void EndBlock() {
 
 void SetThreadName(const char* name) {
 	if (name != nullptr) HangWatchdog::SetThreadName(name);
+#if defined(__APPLE__)
+	// nps5 (kcpu): also the host thread's own name, so per-thread CPU tools (the host's NPS5_PERF
+	// thread table, sample, Instruments) and the host's NPS5_QOS_MAP can tell Kyty's threads apart.
+	// A thread that already has a name (a guest thread named by the host) keeps it.
+	if (name != nullptr) {
+		char current[8] = {};
+		if (pthread_getname_np(pthread_self(), current, sizeof(current)) != 0 || current[0] == 0) {
+			char prefixed[64];
+			std::snprintf(prefixed, sizeof(prefixed), "kyty:%s", name);
+			(void)pthread_setname_np(prefixed);
+		}
+	}
+#endif
 	if (tracy::ProfilerAvailable() && name != nullptr) {
 		tracy::SetThreadName(name);
 	}

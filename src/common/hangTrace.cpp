@@ -1,4 +1,7 @@
 #include "common/hangTrace.h"
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 
 #include "common/cpuPlacement.h"
 #include "common/hangWatchdog.h"
@@ -524,6 +527,10 @@ uint64_t NowMs() {
 uint64_t OsThreadId() {
 #ifdef _WIN32
 	return GetCurrentThreadId();
+#elif defined(__APPLE__)
+	uint64_t id = 0;
+	pthread_threadid_np(nullptr, &id);
+	return id;
 #else
 	return static_cast<uint64_t>(gettid());
 #endif

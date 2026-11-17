@@ -15,9 +15,12 @@
 #include "hybrid/kytyGpuApi.h"
 
 #include "common/abi.h"
+#include "common/latTrace.h"
 #include "common/emulatorConfig.h"
+#include "common/guestAddress.h"
 #include "common/guestLoad.h"
 #include "common/hostException.h"
+#include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/faultCost.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "common/logging/log.h"
@@ -54,6 +57,12 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <unistd.h>
+#endif
 #endif
 
 namespace Libs {
@@ -84,6 +93,11 @@ constexpr uint32_t g_row_count = static_cast<uint32_t>(sizeof(g_rows) / sizeof(g
 
 KytyGpuNidInfo        g_info[g_row_count];
 KytyGpuHostCallbacks  g_host {};
+KytyGpuHostInfo       g_host_info {}; // ABI 1.6 (nativeps5): zero on an older host
+bool                  g_hosted_memory = false;
+std::atomic<uint64_t> g_self_loads_served {0}; // KYTY_HOSTED_SELF_LOADS: GPU-thread loads completed from the alias
+std::atomic<uint64_t> g_self_loads_waited {0}; // GPU-thread read faults that took the ordinary path
+bool                  g_host_serves_loads = false; // ABI 1.7 fault_load / fault_load_apply registered as GuestLoad
 std::atomic<State>    g_state {State::Loaded};
 std::mutex            g_lifecycle;
 
@@ -129,6 +143,55 @@ void* KytyGpuLazyResolve(uint32_t index);
 // Microsoft x64 resolver with a 16-byte aligned stack and its shadow space, restores the
 // registers and jumps to the bound implementation, so the call proceeds as if it had gone there
 // directly. The resolver starts Kyty on first use or stops the process with the NID's name.
+#if defined(__aarch64__)
+// nps5 arm64: the host's thunks call the exports with the arguments in AAPCS64 registers (Kyty's
+// KYTY_SYSV_ABI functions are plain C functions here). A thunk leaves its export index in w16 and
+// jumps through its slot; the trap keeps x0-x8, q0-q7 and the link register across the resolver.
+// Each export has two names: kyty_gpu_nid_<index> and the NID itself (dlsym(handle, "<nid>")).
+void KytyGpuUnboundTrap();
+__asm__(".text\n.p2align 2\n.globl _KytyGpuUnboundTrap\n_KytyGpuUnboundTrap:\n"
+        "stp x29, x30, [sp, #-16]!\n"
+        "mov x29, sp\n"
+        "sub sp, sp, #208\n"
+        "stp x0, x1, [sp, #0]\n"
+        "stp x2, x3, [sp, #16]\n"
+        "stp x4, x5, [sp, #32]\n"
+        "stp x6, x7, [sp, #48]\n"
+        "str x8, [sp, #64]\n"
+        "stp q0, q1, [sp, #80]\n"
+        "stp q2, q3, [sp, #112]\n"
+        "stp q4, q5, [sp, #144]\n"
+        "stp q6, q7, [sp, #176]\n"
+        "mov w0, w16\n"
+        "bl _KytyGpuLazyResolve\n"
+        "mov x16, x0\n"
+        "ldp x0, x1, [sp, #0]\n"
+        "ldp x2, x3, [sp, #16]\n"
+        "ldp x4, x5, [sp, #32]\n"
+        "ldp x6, x7, [sp, #48]\n"
+        "ldr x8, [sp, #64]\n"
+        "ldp q0, q1, [sp, #80]\n"
+        "ldp q2, q3, [sp, #112]\n"
+        "ldp q4, q5, [sp, #144]\n"
+        "ldp q6, q7, [sp, #176]\n"
+        "add sp, sp, #208\n"
+        "ldp x29, x30, [sp], #16\n"
+        "br x16\n");
+
+#define KYTY_GPU_NID(index, nid, library, function, binding) void kyty_gpu_nid_##index();
+#include "hybrid/kytyGpuNids.inc"
+#undef KYTY_GPU_NID
+#define KYTY_GPU_NID(index, nid, library, function, binding)                                       \
+	__asm__(".text\n.p2align 2\n.globl _kyty_gpu_nid_" #index "\n.globl \"_" nid "\"\n"            \
+	        "_kyty_gpu_nid_" #index ":\n\"_" nid "\":\n"                                           \
+	        "mov w16, #" #index "\n"                                                               \
+	        "adrp x17, _g_kyty_gpu_slots@PAGE\n"                                                   \
+	        "add x17, x17, _g_kyty_gpu_slots@PAGEOFF\n"                                            \
+	        "ldr x17, [x17, #(" #index "*8)]\n"                                                    \
+	        "br x17\n");
+#include "hybrid/kytyGpuNids.inc"
+#undef KYTY_GPU_NID
+#else
 __attribute__((naked)) void KytyGpuUnboundTrap() {
 	__asm__ volatile("pushq %rdi\n\t"
 	                 "pushq %rsi\n\t"
@@ -175,6 +238,7 @@ __attribute__((naked)) void KytyGpuUnboundTrap() {
 	}
 #include "hybrid/kytyGpuNids.inc"
 #undef KYTY_GPU_NID
+#endif // __aarch64__
 
 } // extern "C"
 
@@ -226,6 +290,12 @@ void Pump() {
 // which the game reads.
 std::thread       g_relay;
 std::atomic<bool> g_relay_stop {false};
+// KYTY_PAD_RELAY_US (default 4000: 1000 made the scripted left stick (axis 1) ineffective in kint2's play2 bisect; was a fixed 4000): how often the relay thread reads Kyty's pad and publishes it.
+const long g_relay_period_us = [] {
+	const char* v = std::getenv("KYTY_PAD_RELAY_US");
+	const long  n = v != nullptr ? std::atol(v) : 4000;
+	return n >= 100 && n <= 100000 ? n : 4000L;
+}();
 
 // ABI 1.4: the game's pad requests reach the host's pad library; Kyty owns the controller, so the
 // relay applies them through Kyty's own pad functions, which scale them by the controller settings
@@ -360,10 +430,15 @@ void Relay() {
 				}
 				g_host.publish_pad_motion(g_host.user, 0, &sensors);
 			}
+			static uint32_t last_buttons = 0;
+			if (state.buttons != last_buttons) {
+				Common::LatTrace::Log("pad", state.buttons);
+				last_buttons = state.buttons;
+			}
 			g_host.publish_pad(g_host.user, 0, &state);
 		}
 		ApplyPadOutput(handle, output_seen, output_applied);
-		std::this_thread::sleep_for(std::chrono::milliseconds(4));
+		std::this_thread::sleep_for(std::chrono::microseconds(g_relay_period_us));
 	}
 }
 
@@ -474,6 +549,66 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 	g_host = {};
 	std::memcpy(&g_host, host, std::min<size_t>(host->struct_size, sizeof(KytyGpuHostCallbacks)));
 
+	// ABI 1.6 (nativeps5): the host describes its process. Guest memory is at guest + bias there,
+	// and the host owns it (hosted memory): Kyty's kernel memory maps and protects nothing.
+	if (g_host.host_info != nullptr) {
+		if (const auto* info = g_host.host_info(g_host.user); info != nullptr) {
+			std::memcpy(&g_host_info, info, std::min<size_t>(info->struct_size, sizeof(KytyGpuHostInfo)));
+		}
+		Guest::g_bias   = g_host_info.guest_bias;
+		if (g_host.call_guest != nullptr) {
+			Guest::g_call_guest = [](uint64_t function, const uint64_t* args6) {
+				return g_host.call_guest(g_host.user, function, args6);
+			};
+		}
+		g_hosted_memory = (g_host_info.flags & KYTY_GPU_HOST_HOSTED_MEMORY) != 0;
+		if (g_hosted_memory) {
+			if (g_host.protect_guest == nullptr) {
+				Log(2, "init: a hosted-memory host needs protect_guest");
+				return KYTY_GPU_E_HOST_CALLBACK;
+			}
+			if (g_host_info.tracker_page_size != 4096u) {
+				Log(2, "init: the host tracks %u-byte pages, Kyty's page tracker needs 4096",
+				    g_host_info.tracker_page_size);
+				return KYTY_GPU_E_ARGUMENT;
+			}
+			Libs::LibKernel::Memory::HostedCallbacks callbacks {};
+			callbacks.user          = g_host.user;
+			callbacks.protect_guest = g_host.protect_guest;
+			Libs::LibKernel::Memory::HostedEnable(callbacks);
+			// ABI 1.7: the host can complete a trapped arm64 load with bytes Kyty supplies (what
+			// X64InstructionEmulator is for guest code on x86). With KYTY_READ_FAULT_PUBLISHED=1 a
+			// guest read of a GPU-owned page is then served from the page's published copy instead
+			// of a GPU drain per read (BufferCache::ReadMemory).
+			if (g_host.fault_load != nullptr && g_host.fault_load_apply != nullptr) {
+				GuestLoad::Register(
+				    [](void* /*native_context*/, uint64_t fault_vaddr, GuestLoad::Load& load) {
+					    uint64_t address = 0;
+					    uint32_t size    = 0;
+					    // The page reported is one the load touches: its first page, or (a load that
+					    // straddles two tracker pages) its last.
+					    if (g_host.fault_load(g_host.user, &address, &size) != 1 || size == 0 || size > 16 ||
+					        (fault_vaddr >> 12u) < (address >> 12u) ||
+					        (fault_vaddr >> 12u) > ((address + size - 1) >> 12u)) {
+						    return false;
+					    }
+					    load         = GuestLoad::Load {};
+					    load.address = address;
+					    load.size    = size;
+					    return true;
+				    },
+				    [](void* /*native_context*/, const GuestLoad::Load& load, const void* bytes) {
+					    return g_host.fault_load_apply(g_host.user, bytes, load.size) == 1;
+				    });
+				g_host_serves_loads = true;
+			}
+		}
+		Log(0, "init: ABI 1.6 host, flags 0x%x, guest bias 0x%llx, guest 0x%llx-0x%llx, host pages %u, tracker pages %u",
+		    g_host_info.flags, static_cast<unsigned long long>(g_host_info.guest_bias),
+		    static_cast<unsigned long long>(g_host_info.guest_lo), static_cast<unsigned long long>(g_host_info.guest_hi),
+		    g_host_info.host_page_size, g_host_info.tracker_page_size);
+	}
+
 	Loader::SymbolDatabase symbols;
 	Libs::InitAgcDriver_1(&symbols);
 	Libs::LibGen5::InitVideoOut_1(&symbols);
@@ -557,11 +692,13 @@ bool BridgeGuestAccessFault(const Common::HostException::ExceptionInfo& info) {
 	}();
 	bool guest_code = false;
 	if (guest_loads && access == GpuAccess::Read) {
+#if defined(_WIN32)
 		static const HMODULE game = GetModuleHandleW(nullptr);
 		HMODULE              module = nullptr;
 		guest_code = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 		                                reinterpret_cast<LPCWSTR>(info.exception_address), &module) != 0 &&
 		             module == game;
+#endif
 	}
 	const GuestLoad::FaultScope guest_load(guest_code ? info.native_context : nullptr);
 	return Libs::LibKernel::Memory::HandleGpuFault(access, info.access_violation_vaddr);
@@ -597,10 +734,30 @@ Config::ShaderOptimizationType ShaderOptimizationFromEnvironment() {
 	return Config::ShaderOptimizationType::Performance;
 }
 
-void RendererThread() {
+// Memory the host registered before the renderer exists (a 1.6 host registers everything mapped
+// between init and start_graphics): applied once Kyty's memory subsystem is up.
+struct PendingMemory {
+	uint64_t    base  = 0;
+	uint64_t    size  = 0;
+	uint32_t    flags = 0;
+	const void* alias = nullptr;
+	bool        add   = true;
+};
+std::mutex                 g_pending_memory_mutex;
+std::vector<PendingMemory> g_pending_memory;
+std::atomic<bool>          g_memory_ready {false};
+
+// winresize: the renderer in three parts so a host with a main queue can run the window loop one
+// step per main-queue block (a single never-returning block starves AppKit's own main-queue work:
+// fullscreen/zoom completion, which is what hung a maximised window).
+std::unique_ptr<Common::Subsystems> g_subsystems;
+bool                                g_stepped_loop = false;
+
+void RendererBegin() {
 	Common::InitializeThreads();
 	{
-		Common::Subsystems subsystems(true);
+		g_subsystems = std::make_unique<Common::Subsystems>(true);
+		auto& subsystems = *g_subsystems;
 		Config::ConfigOptions options {};
 		options.screen_width  = EnvironmentSize("KYTY_GPU_WIDTH", options.screen_width);
 		options.screen_height = EnvironmentSize("KYTY_GPU_HEIGHT", options.screen_height);
@@ -609,7 +766,12 @@ void RendererThread() {
 		options.vblank_frequency         = EnvironmentSize("KYTY_GPU_VBLANK_HZ", 60);
 		// KYTY_GPU_FULLSCREEN=1: start in desktop fullscreen with the cursor hidden (F11 or Alt+Enter
 		// still toggles it).
-		if (const char* fullscreen = std::getenv("KYTY_GPU_FULLSCREEN"); fullscreen != nullptr && fullscreen[0] == '1') {
+		// KYTY_WINDOW_FULLSCREEN=1 is the same (winresize: also F11 / Cmd+Ctrl+F / Alt+Enter at run time).
+		const char* fullscreen = std::getenv("KYTY_GPU_FULLSCREEN");
+		if (fullscreen == nullptr || fullscreen[0] != '1') {
+			fullscreen = std::getenv("KYTY_WINDOW_FULLSCREEN");
+		}
+		if (fullscreen != nullptr && fullscreen[0] == '1') {
 			options.fullscreen_enabled  = true;
 			options.hide_cursor_enabled = true;
 		}
@@ -626,12 +788,29 @@ void RendererThread() {
 		subsystems.Initialize<Libs::LibKernel::Memory::Lifecycle>();
 		subsystems.Initialize<Libs::Controller::Lifecycle>();
 		subsystems.Initialize<Libs::Graphics::Lifecycle>();
+		if (g_hosted_memory) {
+			std::lock_guard lock(g_pending_memory_mutex);
+			for (const auto& memory: g_pending_memory) {
+				if (memory.add) {
+					Libs::LibKernel::Memory::HostedRegister(memory.base, memory.size, memory.flags, memory.alias);
+				} else {
+					Libs::LibKernel::Memory::HostedUnregister(memory.base, memory.size);
+				}
+			}
+			Log(0, "renderer: %zu guest memory notifications applied", g_pending_memory.size());
+			g_pending_memory.clear();
+			g_memory_ready.store(true, std::memory_order_release);
+		}
 		{
 			std::lock_guard lock(g_renderer_mutex);
 			g_renderer_result = 0;
 		}
 		g_renderer_ready.notify_all();
-		Libs::Graphics::WindowRun();
+	}
+}
+
+void RendererEnd() {
+	{
 		if (!g_shutdown_requested.load(std::memory_order_acquire)) {
 			if (g_host.request_exit != nullptr) {
 				Log(0, "renderer: the window was closed, asking the host to exit");
@@ -645,14 +824,85 @@ void RendererThread() {
 		}
 		Log(0, "renderer: window loop ended, shutting the subsystems down");
 	}
+	g_subsystems.reset();
 	Log(0, "renderer: stopped");
 }
+
+void RendererStepOnMain(void*);
+
+void ScheduleRendererStep() {
+	if (g_host.run_on_main_thread(g_host.user, RendererStepOnMain, nullptr, 0) != 0) {
+		Log(2, "renderer: the host could not queue the next window-loop step; running the rest inline");
+		while (Libs::Graphics::WindowRunStep(1000)) {
+		}
+		Libs::Graphics::WindowRunEnd();
+		RendererEnd();
+	}
+}
+
+void RendererStepOnMain(void*) {
+	if (Libs::Graphics::WindowRunStep(8)) {
+		ScheduleRendererStep();
+		return;
+	}
+	Libs::Graphics::WindowRunEnd();
+	RendererEnd();
+}
+
+// Thread mode (no host main queue): the whole loop on this thread, as before.
+void RendererThread() {
+	RendererBegin();
+	Libs::Graphics::WindowRun();
+	RendererEnd();
+}
+
+#if defined(__APPLE__)
+// nps5 self memory limit, as the AnyPS5 driver's SelfGuard does for the canonical stack (which is not
+// loaded with NPS5_GPU=kyty): the process ends itself with exit code 86 and "[RED] self memory limit"
+// once its physical footprint (the number the machine guard and jetsam look at: resident +
+// compressed + GPU/IOSurface memory) passes NPS5_SELF_MEM_LIMIT_MB (default 18944, 0 = off), before
+// the machine runs out. Polled every 250 ms on its own thread; nothing on any hot path.
+void StartSelfMemoryLimit() {
+	static std::atomic<bool> started {false};
+	if (started.exchange(true)) {
+		return;
+	}
+	const char* text  = std::getenv("NPS5_SELF_MEM_LIMIT_MB");
+	const long  limit = text != nullptr && text[0] != '\0' ? std::strtol(text, nullptr, 10) : 18944;
+	std::fprintf(stderr, "[selfguard] kyty: self memory limit %ld MiB (NPS5_SELF_MEM_LIMIT_MB, 0 = off)\n", limit);
+	if (limit <= 0) {
+		return;
+	}
+	std::thread([limit] {
+		uint64_t peak = 0;
+		for (;;) {
+			task_vm_info_data_t    info {};
+			mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+			if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+				const uint64_t mib = info.phys_footprint >> 20u;
+				peak               = std::max(peak, mib);
+				if (mib > static_cast<uint64_t>(limit)) {
+					std::fprintf(stderr, "[RED] self memory limit: kyty: footprint %llu MiB > %ld MiB, exiting with code 86\n",
+					             static_cast<unsigned long long>(mib), limit);
+					std::fflush(stderr);
+					std::fflush(stdout);
+					_exit(86);
+				}
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
+		}
+	}).detach();
+}
+#endif
 
 int ApiStartGraphics() {
 	std::lock_guard lifecycle(g_lifecycle);
 	if (g_state.load() != State::Initialized) {
 		return KYTY_GPU_E_STATE;
 	}
+#if defined(__APPLE__)
+	StartSelfMemoryLimit();
+#endif
 	if (g_host.donate_guest_range != nullptr) {
 		// Kyty's AGC driver maps its own direct memory at the PS5 address 0x0fe0000000 (agc.cpp
 		// DriverDmemBase, 2 MiB). Kyty's address space only keeps free gaps above 16 MiB, so the
@@ -691,7 +941,28 @@ int ApiStartGraphics() {
 		    static_cast<unsigned long long>(FixedBase));
 	}
 	g_renderer_result = 1;
-	g_renderer_thread = std::thread(RendererThread);
+	// macOS: windows and the event pump belong to the process's main thread. A 1.6 host with a main
+	// queue runs Kyty's "main thread" (window loop) there; it returns when the window loop ends.
+	if (g_host.run_on_main_thread != nullptr && (g_host_info.flags & KYTY_GPU_HOST_MAIN_QUEUE) != 0) {
+		const bool stepped = [] { const char* v = std::getenv("KYTY_WINDOW_STEPPED"); return v == nullptr || v[0] != '0'; }();
+		if (stepped) {
+			g_stepped_loop = true;
+		}
+		if (g_host.run_on_main_thread(g_host.user, [](void*) {
+			    if (!g_stepped_loop) {
+				    RendererThread();
+				    return;
+			    }
+			    RendererBegin();
+			    Libs::Graphics::WindowRunBegin();
+			    ScheduleRendererStep();
+		    }, nullptr, 0) != 0) {
+			Log(2, "start_graphics: the host could not run Kyty's window loop on its main thread");
+			return KYTY_GPU_E_HOST_CALLBACK;
+		}
+	} else {
+		g_renderer_thread = std::thread(RendererThread);
+	}
 	std::unique_lock lock(g_renderer_mutex);
 	const auto started = std::chrono::steady_clock::now();
 	if (!g_renderer_ready.wait_for(lock, std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
@@ -704,7 +975,8 @@ int ApiStartGraphics() {
 	if (g_host.publish_pad != nullptr) {
 		g_relay = std::thread(Relay);
 	}
-	if (!Common::HostException::InstallFirstAccessHandler(BridgeGuestAccessFault)) {
+	// A hosted-memory host owns the fault handler and calls handle_fault for Kyty's watched pages.
+	if (!g_hosted_memory && !Common::HostException::InstallFirstAccessHandler(BridgeGuestAccessFault)) {
 		Log(2, "start_graphics: Kyty's guest memory fault handler could not be installed");
 		return KYTY_GPU_E_STATE;
 	}
@@ -739,6 +1011,11 @@ void ClosePadAudioStreams() {
 void ApiShutdown() {
 	std::lock_guard lock(g_lifecycle);
 	g_shutdown_requested.store(true, std::memory_order_release);
+	if (g_host_serves_loads) {
+		Log(0, "shutdown: GPU-thread read faults: %llu loads completed from the alias, %llu took the ordinary path",
+		    static_cast<unsigned long long>(g_self_loads_served.load()),
+		    static_cast<unsigned long long>(g_self_loads_waited.load()));
+	}
 	ClosePadAudioStreams();
 	if (g_state.load() == State::Graphics) {
 		SDL_Event quit {};
@@ -756,22 +1033,96 @@ void ApiShutdown() {
 }
 
 int ApiRegisterMemory(uint64_t base, uint64_t size, uint32_t flags, const void* alias) {
-	Log(2, "register_memory(0x%llx, 0x%llx, 0x%x, %p): Kyty memory adapter is milestone 2",
-	    static_cast<unsigned long long>(base), static_cast<unsigned long long>(size), flags, alias);
-	return KYTY_GPU_E_NOT_IMPLEMENTED;
+	if (!g_hosted_memory) {
+		Log(2, "register_memory(0x%llx, 0x%llx, 0x%x, %p): only a hosted-memory (ABI 1.6) host registers memory",
+		    static_cast<unsigned long long>(base), static_cast<unsigned long long>(size), flags, alias);
+		return KYTY_GPU_E_NOT_IMPLEMENTED;
+	}
+	if (!g_memory_ready.load(std::memory_order_acquire)) {
+		std::lock_guard lock(g_pending_memory_mutex);
+		if (!g_memory_ready.load(std::memory_order_acquire)) {
+			g_pending_memory.push_back({base, size, flags, alias, true});
+			return KYTY_GPU_OK;
+		}
+	}
+	return Libs::LibKernel::Memory::HostedRegister(base, size, flags, alias) ? KYTY_GPU_OK : KYTY_GPU_E_ARGUMENT;
 }
 
 int ApiUnregisterMemory(uint64_t base, uint64_t size) {
-	Log(2, "unregister_memory(0x%llx, 0x%llx): Kyty memory adapter is milestone 2",
-	    static_cast<unsigned long long>(base), static_cast<unsigned long long>(size));
-	return KYTY_GPU_E_NOT_IMPLEMENTED;
+	if (!g_hosted_memory) {
+		return KYTY_GPU_E_NOT_IMPLEMENTED;
+	}
+	if (!g_memory_ready.load(std::memory_order_acquire)) {
+		std::lock_guard lock(g_pending_memory_mutex);
+		if (!g_memory_ready.load(std::memory_order_acquire)) {
+			g_pending_memory.push_back({base, size, 0, nullptr, false});
+			return KYTY_GPU_OK;
+		}
+	}
+	(void)Libs::LibKernel::Memory::HostedUnregister(base, size);
+	return KYTY_GPU_OK;
 }
 
 int ApiInvalidateMemory(uint64_t base, uint64_t size) {
-	Log(2, "invalidate_memory(0x%llx, 0x%llx): Kyty memory adapter is milestone 2",
-	    static_cast<unsigned long long>(base), static_cast<unsigned long long>(size));
-	return KYTY_GPU_E_NOT_IMPLEMENTED;
+	if (!g_hosted_memory || !g_memory_ready.load(std::memory_order_acquire)) {
+		return g_hosted_memory ? KYTY_GPU_OK : KYTY_GPU_E_NOT_IMPLEMENTED;
+	}
+	Libs::LibKernel::Memory::InvalidateMemory(base, size);
+	return KYTY_GPU_OK;
 }
+
+int ApiProtectMemory(uint64_t base, uint64_t size, uint32_t flags) {
+	if (!g_hosted_memory) {
+		return KYTY_GPU_E_NOT_IMPLEMENTED;
+	}
+	if (!g_memory_ready.load(std::memory_order_acquire)) {
+		return KYTY_GPU_OK; // nothing is watched yet; the flags only matter to the tracker's resync
+	}
+	return Libs::LibKernel::Memory::HostedProtect(base, size, flags) ? KYTY_GPU_OK : KYTY_GPU_E_ARGUMENT;
+}
+
+// A CPU access trapped on a tracker page Kyty armed (guest address). Signal-handler context.
+int ApiHandleFault(uint64_t address, int is_write) {
+	if (!g_memory_ready.load(std::memory_order_acquire)) {
+		return 0;
+	}
+	using GpuAccess = Libs::Graphics::PageFaultAccess;
+	// nps5 (KYTY_HOSTED_SELF_LOADS, default on; =0 off): a load by Kyty's own GPU thread from a page
+	// Kyty itself keeps access-watched (bytes that share a tracker page with GPU-owned bytes, read
+	// through the guest view). When the exact bytes of the load are clean for a backing read, the
+	// alias holds what the mapped read would return after a drain: complete the load with them and
+	// leave the page armed, instead of waiting for the GPU. A burst on one page (a copy or hash
+	// loop) takes the ordinary path once, which opens the page.
+	if (is_write == 0 && g_host_serves_loads && Libs::Graphics::GuestGpu::IsGpuThread()) {
+		static const bool self_loads = [] {
+			const char* value = std::getenv("KYTY_HOSTED_SELF_LOADS");
+			return value == nullptr || value[0] != '0';
+		}();
+		static thread_local uint64_t burst_page  = 0;
+		static thread_local uint64_t burst_count = 0;
+		const uint64_t               page        = address >> 12u;
+		burst_count = burst_page == page ? burst_count + 1 : 0;
+		burst_page  = page;
+		uint64_t load_address = 0;
+		uint32_t load_size    = 0;
+		uint8_t  bytes[16] {};
+		if (self_loads && burst_count < 64 &&
+		    g_host.fault_load(g_host.user, &load_address, &load_size) == 1 && load_size != 0 && load_size <= 16 &&
+		    Libs::LibKernel::Memory::IsGpuCleanForRead(load_address, load_size) &&
+		    Libs::LibKernel::Memory::TryReadBacking(load_address, bytes, load_size) &&
+		    g_host.fault_load_apply(g_host.user, bytes, load_size) == 1) {
+			g_self_loads_served.fetch_add(1, std::memory_order_relaxed);
+			return 1;
+		}
+		g_self_loads_waited.fetch_add(1, std::memory_order_relaxed);
+	}
+	// A load the host can complete: publish a (token) native context for the fault, as the x86 handlers
+	// publish theirs, so BufferCache::ReadMemory may serve it (KYTY_READ_FAULT_PUBLISHED).
+	const GuestLoad::FaultScope guest_load(is_write == 0 && g_host_serves_loads ? static_cast<void*>(&g_host) : nullptr);
+	return Libs::LibKernel::Memory::HandleGpuFault(is_write != 0 ? GpuAccess::Write : GpuAccess::Read, address) ? 1 : 0;
+}
+
+void* ApiNidEntry(const char* nid);
 
 static_assert(sizeof(KytyGpuPacket) == sizeof(Libs::Graphics::Gen5Driver::Packet));
 static_assert(offsetof(KytyGpuPacket, dw_num) == offsetof(Libs::Graphics::Gen5Driver::Packet, dw_num));
@@ -815,14 +1166,42 @@ const KytyGpuNidInfo* ApiFindNid(const char* nid) {
 
 std::mutex g_lazy;
 
+void* const g_entries[] = {
+#define KYTY_GPU_NID(index, nid, library, function, binding) reinterpret_cast<void*>(&kyty_gpu_nid_##index),
+#include "hybrid/kytyGpuNids.inc"
+#undef KYTY_GPU_NID
+};
+
+// ABI 1.6: the native entry point of an export (its thunk; bound by init).
+void* ApiNidEntry(const char* nid) {
+	if (nid == nullptr) {
+		return nullptr;
+	}
+	for (uint32_t i = 0; i < g_row_count; ++i) {
+		if (std::strcmp(g_rows[i].nid, nid) == 0) {
+			return g_entries[i];
+		}
+	}
+	return nullptr;
+}
+
 const KytyGpuHostCallbacks* FindHost() {
 	const char* name   = std::getenv("KYTY_GPU_HOST_MODULE");
+#if defined(_WIN32)
 	HMODULE     module = LoadLibraryA(name != nullptr ? name : KYTY_GPU_HOST_MODULE_DEFAULT);
 	if (module == nullptr) {
 		return nullptr;
 	}
 	const auto entry = reinterpret_cast<KytyGpuHostEntryFn>(
 	    reinterpret_cast<void*>(GetProcAddress(module, KYTY_GPU_HOST_ENTRY)));
+#else
+	// nps5: the host entry is looked up in KYTY_GPU_HOST_MODULE, or in the process itself.
+	void* module = name != nullptr ? dlopen(name, RTLD_NOW | RTLD_GLOBAL) : RTLD_DEFAULT;
+	if (name != nullptr && module == nullptr) {
+		return nullptr;
+	}
+	const auto entry = reinterpret_cast<KytyGpuHostEntryFn>(dlsym(module, KYTY_GPU_HOST_ENTRY));
+#endif
 	return entry != nullptr ? entry() : nullptr;
 }
 
@@ -841,9 +1220,23 @@ const KytyGpuApi g_api = {
     sizeof(KytyGpuApi),  KYTY_GPU_ABI_VERSION, KYTY_GIT_VERSION, ApiInit,     ApiStartGraphics,
     ApiShutdown,         ApiRegisterMemory,    ApiUnregisterMemory, ApiInvalidateMemory, ApiSubmitDcb,
     ApiSubmitAcb,        ApiNidCount,          ApiNidInfo,          ApiFindNid,
+    KYTY_GPU_POINTERS_GUEST, 0, ApiNidEntry, ApiHandleFault, ApiProtectMemory,
 };
 
 } // namespace
+
+// For Gen5Driver::Initialize (libs/agc.cpp), which runs inside the Graphics lifecycle step, before the
+// pending notifications are applied: the last notification that touches the range decides.
+extern "C" __attribute__((used)) bool KytyGpuHostedPendingCovers(uint64_t base, uint64_t size) {
+	std::lock_guard lock(g_pending_memory_mutex);
+	bool            covered = false;
+	for (const auto& memory: g_pending_memory) {
+		if (memory.base < base + size && base < memory.base + memory.size) {
+			covered = memory.add && memory.base <= base && base + size <= memory.base + memory.size;
+		}
+	}
+	return covered;
+}
 
 // Game code reached an export no host has bound yet: AstroBot.exe loads the shims and calls
 // straight in. Find the host module, bind the exports and start the renderer, once.

@@ -1,6 +1,9 @@
+// nps5: exports take guest-valued pointers in kyty_gpu.dylib (libs.h GuestCall).
+#define KYTY_LIB_GUEST_POINTERS 1
 #include "common/abi.h"
 #include "libs/agc.h"
 #include "libs/libs.h"
+#include "libs/guestCallTrace.h" // nps5: KYTY_GPU_CALL_TRACE
 #include "loader/symbolDatabase.h"
 
 namespace Libs {
@@ -92,10 +95,10 @@ LIB_DEFINE(InitAgcDriver_1) {
 	LIB_FUNC("LFSPFmGc9Hg", Gen5::AgcDcbSetWorkloadsActive);
 	LIB_FUNC("hEK26Wdny6s", Gen5::AgcDcbSetWorkloadComplete);
 	LIB_FUNC("QhCbS4X9Rl8", Gen5::AgcDcbSetMarker);
-	LIB_FUNC("pFLArOT53+w", Gen5::AgcDcbSetShRegisterDirect);
-	LIB_FUNC("LHFXRrlTPD8", Gen5::AgcDcbSetCxRegisterDirect);
+	LIB_FUNC_RAW("pFLArOT53+w", Gen5::AgcDcbSetShRegisterDirect);
+	LIB_FUNC_RAW("LHFXRrlTPD8", Gen5::AgcDcbSetCxRegisterDirect);
 	LIB_FUNC("1DeUNpRIDDA", Gen5::AgcDcbSetCxRegisterDirectGetSize);
-	LIB_FUNC("w4-d0n60hdo", Gen5::AgcDcbSetUcRegisterDirect);
+	LIB_FUNC_RAW("w4-d0n60hdo", Gen5::AgcDcbSetUcRegisterDirect);
 	LIB_FUNC("ZvwO9euwYzc", Gen5::AgcDcbSetCxRegistersIndirect);
 	LIB_FUNC("GBCh3zCihoU", Gen5::AgcDcbSetCxRegistersIndirectGetSize);
 	LIB_FUNC("-HOOCn0JY48", Gen5::AgcDcbSetShRegistersIndirect);

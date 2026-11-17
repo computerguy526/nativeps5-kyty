@@ -259,6 +259,30 @@ uint64_t AllocateGuestStackMemory(uint64_t search_addr, uint64_t size,
                                   Common::VirtualMemory::Mode mode, const char* name);
 bool     ProtectGuestMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode,
                             Common::VirtualMemory::Mode* old_mode = nullptr);
+// nps5 hosted memory (kyty_gpu.dylib in the nativeps5 runtime, hybrid ABI 1.6): the host process owns
+// guest memory. Kyty maps, allocates and protects nothing; the host reports the GPU-visible ranges
+// and arms Kyty's page watches. Bytes are read through each range's alias (an always readable and
+// writable host view) or, without one, through the guest view at guest + Guest::Bias().
+struct HostedCallbacks {
+	void* user = nullptr;
+	// watch: 0 none, 1 trap the first store, 2 trap the first load or store (KYTY_GPU_WATCH_*).
+	int (*protect_guest)(void* user, uint64_t address, uint64_t size, uint32_t watch) = nullptr;
+};
+void               HostedEnable(const HostedCallbacks& callbacks); // before Initialize()
+[[nodiscard]] bool HostedActive() noexcept;
+// flags: KYTY_GPU_MEMORY_* of kytyGpuApi.h. A range may replace registered ones.
+bool HostedRegister(uint64_t base, uint64_t size, uint32_t flags, const void* alias);
+bool HostedUnregister(uint64_t base, uint64_t size);
+bool HostedProtect(uint64_t base, uint64_t size, uint32_t flags);
+// Host bytes of guest [vaddr, vaddr + size) for the library's own READS: the range's alias when one
+// registered range holds all of it (never watch-protected, so the read cannot fault on the
+// library's own page watches or on a neighbour's inside a 16 KiB host page), else the guest view
+// (guest + bias; also when memory is not hosted). Per-thread cache of the last range.
+[[nodiscard]] const void* GuestReadPtr(uint64_t vaddr, uint64_t size) noexcept;
+template <typename T>
+[[nodiscard]] inline const T* GuestRead(uint64_t vaddr, uint64_t size = sizeof(T)) noexcept {
+	return static_cast<const T*>(GuestReadPtr(vaddr, size));
+}
 // Transient PageManager watch state; does not change the guest mapping's semantic protection.
 bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode);
 bool FreeGuestMemory(uint64_t vaddr, uint64_t size);

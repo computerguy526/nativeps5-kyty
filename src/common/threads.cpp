@@ -1,8 +1,14 @@
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>
+#endif
 #include "common/threads.h"
 
 #include "common/assert.h"
 #include "common/cpuPlacement.h"
 #include "common/hangWatchdog.h"
+#include "common/liveSwitch.h"
+#include "common/spinRelax.h"
 
 #include <algorithm>
 #include <atomic>
@@ -270,20 +276,41 @@ static void RaiseCurrentThreadPriorityLevel(int level) {
 }
 #endif
 
+#if defined(__APPLE__)
+// nps5: the macOS form of the priority levels: a QoS class keeps the thread on performance cores
+// and ahead of default-class work (level 2 = user-interactive, 1 = user-initiated).
+static void RaiseCurrentThreadPriorityLevel(int level) {
+	if (level == 0) {
+		return;
+	}
+	(void)pthread_set_qos_class_self_np(level == 2 ? QOS_CLASS_USER_INTERACTIVE : QOS_CLASS_USER_INITIATED, 0);
+}
+#endif
+
+// KYTY_SPIN_RELAX (common/spinRelax.h): yield|0 = sched_yield (default), pause|1 = CPU spin hint.
+static Live::Switch g_spin_relax_switch("KYTY_SPIN_RELAX", [](const char* value) -> int64_t {
+	const int pause = value != nullptr && (value[0] == '1' || value[0] == 'p' || value[0] == 'P') ? 1 : 0;
+	g_spin_relax_pause.store(pause, std::memory_order_relaxed);
+	return pause;
+});
+
 static int PriorityLevelFromEnv(const char* name, int fallback) {
 	const char* value = std::getenv(name);
+#if defined(__APPLE__)
+	fallback = 0; // nps5: opt-in on macOS until measured (KYTY_CP_PRIORITY / _DRAW_PREP_ / _SERVICE_)
+#endif
 	return value != nullptr && value[0] >= '0' && value[0] <= '2' ? value[0] - '0' : fallback;
 }
 
 void RaiseCurrentThreadPriority() {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || defined(__APPLE__)
 	static const int level = PriorityLevelFromEnv("KYTY_CP_PRIORITY", 1);
 	RaiseCurrentThreadPriorityLevel(level);
 #endif
 }
 
 void RaiseDrawPrepThreadPriority() {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || defined(__APPLE__)
 	static const int level = PriorityLevelFromEnv("KYTY_DRAW_PREP_PRIORITY", 0);
 	RaiseCurrentThreadPriorityLevel(level);
 #endif
@@ -295,7 +322,7 @@ int ServiceThreadPriorityLevel() {
 }
 
 void RaiseServiceThreadPriority() {
-#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || defined(__APPLE__)
 	RaiseCurrentThreadPriorityLevel(ServiceThreadPriorityLevel());
 #endif
 }
@@ -314,11 +341,7 @@ void YieldAndPauseMicro(uint32_t micros) {
 	const auto end   = start + std::chrono::microseconds(micros);
 	(void)YieldToReadyThread();
 	while (std::chrono::steady_clock::now() < end) {
-#if defined(_M_X64) || defined(__x86_64__)
-		_mm_pause();
-#else
-		std::this_thread::yield();
-#endif
+		SpinRelax(); // KYTY_SPIN_RELAX (common/spinRelax.h)
 	}
 }
 

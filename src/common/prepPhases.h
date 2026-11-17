@@ -74,6 +74,9 @@ void Flush(ThreadState& state);
 [[nodiscard]] inline uint64_t Tsc() {
 #if defined(_M_X64) || defined(__x86_64__)
 	return __rdtsc();
+#elif defined(__aarch64__)
+	// nps5 slowlvl: the virtual counter (24 MHz on Apple silicon; phases are sums over >=128 slots).
+	return __builtin_arm_rsr64("CNTVCT_EL0");
 #else
 	return 0;
 #endif

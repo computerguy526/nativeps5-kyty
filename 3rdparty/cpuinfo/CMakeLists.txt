@@ -60,6 +60,9 @@ elseif(CPUINFO_TARGET_PROC MATCHES "^(armv[5-8].*|aarch64|arm64)$")
 	if(ANDROID)
 		list(APPEND cpuinfo_src src/arm/android/properties.c)
 	endif()
+	if(APPLE) # nps5: native Apple silicon
+		list(APPEND cpuinfo_src src/arm/mach/init.c src/mach/topology.c)
+	endif()
 	
 endif()
 

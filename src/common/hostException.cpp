@@ -186,6 +186,9 @@ static LONG WINAPI FirstExceptionFilter(PEXCEPTION_POINTERS exception) noexcept 
 
 static std::atomic<Handler> g_handler {nullptr};
 static std::atomic_uint32_t g_install_state {0};
+static std::atomic<Handler> g_first_handler {nullptr};
+static struct sigaction     g_previous[2] {}; // SIGSEGV, SIGBUS as found by InstallFirstAccessHandler
+static bool                 g_previous_valid[2] {};
 
 static_assert(decltype(g_handler)::is_always_lock_free);
 static_assert(decltype(g_install_state)::is_always_lock_free);
@@ -212,7 +215,11 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 	const auto& ss = mc->__ss;
 
 	ExceptionInfo info {};
+#if defined(__aarch64__)
+	info.exception_address = __darwin_arm_thread_state64_get_pc(ss);
+#else
 	info.exception_address = ss.__rip;
+#endif
 	info.native_code       = static_cast<uint32_t>(si->si_code);
 	info.native_context    = uctx;
 
@@ -220,10 +227,19 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 		info.type = ExceptionType::IllegalInstruction;
 	} else {
 		info.type                   = ExceptionType::AccessViolation;
+#if defined(__aarch64__)
+		// nps5 arm64: ESR_EL1. EC 0x20/0x21 = instruction abort; data aborts carry WnR in bit 6.
+		const uint64_t esr = mc->__es.__esr;
+		const uint64_t ec  = esr >> 26u;
+		info.access_violation_type = DecodeAccess((ec == 0x20u || ec == 0x21u) ? 0x10u
+		                                          : ((esr & 0x40u) != 0 ? 0x2u : 0u));
+#else
 		info.access_violation_type  = DecodeAccess(mc->__es.__err);
+#endif
 		info.access_violation_vaddr = reinterpret_cast<uint64_t>(si->si_addr);
 	}
 
+#if !defined(__aarch64__) // nps5 arm64: there are no guest x86 registers in a host context
 	info.rax = ss.__rax;
 	info.rbx = ss.__rbx;
 	info.rcx = ss.__rcx;
@@ -240,10 +256,31 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 	info.r13 = ss.__r13;
 	info.r14 = ss.__r14;
 	info.r15 = ss.__r15;
+#endif
 
+	// nps5: the hybrid's first-access handler (guest memory tracking) runs before everything else.
+	if (sig != SIGILL) {
+		const auto first = g_first_handler.load(std::memory_order_acquire);
+		if (first != nullptr && first(info)) {
+			return;
+		}
+	}
 	const auto handler = g_handler.load(std::memory_order_acquire);
 	if (handler != nullptr && handler(info)) {
 		return; // retry the faulting instruction against the fixed mapping
+	}
+	// nps5: in a host process (kyty_gpu.dylib) the fault belongs to the handler that was installed
+	// before ours (the host runtime's guest fault handler, its crash reporter).
+	if (const int slot = sig == SIGSEGV ? 0 : (sig == SIGBUS ? 1 : -1); slot >= 0 && g_previous_valid[slot]) {
+		const struct sigaction& old = g_previous[slot];
+		if ((old.sa_flags & SA_SIGINFO) != 0 && old.sa_sigaction != nullptr) {
+			old.sa_sigaction(sig, si, uctx);
+			return;
+		}
+		if (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN) {
+			old.sa_handler(sig);
+			return;
+		}
 	}
 
 	// Unresolved: restore the default action so the re-executed instruction terminates.
@@ -394,6 +431,33 @@ bool InstallFirstAccessHandler(Handler handler) {
 		g_first_handler.store(nullptr, std::memory_order_release);
 		printf("AddVectoredExceptionHandler(first) failed\n");
 		return false;
+	}
+	return true;
+#elif defined(__APPLE__)
+	// nps5: POSIX has one handler per signal. Ours takes SIGSEGV/SIGBUS, asks `handler` first and
+	// passes every fault it does not resolve to the handler found here (SignalHandler above).
+	if (handler == nullptr) {
+		return false;
+	}
+	Handler expected = nullptr;
+	if (!g_first_handler.compare_exchange_strong(expected, handler, std::memory_order_acq_rel)) {
+		return expected == handler;
+	}
+	struct sigaction sa {};
+	sa.sa_sigaction = SignalHandler;
+	sa.sa_flags     = SA_SIGINFO | SA_ONSTACK;
+	sigemptyset(&sa.sa_mask);
+	const int signals[2] = {SIGSEGV, SIGBUS};
+	for (int i = 0; i < 2; i++) {
+		struct sigaction old {};
+		if (sigaction(signals[i], &sa, &old) != 0) {
+			printf("sigaction(%d) failed to install the first-access handler\n", signals[i]);
+			return false;
+		}
+		if (old.sa_sigaction != SignalHandler) {
+			g_previous[i]       = old;
+			g_previous_valid[i] = true;
+		}
 	}
 	return true;
 #else

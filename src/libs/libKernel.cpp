@@ -465,7 +465,11 @@ static KYTY_SYSV_ABI void stack_chk_fail() {
 	PRINT_NAME();
 
 	uint64_t rsp = 0;
+#if defined(__x86_64__) || defined(_M_X64)
 	asm volatile("movq %%rsp, %0" : "=r"(rsp));
+#else
+	rsp = reinterpret_cast<uint64_t>(__builtin_frame_address(0)); // nps5 arm64
+#endif
 	dump_stack_chk_fail_context(reinterpret_cast<uint64_t>(__builtin_return_address(0)), rsp);
 
 	EXIT("stack fail!!!");
