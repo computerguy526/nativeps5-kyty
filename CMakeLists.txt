@@ -659,6 +659,14 @@ target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(load_card_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LoadCardTests.cpp")
 target_include_directories(load_card_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5: per-page per-frame served-read-fault counter (header only).
+add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")
+target_include_directories(read_fault_frame_burst_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# nps5: occlusion query-only draw skip verdicts (header only).
+add_executable(occlusion_draw_skip_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/OcclusionDrawSkipTests.cpp")
+target_include_directories(occlusion_draw_skip_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5: the hosted guest-memory seam without the kernel or the renderer (header only): the reader
 # slots, the range map (cut ranges lose their alias, one-step replace) and the bridge's pre-start
 # notification queue, self memory limit and main-queue shutdown gate.

@@ -1,5 +1,6 @@
 #include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/readFaultFrameBurst.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -342,6 +343,23 @@ Live::Switch g_read_fault_published("KYTY_READ_FAULT_PUBLISHED", ParseReadFaultP
 // for the page's publication instead (a copy loop would otherwise fault on every load). A wait only
 // pays when the page then stays readable: for a page the GPU writes again every frame (a GPU
 // simulation the game samples from worker threads) each wait costs milliseconds and buys nothing.
+// nps5: KYTY_READ_FAULT_PUBLISHED_FRAME_BURST (default 0 = off; 48 is the tested value): the number of loads
+// served per tracker page per guest frame (all threads together) after which the next one waits for
+// the page's publication (readFaultFrameBurst.h). Independent of the per-thread burst above, which
+// stays as configured. Live-safe: read once.
+uint32_t ReadFaultPublishedFrameBurst() {
+	static const uint32_t limit = [] {
+		const auto* value = std::getenv("KYTY_READ_FAULT_PUBLISHED_FRAME_BURST");
+		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
+	}();
+	return limit;
+}
+
+ReadFaultFrameBurst::PageFrameCounter& ReadFaultFrameCounter() {
+	static ReadFaultFrameBurst::PageFrameCounter counter;
+	return counter;
+}
+
 uint32_t ReadFaultPublishedBurst() {
 	static const uint32_t burst = [] {
 		const auto* value = std::getenv("KYTY_READ_FAULT_PUBLISHED_BURST");
@@ -2033,7 +2051,9 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			return true;
 		};
 		if (const auto burst_limit = ReadFaultPublishedBurst();
-		    burst_limit != 0 && burst_count >= burst_limit) {
+		    (burst_limit != 0 && burst_count >= burst_limit) ||
+		    ReadFaultFrameBurst::ShouldWait(ReadFaultFrameCounter(), ReadFaultPublishedFrameBurst(), page,
+		                                    static_cast<uint32_t>(frame))) {
 			state.burst.fetch_add(1, std::memory_order_relaxed);
 		} else if (!decoded()) {
 			state.undecodable.fetch_add(1, std::memory_order_relaxed);

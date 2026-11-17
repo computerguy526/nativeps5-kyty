@@ -1,3 +1,5 @@
+#include <chrono>
+#include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
 #include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/renderDraw.h"
 
@@ -3875,6 +3877,48 @@ static void AuditGraphicsPushBudget(CpGaps::DrawPassSample& sample,
 	                              static_cast<int64_t>(proposed_bytes);
 }
 
+// nps5: see occlusionDrawSkip.h. Counts verdicts and prints one line every 10 s.
+static bool DrawIsQueryOnly(const DrawRenderState& state,
+                            std::span<const ShaderVertexInputInfo> vertex_stages) {
+	namespace OS = OcclusionDrawSkip;
+	OS::DrawFacts f;
+	f.occlusion_accurate = OcclusionCounter::Enabled();
+	f.mesh               = state.vertex_info[0].stage.program->stage == ShaderType::Mesh;
+	f.color_count        = state.color_count;
+	const auto& di       = state.depth_info;
+	f.depth_write        = di.depth_write_enable;
+	f.depth_clear        = di.depth_clear_enable;
+	f.stencil_clear      = di.stencil_clear_enable;
+	f.stencil_write      = di.stencil_test_enable &&
+	                  (di.stencil_front.writeMask != 0 || di.stencil_back.writeMask != 0);
+	for (const auto& stage: vertex_stages) {
+		if (stage.stage.program == nullptr || !DrawRunProgramEligible(*stage.stage.program)) {
+			f.shader_writes = true;
+		}
+	}
+	if (state.ps_active && (state.ps_input_info.stage.program == nullptr ||
+	                        !DrawRunProgramEligible(*state.ps_input_info.stage.program))) {
+		f.shader_writes = true;
+	}
+	const auto verdict = OS::Classify(f);
+	auto&      c       = OS::GetCounters();
+	c.n[static_cast<size_t>(verdict)].fetch_add(1, std::memory_order_relaxed);
+	static std::atomic<uint64_t> last_ns {0};
+	const auto now = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+	auto prev = last_ns.load(std::memory_order_relaxed);
+	if (now - prev > 10'000'000'000ull && last_ns.compare_exchange_strong(prev, now)) {
+		std::printf("Kyty occlusion draw skip 10s: skipped %llu; kept: accurate %llu, mesh %llu, colour %llu, "
+		            "depth %llu, stencil %llu, shader writes %llu\n",
+		            (unsigned long long)c.n[0].exchange(0), (unsigned long long)c.n[1].exchange(0),
+		            (unsigned long long)c.n[2].exchange(0), (unsigned long long)c.n[3].exchange(0),
+		            (unsigned long long)c.n[4].exchange(0), (unsigned long long)c.n[5].exchange(0),
+		            (unsigned long long)c.n[6].exchange(0));
+	}
+	return verdict == OS::Verdict::Skip;
+}
+
 void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buffer,
                                          const DrawCallInfo& draw, DrawRenderState& state,
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
@@ -3893,6 +3937,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	const auto vertex_stages =
 	    std::span {state.vertex_info.data(), state.programs.VertexStageCount()};
+	// nps5 (KYTY_OCCLUSION_QUERY_DRAW_SKIP, default off): a draw that writes nothing while
+	// occlusion queries are synthetic is a query box.
+	if (OcclusionDrawSkip::Enabled() && DrawIsQueryOnly(state, vertex_stages)) {
+		m_run.valid        = false;
+		m_run_active       = false;
+		m_run_targets_kept = false;
+		for (auto& record: m_run_kept) {
+			record.valid = false;
+		}
+		return;
+	}
 	// CommitStats: image transitions recorded while this draw is committed.
 	const auto stats_transitions = CommitStats::Enabled() ? Image::RecordedTransitions() : uint64_t {0};
 	if (m_context.GetPipelineCache().PipelinePrefetchEnabled() &&
