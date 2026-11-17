@@ -113,7 +113,7 @@ struct ViewLevels {
 // The first level a sampled view may need once the skip floor applies.
 [[nodiscard]] constexpr uint32_t SkipFloor(uint32_t view_first, uint32_t skip, uint32_t guest_levels) noexcept {
 	const uint32_t first = view_first > skip ? view_first : skip;
-	return first < guest_levels ? first : guest_levels - 1u;
+	return first < guest_levels ? first : (guest_levels != 0u ? guest_levels - 1u : 0u);
 }
 
 } // namespace Libs::Graphics::ResidentTrim

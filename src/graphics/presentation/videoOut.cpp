@@ -885,7 +885,7 @@ void VideoOutDriver::Impl::VblankEnd() {
 // nps5: default ON in this tree (=0 restores the 60 Hz grid). Measured on Astro (Kyty + KosmicKrisp, in-run A/B): on the
 // grid a 47-57 ms frame alternates between 50 and 67 ms (stdev 6.4-9.7 ms, mean frame-to-frame change 7-14 ms) and a
 // finished frame waits 7-10 ms for the tick; presented when ready: stdev 1.1-3.6, change 1.3-3.8 ms, same fps, 8-11 ms
-// less submission -> present latency (work/kyty/pacing-plan.md in nativeps5).
+// less submission -> present latency.
 static Live::Switch g_present_abs_vblank("KYTY_PRESENT_ABS_VBLANK", Live::ParseDefaultOn);
 // ASTROHYBRID_FPS_PACING (default on; =0 off): with a frame-rate limit, presents keep a fixed cadence
 // (each due time is the previous due time plus the interval) instead of restarting the interval at

@@ -2,7 +2,7 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_METALFX_H_
 
 // nps5: KYTY_METALFX=1|temporal|spatial (default off; macOS on KosmicKrisp with the
-// nps5_kk_cmd_metalfx driver command, work/s3/kk-mfx): Apple MetalFX in place of Astro Bot's own
+// nps5_kk_cmd_metalfx driver command of the patched KosmicKrisp driver): Apple MetalFX in place of Astro Bot's own
 // temporal upscale pass (RenderExecutor::TryMetalFxUpscale, metalfx.cpp). Same hook, pass and
 // inputs as ASTROHYBRID_DLSS (dlss.h): the pass reads the SMAA-resolved colour, the motion-vector
 // target and the history, writes the upscaled colour (and the next history, which only the pass

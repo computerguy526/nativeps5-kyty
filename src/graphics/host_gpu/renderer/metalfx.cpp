@@ -30,7 +30,7 @@ namespace MetalFx {
 
 namespace {
 
-// The driver command's argument (work/s3/kk-mfx, src/kosmickrisp/vulkan/kk_cmd_fx.c).
+// The driver command's argument (the patched KosmicKrisp driver, src/kosmickrisp/vulkan/kk_cmd_fx.c).
 struct KkMetalFxInfo {
 	uint32_t size;
 	uint32_t mode; // 1 temporal, 2 spatial

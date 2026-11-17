@@ -449,14 +449,16 @@ bool InstallFirstAccessHandler(Handler handler) {
 	sigemptyset(&sa.sa_mask);
 	const int signals[2] = {SIGSEGV, SIGBUS};
 	for (int i = 0; i < 2; i++) {
+		// The previous action is recorded before ours is installed: a fault on another thread right
+		// after the install already finds the handler it must be passed to.
 		struct sigaction old {};
-		if (sigaction(signals[i], &sa, &old) != 0) {
-			printf("sigaction(%d) failed to install the first-access handler\n", signals[i]);
-			return false;
-		}
-		if (old.sa_sigaction != SignalHandler) {
+		if (sigaction(signals[i], nullptr, &old) == 0 && old.sa_sigaction != SignalHandler) {
 			g_previous[i]       = old;
 			g_previous_valid[i] = true;
+		}
+		if (sigaction(signals[i], &sa, nullptr) != 0) {
+			printf("sigaction(%d) failed to install the first-access handler\n", signals[i]);
+			return false;
 		}
 	}
 	return true;

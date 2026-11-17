@@ -200,6 +200,7 @@ void MipSkip() {
 	Check(MipSkipLevels(1, 1024, 2050, 2048, 12, 4, false) == 1, "uncompressed odd width ok");
 	Check(SkipFloor(0, 1, 13) == 1 && SkipFloor(3, 1, 13) == 3 && SkipFloor(0, 2, 13) == 2, "floor raises only");
 	Check(SkipFloor(20, 1, 13) == 12, "floor clamps to last level");
+	Check(SkipFloor(0, 1, 0) == 0 && SkipFloor(5, 2, 0) == 0, "an image without levels: level 0, no wrap");
 	std::mt19937 rng(0x6d697073);
 	for (int round = 0; round < 200000; ++round) {
 		const uint32_t w = 1u + rng() % 8192u, h = 1u + rng() % 8192u, lv = 1u + rng() % 14u, req = rng() % 4u;
