@@ -543,6 +543,34 @@ void TileManager::PrewarmPipelines() {
 			}
 		}
 	}
+	// The D16 conversions and the colour transform (same layout; built lazily by ConvertD16 and
+	// TransformColor otherwise, which use these when they exist).
+	const auto build = [&](std::span<const uint32_t> code, const vk::SpecializationInfo* specialization,
+	                       vk::Pipeline& pipeline) {
+		if (pipeline != nullptr) return;
+		const auto                        module = CompileSPV(code, m_graphics.device);
+		vk::PipelineShaderStageCreateInfo stage {};
+		stage.stage               = vk::ShaderStageFlagBits::eCompute;
+		stage.module              = module;
+		stage.pName               = "main";
+		stage.pSpecializationInfo = specialization;
+		vk::ComputePipelineCreateInfo create {};
+		create.stage  = stage;
+		create.layout = m_pipeline_layout;
+		const auto result = m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
+		m_graphics.device.destroyShaderModule(module, nullptr);
+		if (result != vk::Result::eSuccess) pipeline = nullptr;
+		(pipeline != nullptr ? built : failed)++;
+	};
+	for (const uint32_t d32: {0u, 1u}) {
+		const vk::SpecializationMapEntry entry {0, 0, sizeof(d32)};
+		const vk::SpecializationInfo     specialization {1, &entry, sizeof(d32), &d32};
+		build({GPU_TILER_PROMOTE_D16_SPV, std::size(GPU_TILER_PROMOTE_D16_SPV)}, &specialization,
+		      d32 != 0 ? m_d16_to_d32 : m_d16_to_d24);
+		build({GPU_TILER_DEMOTE_D16_SPV, std::size(GPU_TILER_DEMOTE_D16_SPV)}, &specialization,
+		      d32 != 0 ? m_d32_to_d16 : m_d24_to_d16);
+	}
+	build(GPU_TILER_COLOR_TRANSFORM_SPV, nullptr, m_color_transform);
 	g_tiler_prewarming = false;
 	const auto ms =
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();

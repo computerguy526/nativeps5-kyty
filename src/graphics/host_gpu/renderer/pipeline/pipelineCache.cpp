@@ -5796,6 +5796,20 @@ void PipelineCache::RunListPrepare() {
 	                 static_cast<double>(CompileClockNs() - begin - shaders_ns) / 1e9, t.replayed.load(),
 	                 t.journal_built.load(), t.prewarm_built.load(), size,
 	                 size > MaxDriverCacheFileSize ? " (over the 512 MB file cap: the next start discards it)" : "");
+	// The driver's own pipeline archive (KosmicKrisp: KK_PIPELINE_ARCHIVE_DIR) is written by its
+	// flusher thread, after 32 new pipelines or KK_PIPELINE_ARCHIVE_FLUSH_S (10) seconds; _Exit below
+	// runs no exit handler, so the pipelines compiled last (up to 32, the slowest of the list among
+	// them) were never written and the first session compiled them again. Nothing compiles any more
+	// here: wait one flush period.
+	if (const auto* archive = std::getenv("KK_PIPELINE_ARCHIVE_DIR"); archive != nullptr && *archive != '\0') {
+		double period = 10.0;
+		if (const auto* custom = std::getenv("KK_PIPELINE_ARCHIVE_FLUSH_S"); custom != nullptr && std::atof(custom) > 0.0) {
+			period = std::atof(custom);
+		}
+		PipelineCacheLog("Prepare shaders: waiting {:.0f} s for the driver's pipeline archive to be written", period + 3.0);
+		std::fflush(nullptr);
+		std::this_thread::sleep_for(std::chrono::duration<double>(period + 3.0));
+	}
 	std::fflush(nullptr);
 	std::_Exit(0);
 }
