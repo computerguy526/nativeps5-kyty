@@ -1,6 +1,10 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderPrecompile.h"
 #include "graphics/compileProgress.h"
 
+#ifdef __APPLE__
+#include <pthread.h>
+#include <pthread/qos.h>
+#endif
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -754,6 +758,10 @@ PipelineJournal::Stats PipelineJournal::GetStats() const {
 void LowerCurrentThreadPriority() {
 #if defined(_WIN32)
 	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#elif defined(__APPLE__)
+	// Utility QoS: the compile workers (and the Metal compiles they run) yield to the game's threads,
+	// the presents, the UI and audio.
+	(void)pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #endif
 }
 

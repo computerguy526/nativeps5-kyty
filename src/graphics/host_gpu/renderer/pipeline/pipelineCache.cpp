@@ -5043,6 +5043,22 @@ struct PipelineCache::ComputePrewarm {
 // KYTY_PIPELINE_LIST_PREPARE=1 ("Prepare shaders"): builds everything at start-up with more threads
 // (KYTY_SHADER_PRECOMPILE_THREADS and KYTY_PIPELINE_JOURNAL_THREADS default 8), prints progress, saves
 // the caches and exits (exit code 0; 2 when there is no usable list) before the game starts.
+// The number of compile workers of a prepare, of the launch phase and of a list replay: the logical
+// cores minus 4 (the game, the presents, the UI and audio keep theirs), at least 2;
+// NPS5_COMPILE_THREADS=<n> overrides (1..16). 8 where the core count is not known.
+static uint64_t CompileFanout() {
+	if (const auto forced = EnvU64("NPS5_COMPILE_THREADS", 0); forced != 0) return std::clamp<uint64_t>(forced, 1, 16);
+	uint64_t count = 8;
+#ifdef __APPLE__
+	int    cores = 0;
+	size_t len   = sizeof(cores);
+	if (sysctlbyname("hw.logicalcpu", &cores, &len, nullptr, 0) == 0 && cores > 0) {
+		count = static_cast<uint64_t>(std::max(2, cores - 4));
+	}
+#endif
+	return std::clamp<uint64_t>(count, 2, 16);
+}
+
 struct PipelineCache::ListState {
 	std::vector<std::string>             levels;
 	std::vector<PipelineList::Pipeline>  pipelines;  // moved into the pipeline replay
@@ -5175,7 +5191,9 @@ struct PipelineCache::JournalReplay {
 	}
 
 	void Worker() {
-		if (low_priority) LowerCurrentThreadPriority();
+		// Always below the game, the presents, the UI and audio (macOS: utility QoS); a prepare and
+		// the launch phase get their speed from the worker count, not from priority.
+		LowerCurrentThreadPriority();
 		Profiler::SetThreadName("PipelineJournal");
 		Common::PlaceCurrentThreadCold();
 		CompileProgress::MarkReplayThread();
@@ -5583,19 +5601,10 @@ void PipelineCache::InitializePipelineJournal() {
 	replay.report_ns    = prepare ? 5'000'000'000ull : 10'000'000'000ull;
 	// With a pipeline list (a first start builds hundreds at once) 8: a cold spring_punch_sky_aztec
 	// stalled 5.5 s on 8 threads, 10.3 s on 4 (the level needs ~290 pipelines in its first 20 s).
-	// Sized to the machine: a prepare (no game running) uses every performance core, the launch phase
-	// and a list replay leave two for the game and the presents (KYTY_PIPELINE_JOURNAL_THREADS overrides;
-	// 8 where the core count is not known). The plain background journal replay stays at 4.
-	uint64_t sized = 8;
-#ifdef __APPLE__
-	{
-		int    cores = 0;
-		size_t len   = sizeof(cores);
-		if (sysctlbyname("hw.perflevel0.physicalcpu", &cores, &len, nullptr, 0) == 0 && cores > 0) {
-			sized = prepare ? static_cast<uint64_t>(cores) : static_cast<uint64_t>(std::max(2, cores - 2));
-		}
-	}
-#endif
+	// Sized to the machine (CompileFanout: logical cores - 4, at least 2; NPS5_COMPILE_THREADS or
+	// KYTY_PIPELINE_JOURNAL_THREADS override) for a prepare, the launch phase and a list replay; the
+	// plain background journal replay stays at 4. Every worker runs at utility QoS.
+	const uint64_t sized = CompileFanout();
 	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? sized : 4), 1, 16);
 	PipelineCacheLog("Pipeline replay: {} worker thread(s){}", threads, replay_all ? "; launch phase, the start waits for it" : "");
 	replay.Start(static_cast<uint32_t>(threads), force);
@@ -6536,8 +6545,8 @@ void PipelineCache::InitializeShaderPrecompile() {
 	const bool prepare = m_list != nullptr && m_list->prepare;
 	ShaderPrecompiler::Settings replay;
 	replay.threads     = static_cast<uint32_t>(
-	    std::clamp<uint64_t>(EnvU64("KYTY_SHADER_PRECOMPILE_THREADS", prepare ? 8 : 2), 1, 16));
-	replay.low_priority = !prepare;
+	    std::clamp<uint64_t>(EnvU64("KYTY_SHADER_PRECOMPILE_THREADS", prepare ? CompileFanout() : 2), 1, 16));
+	replay.low_priority = true; // utility QoS in a prepare as well: the Mac stays usable while it builds
 	replay.max_entries = EnvU64("KYTY_SHADER_PRECOMPILE_MAX", 30000);
 	replay.thread_init = [](uint32_t) {
 		Profiler::SetThreadName("ShaderPrecompile");
