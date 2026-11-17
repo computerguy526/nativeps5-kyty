@@ -122,6 +122,8 @@ public:
 	void                 ConvertD16(Result source, Result target, D16Direction direction, bool d32,
 	                                const D16Layout& layout);
 	[[nodiscard]] Result TransformColor(Result input, ColorTransform transform, bool to_host);
+	// Builds every tile/detile pipeline now (KYTY_HELPER_PREWARM).
+	void PrewarmPipelines();
 	void TransformColor(Result input, Result output, ColorTransform transform, bool to_host);
 
 private:

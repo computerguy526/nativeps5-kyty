@@ -1,3 +1,5 @@
+#include <chrono>
+#include <cstdio>
 #include "graphics/host_gpu/renderer/image/tiler.h"
 
 #include "common/alignment.h"
@@ -468,6 +470,9 @@ void TileManager::Prepare(bool tile, uint64_t tiled_capacity, uint64_t linear_ca
 	m_stream_buffer.Commit();
 }
 
+// PrewarmPipelines is running: a build the driver rejects is skipped instead of ending the process.
+static bool g_tiler_prewarming = false;
+
 vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	EXIT_IF(slot >= m_pipelines.size());
 	if (m_pipelines[slot] != nullptr) {
@@ -507,8 +512,42 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	const auto result =
 	    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &m_pipelines[slot]);
 	m_graphics.device.destroyShaderModule(module, nullptr);
+	if (g_tiler_prewarming && result != vk::Result::eSuccess) {
+		m_pipelines[slot] = nullptr;
+		return nullptr;
+	}
 	RequireVulkanSuccess(result, "create TileManager pipeline");
 	return m_pipelines[slot];
+}
+
+// KYTY_HELPER_PREWARM=1 (nps5, default off): every tile/detile pipeline (family x element size x
+// direction, buffer and image variants) is built at start-up instead of at its first use in a
+// level. They are fixed shaders with two specialization constants, in no shader journal or pipeline
+// list, so without this a "prepare" start never built them and the first session compiled each one
+// the moment a texture of its kind was first uploaded. A variant the driver rejects is skipped here
+// (and fails as before if a texture ever needs it).
+void TileManager::PrewarmPipelines() {
+	const auto begin = std::chrono::steady_clock::now();
+	uint32_t   built = 0, failed = 0;
+	g_tiler_prewarming     = true;
+	for (uint32_t slot = 0; slot < m_pipelines.size(); slot++) {
+		(GetPipeline(slot) != nullptr ? built : failed)++;
+	}
+	static constexpr TileBlockFamily image_families[] {
+	    TileBlockFamily::Standard256B, TileBlockFamily::Standard4KB,      TileBlockFamily::Standard64KB,
+	    TileBlockFamily::Prt64KB,      TileBlockFamily::RenderTarget64KB, TileBlockFamily::Depth64KB};
+	for (const bool load: {false, true}) {
+		for (const auto family: image_families) {
+			for (uint32_t element = 0; element < BytesPerElementCount; element++) {
+				(GetImagePipeline(load, family, 1u << element) != nullptr ? built : failed)++;
+			}
+		}
+	}
+	g_tiler_prewarming = false;
+	const auto ms =
+	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+	std::fprintf(stderr, "Helper prewarm: %u tile pipelines built in %.0f ms, %u skipped\n", built, ms,
+	             failed);
 }
 
 void TileManager::Record(vk::Buffer source, uint64_t source_offset,
@@ -970,6 +1009,10 @@ vk::Pipeline TileManager::GetImagePipeline(bool load, TileBlockFamily family,
 	const auto result = m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr,
 	                                                             &m_image_pipelines[slot]);
 	m_graphics.device.destroyShaderModule(module, nullptr);
+	if (g_tiler_prewarming && result != vk::Result::eSuccess) {
+		m_image_pipelines[slot] = nullptr;
+		return nullptr;
+	}
 	RequireVulkanSuccess(result, "create TileManager image pipeline");
 	return m_image_pipelines[slot];
 }

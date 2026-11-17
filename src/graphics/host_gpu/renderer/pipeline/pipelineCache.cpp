@@ -5319,6 +5319,9 @@ struct PipelineCache::JournalReplay {
 			} else if (CacheFull()) {
 				skipped_full.fetch_add(1, std::memory_order_relaxed);
 				ok = true;
+			} else if (once && check.key != 0 && !OnceFirst(check.key)) {
+				skipped_known.fetch_add(1, std::memory_order_relaxed);
+				ok = true;
 			} else if (check.key == record.key || (retargeted && check.key != 0)) {
 				if (retargeted && !item.from_list) retargets.fetch_add(1, std::memory_order_relaxed);
 				const auto          begin = CompileClockNs();
@@ -5360,6 +5363,12 @@ struct PipelineCache::JournalReplay {
 		                                                                          context.pipeline);
 	}
 
+	// True for the first caller with this key (KYTY_PIPELINE_REPLAY_ALL).
+	bool OnceFirst(uint64_t key) {
+		std::scoped_lock lock(once_mutex);
+		return once_keys.insert(key).second;
+	}
+
 	void NoteReplayKey(uint64_t key) {
 		if (!track) return;
 		std::scoped_lock lock(keys_mutex);
@@ -5390,6 +5399,10 @@ struct PipelineCache::JournalReplay {
 	const bool                   strict;
 	bool                         force        = false;
 	bool                         low_priority = true;
+	// KYTY_PIPELINE_REPLAY_ALL: a content key is built once (the journal and the list both hold most).
+	bool                         once         = false;
+	std::mutex                   once_mutex;
+	std::unordered_set<uint64_t> once_keys;
 	// Coverage bookkeeping (KYTY_PIPELINE_LIST or _VERIFY): every key the replay computed and every key
 	// the game created.
 	bool                         track        = false;
@@ -5547,20 +5560,29 @@ void PipelineCache::InitializePipelineJournal() {
 	}
 	// Without a driver cache a rebuilt pipeline helps nobody; KYTY_PIPELINE_JOURNAL_FORCE=1 rebuilds
 	// anyway (tests).
-	const bool force   = EnvU64("KYTY_PIPELINE_JOURNAL_FORCE", 0) != 0;
-	const bool prepare = m_list != nullptr && m_list->prepare;
+	// KYTY_PIPELINE_REPLAY_ALL=1 (nps5, default off): the launch phase "build everything known". Every
+	// journal and list pipeline is created again through the driver before the game starts, known to
+	// the driver cache or not, on normal-priority threads, and the start waits for it (the loading
+	// card shows the count). On a prepared cache every one is a cache hit (2176 pipelines: about 1 s);
+	// a pipeline whose driver-side entry was lost or re-keyed since (an OS update, a library that
+	// moved from source to a prebuilt metallib, an archive segment that was never written) compiles
+	// here instead of at its first draw. A key built once in this replay is not built again.
+	const bool replay_all = EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0;
+	const bool force      = EnvU64("KYTY_PIPELINE_JOURNAL_FORCE", 0) != 0 || replay_all;
+	const bool prepare    = m_list != nullptr && m_list->prepare;
 	if (EnvU64("KYTY_PIPELINE_JOURNAL_REPLAY", 1) == 0 || replay.items.empty() ||
 	    (m_driver_cache == nullptr && !force)) {
 		replay.items = {};
 		return;
 	}
-	replay.low_priority = !prepare;
+	replay.low_priority = !prepare && !replay_all;
+	replay.once         = replay_all;
 	replay.report_ns    = prepare ? 5'000'000'000ull : 10'000'000'000ull;
 	// With a pipeline list (a first start builds hundreds at once) 8: a cold spring_punch_sky_aztec
 	// stalled 5.5 s on 8 threads, 10.3 s on 4 (the level needs ~290 pipelines in its first 20 s).
-	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list ? 8 : 4), 1, 16);
+	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? 8 : 4), 1, 16);
 	replay.Start(static_cast<uint32_t>(threads), force);
-	if (EnvU64("KYTY_PIPELINE_JOURNAL_WAIT", 0) != 0) replay.Wait();
+	if (EnvU64("KYTY_PIPELINE_JOURNAL_WAIT", 0) != 0 || replay_all) replay.Wait();
 }
 
 void PipelineCache::StopBackgroundPipelines() {
@@ -5901,10 +5923,27 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 		                 threads, m_skip_wait_ns / 1000);
 	}
 	if (EnvU64("KYTY_PIPELINE_STATS", 0) != 0) m_stats_reporter = std::make_unique<StatsReporter>(*this);
+}
+
+namespace {
+std::atomic<PipelineCache*> g_live_pipeline_cache {nullptr};
+}
+
+// The window was closed and the host will end the process without the renderer teardown: saves the
+// driver pipeline cache now (the journals and the known set are written as they grow).
+void PipelineCacheSaveForClose() {
+	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr) cache->SaveForClose();
+}
+
+// KYTY_PIPELINE_LIST_PREPARE: called by the render context once every cache and helper exists (the
+// internal helper pipelines are built before, so a prepare records them as well).
+void PipelineCache::RunListPrepareIfRequested() {
+	g_live_pipeline_cache.store(this, std::memory_order_release);
 	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheFileTitleId().empty()) RunListPrepare();
 }
 
 PipelineCache::~PipelineCache() {
+	g_live_pipeline_cache.store(nullptr, std::memory_order_release);
 	m_stats_reporter.reset();
 	StopBackgroundPipelines();
 	StopShaderPrecompile();
@@ -6132,6 +6171,15 @@ struct PipelineCache::DriverCacheSaver {
 		}
 	}
 
+	// Asks the saver thread for a save now and waits for it (at most ~3 s).
+	void RequestCloseSave() {
+		close_requested.store(true, std::memory_order_release);
+		for (int i = 0; i < 150 && thread.joinable() && !close_done.load(std::memory_order_acquire); i++) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		}
+	}
+	std::atomic<bool> close_requested {false}, close_done {false};
+
 	void NoteCreated() {
 		last_created_ns.store(CompileClockNs(), std::memory_order_relaxed);
 		created.fetch_add(1, std::memory_order_release);
@@ -6161,8 +6209,24 @@ struct PipelineCache::DriverCacheSaver {
 		std::condition_variable_any wake;
 		std::unique_lock            lock(mutex);
 		while (!stop.stop_requested()) {
-			wake.wait_for(lock, stop, term_hook ? std::chrono::milliseconds(200) : std::chrono::milliseconds(1000),
+			wake.wait_for(lock, stop,
+			              term_hook || close_requested.load(std::memory_order_acquire) ? std::chrono::milliseconds(200)
+			                                                                         : std::chrono::milliseconds(1000),
 			              [] { return false; });
+			// The window was closed (RequestCloseSave): write what is pending now; the host ends the
+			// process without the renderer teardown, so there is no later chance.
+			if (close_requested.load(std::memory_order_acquire) && !close_done.load(std::memory_order_acquire)) {
+				const auto pending = created.load(std::memory_order_acquire) - saved_created;
+				if (pending != 0 && !oversized && !stop.stop_requested()) {
+					const auto covered = created.load(std::memory_order_acquire);
+					if (const auto written = cache.WriteDriverCache(true); written != 0 && written != WriteOversized) {
+						saved_created = covered;
+					}
+				}
+				PipelineCacheLog("Vulkan pipeline cache: window closed, {} pipelines were pending", pending);
+				close_done.store(true, std::memory_order_release);
+				continue;
+			}
 #ifndef _WIN32
 			if (term_hook && g_term_requested != 0 && !stop.stop_requested()) {
 				const auto pending = created.load(std::memory_order_acquire) - saved_created;
@@ -6319,6 +6383,10 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 	                 static_cast<double>(serialized - begin) / 1.0e6,
 	                 static_cast<double>(written - serialized) / 1.0e6);
 	return payload.size();
+}
+
+void PipelineCache::SaveForClose() {
+	if (m_saver != nullptr) m_saver->RequestCloseSave();
 }
 
 void PipelineCache::Save() {

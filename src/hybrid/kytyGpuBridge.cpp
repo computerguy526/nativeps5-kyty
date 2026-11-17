@@ -70,6 +70,10 @@
 #endif
 #endif
 
+namespace Libs::Graphics {
+void PipelineCacheSaveForClose(); // pipelineCache.cpp
+}
+
 namespace Libs {
 void InitAgcDriver_1(Loader::SymbolDatabase* s);
 void InitLibKernel_1_Mem(Loader::SymbolDatabase* s);
@@ -863,6 +867,8 @@ void RendererEnd() {
 	{
 		if (!g_shutdown_requested.load(std::memory_order_acquire)) {
 			if (g_host.request_exit != nullptr) {
+				// The host ends the process at once: save what this session compiled first.
+				Libs::Graphics::PipelineCacheSaveForClose();
 				Log(0, "renderer: the window was closed, asking the host to exit");
 				g_host.request_exit(g_host.user, 0);
 			} else {

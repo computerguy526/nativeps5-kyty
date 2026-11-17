@@ -492,6 +492,14 @@ private:
 	void InitializePipelineJournal();
 	// KYTY_PIPELINE_LIST_PREPARE: builds the list's shaders and pipelines, saves and ends the process.
 	[[noreturn]] void RunListPrepare();
+
+public:
+	// Runs the prepare (and ends the process) when KYTY_PIPELINE_LIST_PREPARE asks for it.
+	void RunListPrepareIfRequested();
+	// The window was closed: writes the pending driver cache data now.
+	void SaveForClose();
+
+private:
 	// Stops the journal replay and the compute prewarm (before the shader replay and the program
 	// cache they use go).
 	void StopBackgroundPipelines();
@@ -530,6 +538,8 @@ using GraphicsPipelineCreateHook =
 // the depth bounds are dynamic state of every renderer graphics pipeline, recorded per draw by
 // SetGraphicsDynamicParams, instead of pipeline-key fields (=0: baked into each pipeline).
 [[nodiscard]] bool PipelineDynamicRasterStateEnabled();
+// Saves the live pipeline cache when the window is closed (no-op without one).
+void               PipelineCacheSaveForClose();
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
 // Stops the emulator at a mesh (NGG) draw on a device without mesh shaders, naming the missing

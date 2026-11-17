@@ -46,6 +46,8 @@ struct TextureCacheTestAccess;
 
 class TextureCache {
 public:
+	// KYTY_HELPER_PREWARM: the internal helper pipelines, built at start-up.
+	void PrewarmHelperPipelines() { m_tiler.PrewarmPipelines(); }
 	enum class BindingType : uint8_t { Texture, Storage, RenderTarget, DepthTarget, VideoOut };
 
 	// A render-target binding with CMASK fast clears enabled (CB_COLORn_INFO.FAST_CLEAR):
