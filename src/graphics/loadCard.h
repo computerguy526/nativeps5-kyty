@@ -89,6 +89,29 @@ inline int VideoPlayingCount() {
 	return fn != nullptr ? fn() : 0;
 }
 inline bool VideoPlaying() { return VideoPlayingCount() > 0; }
+// card3: the launch compile phase (library replay, pipeline list replay, compute prewarm: CompileProgress unit) is
+// still running. The opening card stays up until it is done AND the game presents a non-black frame.
+// KYTY_LOADCARD_PHASE=0 turns the wait off.
+inline bool PhaseWaitEnabled() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_LOADCARD_PHASE");
+		return v == nullptr || v[0] != '0';
+	}();
+	return on;
+}
+inline bool PhasePending(uint64_t unit_total, uint64_t unit_done) { return unit_total != 0 && unit_done < unit_total; }
+inline bool LaunchPhasePending() {
+	if (!PhaseWaitEnabled()) return false;
+	const auto& c = CompileProgress::Get();
+	return PhasePending(c.unit_total.load(std::memory_order_relaxed), c.unit_done.load(std::memory_order_relaxed));
+}
+// Does a presented frame end the opening card? A playing video always does (never card over a video); else the
+// launch compile phase must be done, and the frame must not be fully black.
+inline bool EndsOpening(bool video, bool phase_pending, bool frame_black) {
+	if (video) return true;
+	if (phase_pending) return false;
+	return !frame_black;
+}
 // card3 luma test: a frame is "black" only when no sampled pixel channel exceeds kBlackMax (max, not mean: a dark
 // frame with a small logo is content).
 inline constexpr unsigned kBlackMax = 2;
@@ -150,6 +173,7 @@ inline bool BlackNow() {
 	if (!BlackEnabled()) return false;
 	if (VideoPlaying()) return false; // card3: a playing video is content
 	auto& s     = State();
+	if (!s.content_seen.load(std::memory_order_relaxed) && LaunchPhasePending()) return true; // opening: phase not done
 	const auto p = s.probe_state.load(std::memory_order_relaxed);
 	if (p == 1) return true;
 	if (p == 2) return false;

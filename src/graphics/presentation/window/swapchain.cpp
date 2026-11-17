@@ -2268,7 +2268,7 @@ void Presenter::Impl::LoadCardLoop(std::stop_token stop) {
 		// genuine long stall (>= GapMs without content, compiles pending or VFS bytes still moving) brings it back.
 		const bool content_seen = shared.content_seen.load(std::memory_order_acquire);
 		const bool video   = LoadCard::VideoPlaying();
-		const bool content = seq != 0 && (video || !LoadCard::BlackEnabled() || shared.probe_state.load(std::memory_order_relaxed) == 2);
+		const bool content = seq != 0 && LoadCard::EndsOpening(video, LoadCard::LaunchPhasePending(), LoadCard::BlackEnabled() && shared.probe_state.load(std::memory_order_relaxed) != 2);
 		const auto pol = LoadCard::MakePolicy(content_seen, content, seq, window.loop.paused.load(std::memory_order_acquire),
 		                                      LoadCard::AnyReason(), LoadCard::MidgameEnabled(), LoadCard::StartMs(), LoadCard::GapMs(), video);
 		wd.SetStartMs(pol.start_ms);

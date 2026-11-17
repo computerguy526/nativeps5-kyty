@@ -307,6 +307,21 @@ int main() {
 		CHECK(!MakePolicy(false, false, 0, false, true, true, 500, 4000, true).armed);
 		CHECK(!MakePolicy(true, false, 9, false, true, true, 500, 4000, true).armed);
 		CHECK(VideoPlayingCount() >= 0 && !VideoPlaying()); // no AvPlayer hook in the test process
+		// card3: the opening card stays through the launch compile phase; hides only when it is done AND a non-black frame.
+		CHECK(PhasePending(200, 199) && !PhasePending(200, 200) && !PhasePending(0, 0));
+		CHECK(!EndsOpening(false, true, false));  // content frame while ~200 of T compiled: card stays
+		CHECK(!EndsOpening(false, true, true));
+		CHECK(!EndsOpening(false, false, true));  // phase done but frame fully black: stays
+		CHECK(EndsOpening(false, false, false));  // phase done + non-black: hides
+		CHECK(EndsOpening(true, true, true));     // a playing video always ends it (never card over a video)
+		{
+			auto& cu = Libs::Graphics::CompileProgress::Get();
+			cu.unit_total.store(1500); cu.unit_done.store(200);
+			CHECK(LaunchPhasePending());
+			cu.unit_done.store(1500);
+			CHECK(!LaunchPhasePending());
+			cu.unit_total.store(0); cu.unit_done.store(0);
+		}
 		// Policy: startup is any-reason with the short start, afterwards pending-only with the gap.
 		{
 			auto a = MakePolicy(false, false, 0, false, true, true, 500, 4000);
