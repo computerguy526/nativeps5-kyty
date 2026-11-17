@@ -107,6 +107,10 @@ uint32_t EmitSubgroupLocalInvocationId(EmitterState& state) {
 		return EmitLocalInvocationIndex(state);
 	}
 	if (state.subgroup_local_invocation_id_variable == 0) {
+		if (!GetHostVertexSubgroups()) {
+			// nps5: a vertex-stage invocation is lane 0 of its own wave (spirvEmitterModule.cpp).
+			return ConstantU32(state, state.wave_clusters || state.lane_half == 0 ? 0u : 32u);
+		}
 		EXIT("SubgroupLocalInvocationId was not declared before SPIR-V function emission\n");
 	}
 	const auto value = state.builder.AllocateId();
@@ -123,6 +127,9 @@ namespace {
 // The raw SubgroupLocalInvocationId (KYTY_WAVE32_CLUSTERS only).
 uint32_t LoadHostSubgroupLane(EmitterState& state) {
 	if (state.subgroup_local_invocation_id_variable == 0) {
+		if (!GetHostVertexSubgroups()) {
+			return ConstantU32(state, 0u); // nps5: see EmitSubgroupLocalInvocationId
+		}
 		EXIT("SubgroupLocalInvocationId was not declared before SPIR-V function emission\n");
 	}
 	const auto value = state.builder.AllocateId();

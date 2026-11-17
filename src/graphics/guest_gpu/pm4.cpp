@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5
 #include "graphics/guest_gpu/pm4.h"
 
 #include "common/assert.h"
@@ -143,7 +144,7 @@ void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_
 				if ((op == IT_SET_CONTEXT_REG_INDIRECT || op == IT_SET_SH_REG_INDIRECT ||
 				     op == IT_SET_UCONFIG_REG_INDIRECT) &&
 				    len == 4) {
-					auto* indirect_buffer = reinterpret_cast<const uint32_t*>(
+					auto* indirect_buffer = Guest::Ptr<const uint32_t>(
 					    (static_cast<uint64_t>(cmd[0]) & 0xfffffffcu) |
 					    (static_cast<uint64_t>(cmd[1]) << 32u));
 					const uint32_t indirect_num_regs = cmd[3] & 0x3fffu;

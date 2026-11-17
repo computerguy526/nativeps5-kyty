@@ -1,4 +1,5 @@
 #include "graphics/guest_gpu/command_processor/cpSequencer.h"
+#include "common/spinRelax.h"
 
 #include "common/assert.h"
 #include "common/hangWatchdog.h"
@@ -46,11 +47,7 @@ uint64_t NowNs() {
 }
 
 void Relax() noexcept {
-#if defined(_M_X64) || defined(__x86_64__)
-	_mm_pause();
-#else
-	std::this_thread::yield();
-#endif
+	Common::SpinRelax(); // KYTY_SPIN_RELAX (common/spinRelax.h)
 }
 
 } // namespace

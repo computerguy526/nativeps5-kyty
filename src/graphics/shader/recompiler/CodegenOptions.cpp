@@ -133,7 +133,13 @@ CodegenOptions FromEnvironment() {
 	if (const auto* limit = std::getenv("KYTY_LDS_LIMIT_OVERRIDE"); limit != nullptr && limit[0] != '\0') {
 		options.lds_limit_override = static_cast<uint32_t>(std::strtoul(limit, nullptr, 0));
 	}
-	options.ps_per_vertex = EnvFlag("KYTY_PS_PER_VERTEX", options.ps_per_vertex);
+	if (const auto* mode = std::getenv("KYTY_PS_PER_VERTEX");
+	    mode != nullptr && (std::strcmp(mode, "gs") == 0 || std::strcmp(mode, "2") == 0 ||
+	                        std::strcmp(mode, "unpack") == 0 || std::strcmp(mode, "3") == 0)) {
+		options.ps_per_vertex = true;
+	} else {
+		options.ps_per_vertex = EnvFlag("KYTY_PS_PER_VERTEX", options.ps_per_vertex);
+	}
 	options.clip_guard    = EnvFlag("KYTY_CLIP_GUARD", options.clip_guard);
 	if (const auto* mode = std::getenv("KYTY_MAD_MODE"); mode != nullptr) {
 		if (std::strcmp(mode, "exact") == 0) {
@@ -157,6 +163,83 @@ CodegenOptions& Storage() {
 namespace {
 std::atomic<bool> g_host_compute_subgroups_32 {false};
 } // namespace
+
+namespace {
+std::atomic<bool> g_host_buffer_int64_atomics {true};
+} // namespace
+
+void SetHostBufferInt64Atomics(bool supported) {
+	g_host_buffer_int64_atomics.store(supported, std::memory_order_relaxed);
+}
+
+bool GetHostBufferInt64Atomics() {
+	return g_host_buffer_int64_atomics.load(std::memory_order_relaxed);
+}
+
+namespace {
+std::atomic<bool> g_host_vertex_subgroups {true};
+} // namespace
+
+namespace {
+std::atomic<bool> g_host_ps_per_vertex {true};
+} // namespace
+
+void SetHostPsPerVertex(bool supported) {
+	g_host_ps_per_vertex.store(supported, std::memory_order_relaxed);
+}
+
+bool GetHostPsPerVertex() {
+	return g_host_ps_per_vertex.load(std::memory_order_relaxed);
+}
+
+namespace {
+// The word of KYTY_PS_PER_VERTEX (kept outside CodegenOptions: read once). 0: none or a plain
+// switch, 1: "gs", 2: "unpack".
+int PsPerVertexWord() {
+	static const int word = [] {
+		const auto* mode = std::getenv("KYTY_PS_PER_VERTEX");
+		if (mode == nullptr) {
+			return 0;
+		}
+		if (std::strcmp(mode, "gs") == 0 || std::strcmp(mode, "2") == 0) {
+			return 1;
+		}
+		if (std::strcmp(mode, "unpack") == 0 || std::strcmp(mode, "3") == 0) {
+			return 2;
+		}
+		return 0;
+	}();
+	return word;
+}
+std::atomic<int> g_ps_per_vertex_test_mode {-1};
+} // namespace
+
+void SetPsPerVertexModeForTests(int mode) {
+	g_ps_per_vertex_test_mode.store(mode, std::memory_order_relaxed);
+}
+
+bool PsPerVertexGeometry() {
+	if (const auto test = g_ps_per_vertex_test_mode.load(std::memory_order_relaxed); test >= 0) {
+		return test == 1;
+	}
+	return GetCodegenOptions().ps_per_vertex && PsPerVertexWord() == 1;
+}
+
+bool PsPerVertexUnpack() {
+	if (const auto test = g_ps_per_vertex_test_mode.load(std::memory_order_relaxed); test >= 0) {
+		return test == 2;
+	}
+	return GetCodegenOptions().ps_per_vertex &&
+	       (PsPerVertexWord() == 2 || (PsPerVertexWord() == 0 && !GetHostPsPerVertex()));
+}
+
+void SetHostVertexSubgroups(bool supported) {
+	g_host_vertex_subgroups.store(supported, std::memory_order_relaxed);
+}
+
+bool GetHostVertexSubgroups() {
+	return g_host_vertex_subgroups.load(std::memory_order_relaxed);
+}
 
 void SetHostComputeSubgroups32(bool fixed_32) {
 	g_host_compute_subgroups_32.store(fixed_32, std::memory_order_relaxed);

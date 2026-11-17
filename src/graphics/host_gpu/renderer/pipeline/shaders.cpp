@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "graphics/compileProgress.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
@@ -17,6 +18,7 @@
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
+#include "graphics/shader/perVertexShader.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
@@ -214,6 +216,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const PipelineStaticParameters&        static_params,
                             vk::PipelineCache                      driver_cache,
                             const GraphicsPipelineCreateHook*      create_hook) {
+	CompileProgress::LiveScope title_live; // window-title "compiling shader (live)"
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
 	const auto& pixel_program  = programs.pixel;
@@ -252,7 +255,52 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	EXIT_NOT_IMPLEMENTED(
 	    rect_list && (tess_control_shader_module == nullptr || tess_eval_shader_module == nullptr));
 
-	vk::PipelineShaderStageCreateInfo shader_stages[4] {};
+	// nps5, KYTY_PS_PER_VERTEX=gs: the pixel shader reads raw vertices as flat inputs that a
+	// generated geometry stage writes (perVertexShader.h).
+	vk::ShaderModule per_vertex_geometry_module = nullptr;
+	if (ps_active && PerVertexGeometryNeeded(ps_input_info)) {
+		const bool triangles = static_params.topology == vk::PrimitiveTopology::eTriangleList ||
+		                       static_params.topology == vk::PrimitiveTopology::eTriangleStrip ||
+		                       static_params.topology == vk::PrimitiveTopology::eTriangleFan;
+		const char* missing = mesh           ? "a mesh program"
+		                      : tessellation ? "tessellation stages"
+		                      : !triangles   ? "a non-triangle topology"
+		                                     : nullptr;
+		if (missing == nullptr) {
+			const auto interface = DescribePerVertexGeometry(vs_input_info, *ps_input_info);
+			if (interface.unsupported) {
+				missing = "a vertex shader that writes the layer or viewport index";
+			} else {
+				per_vertex_geometry_module =
+				    CompileSPV(BuildPerVertexGeometryShader(interface), graphics.device);
+				EXIT_NOT_IMPLEMENTED(per_vertex_geometry_module == nullptr);
+				static std::atomic<uint32_t> built {0};
+				const auto count = built.fetch_add(1, std::memory_order_relaxed) + 1;
+				if (count <= 8 || (count & (count - 1)) == 0) {
+					std::printf("nps5: per-vertex geometry stage for VS 0x%016llx PS 0x%016llx "
+					            "(%zu parameters, %u clip, %u cull; %u pipelines)\n",
+					            static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
+					            static_cast<unsigned long long>(ps_input_info->stage.program->shader_hash),
+					            interface.parameters.size(), interface.clip_distances,
+					            interface.cull_distances, count);
+				}
+			}
+		}
+		if (missing != nullptr) {
+			static std::atomic<uint32_t> skipped {0};
+			const auto count = skipped.fetch_add(1, std::memory_order_relaxed) + 1;
+			if (count <= 16 || (count & (count - 1)) == 0) {
+				std::printf("nps5: no per-vertex geometry stage with %s, VS 0x%016llx PS 0x%016llx: "
+				            "the pixel shader's raw-vertex inputs are undefined (%u pipelines)\n",
+				            missing,
+				            static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
+				            static_cast<unsigned long long>(ps_input_info->stage.program->shader_hash),
+				            count);
+			}
+		}
+	}
+
+	vk::PipelineShaderStageCreateInfo shader_stages[5] {};
 	uint32_t                          shader_stage_count = 0;
 	for (uint32_t i = 0; i < vertex_info.size(); i++) {
 		shader_stages[shader_stage_count++] = {.stage =
@@ -270,6 +318,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                       .module = tess_eval_shader_module,
 		                                       .pName  = "main"};
 	}
+	if (per_vertex_geometry_module != nullptr) {
+		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eGeometry,
+		                                       .module = per_vertex_geometry_module,
+		                                       .pName  = "main"};
+	}
 	if (ps_active) {
 		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
 		                                       .module = pixel_program.module,
@@ -278,7 +331,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// One guest wave per host subgroup where the device lets the stage require it (mesh and
 	// pixel shaders on AMD); GraphicsSubgroupSize and the mesh's host_subgroup_size
 	// (FinishMeshStage) agree. NVIDIA has one subgroup size and chains nothing.
-	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo stage_subgroup_sizes[4] {};
+	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo stage_subgroup_sizes[5] {};
 	for (uint32_t index = 0; index < shader_stage_count; index++) {
 		auto&      stage   = shader_stages[index];
 		const bool is_mesh = stage.stage == vk::ShaderStageFlagBits::eMeshEXT;
@@ -621,10 +674,29 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
 		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
 	}
+#if defined(__APPLE__)
+	// nps5 (KosmicKrisp): a pipeline the driver cannot build (a shader feature Metal lacks) is
+	// reported and left null; PipelineCache skips its draws instead of ending the process.
+	if (result != vk::Result::eSuccess || pipeline.pipeline == nullptr) {
+		static std::atomic<uint32_t> failures {0};
+		const auto count = failures.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (count <= 32 || (count & (count - 1)) == 0) {
+			std::printf("nps5: graphics pipeline build failed (%s), VS 0x%016llx PS 0x%016llx; its draws are skipped (%u failures)\n",
+			            vk::to_string(result).c_str(),
+			            static_cast<unsigned long long>(vs_input_info.stage.program != nullptr ? vs_input_info.stage.program->shader_hash : 0),
+			            static_cast<unsigned long long>(ps_active && ps_input_info->stage.program != nullptr ? ps_input_info->stage.program->shader_hash : 0), count);
+		}
+		pipeline.pipeline = nullptr;
+	}
+#else
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
+#endif
 
+	if (per_vertex_geometry_module != nullptr) {
+		graphics.device.destroyShaderModule(per_vertex_geometry_module, nullptr);
+	}
 	if (tess_control_shader_module != nullptr) {
 		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
 	}
@@ -639,6 +711,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             vk::ShaderModule compute_module, vk::PipelineCache driver_cache,
                             const ComputePipelineCreateHook* create_hook,
                             vk::Result* result_out) {
+	CompileProgress::LiveScope title_live; // window-title "compiling shader (live)"
 	EXIT_IF(compute_module == nullptr);
 
 	vk::PipelineShaderStageCreateInfo                     comp_shader_stage_info {};

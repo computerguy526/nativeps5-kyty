@@ -143,6 +143,18 @@ std::vector<uint8_t> CodegenFingerprint() {
 		b.U8(GetHostComputeSubgroups32() ? 1u : 0u);
 	}
 
+	if (!GetHostBufferInt64Atomics()) {
+		b.Text("no_buffer_int64_atomics");
+	}
+	if (!GetHostVertexSubgroups()) {
+		b.Text("no_vertex_subgroups");
+	}
+	if (PsPerVertexGeometry()) {
+		b.Text("ps_per_vertex_gs");
+	}
+	if (PsPerVertexUnpack()) {
+		b.Text("ps_per_vertex_unpack1");
+	}
 	// Host device state the emitter reads (set once by the device layer).
 	const auto float_controls = Spirv::GetHostFloatControls();
 	b.U8(float_controls.denorm_flush_f32 ? 1u : 0u);

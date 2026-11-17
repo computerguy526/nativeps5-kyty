@@ -1187,6 +1187,10 @@ private:
 	void NoteDlssTargets(std::span<const RenderColorInfo> colors, ImageId depth);
 	[[nodiscard]] bool TryDlssUpscale(CommandBuffer& buffer, PreparedBindings& pixel,
 	                                  ImageId output);
+	// nps5 KYTY_METALFX (metalfx.h): the same, with Apple MetalFX through KosmicKrisp.
+	void NoteMetalFxTargets(std::span<const RenderColorInfo> colors, ImageId depth);
+	[[nodiscard]] bool TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& pixel,
+	                                     ImageId output, uint32_t color_count);
 	// ASTROHYBRID_DLSSG (frameGen.h): the camera from a draw's bound constants, and the frame's
 	// depth, motion vectors and constants at the temporal upscale pass.
 	void NoteFrameGenCamera(const PreparedBindings& stage);

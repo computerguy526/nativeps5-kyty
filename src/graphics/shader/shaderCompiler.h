@@ -1,6 +1,7 @@
 #ifndef EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_SHADERCOMPILER_H_
 #define EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_SHADERCOMPILER_H_
 
+#include "common/guestAddress.h"
 #include "graphics/shader/shader.h"
 
 #include <array>
@@ -22,7 +23,9 @@ struct ShaderParams {
 	std::span<const uint32_t> back_code;
 
 	[[nodiscard]] uint64_t Base() const {
-		return reinterpret_cast<uint64_t>(code.data());
+		// nps5: a GUEST address (the SRT walker forms resource addresses from it: descriptors of
+		// data embedded in the shader); code is a span over the host view of guest memory.
+		return Guest::AddrIfGuest(code.data());
 	}
 };
 

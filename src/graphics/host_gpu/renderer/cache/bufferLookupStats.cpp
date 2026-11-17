@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 
+#include "common/fastTicks.h"
+
 #include <array>
 #include <chrono>
 #include <cinttypes>
@@ -39,13 +41,7 @@ constexpr size_t PartCount    = static_cast<size_t>(Part::Count);
 constexpr size_t MissCount    = static_cast<size_t>(Miss::Count);
 
 uint64_t ReadTsc() {
-#if defined(_M_X64) || defined(__x86_64__)
-	return __rdtsc();
-#else
-	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-	                                 std::chrono::steady_clock::now().time_since_epoch())
-	                                 .count());
-#endif
+	return Common::FastTicks(); // nps5 cpcommit: arm64 = CNTVCT_EL0, not steady_clock
 }
 
 uint64_t NowNs() {

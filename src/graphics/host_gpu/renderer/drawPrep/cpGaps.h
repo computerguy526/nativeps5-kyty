@@ -1,6 +1,7 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DRAWPREP_CPGAPS_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_DRAWPREP_CPGAPS_H_
 
+#include "common/fastTicks.h"
 #include "common/onceValue.h"
 #include <array>
 #include <cstdint>
@@ -253,13 +254,7 @@ private:
 }
 
 [[nodiscard]] inline uint64_t Tsc() noexcept {
-#if defined(_M_X64) || defined(__x86_64__)
-	return __rdtsc();
-#else
-	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-	                                 std::chrono::steady_clock::now().time_since_epoch())
-	                                 .count());
-#endif
+	return Common::FastTicks(); // nps5 cpcommit: arm64 = CNTVCT_EL0, not steady_clock
 }
 
 // Counted events (per frame in the line): guest readbacks the command processor served by a

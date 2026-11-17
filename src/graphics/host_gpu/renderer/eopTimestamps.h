@@ -5,9 +5,12 @@
 #include "graphics/host_gpu/renderer/eopTimestampClock.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <stop_token>
+#include <thread>
 #include <vector>
 
 // GPU-accurate guest timestamps (KYTY_EOP_TIMESTAMPS).
@@ -34,6 +37,14 @@
 // cannot finish before the packet was recorded) and against the previously published value (the
 // single host queue executes in recording order).
 //
+// cbtime (nps5 drsclock; for hosts where timestamp queries are not safe: under KosmicKrisp a
+// timestamp query pool is a Metal counter heap):
+// - Like gpu, but with no query, no device timestamp and no calibration: the value comes from when
+//   the tick (host command buffer) holding the clock write was seen complete on the scheduler's
+//   timeline semaphore (EopCompletionClock), spread over the tick's clock writes by record time
+//   (EopTimestamps::CompletionGroup).
+// - A deferred clock write gets the reference clock of its deferred write (its tick completed).
+//
 // COPY_DATA from the clock reads it when the command processor processes the packet, on hardware as
 // here, and stays at record time.
 namespace Libs::Graphics {
@@ -43,11 +54,16 @@ struct GraphicContext;
 
 namespace EopTimestamps {
 
-enum class Mode : uint8_t { Record, Gpu, GpuVerify };
-// KYTY_EOP_TIMESTAMPS=record|gpu|gpu-verify. Evaluated once.
+enum class Mode : uint8_t { Record, Gpu, GpuVerify, CbTime };
+// KYTY_EOP_TIMESTAMPS=record|gpu|gpu-verify|cbtime. Evaluated once.
 [[nodiscard]] Mode GetMode();
+// gpu / gpu-verify: the timestamp query ring (and the calibrated-timestamp extension).
 [[nodiscard]] inline bool GpuEnabled() {
-	return GetMode() != Mode::Record;
+	return GetMode() == Mode::Gpu || GetMode() == Mode::GpuVerify;
+}
+// cbtime: command-buffer completion times (EopCompletionClock). No query, no device timestamp.
+[[nodiscard]] inline bool CbTimeEnabled() {
+	return GetMode() == Mode::CbTime;
 }
 // gpu-verify: mismatches found so far in this process (always counted; tests read it).
 [[nodiscard]] uint64_t VerifyMismatches();
@@ -117,6 +133,93 @@ private:
 	uint64_t                m_calibrated_ns = 0;
 	bool                    m_verify         = false;
 	uint64_t                m_last_published = 0; // gpu-verify: the previous published value
+};
+
+// KYTY_EOP_TIMESTAMPS=cbtime: the completion clock of one guest command scheduler.
+// - A watcher thread waits on the scheduler's timeline semaphore for the next tick and notes the
+//   reference clock when it completes (one blocking wait per tick; no query, no polling).
+// - Queue and Publish run on the scheduler's recording thread (the GPU thread), like the ring's.
+class EopCompletionClock {
+public:
+	// The pseudo slot of a clock write in this mode (EopTimestampRing slots are below 2^31).
+	static constexpr uint32_t Slot = UINT32_MAX - 1u;
+
+	EopCompletionClock(GraphicContext& graphics, vk::Semaphore timeline);
+	~EopCompletionClock();
+	KYTY_CLASS_NO_COPY(EopCompletionClock);
+
+	// The guest command scheduler's clock. It is kept here, not as a scheduler member (the
+	// scheduler's layout is unchanged): created in the scheduler's constructor in cbtime mode,
+	// destroyed in its destructor after the last deferred clock write and before the timeline.
+	// Null in every other mode. `timeline` identifies the scheduler.
+	static void                              CreateGuest(GraphicContext& graphics, vk::Semaphore timeline);
+	static void                              DestroyGuest(vk::Semaphore timeline);
+	[[nodiscard]] static EopCompletionClock* Guest(vk::Semaphore timeline) noexcept;
+
+	// `address` now holds `record_value`; it gets its completion value once `tick` completed.
+	void Queue(uint64_t tick, uint64_t address, uint64_t record_value);
+	// At a packet boundary with the draw-prep window empty: rewrites every queued clock value
+	// whose tick was seen complete (never waits).
+	void Publish();
+	// A clock write deferred with its label (KYTY_LABEL_MODE=split/completion defer every label):
+	// NoteDeferred on the recording thread when the write of `record_value` is deferred to the
+	// completion of `tick`; DeferredValue on the completion runner once `tick` has completed (in
+	// tick order): the value to write. The first deferred write of a tick closes the tick's
+	// group at the reference clock of that moment.
+	void                   NoteDeferred(uint64_t tick, uint64_t record_value);
+	[[nodiscard]] uint64_t DeferredValue(uint64_t tick, uint64_t record_value);
+
+private:
+	struct Entry {
+		uint64_t tick         = 0;
+		uint64_t address      = 0;
+		uint64_t record_value = 0;
+	};
+	struct Observation {
+		uint64_t tick = 0; // the highest tick complete at `time`
+		uint64_t time = 0; // reference clock
+	};
+
+	struct TickSpan {
+		uint64_t tick         = 0;
+		uint64_t first_record = 0;
+		uint64_t last_record  = 0;
+	};
+
+	void Watch(std::stop_token stop);
+	void Report(uint64_t now);
+
+	GraphicContext&          m_graphics;
+	vk::Semaphore            m_timeline;
+	std::deque<Entry>        m_queue; // recording thread: clock writes in recording (tick) order
+	std::vector<Observation> m_taken; // recording thread: scratch
+	uint64_t                 m_previous_end = 0; // recording thread: the last group's gpu_end
+	std::atomic<uint64_t>    m_observed_tick {0};
+	std::mutex               m_mutex;
+	std::vector<Observation> m_observations; // under m_mutex, in tick order
+	// Statistics of the current report window (recording thread).
+	uint64_t m_report_at    = 0;
+	uint64_t m_groups       = 0;
+	uint64_t m_rewritten    = 0;
+	uint64_t m_skipped      = 0;
+	uint64_t m_shift_sum    = 0;
+	uint64_t m_shift_max    = 0;
+	uint64_t m_gpu_span_sum = 0; // sum of the groups' (gpu_end - gpu_begin)
+	std::atomic<uint64_t> m_dropped {0};
+	// Deferred clock writes: the record span of each tick that has some, in tick order, and the
+	// group of the tick whose deferred writes are running. Under m_deferred_mutex.
+	std::mutex                     m_deferred_mutex;
+	std::deque<TickSpan>           m_deferred_spans;
+	EopTimestamps::CompletionGroup m_deferred_group;
+	uint64_t                       m_deferred_group_tick   = 0;
+	uint64_t                       m_deferred_previous_end = 0;
+	uint64_t                       m_deferred_report_at    = 0; // reference clock
+	uint64_t                       m_deferred_groups       = 0;
+	uint64_t                       m_deferred_writes       = 0;
+	uint64_t                       m_deferred_shift_sum    = 0;
+	uint64_t                       m_deferred_shift_max    = 0;
+	uint64_t                       m_deferred_span_sum     = 0;
+	std::jthread          m_watcher; // last: stopped and joined before the members above go
 };
 
 } // namespace Libs::Graphics

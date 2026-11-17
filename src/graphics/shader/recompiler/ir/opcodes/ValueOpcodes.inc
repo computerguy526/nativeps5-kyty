@@ -383,3 +383,7 @@ VALUE_OPCODE(Sendmsg, Void)
 VALUE_OPCODE(TtraceData, Void)
 VALUE_OPCODE(InstPrefetch, Void)
 VALUE_OPCODE(SelectU32, U32, U1, U32, U32)
+// KYTY_PS_PER_VERTEX=unpack (ir/passes/RawVertexUnpack.h): a host-interpolated field of a pixel
+// parameter: pixel input index, field code (ShaderParameterFieldCode). Last: the opcodes above keep
+// their numbers.
+VALUE_OPCODE(GetParameterField, F32, U32, U32)

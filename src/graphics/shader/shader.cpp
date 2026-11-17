@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/shader/shader.h"
 
 #include "common/assert.h"
@@ -117,7 +118,7 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data) {
 			EXIT("ShaderMapUserData: invalid code address/size 0x%016" PRIx64 " / %u\n", addr, data.code_size_bytes);
 		}
 		// Hash before taking the map lock: a guest read can fault and ask the GPU to publish bytes.
-		entry.code_hash = XXH3_64bits(reinterpret_cast<const void*>(addr), data.code_size_bytes);
+		entry.code_hash = XXH3_64bits(Guest::Ptr<const void>(addr), data.code_size_bytes);
 		const auto declared = GetDeclaredShaderHash(addr);
 		// Keep declared IDs used by our title-specific codegen options; headerless code uses XXH3.
 		entry.registered_hash = declared != 0 ? declared : entry.code_hash;
@@ -246,7 +247,7 @@ static bool CopyMetadataForPreparation(const ShaderMappedData& data, Preparation
 	}
 	const auto read = [](const void* address, void* destination, uint64_t size) {
 		return size == 0 ||
-		       LibKernel::Memory::TryReadGpuCleanBacking(reinterpret_cast<uint64_t>(address),
+		       LibKernel::Memory::TryReadGpuCleanBacking(Guest::Addr(address),
 		                                                destination, size);
 	};
 	if (data.user_data != nullptr) {
@@ -260,11 +261,12 @@ static bool CopyMetadataForPreparation(const ShaderMappedData& data, Preparation
 			return false;
 		}
 		if (direct != 0 && copy.header.direct_resource_offset != nullptr) {
-			if (!read(copy.header.direct_resource_offset, copy.direct_offsets.data(),
+			if (!read(Guest::Host(copy.header.direct_resource_offset), copy.direct_offsets.data(),
 			          uint64_t {direct} * sizeof(uint16_t))) {
 				return false;
 			}
-			copy.header.direct_resource_offset = copy.direct_offsets.data();
+			// The header's pointer stays a guest-valued one (nps5: its readers add the bias).
+			copy.header.direct_resource_offset = Guest::Value(copy.direct_offsets.data());
 		}
 		view.user_data = &copy.header;
 	}
@@ -287,7 +289,14 @@ static bool CopyMetadataForPreparation(const ShaderMappedData& data, Preparation
 static uint64_t GetDeclaredShaderHash(uint64_t shader_addr) {
 	static const bool use_clean_backing = [] {
 		const auto* value = std::getenv("KYTY_SHADER_METADATA_BACKING");
-		return value != nullptr && std::strcmp(value, "1") == 0;
+		// nps5: on by default with hosted memory (guest view != backing alias). There the mapped
+		// read goes through the watch-protected guest view, and a header on a page whose other
+		// bytes the GPU owns made the CP thread fault on Kyty's own watch and drain the GPU per
+		// dispatch (ks_f3: GetDeclaredShaderHash <- PrepareProgram <- DispatchDirect, 10 ms each).
+		if (value == nullptr) {
+			return LibKernel::Memory::HostedActive();
+		}
+		return std::strcmp(value, "1") == 0;
 	}();
 	// A draw-prep preparation reads only through recorded probes (a clean probe returns the
 	// bytes the mapped read would) and never falls back to the guest mapping.
@@ -299,12 +308,12 @@ static uint64_t GetDeclaredShaderHash(uint64_t shader_addr) {
 		const auto read_word = [speculative](const uint32_t* address) {
 			uint32_t value = 0;
 			const bool clean = LibKernel::Memory::TryReadGpuCleanBacking(
-			    reinterpret_cast<uint64_t>(address), &value, sizeof(value));
+			    Guest::Addr(address), &value, sizeof(value));
 			Profiler::CountFrameEvent(clean ? Profiler::FrameEvent::ShaderHeaderProbeHits
 			                               : Profiler::FrameEvent::ShaderHeaderProbeMisses);
 			return clean || speculative ? value : *address;
 		};
-		const auto* code = reinterpret_cast<const uint32_t*>(shader_addr);
+		const auto* code = Guest::Ptr<const uint32_t>(shader_addr);
 		EXIT_IF(code == nullptr);
 		// Both leading words in one silent probe. It reads the second word even when the
 		// first is not the marker, which a silent probe may do: it cannot fault, and a
@@ -325,7 +334,7 @@ static uint64_t GetDeclaredShaderHash(uint64_t shader_addr) {
 		std::array<uint32_t, 2> hashes {};
 		static_assert(offsetof(ShaderBinaryInfo, hash1) == offsetof(ShaderBinaryInfo, hash0) + sizeof(uint32_t));
 		const bool clean = LibKernel::Memory::TryReadGpuCleanBacking(
-		    reinterpret_cast<uint64_t>(&header->hash0), hashes.data(), sizeof(hashes));
+		    Guest::Addr(&header->hash0), hashes.data(), sizeof(hashes));
 		Profiler::CountFrameEvent(clean ? Profiler::FrameEvent::ShaderHeaderProbeHits
 		                               : Profiler::FrameEvent::ShaderHeaderProbeMisses);
 		if (!clean && speculative) {
@@ -334,7 +343,7 @@ static uint64_t GetDeclaredShaderHash(uint64_t shader_addr) {
 		return clean ? (static_cast<uint64_t>(hashes[1]) << 32u) | hashes[0]
 		             : (static_cast<uint64_t>(header->hash1) << 32u) | header->hash0;
 	}
-	const auto* header = GetBinaryInfo(reinterpret_cast<const uint32_t*>(shader_addr));
+	const auto* header = GetBinaryInfo(Guest::Ptr<const uint32_t>(shader_addr));
 	return header != nullptr ? (static_cast<uint64_t>(header->hash1) << 32u) | header->hash0 : 0;
 }
 
@@ -400,7 +409,7 @@ static uint64_t HashShaderCodeCertified(std::span<const uint32_t> code) {
 		DrawPrep::FailActive(DrawPrep::ReadFailure::Uncertified);
 		return 0;
 	}
-	const auto address = reinterpret_cast<uint64_t>(code.data());
+	const auto address = Guest::Addr(code.data());
 	if (DrawPrepCodeDigestEnabled() && LibKernel::Memory::BackingInPlaceEnabled()) {
 		bool       ok     = false;
 		const auto digest = HashCleanBackingInPlace(address, code.size_bytes(), ok);
@@ -438,7 +447,7 @@ static uint64_t HashShaderCode(std::span<const uint32_t> code) {
 		if (LibKernel::Memory::BackingInPlaceEnabled()) {
 			bool       ok = false;
 			const auto digest =
-			    HashCleanBackingInPlace(reinterpret_cast<uint64_t>(code.data()), code.size_bytes(), ok);
+			    HashCleanBackingInPlace(Guest::Addr(code.data()), code.size_bytes(), ok);
 			if (ok) {
 				Profiler::CountFrameEvent(Profiler::FrameEvent::ShaderCodeHashBacking);
 				return digest;
@@ -446,7 +455,7 @@ static uint64_t HashShaderCode(std::span<const uint32_t> code) {
 		} else {
 			static thread_local std::vector<uint32_t> scratch;
 			scratch.resize(code.size());
-			if (LibKernel::Memory::TryReadGpuCleanBacking(reinterpret_cast<uint64_t>(code.data()),
+			if (LibKernel::Memory::TryReadGpuCleanBacking(Guest::Addr(code.data()),
 			                                              scratch.data(), code.size_bytes())) {
 				Profiler::CountFrameEvent(Profiler::FrameEvent::ShaderCodeHashBacking);
 				return XXH3_64bits(scratch.data(), code.size_bytes());
@@ -469,7 +478,7 @@ static ShaderParams GetShaderParams(uint64_t shader_addr, const char* label, uin
 		     label, declared_hash, shader_addr, data.code_size_bytes);
 	}
 	const auto code_words = data.code_size_bytes / sizeof(uint32_t);
-	const auto code = std::span {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
+	const auto code = std::span {Guest::Ptr<const uint32_t>(shader_addr), code_words};
 	uint64_t effective_hash = declared_hash;
 	if (RegisteredShaderCodeEnabled() && DrawPrep::Speculative()) {
 		// Keep the worker's exact code certificate, including failed-read fallback at commit.
@@ -829,7 +838,14 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 	const bool debug_dump = Config::GraphicsDebugDumpEnabled();
 	static const bool use_clean_backing_env = [] {
 		const auto* value = std::getenv("KYTY_SHADER_METADATA_BACKING");
-		return value != nullptr && std::strcmp(value, "1") == 0;
+		// nps5: on by default with hosted memory (guest view != backing alias). There the mapped
+		// read goes through the watch-protected guest view, and a header on a page whose other
+		// bytes the GPU owns made the CP thread fault on Kyty's own watch and drain the GPU per
+		// dispatch (ks_f3: GetDeclaredShaderHash <- PrepareProgram <- DispatchDirect, 10 ms each).
+		if (value == nullptr) {
+			return LibKernel::Memory::HostedActive();
+		}
+		return std::strcmp(value, "1") == 0;
 	}();
 	// A draw-prep preparation reads only through recorded probes and stops at the first failed
 	// one (which already failed the preparation) instead of reading the guest mapping.
@@ -858,7 +874,7 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		if (last - first < MaxBatchWords) {
 			attribute_first    = first;
 			attributes_batched = LibKernel::Memory::TryReadGpuCleanBacking(
-			    reinterpret_cast<uint64_t>(attrib + first), attribute_words.data(),
+			    Guest::Addr(attrib + first), attribute_words.data(),
 			    (last - first + 1u) * sizeof(uint32_t));
 			Profiler::CountFrameEvent(attributes_batched ? Profiler::FrameEvent::VertexTableBatchHits
 			                                             : Profiler::FrameEvent::VertexTableBatchMisses);
@@ -882,7 +898,7 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		} else {
 			const bool attribute_clean = use_clean_backing &&
 			    LibKernel::Memory::TryReadGpuCleanBacking(
-			        reinterpret_cast<uint64_t>(attrib + in.semantic), &attribute, sizeof(attribute));
+			        Guest::Addr(attrib + in.semantic), &attribute, sizeof(attribute));
 			if (use_clean_backing) {
 				Profiler::CountFrameEvent(attribute_clean
 				                              ? Profiler::FrameEvent::VertexMetadataProbeHits
@@ -920,7 +936,7 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		if (valid && (last - first + 1u) * 4u <= sharp_words.size()) {
 			sharp_first    = first;
 			sharps_batched = LibKernel::Memory::TryReadGpuCleanBacking(
-			    reinterpret_cast<uint64_t>(buffer + static_cast<size_t>(first) * 4u),
+			    Guest::Addr(buffer + static_cast<size_t>(first) * 4u),
 			    sharp_words.data(), (last - first + 1u) * 4u * sizeof(uint32_t));
 			Profiler::CountFrameEvent(sharps_batched ? Profiler::FrameEvent::VertexTableBatchHits
 			                                         : Profiler::FrameEvent::VertexTableBatchMisses);
@@ -963,7 +979,7 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 			descriptor_clean = true;
 		} else {
 			descriptor_clean = use_clean_backing &&
-			    LibKernel::Memory::TryReadGpuCleanBacking(reinterpret_cast<uint64_t>(sharp),
+			    LibKernel::Memory::TryReadGpuCleanBacking(Guest::Addr(sharp),
 			                                             r.fields, 4 * sizeof(uint32_t));
 			if (use_clean_backing) {
 				Profiler::CountFrameEvent(descriptor_clean
@@ -1004,8 +1020,8 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 		}
 		if (invalid_descriptor) {
 			DumpVertexFailure(shader_addr, data, user_sgpr, user_sgpr_num, metadata,
-			                  reinterpret_cast<uint64_t>(attrib),
-			                  reinterpret_cast<uint64_t>(buffer), speculative);
+			                  Guest::Addr(attrib),
+			                  Guest::Addr(buffer), speculative);
 			static std::atomic<uint32_t> invalid_logs {0};
 			if (invalid_logs.fetch_add(1, std::memory_order_relaxed) < 32) {
 				std::fprintf(stderr, "VertexDescriptorInvalid: speculative=%u clean=%u batched=%u "
@@ -1013,8 +1029,8 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 				     " semantic=%u attribute=0x%08x descriptor_index=%zu "
 				     "descriptor=%08x,%08x,%08x,%08x format=%u selectors=%u,%u,%u,%u\n",
 				     static_cast<unsigned>(speculative), static_cast<unsigned>(descriptor_clean),
-				     static_cast<unsigned>(sharps_batched), reinterpret_cast<uint64_t>(attrib),
-				     reinterpret_cast<uint64_t>(buffer), static_cast<unsigned>(in.semantic),
+				     static_cast<unsigned>(sharps_batched), Guest::Addr(attrib),
+				     Guest::Addr(buffer), static_cast<unsigned>(in.semantic),
 				     attribute, index, r.fields[0], r.fields[1], r.fields[2], r.fields[3],
 				     static_cast<unsigned>(r.RawFormat()), static_cast<unsigned>(r.DstSelX()),
 				     static_cast<unsigned>(r.DstSelY()), static_cast<unsigned>(r.DstSelZ()),
@@ -1022,10 +1038,10 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 				uint32_t live_attribute = 0;
 				std::array<uint32_t, 4> live_descriptor {};
 				const bool live_attribute_read = LibKernel::Memory::TryReadBacking(
-				    reinterpret_cast<uint64_t>(attrib + in.semantic), &live_attribute,
+				    Guest::Addr(attrib + in.semantic), &live_attribute,
 				    sizeof(live_attribute));
 				const bool live_descriptor_read = LibKernel::Memory::TryReadBacking(
-				    reinterpret_cast<uint64_t>(sharp), live_descriptor.data(),
+				    Guest::Addr(sharp), live_descriptor.data(),
 				    sizeof(live_descriptor));
 				std::fprintf(stderr, "VertexDescriptorBacking: attribute_read=%u attribute=%08x "
 				    "descriptor_read=%u descriptor=%08x,%08x,%08x,%08x\n",
@@ -1135,10 +1151,10 @@ static bool ShaderGetStaticVertexInputInfo(uint64_t shader_addr, const HW::UserS
 		info.fetch_attrib_reg = metadata.vertex_attrib_reg;
 		info.fetch_buffer_reg = metadata.vertex_buffer_reg;
 
-		const auto* attrib = reinterpret_cast<const uint32_t*>(
+		const auto* attrib = Guest::Ptr<const uint32_t>(
 		    static_cast<uint64_t>(user_sgpr.value[metadata.vertex_attrib_reg]) |
 		    (static_cast<uint64_t>(user_sgpr.value[metadata.vertex_attrib_reg + 1]) << 32u));
-		const auto* buffer = reinterpret_cast<const uint32_t*>(
+		const auto* buffer = Guest::Ptr<const uint32_t>(
 		    static_cast<uint64_t>(user_sgpr.value[metadata.vertex_buffer_reg]) |
 		    (static_cast<uint64_t>(user_sgpr.value[metadata.vertex_buffer_reg + 1]) << 32u));
 

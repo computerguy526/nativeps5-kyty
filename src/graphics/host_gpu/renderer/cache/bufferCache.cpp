@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
 #include "common/alignment.h"
@@ -291,6 +292,9 @@ Live::Switch g_readback_merge_gap("KYTY_READBACK_MERGE_GAP_KB", [](const char* v
 // command processor no longer waits for the GPU to finish everything queued before it serves the
 // next op.
 Live::Switch g_readback_flush_side("KYTY_READBACK_FLUSH_SIDE", Live::ParseDefaultOff);
+// KYTY_GC_SIDE_SETTLE_LAZY (live, default 0; nps5 slowlvl): see BufferCache::RunGarbageCollector.
+Live::Switch g_gc_side_settle_lazy("KYTY_GC_SIDE_SETTLE_LAZY", Live::ParseDefaultOff);
+std::atomic<uint64_t> g_gc_settle_deferred_passes {0};
 std::atomic<uint64_t> g_readback_flush_side_copies {0};
 
 // KYTY_READBACK_SIDE_WRITES (live, default on; =0 drains as before): a write fault on a GPU-owned
@@ -333,6 +337,30 @@ int64_t ParseReadFaultPublished(const char* value) {
 }
 Live::Switch g_read_fault_published("KYTY_READ_FAULT_PUBLISHED", ParseReadFaultPublished);
 
+// nps5: KYTY_READ_FAULT_PUBLISHED_BURST (default 8; 0 = never): the number of consecutive served
+// loads of one page by one thread, each within 1 ms of the previous, after which the next one waits
+// for the page's publication instead (a copy loop would otherwise fault on every load). A wait only
+// pays when the page then stays readable: for a page the GPU writes again every frame (a GPU
+// simulation the game samples from worker threads) each wait costs milliseconds and buys nothing.
+uint32_t ReadFaultPublishedBurst() {
+	static const uint32_t burst = [] {
+		const auto* value = std::getenv("KYTY_READ_FAULT_PUBLISHED_BURST");
+		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 8u;
+	}();
+	return burst;
+}
+
+// nps5: KYTY_READ_FAULT_PUBLISHED_STRADDLE (default on; =0 off): a plain load whose bytes lie in
+// two tracker pages is served too when each of the two pages is either plain CPU memory (no GPU
+// owner: the backing holds its bytes) or qualifies like the faulting page.
+bool ReadFaultPublishedStraddle() {
+	static const bool on = [] {
+		const auto* value = std::getenv("KYTY_READ_FAULT_PUBLISHED_STRADDLE");
+		return value == nullptr || value[0] != '0';
+	}();
+	return on;
+}
+
 uint32_t ReadFaultPublishedFrames() {
 	static const uint32_t frames = [] {
 		const auto* value = std::getenv("KYTY_READ_FAULT_PUBLISHED_FRAMES");
@@ -350,6 +378,7 @@ struct ReadFaultPublishedState {
 	std::atomic<uint64_t>                  stale {0};
 	std::atomic<uint64_t>                  other {0};
 	std::atomic<uint64_t>                  burst {0};
+	std::atomic<uint64_t>                  straddled {0};
 	std::atomic<uint64_t>                  verify_equal {0};
 	std::atomic<uint64_t>                  verify_different {0};
 	std::atomic<uint64_t>                  report_ns {0};
@@ -403,10 +432,11 @@ void ReportReadFaultPublished(uint32_t frame) {
 	const auto served = take(state.served);
 	std::printf("Kyty read-fault published 10s: %u frames, served %" PRIu64 " (%.2f/frame); waited: "
 	            "not a plain load %" PRIu64 ", image %" PRIu64 ", not published recently %" PRIu64
-	            ", other %" PRIu64 ", copy burst %" PRIu64 "; verify: equal %" PRIu64 ", different %" PRIu64 "\n",
+	            ", other %" PRIu64 ", copy burst %" PRIu64 "; verify: equal %" PRIu64 ", different %" PRIu64
+	            "; served across two pages %" PRIu64 "\n",
 	            frames, served, static_cast<double>(served) / frames, take(state.undecodable),
 	            take(state.image), take(state.stale), take(state.other), take(state.burst), take(state.verify_equal),
-	            take(state.verify_different));
+	            take(state.verify_different), take(state.straddled));
 }
 
 // The number of regions copies (source ascending) give when a copy starting at most `gap` bytes
@@ -1692,7 +1722,7 @@ void BufferCache::SettleHotPages(uint64_t vaddr, uint64_t size) {
 		// differ from the last upload (or nothing was uploaded while hot), the CPU wrote since.
 		const auto shadow = m_hot_shadows.find(page);
 		if (shadow == m_hot_shadows.end() ||
-		    std::memcmp(shadow->second.data.get(), reinterpret_cast<const void*>(page),
+		    std::memcmp(shadow->second.data.get(), LibKernel::Memory::GuestReadPtr(page, TRACKER_PAGE_SIZE),
 		                TRACKER_PAGE_SIZE) != 0) {
 			m_memory_tracker.MarkRegionAsCpuModified(page, TRACKER_PAGE_SIZE);
 		}
@@ -1750,11 +1780,11 @@ void BufferCache::CollectHotPages(Buffer& buffer, std::span<const GuestRange> ho
 			// (hot, hence never GPU-dirty and readable) page first and snapshot only one that
 			// differs. A write racing either compare is seen by the next upload, whose shadow still
 			// holds the old contents, exactly as a write landing right after a snapshot.
-			bool same = m_bda_hot_sync && unchanged(reinterpret_cast<const void*>(page));
+			bool same = m_bda_hot_sync && unchanged(LibKernel::Memory::GuestReadPtr(page, TRACKER_PAGE_SIZE));
 			if (!same) {
 				// Snapshot the (writable) page once: the compare, the shadow and the upload all use
 				// this copy, so the shadow always equals what the buffer receives.
-				std::memcpy(snapshot, reinterpret_cast<const void*>(page), TRACKER_PAGE_SIZE);
+				std::memcpy(snapshot, LibKernel::Memory::GuestReadPtr(page, TRACKER_PAGE_SIZE), TRACKER_PAGE_SIZE);
 				same = unchanged(snapshot);
 			}
 			if (same) {
@@ -1973,16 +2003,47 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 		burst_count = burst_page == page && now_ns - burst_ns < 1'000'000 ? burst_count + 1 : 0;
 		burst_page  = page;
 		burst_ns    = now_ns;
-		if (burst_count >= 8) {
+		// The other tracker page of a load that straddles two (0: the load lies in the faulting
+		// page). 1: it holds an image's bytes; 2: its GPU-owned bytes were not published recently.
+		uint64_t   other_page = 0;
+		const auto other_page_state = [&]() -> int {
+			if (m_texture_cache.IsRegionGpuModified(other_page, TRACKER_PAGE_SIZE)) {
+				return 1;
+			}
+			if (IsRegionGpuModifiedRelaxed(other_page, TRACKER_PAGE_SIZE) &&
+			    !ReadFaultPublishedRecently(other_page, frame)) {
+				return 2;
+			}
+			return 0; // plain CPU memory, or published like the faulting page
+		};
+		const auto decoded = [&] {
+			if (!GuestLoad::Decode(vaddr, load)) {
+				return false;
+			}
+			const auto first = Common::AlignDown(load.address, TRACKER_PAGE_SIZE);
+			const auto last  = Common::AlignDown(load.address + load.size - 1, TRACKER_PAGE_SIZE);
+			if (first == page && last == page) {
+				return true;
+			}
+			if (!ReadFaultPublishedStraddle() || last - first != TRACKER_PAGE_SIZE ||
+			    (first != page && last != page)) {
+				return false;
+			}
+			other_page = first == page ? last : first;
+			return true;
+		};
+		if (const auto burst_limit = ReadFaultPublishedBurst();
+		    burst_limit != 0 && burst_count >= burst_limit) {
 			state.burst.fetch_add(1, std::memory_order_relaxed);
-		} else if (!GuestLoad::Decode(vaddr, load) ||
-		    Common::AlignDown(load.address + load.size - 1, TRACKER_PAGE_SIZE) != page) {
+		} else if (!decoded()) {
 			state.undecodable.fetch_add(1, std::memory_order_relaxed);
 		} else if (!IsRegionGpuModifiedRelaxed(page, TRACKER_PAGE_SIZE) ||
-		           m_texture_cache.IsRegionGpuModified(page, TRACKER_PAGE_SIZE)) {
+		           m_texture_cache.IsRegionGpuModified(page, TRACKER_PAGE_SIZE) ||
+		           (other_page != 0 && other_page_state() == 1)) {
 			// Not (only) buffer bytes the GPU owns: an image's contents are not in the backing.
 			state.image.fetch_add(1, std::memory_order_relaxed);
-		} else if (!ReadFaultPublishedRecently(page, frame)) {
+		} else if (!ReadFaultPublishedRecently(page, frame) ||
+		           (other_page != 0 && other_page_state() == 2)) {
 			state.stale.fetch_add(1, std::memory_order_relaxed);
 		} else if (!LibKernel::Memory::TryReadBacking(load.address, bytes, load.size)) {
 			state.other.fetch_add(1, std::memory_order_relaxed);
@@ -1996,6 +2057,11 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			// Keep the page read-hot so its eager copy keeps publishing the GPU's new bytes.
 			(void)m_scheduler.Context().GetGpu().TrySendCommand(
 			    [this, page] { NoteEagerRead(page, TRACKER_PAGE_SIZE, false); });
+			if (other_page != 0) {
+				state.straddled.fetch_add(1, std::memory_order_relaxed);
+				(void)m_scheduler.Context().GetGpu().TrySendCommand(
+				    [this, other_page] { NoteEagerRead(other_page, TRACKER_PAGE_SIZE, false); });
+			}
 			if (diag) {
 				diag->SetPath("published");
 			}
@@ -3251,7 +3317,7 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		if (reserved != nullptr && total_size <= reserved_size && guest_copies == copies.size()) {
 			for (auto& copy: copies) {
 				std::memcpy(reserved + copy.srcOffset,
-				            reinterpret_cast<const void*>(buffer.CpuAddress() + copy.dstOffset),
+				            LibKernel::Memory::GuestReadPtr(buffer.CpuAddress() + copy.dstOffset, copy.size),
 				            copy.size);
 				copy.srcOffset += reserved_offset;
 			}
@@ -3512,7 +3578,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	// at (srcOffset - host_base).
 	const auto source_of = [&](size_t index, const vk::BufferCopy& copy) -> const void* {
 		if (index < guest_copies) {
-			return reinterpret_cast<const void*>(buffer.CpuAddress() + copy.dstOffset);
+			return LibKernel::Memory::GuestReadPtr(buffer.CpuAddress() + copy.dstOffset, copy.size);
 		}
 		return host_data + (copy.srcOffset - host_base);
 	};
@@ -4542,7 +4608,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferNow(uint64_t vaddr, uint64
 			auto [mapped, offset] = m_stream_buffer.Map(size, alignment, false);
 			bool read = false;
 			if (mapped != nullptr && StreamDirectReadEnabled()) {
-				std::memcpy(mapped, reinterpret_cast<const void*>(vaddr), size);
+				std::memcpy(mapped, LibKernel::Memory::GuestReadPtr(vaddr, size), size);
 				read = true;
 			} else if (mapped != nullptr && TryDeferStreamCopy(mapped, vaddr, size)) {
 				read = true; // KYTY_STREAM_COPY_DEFER: the recorder copies the bytes
@@ -4703,7 +4769,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	(void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
-		auto* destination = reinterpret_cast<uint32_t*>(vaddr);
+		auto* destination = Guest::Ptr<uint32_t>(vaddr);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
 		return;
 	}
@@ -4879,15 +4945,15 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	     (!m_texture_cache.IsRegionGpuModified(src_vaddr, size) &&
 	      !m_texture_cache.IsRegionGpuModified(dst_vaddr, size)))) {
 		if (!g_cpu_copy_page_skip.On()) {
-			std::memcpy(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr), size);
+			std::memcpy(Guest::Ptr<void>(dst_vaddr), Guest::Ptr<const void>(src_vaddr), size);
 		} else if ((dst_vaddr >= src_vaddr ? dst_vaddr - src_vaddr : src_vaddr - dst_vaddr) < size) {
 			// Page-by-page copying would corrupt later source bytes of an overlapping copy.
-			std::memmove(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr), size);
+			std::memmove(Guest::Ptr<void>(dst_vaddr), Guest::Ptr<const void>(src_vaddr), size);
 		} else {
 			for (uint64_t at = 0; at < size;) {
 				const auto bytes = std::min(TRACKER_PAGE_SIZE - (dst_vaddr + at) % TRACKER_PAGE_SIZE, size - at);
-				auto* to = reinterpret_cast<void*>(dst_vaddr + at);
-				const auto* from = reinterpret_cast<const void*>(src_vaddr + at);
+				auto* to = Guest::Ptr<void>(dst_vaddr + at);
+				const auto* from = Guest::Ptr<const void>(src_vaddr + at);
 				// Only a successful clean-backing comparison can suppress a write. Dirty GPU
 				// ownership is checked above; an unmapped/failed proof takes the original copy.
 				if (LibKernel::Memory::CompareGpuCleanBacking(dst_vaddr + at, from, bytes) !=
@@ -5325,13 +5391,40 @@ void BufferCache::RunGarbageCollector() {
 		}
 		return;
 	}
+	const bool     aggressive = m_total_used_memory >= critical;
+	// KYTY_GC_SIDE_SETTLE_LAZY (VramBudget::PlanBufferPass): below the critical mark, a pass that
+	// would wait for the GPU to settle the pending side readbacks is put off.
+	// (State kept here, not in the class: one BufferCache, this runs on the GPU thread only.)
+	static uint64_t gc_settle_deferred = 0;
+	const bool      lazy               = g_gc_side_settle_lazy.On();
+	bool            settle_waits       = false;
+	if (lazy && !aggressive && m_side != nullptr &&
+	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
+		// CompleteAllSideReadbacks does not wait when every pending readback is published or is
+		// an eager copy whose recording (master tick `value`) has completed.
+		auto& master = m_scheduler.GetMasterSemaphore();
+		master.Refresh();
+		std::lock_guard lock(m_side->pending_mutex);
+		for (const auto& entry: m_side->pending) {
+			if (!entry->done.load(std::memory_order_acquire) &&
+			    (!entry->eager || !master.IsFree(entry->value))) {
+				settle_waits = true;
+				break;
+			}
+		}
+	}
+	const auto pass = VramBudget::PlanBufferPass(lazy, aggressive, settle_waits, gc_settle_deferred);
+	gc_settle_deferred = pass.deferred;
+	if (!pass.run) {
+		g_gc_settle_deferred_passes.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
 	// Pending side readbacks keep tracker pages GPU-owned without exact dirty bytes; settle
 	// them so the ownership checks and downloads below see a consistent state.
 	CompleteAllSideReadbacks();
 
-	const bool     aggressive = m_total_used_memory >= critical;
 	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
-	const size_t   limit      = aggressive ? 64 : 32;
+	const size_t   limit      = static_cast<size_t>(pass.limit);
 
 	std::vector<BufferId> dirty_buffers;
 	size_t                retire_count = 0;

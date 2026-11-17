@@ -20,7 +20,9 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+#if defined(_WIN32) // nps5: the non-NGX/Streamline paths below build elsewhere
 #include <windows.h>
+#endif
 
 #include <array>
 #include <atomic>
@@ -97,6 +99,9 @@ void ProbeBinaryImport(const char* when) {
 	if (value == nullptr || std::strcmp(value, "1") != 0) {
 		return;
 	}
+#if !defined(_WIN32)
+	(void)when; // nps5: an NVIDIA/Windows probe
+#else
 	// The largest free address ranges below 1 TiB at this point.
 	{
 		std::array<std::pair<uint64_t, uint64_t>, 4> largest {};
@@ -172,6 +177,7 @@ void ProbeBinaryImport(const char* when) {
 		destroy_device(device, nullptr);
 	}
 	destroy_instance(instance, nullptr);
+#endif
 }
 
 } // namespace Dlss

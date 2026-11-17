@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/spirv/atomic64Lowering.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
@@ -319,6 +320,11 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 			if (IR::BufferAccessOf(inst.GetOpcode()) == IR::BufferAccess::Atomic &&
 			    inst.GetType() == IR::Type::U64) {
 				requirements.buffer_int64_atomics = true;
+				if (!GetHostBufferInt64Atomics() &&
+				    ClassifyBufferAtomic64(inst) == BufferAtomic64Form::Native) {
+					Fail(program, "64-bit buffer atomics need shaderBufferInt64Atomics (only a "
+					              "64-bit store or load form is lowered)");
+				}
 			}
 			// KYTY_PS_HELPER_ATOMICS_SKIP: emulated read-modify-writes (AtomicUpdate) of pixel shaders
 			// test gl_HelperInvocation.
@@ -678,6 +684,11 @@ std::vector<uint32_t> EmitProgram(const IR::Program& program,
 	}
 	if (program.stage != ShaderType::Compute) {
 		NoteGraphicsAddTid(program, state.lane_count, state.wave_clusters);
+	}
+	// nps5: no subgroup operations in this stage on the host (GetHostVertexSubgroups): one lane.
+	if (!GetHostVertexSubgroups() && program.stage != ShaderType::Pixel &&
+	    program.stage != ShaderType::Compute && program.stage != ShaderType::Mesh) {
+		state.builder.EnableSingleLane(TypeU32(state), ConstantU32(state, 0u), ConstantU32(state, 1u));
 	}
 	DefineModule(state);
 	EmitProgram(state);

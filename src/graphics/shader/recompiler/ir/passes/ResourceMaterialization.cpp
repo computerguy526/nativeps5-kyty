@@ -1,3 +1,4 @@
+#include "common/guestAddress.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "common/prepPhases.h"
 
@@ -106,6 +107,10 @@ bool NullBufferDescriptor(const ShaderBufferResource& descriptor, bool count = t
 		             " specialized as null (%08x %08x %08x %08x)%s\n",
 		             base, descriptor.fields[0], descriptor.fields[1], descriptor.fields[2],
 		             descriptor.fields[3], nulls == 7u ? "; further ones are counted only" : "");
+		if (Guest::g_bias != 0 && base >= Guest::g_bias) { // nps5 diagnostic
+			std::fprintf(stderr, "Kyty spec: that base - bias = 0x%012" PRIx64 " is %s\n", base - Guest::g_bias,
+			             probe(base - Guest::g_bias, size) ? "MAPPED (a host pointer in a descriptor)" : "unmapped too");
+		}
 	}
 	return true;
 }

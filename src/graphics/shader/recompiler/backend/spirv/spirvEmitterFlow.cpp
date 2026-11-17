@@ -164,10 +164,17 @@ uint32_t LoadVertexParameter(EmitterState& state, const InputBinding& input, uin
                              uint32_t chan) {
 	const auto pointer = state.builder.AllocateId();
 	const auto value   = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpAccessChain,
-	                          TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
-	                          input.variable_id, ConstantU32(state, vertex),
-	                          ConstantU32(state, chan & 3u));
+	if (input.vertex_variable_ids[0] != 0) {
+		// KYTY_PS_PER_VERTEX=gs: the vertex's flat copy.
+		state.builder.AddFunction(spv::OpAccessChain,
+		                          TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
+		                          input.vertex_variable_ids[vertex], ConstantU32(state, chan & 3u));
+	} else {
+		state.builder.AddFunction(spv::OpAccessChain,
+		                          TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
+		                          input.variable_id, ConstantU32(state, vertex),
+		                          ConstantU32(state, chan & 3u));
+	}
 	state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
 	return value;
 }
@@ -238,13 +245,7 @@ uint32_t EmitAttribute(EmitterState& state, uint32_t attr, uint32_t chan,
 		return EmitVertexParameterComponentU32(state, *input, chan & 3u);
 	}
 	const auto load_per_vertex = [&](uint32_t vertex) {
-		const auto pointer = state.builder.AllocateId();
-		const auto value   = state.builder.AllocateId();
-		state.builder.AddFunction(
-		    spv::OpAccessChain, TypePointer(state, spv::StorageClassInput, TypeF32(state)), pointer,
-		    input->variable_id, ConstantU32(state, vertex), ConstantU32(state, chan & 3u));
-		state.builder.AddFunction(spv::OpLoad, TypeF32(state), value, pointer);
-		return value;
+		return LoadVertexParameter(state, *input, vertex, chan);
 	};
 	if (input->per_vertex) {
 		if (PixelParameterIsFlat(state, attr)) {
@@ -1051,9 +1052,13 @@ static uint32_t EmitLaneReduction(ValueEmitContext& ctx, const IR::LaneReduction
 	// A wave64 on a 32-wide subgroup keeps lanes 32-63 in the second half.
 	const auto host_lanes = state.lane_count == 2 ? 32u : state.program.wave_size;
 	auto&      lane = reduction.first_lane / host_lanes == ctx.half ? ctx : *ctx.other_half;
-	const auto subid = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpLoad, TypeU32(state), subid,
-	                          state.subgroup_local_invocation_id_variable);
+	auto subid = state.builder.AllocateId();
+	if (state.subgroup_local_invocation_id_variable != 0) {
+		state.builder.AddFunction(spv::OpLoad, TypeU32(state), subid,
+		                          state.subgroup_local_invocation_id_variable);
+	} else {
+		subid = ConstantU32(state, 0u); // nps5: no vertex-stage subgroup builtin on this host
+	}
 	const auto in_range =
 	    Binary(state, spv::OpULessThan, TypeBool(state),
 	           Binary(state, spv::OpISub, TypeU32(state), subid,
@@ -1179,6 +1184,33 @@ uint32_t EmitGetAttributeF16(ValueEmitContext& ctx, const IR::Inst& inst) {
 
 uint32_t EmitGetInterpolationParameter(ValueEmitContext& ctx, const IR::Inst& inst) {
 	return EmitInterpolationParameter(ctx, inst.Arg(0).U32(), inst.Arg(1).U32(), inst.Arg(2).U32());
+}
+
+uint32_t EmitGetParameterField(ValueEmitContext& ctx, const IR::Inst& inst) {
+	// KYTY_PS_PER_VERTEX=unpack: the component of the slot that carries this field.
+	auto&      state = ctx.state;
+	const auto attr  = inst.Arg(0).U32();
+	const auto code  = inst.Arg(1).U32();
+	for (const auto& input: state.inputs) {
+		if (input.kind != IR::StageInputKind::ParameterField || input.variable_id == 0) {
+			continue;
+		}
+		const auto slot = ShaderParameterFieldSlot::Unpack(input.location, input.component_count);
+		if (slot.input != attr) {
+			continue;
+		}
+		for (uint32_t component = 0; component < 4u; component++) {
+			if (slot.codes[component] == code) {
+				const auto vector = state.builder.AllocateId();
+				const auto value  = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpLoad, TypeF32Vector(state, 4), vector, input.variable_id);
+				state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), value, vector, component);
+				return value;
+			}
+		}
+	}
+	// A field that found no location (ShaderPixelFieldSlots).
+	return ConstantF32Value(state, 0.0f);
 }
 
 uint32_t EmitGetShaderBase(ValueEmitContext& ctx) {

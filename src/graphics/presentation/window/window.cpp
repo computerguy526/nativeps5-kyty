@@ -1,5 +1,7 @@
 ﻿#include "graphics/presentation/window.h"
 
+#include "graphics/compileProgress.h"
+
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -25,6 +27,13 @@
 #include "loader/systemContent.h"
 
 #include <SDL3/SDL.h>
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -517,6 +526,31 @@ void WindowContext::ProcessEvent(double time_s) {
 	if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
 		const bool pressed = event->type == SDL_EVENT_KEY_DOWN && event->key.repeat == 0;
 		switch (event->key.key) {
+#if defined(__APPLE__)
+			// winresize: F11 and Cmd+Ctrl+F (the macOS shortcut) toggle desktop fullscreen; Alt+Enter too.
+			case SDLK_F11:
+				if (pressed) {
+					ToggleDesktopFullscreen();
+				}
+				return;
+			case SDLK_F:
+				if ((event->key.mod & SDL_KMOD_GUI) != 0 && (event->key.mod & SDL_KMOD_CTRL) != 0) {
+					if (pressed) {
+						ToggleDesktopFullscreen();
+					}
+					return;
+				}
+				break;
+			case SDLK_RETURN:
+			case SDLK_KP_ENTER:
+				if ((event->key.mod & SDL_KMOD_ALT) != 0) {
+					if (pressed) {
+						ToggleDesktopFullscreen();
+					}
+					return;
+				}
+				break;
+#endif
 			case SDLK_F7:
 				if (pressed) {
 					HostInputToggleMouseToJoystick();
@@ -795,46 +829,393 @@ void WindowContext::ProcessEvent(double time_s) {
 	}
 }
 
-void WindowContext::Run() {
-	Common::Timer timer;
-	timer.Start();
+namespace {
 
+// The window title with compile progress (window thread only). `base` is the diagnostic title
+// UpdateTitle built (empty before the first frame); the status is appended on every poll.
+struct ProgressTitle {
+	std::string                       base;
+	bool                              first_frame = false;
+	CompileProgress::TitleThrottle    throttle;
+};
+
+ProgressTitle& GetProgressTitle() {
+	static ProgressTitle state;
+	return state;
+}
+
+std::string ProgressTitleName() {
+	static std::string name;
+	char               title[128];
+	if (name.empty() && Loader::SystemContentParamSfoGetString("TITLE", title, sizeof(title))) {
+		name = title;
+	}
+	return name.empty() ? std::string("Kyty") : name;
+}
+
+void RefreshProgressTitle(SDL_Window* window, uint64_t now_ms) {
+	auto&      state = GetProgressTitle();
+	const auto text  = CompileProgress::ComposeTitle(state.first_frame ? state.base : ProgressTitleName(),
+	                                                  CompileProgress::Read(), state.first_frame);
+	if (!state.throttle.ShouldSet(now_ms, text)) {
+		return;
+	}
+	SDL_SetWindowTitle(window, text.c_str());
+	if (CompileProgress::LogEnabled()) {
+		std::fprintf(stderr, "[progress-title] %llu ms: %s\n", static_cast<unsigned long long>(now_ms),
+		             text.c_str());
+	}
+}
+
+} // namespace
+
+namespace {
+
+// winresize: while the user drags a window edge or Cocoa animates a zoom, the main thread sits in
+// AppKit's tracking loop inside SDL_PumpEvents/SDL_WaitEvent and Run() does not get to see the
+// events until it ends. SDL calls event watches synchronously from where the event is pushed, so
+// the drawable size is updated live and the presenter's swapchain follows during the drag.
+bool SDLCALL LiveResizeWatch(void* user, SDL_Event* event) {
+	auto* context = static_cast<WindowContext*>(user);
+	if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED && event->window.data1 > 0 &&
+	    event->window.data2 > 0 && context->window != nullptr &&
+	    event->window.windowID == SDL_GetWindowID(context->window)) {
+		context->Resize(event->window.data1, event->window.data2);
+	}
+	return true;
+}
+
+// KYTY_TEST_RESIZE='t1:WxH,t2:max,t3:fs,t4:restore' (t = seconds after the first presented frame):
+// resizes the window programmatically on the window thread; logs each step and its outcome.
+struct ResizeScript {
+	std::vector<PresentGeometry::Step> steps;
+	size_t                             next      = 0;
+	uint64_t                           start_ms  = 0;
+	bool                               started   = false;
+	uint64_t                           last_log  = 0;
+	std::string                        last_what;
+};
+
+void LogWindowState(SDL_Window* window, const char* what) {
+	int w = 0, h = 0, pw = 0, ph = 0;
+	SDL_GetWindowSize(window, &w, &h);
+	SDL_GetWindowSizeInPixels(window, &pw, &ph);
+	const auto flags = static_cast<uint64_t>(SDL_GetWindowFlags(window));
+	std::fprintf(stderr, "[winresize] %s: window %dx%d points, %dx%d pixels%s%s%s\n", what, w, h, pw, ph,
+	             (flags & SDL_WINDOW_FULLSCREEN) != 0u ? " fullscreen" : "",
+	             (flags & SDL_WINDOW_MAXIMIZED) != 0u ? " maximized" : "",
+	             (flags & SDL_WINDOW_MINIMIZED) != 0u ? " minimized" : "");
+}
+
+void RunResizeStep(SDL_Window* window, const PresentGeometry::Step& step) {
+	using PresentGeometry::StepKind;
+	switch (step.kind) {
+		case StepKind::Size:
+			SDL_SetWindowFullscreen(window, false);
+			SDL_RestoreWindow(window);
+			SDL_SetWindowSize(window, step.w, step.h);
+			std::fprintf(stderr, "[winresize] step t=%.1f: size %dx%d\n", step.at_s, step.w, step.h);
+			break;
+		case StepKind::Maximize:
+			SDL_MaximizeWindow(window);
+			std::fprintf(stderr, "[winresize] step t=%.1f: maximize\n", step.at_s);
+			break;
+		case StepKind::Fullscreen:
+			SDL_SetWindowFullscreen(window, true);
+			std::fprintf(stderr, "[winresize] step t=%.1f: fullscreen\n", step.at_s);
+			break;
+		case StepKind::Restore:
+			SDL_SetWindowFullscreen(window, false);
+			SDL_RestoreWindow(window);
+			std::fprintf(stderr, "[winresize] step t=%.1f: restore\n", step.at_s);
+			break;
+	}
+}
+
+} // namespace
+
+namespace {
+// winresize: the window loop as resumable steps. On macOS the loop runs inside a block of the
+// process main queue (a serial queue): one never-returning block starves every other main-queue
+// block (AppKit's fullscreen/zoom completion, Spaces transitions, CAMetalLayer layout), which is
+// the maximise hang. The bridge therefore runs one step per main-queue block and re-queues itself.
+struct RunState {
+	Common::Timer          timer;
+	ResizeScript           script;
+	uint64_t               title_time   = 0;
+	uint64_t               title_frames = 0;
+	bool                   progress_title = false;
+};
+std::unique_ptr<RunState> g_run;
+constexpr uint64_t        kTitleIntervalMs = 1000;
+} // namespace
+
+void WindowContext::RunBegin() {
+	g_run = std::make_unique<RunState>();
+	g_run->timer.Start();
+	SDL_AddEventWatch(LiveResizeWatch, this);
+	if (const char* text = std::getenv("KYTY_TEST_RESIZE"); text != nullptr && *text != '\0') {
+		g_run->script.steps = PresentGeometry::ParseResizeScript(text);
+		std::fprintf(stderr, "[winresize] KYTY_TEST_RESIZE: %zu steps\n", g_run->script.steps.size());
+	}
 	loop.event     = {};
 	loop.need_exit = false;
 	loop.paused.store(false, std::memory_order_release);
-
-	constexpr uint64_t title_interval_ms = 1000;
-	auto               title_time        = SDL_GetTicks();
-	auto               title_frames      = loop.presented_frames.load(std::memory_order_relaxed);
-
-	while (!loop.need_exit) {
-		if (loop.paused.load(std::memory_order_acquire)) {
-			if (!timer.IsPaused()) {
-				timer.Pause();
-			}
-		} else if (timer.IsPaused()) {
-			timer.Resume();
-		}
-
-		// Refresh the title on the main thread without making presentation wait for it.
-		const auto now     = SDL_GetTicks();
-		const auto elapsed = now - title_time;
-		if (elapsed >= title_interval_ms) {
-			const auto frames = loop.presented_frames.load(std::memory_order_relaxed);
-			if (frames != 0) {
-				UpdateTitle(frames, static_cast<double>(frames - title_frames) * 1000.0 /
-				                        static_cast<double>(elapsed));
-			}
-			title_time   = now;
-			title_frames = frames;
-		}
-		const auto wait_ms = static_cast<int>(title_interval_ms - (now - title_time));
-		if (!HostInputWaitEvent(&loop.event, wait_ms)) {
-			continue;
-		}
-		ProcessEvent(timer.GetTimeS());
+	g_run->title_time   = SDL_GetTicks();
+	g_run->title_frames = loop.presented_frames.load(std::memory_order_relaxed);
+	// Compile progress in the title (KYTY_PROGRESS_TITLE=0 off): polled here on the window thread
+	// every CompileProgress::kTitleIntervalMs, so the loop wakes that often.
+	g_run->progress_title = CompileProgress::Enabled();
+	if (g_run->progress_title) {
+		RefreshProgressTitle(window, SDL_GetTicks());
 	}
 }
+
+bool WindowContext::RunStep(int max_wait_ms) {
+	auto& r      = *g_run;
+	auto& script = r.script;
+	if (loop.need_exit) {
+		return false;
+	}
+	if (loop.paused.load(std::memory_order_acquire)) {
+		if (!r.timer.IsPaused()) {
+			r.timer.Pause();
+		}
+	} else if (r.timer.IsPaused()) {
+		r.timer.Resume();
+	}
+
+	// Refresh the title on the main thread without making presentation wait for it.
+	const auto now     = SDL_GetTicks();
+	const auto elapsed = now - r.title_time;
+	if (elapsed >= kTitleIntervalMs) {
+		const auto frames = loop.presented_frames.load(std::memory_order_relaxed);
+		if (frames != 0) {
+			UpdateTitle(frames, static_cast<double>(frames - r.title_frames) * 1000.0 /
+			                        static_cast<double>(elapsed));
+		}
+		r.title_time   = now;
+		r.title_frames = frames;
+	}
+	if (r.progress_title) {
+		RefreshProgressTitle(window, now);
+	}
+	if (script.next < script.steps.size() || script.last_log != 0) {
+		const auto frames_now = loop.presented_frames.load(std::memory_order_relaxed);
+		if (!script.started && frames_now > 0) {
+			script.started  = true;
+			script.start_ms = now;
+			LogWindowState(window, "initial");
+		}
+		while (script.started && script.next < script.steps.size() &&
+		       static_cast<double>(now - script.start_ms) >= script.steps[script.next].at_s * 1000.0) {
+			RunResizeStep(window, script.steps[script.next]);
+			script.next++;
+			script.last_log = now;
+		}
+		// report the state 1.5 s after each step
+		if (script.last_log != 0 && now - script.last_log >= 1500) {
+			LogWindowState(window, "after step");
+			script.last_log = script.next >= script.steps.size() ? 0 : now;
+		}
+	}
+	auto wait_ms = static_cast<int>(kTitleIntervalMs - (now - r.title_time));
+	if (script.next < script.steps.size() || script.last_log != 0) {
+		wait_ms = std::min(wait_ms, 50);
+	}
+	if (r.progress_title && wait_ms > static_cast<int>(CompileProgress::kTitleIntervalMs)) {
+		wait_ms = static_cast<int>(CompileProgress::kTitleIntervalMs);
+	}
+	wait_ms = std::max(0, std::min(wait_ms, max_wait_ms));
+	if (HostInputWaitEvent(&loop.event, wait_ms)) {
+		ProcessEvent(r.timer.GetTimeS());
+	}
+	return !loop.need_exit;
+}
+
+void WindowContext::RunEnd() {
+	SDL_RemoveEventWatch(LiveResizeWatch, this);
+	g_run.reset();
+}
+
+void WindowContext::Run() {
+	RunBegin();
+	while (RunStep(1000)) {
+	}
+	RunEnd();
+}
+
+// nps5: window placement like AnyPS5's DisplayWindow (same env names). NPS5_WINDOW_SCREEN=<builtin|main|index>[:tl|:tr|:bl|:br|:center]
+// (default builtin:tl = laptop panel, top-left), NPS5_WINDOW_PERCENT=1..100 of the usable display (default 33), NPS5_WINDOW_STACK=0 turns
+// off the slot stacking (flock() slot files in NPS5_WINDOW_SLOT_DIR, shared with AnyPS5 windows), NPS5_WINDOW_TOP=1 keeps it on top.
+namespace {
+int g_window_slot    = -1;
+int g_window_slot_fd = -1;
+
+void ReleaseWindowSlot() noexcept {
+	if (g_window_slot_fd >= 0) {
+		if (ftruncate(g_window_slot_fd, 0) != 0) {}
+		close(g_window_slot_fd);
+		g_window_slot_fd = -1;
+	}
+	g_window_slot = -1;
+}
+
+int TakeWindowSlot() {
+	const char* off = std::getenv("NPS5_WINDOW_STACK");
+	if (off != nullptr && std::string(off) == "0") return -1;
+	std::string dir;
+	if (const char* custom = std::getenv("NPS5_WINDOW_SLOT_DIR"); custom != nullptr && *custom != '\0') {
+		dir = custom;
+	} else {
+		char tmp_buffer[1024] = {};
+		const char* tmp       = std::getenv("TMPDIR");
+#if defined(__APPLE__)
+		if (confstr(_CS_DARWIN_USER_TEMP_DIR, tmp_buffer, sizeof(tmp_buffer)) > 0) tmp = tmp_buffer;
+#endif
+		dir = std::string(tmp != nullptr && *tmp != '\0' ? tmp : "/tmp");
+		while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
+		dir += "/nps5-windows";
+	}
+	mkdir(dir.c_str(), 0700);
+	struct stat info {};
+	if (stat(dir.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return -1;
+	for (int slot = 0; slot < 64; ++slot) {
+		const std::string path = dir + "/slot-" + std::to_string(slot);
+		const int fd           = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+		if (fd < 0) return -1;
+		if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+			close(fd);
+			continue;
+		}
+		const auto text = std::to_string(getpid());
+		if (ftruncate(fd, 0) != 0) {}
+		if (pwrite(fd, text.data(), text.size(), 0) < 0) {}
+		static bool registered = false;
+		if (!registered) {
+			registered = true;
+			std::atexit([] { ReleaseWindowSlot(); });
+		}
+		g_window_slot_fd = fd;
+		return slot;
+	}
+	return -1;
+}
+
+// SDL display id of the built-in panel (0 if none). CoreGraphics and SDL share the global top-left point coordinates, so the display
+// whose bounds start at the panel's origin is the panel. CoreGraphics is resolved with dlsym (the dylib does not link it).
+SDL_DisplayID BuiltinDisplayId() {
+#if defined(__APPLE__)
+	struct Rect { double x, y, w, h; };
+	using GetList   = int32_t (*)(uint32_t, uint32_t*, uint32_t*);
+	using IsBuiltin = uint32_t (*)(uint32_t);
+	using Bounds    = Rect (*)(uint32_t);
+	auto get_list   = reinterpret_cast<GetList>(dlsym(RTLD_DEFAULT, "CGGetActiveDisplayList"));
+	auto is_builtin = reinterpret_cast<IsBuiltin>(dlsym(RTLD_DEFAULT, "CGDisplayIsBuiltin"));
+	auto bounds     = reinterpret_cast<Bounds>(dlsym(RTLD_DEFAULT, "CGDisplayBounds"));
+	if (get_list == nullptr || is_builtin == nullptr || bounds == nullptr) return 0;
+	uint32_t ids[16];
+	uint32_t count = 0;
+	if (get_list(16, ids, &count) != 0) return 0;
+	int n                 = 0;
+	SDL_DisplayID* displays = SDL_GetDisplays(&n);
+	SDL_DisplayID found   = 0;
+	for (uint32_t i = 0; i < count && found == 0; ++i) {
+		if (is_builtin(ids[i]) == 0) continue;
+		const Rect b = bounds(ids[i]);
+		for (int d = 0; d < n && displays != nullptr; ++d) {
+			SDL_Rect r {};
+			if (SDL_GetDisplayBounds(displays[d], &r) && r.x == static_cast<int>(b.x) && r.y == static_cast<int>(b.y)) {
+				found = displays[d];
+				break;
+			}
+		}
+	}
+	SDL_free(displays);
+	return found;
+#else
+	return 0;
+#endif
+}
+
+// Applies the placement to a freshly created window of content size w x h. Logs '[window] display N (builtin) at x,y size WxH'.
+void PlaceWindow(SDL_Window* window, int w, int h) {
+	std::string spec = "builtin:tl";
+	if (const char* v = std::getenv("NPS5_WINDOW_SCREEN"); v != nullptr && *v != '\0') spec = v;
+	std::string screen = spec;
+	char corner        = 't'; // t = top-left, r = top-right, l = bottom-left, b = bottom-right, c = center
+	if (const auto colon = spec.find(':'); colon != std::string::npos) {
+		screen          = spec.substr(0, colon);
+		const auto where = spec.substr(colon + 1);
+		corner           = where == "tl" ? 't' : where == "tr" ? 'r' : where == "bl" ? 'l' : (where == "br" || where == "corner") ? 'b' : 'c';
+	} else if (std::getenv("NPS5_WINDOW_SCREEN") != nullptr) {
+		corner = 'c';
+	}
+	int n                   = 0;
+	SDL_DisplayID* displays = SDL_GetDisplays(&n);
+	SDL_DisplayID id        = 0;
+	const char* kind        = "main";
+	if (screen == "builtin") {
+		id   = BuiltinDisplayId();
+		kind = id != 0 ? "builtin" : "main (no builtin)";
+	} else if (screen != "main") {
+		char* end        = nullptr;
+		const auto index = std::strtol(screen.c_str(), &end, 10);
+		if (end != screen.c_str() && *end == '\0' && index >= 0 && index < n && displays != nullptr) {
+			id   = displays[index];
+			kind = "index";
+		} else {
+			LOGF("[window] ignoring NPS5_WINDOW_SCREEN=%s\n", spec.c_str());
+		}
+	}
+	if (id == 0) id = SDL_GetPrimaryDisplay();
+	int display_no = 0;
+	for (int d = 0; d < n && displays != nullptr; ++d) {
+		if (displays[d] == id) display_no = d;
+	}
+	SDL_free(displays);
+	SDL_Rect usable {};
+	if (!SDL_GetDisplayUsableBounds(id, &usable) || usable.w <= 0 || usable.h <= 0) {
+		return;
+	}
+	long percent = 33; // about a third of the panel
+	if (const char* v = std::getenv("NPS5_WINDOW_PERCENT"); v != nullptr && *v != '\0') {
+		char* end        = nullptr;
+		const auto parsed = std::strtol(v, &end, 10);
+		if (end != v && *end == '\0' && parsed >= 1 && parsed <= 100) percent = parsed;
+	}
+	const int bound_w = std::max(320, static_cast<int>(static_cast<int64_t>(usable.w) * percent / 100));
+	const int bound_h = std::max(180, static_cast<int>(static_cast<int64_t>(usable.h) * percent / 100));
+	// contain the source aspect inside the bounds
+	int ww = bound_w;
+	int wh = static_cast<int>(static_cast<int64_t>(bound_w) * h / w);
+	if (wh > bound_h) {
+		wh = bound_h;
+		ww = static_cast<int>(static_cast<int64_t>(bound_h) * w / h);
+	}
+	constexpr int title_bar = 28;
+	const bool left         = corner == 't' || corner == 'l';
+	const bool top          = corner == 't' || corner == 'r';
+	int x = usable.x + (usable.w - ww) / 2;
+	int y = usable.y + (usable.h - wh) / 2;
+	if (corner != 'c') {
+		x = left ? usable.x : usable.x + usable.w - ww;
+		y = top ? usable.y + title_bar : usable.y + usable.h - wh;
+	}
+	if (const int slot = TakeWindowSlot(); slot >= 0) {
+		g_window_slot   = slot;
+		const int pitch = wh + title_bar;
+		const int rows  = std::max(1, usable.h / pitch);
+		const int cols  = std::max(1, usable.w / ww);
+		x               = usable.x + ((slot / rows) % cols) * ww;
+		y               = usable.y + title_bar + (slot % rows) * pitch;
+	}
+	SDL_SetWindowSize(window, ww, wh);
+	SDL_SetWindowPosition(window, x, y);
+	if (const char* t = std::getenv("NPS5_WINDOW_TOP"); t != nullptr && std::atoi(t) != 0) SDL_SetWindowAlwaysOnTop(window, true);
+	std::fprintf(stderr, "[window] display %d (%s) at %d,%d size %dx%d slot %d\n", display_no, kind, x, y, ww, wh, g_window_slot);
+}
+} // namespace
 
 static void WindowCreate(WindowContext& context) {
 	EXIT_IF(context.window != nullptr);
@@ -888,7 +1269,11 @@ static void WindowCreate(WindowContext& context) {
 		EXIT("%s\n", SDL_GetError());
 	}
 
-	SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+	if (Config::FullscreenEnabled()) {
+		SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+	} else {
+		PlaceWindow(context.window, width, height);
+	}
 	HostInputInit(context.window);
 	InitializeSystemOverlayInput(context.window);
 	context.UpdateIcon();
@@ -899,6 +1284,13 @@ uint32_t WindowContext::InitialWindowFlags(bool fullscreen) noexcept {
 	if (fullscreen) {
 		flags |= static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN);
 	}
+#if defined(__APPLE__)
+	// crisptext: size the drawable in backing pixels (Retina 2x). Without this the swapchain is the window size in
+	// points and the compositor magnifies it 2x (chunky text). KYTY_HIDPI=0 restores the point-sized drawable.
+	if (const char* v = std::getenv("KYTY_HIDPI"); v == nullptr || std::string_view(v) != "0") {
+		flags |= static_cast<uint32_t>(SDL_WINDOW_HIGH_PIXEL_DENSITY);
+	}
+#endif
 	return flags;
 }
 
@@ -923,6 +1315,23 @@ void WindowRun() {
 	EXIT_IF(g_window == nullptr);
 
 	g_window->Run();
+	g_window->render_context->GetPipelineCache().Save();
+}
+
+void WindowRunBegin() {
+	KYTY_PROFILER_THREAD("Thread_Window");
+	EXIT_IF(g_window == nullptr);
+	g_window->RunBegin();
+}
+
+bool WindowRunStep(int max_wait_ms) {
+	EXIT_IF(g_window == nullptr);
+	return g_window->RunStep(max_wait_ms);
+}
+
+void WindowRunEnd() {
+	EXIT_IF(g_window == nullptr);
+	g_window->RunEnd();
 	g_window->render_context->GetPipelineCache().Save();
 }
 
@@ -1044,6 +1453,13 @@ void WindowContext::UpdateTitle(uint64_t frame_num, double current_fps) {
 		text = fixed_title;
 	}
 
+	if (CompileProgress::Enabled()) {
+		auto& state       = GetProgressTitle();
+		state.base        = text;
+		state.first_frame = true;
+		RefreshProgressTitle(window, SDL_GetTicks());
+		return;
+	}
 	SDL_SetWindowTitle(window, text.c_str());
 }
 

@@ -54,6 +54,9 @@ void                          VideoOutShutdown();
 
 [[nodiscard]] const char* FrameLimitLabel();
 bool CycleFrameLimit();
+// nps5 frame pacing: called by the guest thread that ended a frame (sceAgcSuspendPoint), before it starts the next
+// one. Returns at once unless KYTY_FRAME_START_LIMIT or KYTY_FRAME_START_SLACK_MS (with a frame-rate limit) is set.
+void PaceFrameStart();
 
 KYTY_SYSV_ABI int  VideoOutOpen(int user_id, int bus_type, int index, const void* param);
 KYTY_SYSV_ABI int  VideoOutClose(int handle);

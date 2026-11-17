@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5
 #include "common/assert.h"
 #include "common/hangTrace.h"
 #include "common/logging/log.h"
@@ -1525,11 +1526,12 @@ KYTY_CP_OP_PARSER(CpOpBranch) {
 		     reinterpret_cast<uint64_t>(else_buffer), else_num_dw);
 	}
 
+	// nps5: the buffers' words are read at guest + bias.
 	if (take_then) {
-		cp.ProcessIndirectBuffer({then_buffer, then_num_dw}, true);
+		cp.ProcessIndirectBuffer({Guest::Host(then_buffer), then_num_dw}, true);
 	} else if (mode == 2 && else_num_dw != 0) {
 		EXIT_NOT_IMPLEMENTED(else_buffer == nullptr);
-		cp.ProcessIndirectBuffer({else_buffer, else_num_dw}, true);
+		cp.ProcessIndirectBuffer({Guest::Host(else_buffer), else_num_dw}, true);
 	}
 
 	return payload_dw;
@@ -2030,10 +2032,10 @@ KYTY_CP_OP_PARSER(CpOpIndirectBuffer) {
 	}
 
 	if (!cp.IsReferenceFront()) {
-		GraphicsDbgDumpDcb("ci", indirect_num_dw, indirect_buffer);
+		GraphicsDbgDumpDcb("ci", indirect_num_dw, Guest::Host(indirect_buffer));
 	}
 
-	cp.ProcessIndirectBuffer({indirect_buffer, indirect_num_dw}, (control & (1u << 20u)) != 0);
+	cp.ProcessIndirectBuffer({Guest::Host(indirect_buffer), indirect_num_dw}, (control & (1u << 20u)) != 0);
 
 	return 3;
 }

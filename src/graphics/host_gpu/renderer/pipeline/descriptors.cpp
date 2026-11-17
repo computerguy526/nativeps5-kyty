@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
 #include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
@@ -2120,7 +2121,7 @@ void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings
 				if (source.address == 0 || source.size < 64) {
 					continue;
 				}
-				const auto* f     = reinterpret_cast<const float*>(source.address);
+				const auto* f     = Guest::Ptr<const float>(source.address);
 				const auto  count = std::min<uint64_t>(source.size, 65536) / 4;
 				for (uint64_t i = 0; i + 16 <= count; i++) {
 					const float* m      = f + i;
@@ -2175,7 +2176,7 @@ void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings
 				              static_cast<unsigned long long>(source.address),
 				              static_cast<unsigned long long>(source.size));
 				line += part;
-				const auto* words = reinterpret_cast<const uint32_t*>(source.address);
+				const auto* words = Guest::Ptr<const uint32_t>(source.address);
 				const auto  count = std::min<uint64_t>(24, source.size / 4);
 				for (uint64_t i = 0; i < count; i++) {
 					float value = 0;

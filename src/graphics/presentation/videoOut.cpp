@@ -1,5 +1,6 @@
 #include "graphics/presentation/videoOut.h"
 
+#include "common/latTrace.h"
 #include "common/abi.h"
 
 #include <algorithm>
@@ -260,6 +261,7 @@ private:
 		Graphics::Presenter::Frame* frame;
 		bool                        premultiplied_alpha;
 		uint64_t                    latency_frame; // ASTROHYBRID_LOW_LATENCY frame number
+		uint64_t                    ready_tick;    // nps5 frame pacing: QPC when the frame became Ready
 	};
 
 	Graphics::Presenter& m_presenter;
@@ -547,6 +549,7 @@ static int ReserveFlipRequest(VideoOutDriver::Impl& driver, int handle, int inde
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
 	}
 
+	Common::LatTrace::Log("flip", flip_arg);
 	Common::LockGuard lock(video_out->mutex);
 	if ((video_out->master != nullptr) != (flip_mode == VIDEO_OUT_FLIP_MODE_SLAVE) ||
 	    (video_out->slave_count != 0) != (flip_mode == VIDEO_OUT_FLIP_MODE_MASTER)) {
@@ -871,7 +874,7 @@ void VideoOutDriver::Impl::VblankEnd() {
 	}
 }
 
-// KYTY_PRESENT_ABS_VBLANK=1 (live switch, default off): run the virtual vblank on an absolute QPC
+// KYTY_PRESENT_ABS_VBLANK=1 (live switch, upstream default off): run the virtual vblank on an absolute QPC
 // timeline (deadline = origin + index * frequency / refresh, fractional ticks kept). A vblank that
 // is missed is skipped instead of repaid: the default timeline carries the overrun forward as
 // negative wait, so an over-budget frame is followed by back-to-back vblanks that keep the average
@@ -879,11 +882,100 @@ void VideoOutDriver::Impl::VblankEnd() {
 // PresentMode::Immediate the switch also presents ready flips between vblanks (polling every
 // <= 500 us) instead of only at a vblank. The timeline restarts when the switch turns on or the
 // refresh rate changes. Independent of KYTY_PRESENT_PORT_UNLOCKED, which only changes FlipQueue::Flip.
-static Live::Switch g_present_abs_vblank("KYTY_PRESENT_ABS_VBLANK", Live::ParseDefaultOff);
+// nps5: default ON in this tree (=0 restores the 60 Hz grid). Measured on Astro (Kyty + KosmicKrisp, in-run A/B): on the
+// grid a 47-57 ms frame alternates between 50 and 67 ms (stdev 6.4-9.7 ms, mean frame-to-frame change 7-14 ms) and a
+// finished frame waits 7-10 ms for the tick; presented when ready: stdev 1.1-3.6, change 1.3-3.8 ms, same fps, 8-11 ms
+// less submission -> present latency (work/kyty/pacing-plan.md in nativeps5).
+static Live::Switch g_present_abs_vblank("KYTY_PRESENT_ABS_VBLANK", Live::ParseDefaultOn);
 // ASTROHYBRID_FPS_PACING (default on; =0 off): with a frame-rate limit, presents keep a fixed cadence
 // (each due time is the previous due time plus the interval) instead of restarting the interval at
 // every present, which let timer overshoots accumulate (30 FPS limit measured 29.76 FPS, uneven gaps).
 static Live::Switch g_frame_limit_pacing("ASTROHYBRID_FPS_PACING", Live::ParseDefaultOn);
+// nps5 KYTY_FPS_LIMIT=<10..240> (live switch, default unset = ASTROHYBRID_FPS_LIMIT / none): frame-rate limit that can
+// change while the game runs (KYTY_LIVE_FILE), for same-run pacing A/Bs and for a governor outside the present thread.
+// Like ASTROHYBRID_FPS_LIMIT it implies the absolute vblank timeline in Immediate mode (flips presented when ready,
+// spaced by the limit's interval, the guest's vblank events keep their own clock).
+static Live::Switch g_live_frame_limit("KYTY_FPS_LIMIT", [](const char* value) -> int64_t {
+	const auto limit = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+	return limit >= 10 && limit <= 240 ? limit : 0;
+});
+
+// nps5 frame pacing at the SOURCE. A present-side limit alone (ASTROHYBRID_FPS_LIMIT / KYTY_FPS_LIMIT) gives an even
+// cadence but the guest keeps producing until every queue is full: two finished frames wait in the flip queue (Astro world
+// map: guest submission -> present 116 ms uncapped, 203 ms at a present-side 20 fps cap, 242 ms at 17). The gate below
+// holds the guest thread that ended a frame (sceAgcSuspendPoint, GuestGpu::Done) so that the next frame starts just in
+// time for its present slot.
+//   KYTY_FRAME_START_SLACK_MS=<1..100> (live, default unset = off; acts with a frame-rate limit in Immediate mode): frame
+//     starts run on the limiter's interval, phase-locked to the presents: every limited flip reports how long its frame
+//     waited finished (ready -> present; minus how late the flip was when the frame missed its slot), and the next start
+//     moves by a fifth of (that - SLACK): frames arrive SLACK ms before their slot instead of two intervals before it.
+//     SLACK is the jitter reserve (guest build + GPU time variation); too small = missed slots, too large = latency.
+//     A game that cannot hold the limit is never held (it arrives after its start time) and behaves as without the gate.
+//   KYTY_FRAME_START_LIMIT=<5..240> (live, default unset = off): free-running start cadence without a present-side limit
+//     (start(n+1) = start(n) + interval, late by up to a quarter interval keeps the cadence). Lowest latency, but the
+//     present cadence inherits the guest's build-time jitter (world map at 15-17: stdev 5 ms): measurement arm.
+// Waits sleep to ~1.5 ms before the deadline and yield for the rest (macOS sleeps overshoot by ~1 ms under load).
+static Live::Switch g_frame_start_slack_ms("KYTY_FRAME_START_SLACK_MS", [](const char* value) -> int64_t {
+	const auto slack = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+	return slack >= 1 && slack <= 100 ? slack : 0;
+});
+static Live::Switch g_frame_start_limit("KYTY_FRAME_START_LIMIT", [](const char* value) -> int64_t {
+	const auto limit = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+	return limit >= 5 && limit <= 240 ? limit : 0;
+});
+// Written by the present thread (QPC ticks), read by the gate. interval 0 = no limit in force.
+static std::atomic<uint64_t> g_pace_flip_ready {0}; // ready tick of the frame being flipped
+static std::atomic<uint64_t> g_pace_interval {0};
+static std::atomic<int64_t>  g_pace_error {0};      // ready -> present wait minus lateness, of the last limited flip
+static std::atomic<uint64_t> g_pace_error_seq {0};
+
+static void PaceWaitUntil(uint64_t deadline, uint64_t frequency) {
+	const uint64_t spin = frequency * 3 / 2000; // 1.5 ms
+	auto           now  = Common::Timer::QueryPerformanceCounter();
+	if (now + spin < deadline) {
+		const auto us = ((deadline - now - spin) * 1000000u) / frequency;
+		Common::Thread::SleepMicro(static_cast<uint32_t>(std::min<uint64_t>(us, 500000)));
+	}
+	while (Common::Timer::QueryPerformanceCounter() < deadline) {
+		std::this_thread::yield();
+	}
+}
+
+void PaceFrameStart() {
+	static const auto            frequency = Common::Timer::QueryPerformanceFrequency();
+	static std::atomic<uint64_t> next_start {0};
+	static std::atomic<uint64_t> seen_seq {0};
+	const auto slack_ms = static_cast<int64_t>(g_frame_start_slack_ms.Get());
+	const auto limit    = static_cast<uint64_t>(g_frame_start_limit.Get());
+	uint64_t   interval = slack_ms != 0 ? g_pace_interval.load(std::memory_order_relaxed) : 0;
+	int64_t    adjust   = 0;
+	if (interval != 0) {
+		const auto seq = g_pace_error_seq.load(std::memory_order_relaxed);
+		if (seen_seq.exchange(seq, std::memory_order_relaxed) != seq) {
+			const int64_t target = slack_ms * static_cast<int64_t>(frequency) / 1000;
+			adjust = std::clamp((g_pace_error.load(std::memory_order_relaxed) - target) / 5,
+			                    -static_cast<int64_t>(interval / 4), static_cast<int64_t>(interval / 2));
+		}
+	} else if (limit != 0) {
+		interval = frequency / limit;
+	} else {
+		next_start.store(0, std::memory_order_relaxed);
+		return;
+	}
+	const uint64_t now = Common::Timer::QueryPerformanceCounter();
+	uint64_t       due = next_start.load(std::memory_order_relaxed);
+	if (due != 0) {
+		due = static_cast<uint64_t>(static_cast<int64_t>(due) + adjust);
+	}
+	uint64_t start = now;
+	if (due != 0 && now < due) {
+		PaceWaitUntil(std::min(due, now + frequency / 2), frequency);
+		start = due;
+	} else if (due != 0 && now - due <= interval / 4) {
+		start = due;
+	}
+	next_start.store(start + interval, std::memory_order_relaxed);
+}
 
 namespace {
 
@@ -952,9 +1044,14 @@ void UpdateGameStep(GameStep& step, uint64_t now, uint64_t frequency, uint32_t l
 	if (!step.ready) {
 		const char* custom = std::getenv("ASTROHYBRID_GAME_STEP_ADDR");
 		const auto  addr   = custom != nullptr ? std::strtoull(custom, nullptr, 0) : 0x93F0040ull;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		MEMORY_BASIC_INFORMATION info {};
-		if (VirtualQuery(reinterpret_cast<void*>(addr), &info, sizeof(info)) != sizeof(info) ||
-		    info.State != MEM_COMMIT || (info.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) == 0) {
+		const bool mapped = VirtualQuery(reinterpret_cast<void*>(addr), &info, sizeof(info)) == sizeof(info) &&
+		                    info.State == MEM_COMMIT && (info.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
+#else
+		const bool mapped = false; // nps5: the host runtime owns the game's clock (NPS5_ASTRO_REALTIME)
+#endif
+		if (!mapped) {
 			step.dead = true;
 			std::printf("Game speed: no frame-rate block at 0x%llx, switch ignored\n", static_cast<unsigned long long>(addr));
 			return;
@@ -1051,6 +1148,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		if (limit == 0) {
 			const bool flipped = m_flip_queue.Flip(0);
 			if (flipped) {
+				g_pace_interval.store(0, std::memory_order_relaxed);
 				UpdateGameStep(game_step, Common::Timer::QueryPerformanceCounter(), frequency, 0);
 			}
 			return flipped;
@@ -1063,7 +1161,13 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		// start a fresh interval so the next frame cannot arrive in a catch-up burst.
 		const bool on_cadence = g_frame_limit_pacing.On() && next_flip != 0 &&
 		                        now - next_flip <= frequency / 1000;
+		const int64_t late = next_flip != 0 ? static_cast<int64_t>(now - next_flip) : 0; // >= 0: now >= next_flip here
 		next_flip = (on_cadence ? next_flip : now) + (frequency + limit - 1) / limit;
+		if (const auto ready = g_pace_flip_ready.load(std::memory_order_relaxed); ready != 0 && ready <= now) {
+			g_pace_error.store(static_cast<int64_t>(now - ready) - late, std::memory_order_relaxed);
+			g_pace_error_seq.fetch_add(1, std::memory_order_relaxed);
+		}
+		g_pace_interval.store((frequency + limit - 1) / limit, std::memory_order_relaxed);
 		UpdateGameStep(game_step, now, frequency, limit);
 		return true;
 	};
@@ -1073,16 +1177,20 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		if ((++placement_count & 7u) == 0u) {
 			Common::SamplePlacement(Common::ThreadRole::Host);
 		}
-		const auto choice = FrameLimitChoice().load(std::memory_order_relaxed);
+		const auto live_limit = static_cast<uint32_t>(g_live_frame_limit.Get());
+		// Key of the limit in force: the live value (>= 10) shifted clear of the choice indices.
+		const auto choice = live_limit != 0 ? (live_limit << 16)
+		                                    : FrameLimitChoice().load(std::memory_order_relaxed);
 		if (choice != previous_limit) {
 			previous_limit = choice;
 			next_flip = 0;
 		}
 		const bool limit_enabled = choice != FRAME_LIMIT_DISABLED;
-		const auto limit = limit_enabled ? (choice == FRAME_LIMIT_CUSTOM
-		                                        ? g_custom_frame_limit.load(std::memory_order_relaxed)
-		                                        : FRAME_LIMITS[choice])
-		                                 : 0u;
+		const auto limit = live_limit != 0 ? live_limit
+		                   : limit_enabled ? (choice == FRAME_LIMIT_CUSTOM
+		                                          ? g_custom_frame_limit.load(std::memory_order_relaxed)
+		                                          : FRAME_LIMITS[choice])
+		                                   : 0u;
 		const bool absolute = g_present_abs_vblank.On() ||
 		                      (limit_enabled && Config::GetPresentMode() == Config::PresentMode::Immediate);
 		bool       behind      = false; // a vblank deadline was missed: may present a blank frame
@@ -1124,7 +1232,13 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 						break;
 					}
 					if (limit != 0 && current < next_flip) {
-						sleep_until(std::min(deadline, next_flip));
+						// nps5: the flip's due time is met to within the scheduler's yield (the plain sleep
+						// overshot by ~1 ms on macOS: every flip left the cadence and the interval grew by it).
+						if (next_flip <= deadline) {
+							PaceWaitUntil(next_flip, frequency);
+						} else {
+							sleep_until(deadline);
+						}
 						continue;
 					}
 					const auto remaining_us =
@@ -1471,6 +1585,7 @@ void FlipQueue::Complete(uint64_t request_id) {
 			EXIT("completed GPU flip has no prepared recording, id=%" PRIu64 "\n", request_id);
 		}
 		request->state = RequestState::Ready;
+		request->ready_tick = Common::Timer::QueryPerformanceCounter();
 		PaceLog::NoteReady(request_id);
 		m_submit_cond_var.Signal();
 		m_mutex.Unlock();
@@ -1559,6 +1674,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 			EXIT_IF(count == requests.size());
 			request.state = RequestState::Presenting;
 			requests[count++] = request;
+			g_pace_flip_ready.store(request.ready_tick, std::memory_order_relaxed);
 		}
 	}
 	m_processing = true;
@@ -1743,6 +1859,11 @@ KYTY_SYSV_ABI void VideoOutSetBufferAttribute2(VideoOutBufferAttribute2* attribu
 	     pixel_format, tiling_mode, width, height, option, dcc_control,
 	     dcc_cb_register_clear_color);
 
+	if (std::getenv("KYTY_CLEAR_TRACE") != nullptr) { // nps5 diagnostic
+		std::fprintf(stderr, "VideoOutSetBufferAttribute2: format 0x%016" PRIx64 " tiling %u %ux%u option 0x%" PRIx64
+		             " dcc_control 0x%08x dcc_clear_color 0x%016" PRIx64 "\n",
+		             pixel_format, tiling_mode, width, height, option, dcc_control, dcc_cb_register_clear_color);
+	}
 	memset(attribute, 0, sizeof(VideoOutBufferAttribute2));
 
 	attribute->tiling_mode                 = tiling_mode;
@@ -1934,6 +2055,10 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 		LOGF("\tbuffers[%d] = %016" PRIx64 " metadata = %016" PRIx64 " dcc = %08" PRIx32 "\n",
 		     buffer_index_start + i, buffer.data_address, buffer.metadata_address,
 		     attribute->dcc_control);
+		if (std::getenv("KYTY_CLEAR_TRACE") != nullptr) { // nps5 diagnostic
+			std::fprintf(stderr, "VideoOutRegisterBuffers2: buffers[%d] = 0x%" PRIx64 " metadata = 0x%" PRIx64 "\n",
+			             buffer_index_start + i, buffer.data_address, buffer.metadata_address);
+		}
 	}
 
 	return OK;
@@ -2246,6 +2371,16 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
 	         ? VIDEO_OUT_REFRESH_RATE_119_88HZ
 	         : VIDEO_OUT_REFRESH_RATE_59_94HZ);
+	// nps5: KYTY_GPU_OUTPUT_STATUS=1080p reports a 1080p SDR output (what the host's own VideoOut
+	// reports), whatever the window size.
+	static const bool report_1080p = [] {
+		const char* value = std::getenv("KYTY_GPU_OUTPUT_STATUS");
+		return value != nullptr && std::strcmp(value, "1080p") == 0;
+	}();
+	if (report_1080p) {
+		status->resolution   = 1u;
+		status->dynamicRange = 1u;
+	}
 	status->flags       = 0;
 	status->reserved[0] = 0;
 	status->reserved[1] = 0;

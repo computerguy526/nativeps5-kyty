@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/renderDraw.h"
 
 #include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
@@ -25,6 +26,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/dlss.h"
+#include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/frameGen.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
@@ -347,7 +349,7 @@ static void LogDrawInputState(const CommandBuffer& buffer, const RenderColorInfo
 		     " stride=%u records=%u fetch_index=%u attr_num=%d\n",
 		     log_id, bi, b.addr, b.stride, b.num_records, b.fetch_index, b.attr_num);
 
-		const auto* bytes = reinterpret_cast<const uint8_t*>(b.addr);
+		const auto* bytes = Guest::Ptr<const uint8_t>(b.addr);
 		if (bytes != nullptr && b.stride != 0) {
 			const uint32_t records = std::min<uint32_t>(b.num_records, 4u);
 			for (uint32_t rec = 0; rec < records; rec++) {
@@ -1791,7 +1793,7 @@ static bool ResolvePrimitiveRestart(const CommandBuffer& buffer,
 	// Keep restart off in that case; fail if we actually find the value.
 	// Scan before final binding preparation: readback can restart the command buffer.
 	EXIT_NOT_IMPLEMENTED(source.address == 0);
-	const auto* indices = reinterpret_cast<const uint8_t*>(source.address);
+	const auto* indices = static_cast<const uint8_t*>(LibKernel::Memory::GuestReadPtr(source.address, source.size));
 	for (uint64_t offset = 0; offset < source.size; offset += element_size) {
 		uint32_t index = 0;
 		std::memcpy(&index, indices + offset, element_size);
@@ -4175,6 +4177,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		if (Dlss::Requested() && state.ps_active && bindings.pixel.has_value() && state.color_count != 0 &&
 		    TryDlssUpscale(buffer, *bindings.pixel, state.color_info[0].image_id)) {
+			m_run.valid        = false;
+			m_run_active       = false;
+			m_run_targets_kept = false;
+			for (auto& record: m_run_kept) {
+				record.valid = false;
+			}
+			return;
+		}
+	}
+
+	// nps5 KYTY_METALFX (metalfx.h): the same replacement with Apple MetalFX.
+	if (MetalFx::Requested()) [[unlikely]] {
+		NoteMetalFxTargets(std::span<const RenderColorInfo> {state.color_info, state.color_count},
+		                   state.depth_info.image_id);
+		if (state.ps_active && bindings.pixel.has_value() && state.color_count != 0 &&
+		    TryMetalFxUpscale(buffer, *bindings.pixel, state.color_info[0].image_id,
+		                      state.color_count)) {
 			m_run.valid        = false;
 			m_run_active       = false;
 			m_run_targets_kept = false;

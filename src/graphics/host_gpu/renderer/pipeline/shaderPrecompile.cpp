@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderPrecompile.h"
+#include "graphics/compileProgress.h"
 
 #include <algorithm>
 #include <chrono>
@@ -783,6 +784,8 @@ ShaderPrecompiler::ShaderPrecompiler(const ShaderJournal& journal, Settings sett
 	}
 	const auto threads = static_cast<uint32_t>(std::min<uint64_t>(m_settings.threads, m_total));
 	m_workers_running  = threads;
+	CompileProgress::Get().shader_done.store(0, std::memory_order_relaxed);
+	CompileProgress::Get().shader_total.store(m_total, std::memory_order_relaxed);
 	if (m_settings.log) {
 		m_settings.log("Shader precompile: replaying " + std::to_string(m_total) + " permutations of " +
 		               std::to_string(m_journal.Sources().size()) + " sources on " +
@@ -830,6 +833,7 @@ void ShaderPrecompiler::NoteDone(Outcome outcome) {
 		case Outcome::Failed: m_failed.fetch_add(1, std::memory_order_relaxed); break;
 	}
 	const auto done = m_done.fetch_add(1, std::memory_order_relaxed) + 1;
+	CompileProgress::Get().shader_done.fetch_add(1, std::memory_order_relaxed);
 	if (!m_settings.log) return;
 	const auto now = NowNs();
 	std::scoped_lock lock(m_mutex);
@@ -878,6 +882,7 @@ void ShaderPrecompiler::Worker(uint32_t index) {
 		NoteDone(outcome);
 	}
 	if (m_workers_running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+		CompileProgress::ClearShaderReplay();
 		const auto done = m_done.load(std::memory_order_relaxed);
 		if (m_settings.log) {
 			char text[256];

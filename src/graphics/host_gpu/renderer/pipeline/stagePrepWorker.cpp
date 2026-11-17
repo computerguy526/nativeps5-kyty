@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/stagePrepWorker.h"
+#include "common/spinRelax.h"
 
 #include "common/assert.h"
 #include "common/profiler.h"
@@ -18,11 +19,7 @@ namespace Libs::Graphics {
 namespace {
 
 void CpuRelax() {
-#if defined(_M_X64) || defined(__x86_64__)
-	_mm_pause();
-#else
-	std::this_thread::yield();
-#endif
+	Common::SpinRelax(); // KYTY_SPIN_RELAX (common/spinRelax.h)
 }
 
 uint64_t NowNs() {

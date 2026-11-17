@@ -6,6 +6,7 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/window/presentGeometry.h"
 
 #include <atomic>
 #include <cstdint>
@@ -83,6 +84,9 @@ struct WindowContext {
 	void ProcessDisplayEvent(const SDL_DisplayEvent& event);
 	void ProcessEvent(double time_seconds);
 	void Run();
+	void RunBegin();
+	bool RunStep(int max_wait_ms); ///< one loop iteration; false once the window loop ended
+	void RunEnd();
 
 	GraphicContext                 graphic_ctx;
 	SDL_Window*                    window        = nullptr;

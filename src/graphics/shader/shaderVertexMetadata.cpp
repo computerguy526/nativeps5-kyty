@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5
 #include "graphics/shader/shaderVertexMetadata.h"
 
 #include <array>
@@ -28,7 +29,7 @@ bool ShaderReadVertexMetadata(const ShaderMappedData& data, uint32_t max_user_sg
 		if (user_data.direct_resource_offset == nullptr) {
 			return ShaderError::Fail(error, "missing AGC direct-resource offsets");
 		}
-		std::memcpy(direct_offsets.data(), user_data.direct_resource_offset, direct_size);
+		std::memcpy(direct_offsets.data(), Guest::Host(user_data.direct_resource_offset), direct_size); // nps5
 	}
 
 	ShaderVertexMetadata next;

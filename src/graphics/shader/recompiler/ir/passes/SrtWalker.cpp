@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include "common/assert.h"
@@ -19,6 +20,10 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+
+namespace Libs::LibKernel::Memory {
+[[nodiscard]] const void* GuestReadPtr(uint64_t vaddr, uint64_t size) noexcept; // kernel/memory.h (nps5)
+} // namespace Libs::LibKernel::Memory
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
@@ -1455,7 +1460,7 @@ bool SrtWalker::ReadRawWord(uint64_t address, uint64_t& result, bool allow_probe
 				result = 0;
 				return true;
 			}
-			std::memcpy(&word, reinterpret_cast<const void*>(address), sizeof(word));
+			std::memcpy(&word, Libs::LibKernel::Memory::GuestReadPtr(address, sizeof(word)), sizeof(word));
 		}
 	}
 	ObserveSrtRead(m_runtime, address, {&word, 1}, true);

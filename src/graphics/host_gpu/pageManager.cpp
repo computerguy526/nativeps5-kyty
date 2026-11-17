@@ -526,7 +526,11 @@ struct PageManager::Impl {
 		}
 #elif defined(__APPLE__)
 		// Under Rosetta the host page size is 4 KB, matching TRACKER_PAGE_SIZE.
-		if (static_cast<uint64_t>(getpagesize()) != PAGE_SIZE) {
+		// nps5 (kseam 762e357b): native arm64 has 16 KB pages, allowed when the host process owns guest
+		// memory (hybrid ABI 1.6): the tracker keeps 4 KB pages, the host folds them into its pages.
+		if (static_cast<uint64_t>(getpagesize()) != PAGE_SIZE &&
+		    !(Libs::LibKernel::Memory::HostedActive() &&
+		      static_cast<uint64_t>(getpagesize()) % PAGE_SIZE == 0)) {
 			Fatal("unsupported host page size 0x%08" PRIx32, static_cast<uint32_t>(getpagesize()));
 		}
 #else

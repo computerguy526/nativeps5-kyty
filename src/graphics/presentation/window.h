@@ -10,6 +10,10 @@ class Presenter;
 
 [[nodiscard]] Presenter& WindowInit(uint32_t width, uint32_t height);
 void                     WindowRun();
+// Same loop as WindowRun() in resumable steps (macOS hosts run one step per main-queue block).
+void                     WindowRunBegin();
+[[nodiscard]] bool       WindowRunStep(int max_wait_ms);
+void                     WindowRunEnd();
 void                     WindowShutdown();
 
 } // namespace Libs::Graphics

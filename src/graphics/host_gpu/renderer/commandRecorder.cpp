@@ -352,7 +352,7 @@ struct CommandRecorder::NativeExecutor {
 				    reinterpret_cast<uint64_t>(static_cast<VkQueue>(graphics.queue)), p.tick, 0, 0,
 				    p.debug_submit);
 				HangWatchdog::DebugDelay("submit", p.tick);
-				NoteWatchdogSubmit(graphics.queue, submit_info, p.tick);
+				NoteWatchdogSubmit(graphics.queue, submit_info, p.tick, p.debug_submit, p.debug_op);
 				result = graphics.queue.submit(1, &submit_info, nullptr);
 			}
 			if (result == vk::Result::eErrorDeviceLost) DumpDeviceLossDiagnostics(graphics, p.tick);

@@ -24,6 +24,7 @@
 #include "graphics/host_gpu/renderer/image/dccClear.h"
 #include "graphics/host_gpu/renderer/image/imageClearRange.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/residentTrim.h"
 #include "graphics/host_gpu/renderer/image/stagingCopier.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
@@ -55,9 +56,17 @@
 #include <vulkan/vulkan_format_traits.hpp>
 #include <xxhash.h>
 
+// KYTY_TEX_MIP_SKIP (nps5 mipskip): file-level so TextureCache keeps its layout (no rebuild of its includers).
+static uint32_t g_mip_skip     = 0;
+static uint32_t g_mip_skip_min = 1024;
+
 namespace Libs::Graphics {
 
 namespace {
+
+// KYTY_TEXTURE_GC_REUSE state (one texture cache per process; kept out of the class so its layout is unchanged).
+VramBudget::ChurnTracker g_churn;
+bool                     g_budget_collecting = false;
 
 constexpr uint64_t NumFramesBeforeRemoval = 32;
 // Largest GPU-written tiled image (in texels) that is written back to guest memory on submit.
@@ -571,6 +580,25 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 	if (m_sparse_textures) {
 		LOGF("Texture streaming: partially resident textures are sparse residency images\n");
 	}
+	// KYTY_TEXTURE_RESIDENT_TRIM=1 (default off; residentTrim.h): a partially resident texture's
+	// native image holds only its resident levels, and is replaced by a larger one when the game
+	// makes finer levels resident. Not with sparse residency images (they already have memory
+	// behind the resident levels only), not with poison (it writes the other levels), and not on
+	// a device with VK_EXT_image_view_min_lod (its view clamp is absolute to the image's levels).
+	m_trim_textures = EnvNotZero("KYTY_TEXTURE_RESIDENT_TRIM") &&
+	                  std::getenv("KYTY_TEXTURE_RESIDENT_TRIM") != nullptr &&
+	                  m_residency == ResidencyMode::On && !m_sparse_textures &&
+	                  !graphics.image_view_min_lod_enabled;
+	LOGF("Texture streaming: trimmed native images (KYTY_TEXTURE_RESIDENT_TRIM) %s\n",
+	     m_trim_textures ? "on" : "off");
+	if (const auto* skip = std::getenv("KYTY_TEX_MIP_SKIP"); skip != nullptr && m_trim_textures) {
+		g_mip_skip = std::min<uint32_t>(static_cast<uint32_t>(std::strtoul(skip, nullptr, 10)), 3u);
+		if (const auto* min_dim = std::getenv("KYTY_TEX_MIP_SKIP_MIN"); min_dim != nullptr) {
+			g_mip_skip_min = static_cast<uint32_t>(std::strtoul(min_dim, nullptr, 10));
+		}
+		LOGF("Texture streaming: mip skip (KYTY_TEX_MIP_SKIP) %u levels for sampled 2D textures >= %u px\n", g_mip_skip,
+		     g_mip_skip_min);
+	}
 	if (const auto* idle = std::getenv("KYTY_TEXTURE_RESIDENT_IDLE_FRAMES"); idle != nullptr) {
 		m_resident_idle_frames = std::strtoull(idle, nullptr, 10);
 	}
@@ -743,11 +771,36 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, uint32_t resident_first
 	if (resident_first != 0 && resident_prefix == 0) {
 		resident_prefix = ResidentPrefixSize(info, resident_first);
 	}
+	// KYTY_TEXTURE_RESIDENT_TRIM_TEST_GROW=1 (test only): every trimmed texture starts one level
+	// coarser than asked, so the EnsureResidency that follows its creation (FindImage) grows it
+	// through Image::ReplaceBacking. The picture must not change.
+	static const bool test_grow = [] {
+		const auto* value = std::getenv("KYTY_TEXTURE_RESIDENT_TRIM_TEST_GROW");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	if (test_grow && m_trim_textures && resident_first != 0 && resident_prefix != 0 &&
+	    resident_first + 1 < info.resources.levels) {
+		if (const auto coarser = ResidentPrefixSize(info, resident_first + 1); coarser != 0) {
+			resident_first++;
+			resident_prefix = coarser;
+		}
+	}
 	// KYTY_TEXTURE_SPARSE_RESIDENCY: memory behind the resident levels only.
 	const uint32_t sparse_first = m_sparse_textures && resident_first != 0 && resident_prefix != 0
 	                                  ? resident_first
 	                                  : 0u;
-	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info, sparse_first);
+	// KYTY_TEXTURE_RESIDENT_TRIM: a native image of the resident levels only.
+	const uint32_t trim_first = m_trim_textures && sparse_first == 0 && resident_first != 0 &&
+	                                    resident_prefix != 0
+	                                ? resident_first
+	                                : 0u;
+	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info, sparse_first, trim_first);
+	if (VramBudget::ReuseEnabled() && !info.data.Empty()) {
+		(void)g_churn.NoteCreated(info.data.address, m_frame.load(std::memory_order_relaxed));
+	}
+	if (m_slot_images[id].native_first != 0) {
+		++m_trim_creates;
+	}
 	if (VramStats::Enabled()) {
 		if (const auto bytes = m_graphics.NativeImageBytes(m_slot_images[id].backing); bytes != 0) {
 			m_vram_creates.first++;
@@ -785,7 +838,20 @@ uint32_t TextureCache::RequestedFirstLevel(const ImageDesc& desc, uint32_t level
 	// selection rounds only towards coarser levels, and texel fetches of finer levels are out
 	// of range for the view. Levels below base_level are outside the view altogether.
 	const auto& view  = desc.view_info;
-	const auto  first = view.base_level + (view.min_lod >> 8u);
+	auto        first = view.base_level + (view.min_lod >> 8u);
+	// KYTY_TEX_MIP_SKIP: large read-only sampled 2D textures never ask for their finest levels.
+	if (g_mip_skip != 0 && m_trim_textures) {
+		const auto& info = desc.info;
+		if (info.type == Prospero::ImageType::kColor2D && info.resources.layers == 1 && info.samples == 1 &&
+		    !info.IsDepth() && !info.HasStencil() && !info.HasMetadata() &&
+		    info.pixel_format != vk::Format::eUndefined) {
+			const auto skip = ResidentTrim::MipSkipLevels(g_mip_skip, g_mip_skip_min, info.extent.width, info.extent.height,
+			                                              levels, info.bytes_per_block, info.IsBlock());
+			if (skip != 0) {
+				first = ResidentTrim::SkipFloor(first, skip, levels);
+			}
+		}
+	}
 	return std::min(first, levels - 1u);
 }
 
@@ -873,6 +939,19 @@ void TextureCache::EnsureResidency(ImageId id, uint32_t first_level, bool sampli
 	NoteImageStateChange();
 	image.live = new_first != 0 ? GuestRange {image.info.data.address, prefix} : image.info.data;
 	NoteImageStateChange();
+	if (image.native_first > new_first) {
+		// KYTY_TEXTURE_RESIDENT_TRIM: the native image starts above the first level now resident.
+		// A new one from that level (the whole chain for a non-sampling use); every resident
+		// level is refreshed below (MarkResidencyDirty), and the re-registration around this
+		// moved the page versions, so binding memos resolve this image again and take the new
+		// image's views. The old native image stays alive with the Image (Image::retired).
+		image.ReplaceBacking(new_first);
+		if (VramStats::Enabled()) {
+			m_vram_creates.first++;
+			m_vram_creates.second += m_graphics.NativeImageBytes(image.backing);
+		}
+		++(new_first != 0 ? m_trim_grows : m_trim_full);
+	}
 	if (image.backing.sparse) {
 		// KYTY_TEXTURE_SPARSE_RESIDENCY: memory behind the newly resident levels; their refresh
 		// follows (MarkResidencyDirty). Submitted ticks may still access these levels: Image::
@@ -6596,11 +6675,21 @@ bool TextureCache::RunBudgetGarbageCollector(uint64_t frame) {
 	const auto budget = m_graphics.GetTotalMemoryBudget();
 	m_budget_last     = budget;
 	const auto plan   = VramBudget::PlanImages(budget, m_total_used_memory, m_pressure_frames);
+	const bool reuse  = VramBudget::ReuseEnabled();
+	if (reuse) {
+		g_churn.Tick(frame);
+	}
 	if (!plan.retire) {
 		return true;
 	}
 	const auto before  = m_idle_freed;
-	m_budget_freed_bytes += RetireUnusedImages(frame, plan.age_frames, 256, plan.bytes);
+	const auto age     = reuse ? VramBudget::EffectiveAge(plan.age_frames, g_churn.Floor(), budget,
+	                                                      m_total_used_memory)
+	                           : plan.age_frames;
+	const auto bytes   = reuse ? std::min(plan.bytes, VramBudget::BurstBytes) : plan.bytes;
+	g_budget_collecting = reuse;
+	m_budget_freed_bytes += RetireUnusedImages(frame, age, 256, bytes);
+	g_budget_collecting = false;
 	m_budget_freed += m_idle_freed - before;
 	return true;
 }
@@ -6681,6 +6770,9 @@ uint64_t TextureCache::RetireUnusedImages(uint64_t frame, uint64_t min_age, size
 				            image->info.resources.layers, image->AccountedSize() >> 20u,
 				            image->info.resources.levels, image->info.data.address);
 			}
+		}
+		if (g_budget_collecting) {
+			g_churn.NoteFreed(image->info.data.address, frame);
 		}
 		FreeImage(id, HangTrace::ImageFreeReason::GarbageCollect);
 		++m_idle_freed;
@@ -6914,6 +7006,9 @@ void TextureCache::ReportVram() {
 	std::vector<Entry>                                                      entries;
 	entries.reserve(m_slot_images.size());
 	Bucket sparse;
+	Bucket trimmed;
+	Bucket retired_backings;
+	uint64_t trimmed_saved = 0;
 	m_slot_images.ForEach([&](ImageId id, const Image& image) {
 		if (image.backing.image == nullptr) {
 			++no_backing;
@@ -6938,12 +7033,22 @@ void TextureCache::ReportVram() {
 				gpu_modified_idle.Add(bytes);
 			}
 		}
+		if (image.native_first != 0) {
+			trimmed.Add(bytes);
+			const double kept = ResidentTrim::KeptFraction(image.info.extent.width, image.info.extent.height,
+			                                               image.info.resources.levels, image.native_first);
+			trimmed_saved += static_cast<uint64_t>(static_cast<double>(bytes) * (1.0 / kept - 1.0));
+		}
+		if (!image.retired.empty()) {
+			retired_backings.Add(image.RetiredBytes());
+		}
 		if (!image.FullyResident()) {
 			partial.Add(bytes);
 			// The native bytes of levels no view samples (proportional to their texels).
 			double all     = 0.0;
 			double skipped = 0.0;
-			for (uint32_t level = 0; level < image.info.resources.levels; ++level) {
+			// (KYTY_TEXTURE_RESIDENT_TRIM: the native image has no level below native_first.)
+			for (uint32_t level = image.native_first; level < image.info.resources.levels; ++level) {
 				const double texels = static_cast<double>(std::max(image.info.extent.width >> level, 1u)) *
 				                      static_cast<double>(std::max(image.info.extent.height >> level, 1u)) *
 				                      static_cast<double>(std::max(image.info.extent.depth >> level, 1u));
@@ -6988,6 +7093,16 @@ void TextureCache::ReportVram() {
 		                ToMiB(by_kind[kind].bytes), static_cast<unsigned long long>(by_kind[kind].count),
 		                ages.c_str());
 	}
+	VramStats::Line("trimmed (KYTY_TEXTURE_RESIDENT_TRIM %s): %.1f MiB in %llu images, about %.1f MiB "
+	                "less than their whole chains; replaced native images kept: %.1f MiB (%llu "
+	                "images) | totals: %llu created trimmed, %llu grown, %llu made whole",
+	                m_trim_textures ? "on" : "off", ToMiB(trimmed.bytes),
+	                static_cast<unsigned long long>(trimmed.count), ToMiB(trimmed_saved),
+	                ToMiB(retired_backings.bytes),
+	                static_cast<unsigned long long>(retired_backings.count),
+	                static_cast<unsigned long long>(m_trim_creates),
+	                static_cast<unsigned long long>(m_trim_grows),
+	                static_cast<unsigned long long>(m_trim_full));
 	VramStats::Line("partially resident: %.1f MiB (%llu), about %.1f MiB of it in levels no view "
 	                "samples; %zu tracked for idle retirement | sparse (KYTY_TEXTURE_SPARSE_RESIDENCY): "
 	                "%.1f MiB bound in %llu images",
@@ -7091,6 +7206,10 @@ void TextureCache::ReportVram() {
 	                ToMiB(m_registered_image_memory), ToMiB(m_pressure_retirement_bytes),
 	                static_cast<unsigned long long>(m_gc_tick), ToMiB(scratch_idle), ToMiB(scratch_limit));
 	if (budget_mode) {
+		VramStats::Line("budget GC reuse: %s, churn hits %llu, age floor %llu frames",
+		                VramBudget::ReuseEnabled() ? "on" : "off",
+		                static_cast<unsigned long long>(g_churn.Hits()),
+		                static_cast<unsigned long long>(g_churn.Floor()));
 		VramStats::Line("budget GC: planning budget %.1f MiB, freed %llu images / %.1f MiB in total (age %llu "
 		                "frames, a quarter above the critical mark)",
 		                ToMiB(m_budget_last), static_cast<unsigned long long>(m_budget_freed),

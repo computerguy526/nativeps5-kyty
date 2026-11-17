@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <thread>
+#include "common/spinRelax.h"
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -195,11 +196,7 @@ inline uint64_t WorkerNowNs() noexcept {
 }
 
 inline void WorkerRelax() noexcept {
-#if defined(_M_X64) || defined(__x86_64__)
-	_mm_pause();
-#else
-	std::this_thread::yield();
-#endif
+	Common::SpinRelax(); // KYTY_SPIN_RELAX (common/spinRelax.h)
 }
 
 // One preparation worker (Engine::Workers::Run; the unit tests run the same loop). `prepare` gets

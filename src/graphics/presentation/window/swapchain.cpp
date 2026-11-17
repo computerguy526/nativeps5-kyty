@@ -1,6 +1,8 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
+#include "common/latTrace.h"
+#include "common/presentInterval.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -17,12 +19,15 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
+#include "graphics/progressOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "kernel/memory.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <optional>
@@ -264,6 +269,506 @@ void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColor
 	command.clearColorImage(image.image, vk::ImageLayout::eTransferDstOptimal, &color, 1, &range);
 }
 
+// nps5: KYTY_DUMP_DIR=<directory> (default: working directory) for the frame and target dumps.
+static std::string DumpPath(const char* name) {
+	const char* dir = std::getenv("KYTY_DUMP_DIR");
+	return dir != nullptr && dir[0] != 0 ? std::string(dir) + "/" + name : std::string(name);
+}
+
+// nps5: KYTY_DUMP_FRAMES=<n> [KYTY_DUMP_FRAMES_EVERY=<m>] [KYTY_DUMP_FRAMES_FROM=<present>] saves every m-th presented swapchain image
+// (what the window shows: after the blit/filter and the overlays) as frame_<index>.bmp in the
+// working directory, 960x540 (KYTY_DUMP_SCALE=1: swapchain size) 32-bit top-down BGRA, the format
+// and naming of AnyPS5's APS5_DUMP_FRAMES. The read-back is synchronous on the present thread.
+class FrameDump final {
+public:
+	static FrameDump& Instance() {
+		static FrameDump dump;
+		return dump;
+	}
+	[[nodiscard]] bool Enabled() const noexcept { return m_limit > 0; }
+	// True when the next Next() call will select a frame (no state change).
+	[[nodiscard]] bool WouldDump() const noexcept {
+		return m_dumped < m_limit && m_presents + 1 >= m_from && (m_presents + 1) % static_cast<uint64_t>(m_every) == 0;
+	}
+	[[nodiscard]] bool Next() {
+		if (m_dumped >= m_limit) {
+			return false;
+		}
+		return ++m_presents >= m_from && m_presents % static_cast<uint64_t>(m_every) == 0;
+	}
+	void Record(GraphicContext& graphics, vk::CommandBuffer command, vk::Image swapchain_image,
+	            vk::Format swapchain_format, vk::Extent2D swapchain_extent) {
+		const bool srgb = swapchain_format == vk::Format::eB8G8R8A8Srgb ||
+		                  swapchain_format == vk::Format::eR8G8B8A8Srgb;
+		const auto format = srgb ? vk::Format::eB8G8R8A8Srgb : vk::Format::eB8G8R8A8Unorm;
+		const vk::Extent2D extent = m_full ? swapchain_extent : vk::Extent2D {960, 540};
+		Ensure(graphics, format, extent);
+		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		std::array<vk::ImageMemoryBarrier, 2> barriers {};
+		barriers[0].srcAccessMask       = vk::AccessFlagBits::eMemoryRead;
+		barriers[0].dstAccessMask       = vk::AccessFlagBits::eTransferRead;
+		barriers[0].oldLayout           = vk::ImageLayout::ePresentSrcKHR;
+		barriers[0].newLayout           = vk::ImageLayout::eTransferSrcOptimal;
+		barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barriers[0].image               = swapchain_image;
+		barriers[0].subresourceRange    = range;
+		barriers[1]                     = barriers[0];
+		barriers[1].srcAccessMask       = {};
+		barriers[1].dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
+		barriers[1].oldLayout           = vk::ImageLayout::eUndefined;
+		barriers[1].newLayout           = vk::ImageLayout::eTransferDstOptimal;
+		barriers[1].image               = m_image;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
+		                        nullptr, 0, nullptr, 2, barriers.data());
+		vk::ImageBlit region {};
+		region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+		region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(swapchain_extent.width),
+		                                      static_cast<int>(swapchain_extent.height), 1};
+		region.dstSubresource = region.srcSubresource;
+		region.dstOffsets[1]  =
+		    vk::Offset3D {static_cast<int>(extent.width), static_cast<int>(extent.height), 1};
+		command.blitImage(swapchain_image, vk::ImageLayout::eTransferSrcOptimal, m_image,
+		                  vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eLinear);
+		barriers[0].srcAccessMask = vk::AccessFlagBits::eTransferRead;
+		barriers[0].dstAccessMask = vk::AccessFlagBits::eMemoryRead;
+		barriers[0].oldLayout     = vk::ImageLayout::eTransferSrcOptimal;
+		barriers[0].newLayout     = vk::ImageLayout::ePresentSrcKHR;
+		barriers[1].srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		barriers[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+		barriers[1].oldLayout     = vk::ImageLayout::eTransferDstOptimal;
+		barriers[1].newLayout     = vk::ImageLayout::eTransferSrcOptimal;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                        vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags {}, 0,
+		                        nullptr, 0, nullptr, 2, barriers.data());
+		vk::BufferImageCopy copy {};
+		copy.imageSubresource = region.srcSubresource;
+		copy.imageExtent      = vk::Extent3D {extent.width, extent.height, 1};
+		command.copyImageToBuffer(m_image, vk::ImageLayout::eTransferSrcOptimal, m_buffer, 1, &copy);
+		m_recorded = true;
+	}
+	/// True when the command buffer just submitted carries a read-back; the caller waits for it.
+	[[nodiscard]] bool TakeRecorded() noexcept {
+		const bool recorded = m_recorded;
+		m_recorded          = false;
+		return recorded;
+	}
+	void Write() {
+		char name[64];
+		std::snprintf(name, sizeof(name), "frame_%03d.bmp", m_dumped++);
+		const uint32_t bytes = m_extent.width * m_extent.height * 4u;
+		uint8_t        header[54] {};
+		const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+		header[0] = 'B';
+		header[1] = 'M';
+		put(2, 54u + bytes);
+		put(10, 54u);
+		put(14, 40u);
+		put(18, m_extent.width);
+		put(22, static_cast<uint32_t>(-static_cast<int32_t>(m_extent.height)));
+		header[26] = 1;
+		header[28] = 32;
+		put(34, bytes);
+		put(38, 2835u);
+		put(42, 2835u);
+		if (Common::LatTrace::Enabled() && std::getenv("KYTY_DUMP_STAT") != nullptr) {
+			// nps5 KYTY_DUMP_STAT=1 (with KYTY_LAT_TRACE): no file; "[klat] diff" = mean absolute difference of every 4th
+			// pixel against the previous presented frame (x100, 0 = identical), to find the first frame an input changed.
+			static std::vector<uint8_t> prev;
+			const auto*                 cur = static_cast<const uint8_t*>(m_mapped);
+			uint64_t                    acc = 0, cnt = 0;
+			if (prev.size() == bytes) {
+				for (uint32_t i = 0; i < bytes; i += 16) {
+					acc += static_cast<uint64_t>(std::abs(int(cur[i]) - int(prev[i]))) + std::abs(int(cur[i + 1]) - int(prev[i + 1])) +
+					       std::abs(int(cur[i + 2]) - int(prev[i + 2]));
+					cnt += 3;
+				}
+			}
+			prev.assign(cur, cur + bytes);
+			Common::LatTrace::Log("diff", cnt != 0 ? static_cast<long long>(acc * 100 / cnt) : -1);
+			return;
+		}
+		std::vector<uint8_t> pixels(bytes);
+		std::memcpy(pixels.data(), m_mapped, bytes);
+		uint64_t sum = 0;
+		for (uint32_t i = 0; i < bytes; i += 4) {
+			sum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+			pixels[i + 3] = 0xff;
+		}
+		if (auto* file = std::fopen(DumpPath(name).c_str(), "wb"); file != nullptr) {
+			std::fwrite(header, 1, sizeof(header), file);
+			std::fwrite(pixels.data(), 1, bytes, file);
+			std::fclose(file);
+		}
+		ScanGuest(name);
+		std::fprintf(stderr, "[kyty-dump] %s: present %llu, %ux%u, mean %.1f\n", name,
+		             static_cast<unsigned long long>(m_presents), m_extent.width, m_extent.height,
+		             static_cast<double>(sum) / (static_cast<double>(bytes) * 0.75));
+	}
+
+	// KYTY_DUMP_GUEST_RANGE=<hex address>:<hex size> (diagnostic): with each dump, the guest bytes of
+	// that range (e.g. the display buffer) as runs of 64 KiB blocks: zero, one repeated 32-bit word,
+	// or mixed (first word shown).
+	static void ScanGuest(const char* name) {
+		const char* text = std::getenv("KYTY_DUMP_GUEST_RANGE");
+		if (text == nullptr) {
+			return;
+		}
+		char*          end  = nullptr;
+		const uint64_t base = std::strtoull(text, &end, 16);
+		const uint64_t size = end != nullptr && *end == ':' ? std::strtoull(end + 1, nullptr, 16) : 0;
+		const char*    block_text = std::getenv("KYTY_DUMP_GUEST_BLOCK"); // hex bytes, default 64 KiB
+		const uint64_t Block = block_text != nullptr ? std::max<uint64_t>(std::strtoull(block_text, nullptr, 16), 4) : 0x10000;
+		int      last_kind = -1;
+		uint32_t last_word = 0;
+		uint64_t run_start = base;
+		const auto flush = [&](uint64_t at) {
+			if (last_kind >= 0) {
+				std::fprintf(stderr, "[kyty-dump] %s guest 0x%llx +0x%llx: %s 0x%08x\n", name,
+				             static_cast<unsigned long long>(run_start),
+				             static_cast<unsigned long long>(at - run_start),
+				             last_kind == 0 ? "zero" : last_kind == 1 ? "uniform" : "mixed", last_word);
+			}
+			run_start = at;
+		};
+		for (uint64_t at = base; at + Block <= base + size; at += Block) {
+			const auto* words = static_cast<const uint32_t*>(
+			    Libs::LibKernel::Memory::GuestReadPtr(at, Block));
+			uint32_t first = 0;
+			std::memcpy(&first, words, 4);
+			bool uniform = true;
+			for (uint64_t i = 1; i < Block / 4 && uniform; i++) {
+				uint32_t word = 0;
+				std::memcpy(&word, words + i, 4);
+				uniform = word == first;
+			}
+			const int kind = !uniform ? 2 : first == 0 ? 0 : 1;
+			if (kind != last_kind || (kind == 1 && first != last_word)) {
+				flush(at);
+				last_kind = kind;
+				last_word = first;
+			}
+		}
+		flush(base + size);
+	}
+
+private:
+	FrameDump() {
+		const auto number = [](const char* name, int fallback) {
+			const char* value = std::getenv(name);
+			return value != nullptr ? std::atoi(value) : fallback;
+		};
+		m_limit = number("KYTY_DUMP_FRAMES", 0);
+		m_every = std::max(number("KYTY_DUMP_FRAMES_EVERY", 1), 1);
+		m_full  = number("KYTY_DUMP_SCALE", 0) == 1;
+		m_from  = static_cast<uint64_t>(std::max(number("KYTY_DUMP_FRAMES_FROM", 0), 0));
+	}
+	void Ensure(GraphicContext& graphics, vk::Format format, vk::Extent2D extent) {
+		if (m_image != nullptr && format == m_format && extent == m_extent) {
+			return;
+		}
+		auto device = graphics.device;
+		if (m_image != nullptr) {
+			static_cast<void>(device.waitIdle());
+			device.unmapMemory(m_buffer_memory);
+			device.destroyBuffer(m_buffer, nullptr);
+			device.freeMemory(m_buffer_memory, nullptr);
+			device.destroyImage(m_image, nullptr);
+			device.freeMemory(m_image_memory, nullptr);
+		}
+		m_format = format;
+		m_extent = extent;
+		const auto memory_type = [&](uint32_t bits, vk::MemoryPropertyFlags wanted) {
+			const auto& memory = graphics.physical_device_memory_properties;
+			for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
+				if ((bits & (1u << i)) != 0 && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
+					return i;
+				}
+			}
+			EXIT("frame dump: no memory type\n");
+			return 0u;
+		};
+		vk::ImageCreateInfo create {};
+		create.imageType   = vk::ImageType::e2D;
+		create.extent      = vk::Extent3D {extent.width, extent.height, 1};
+		create.mipLevels   = 1;
+		create.arrayLayers = 1;
+		create.format      = format;
+		create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+		create.samples = vk::SampleCountFlagBits::e1;
+		RequireVulkanSuccess(device.createImage(&create, nullptr, &m_image), "frame dump image");
+		vk::MemoryRequirements requirements {};
+		device.getImageMemoryRequirements(m_image, &requirements);
+		vk::MemoryAllocateInfo allocate {};
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_image_memory),
+		                     "frame dump image memory");
+		device.bindImageMemory(m_image, m_image_memory, 0);
+		vk::BufferCreateInfo buffer {};
+		buffer.size  = static_cast<vk::DeviceSize>(extent.width) * extent.height * 4u;
+		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
+		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &m_buffer), "frame dump buffer");
+		device.getBufferMemoryRequirements(m_buffer, &requirements);
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(
+		    requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+		                                     vk::MemoryPropertyFlagBits::eHostCoherent);
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_buffer_memory),
+		                     "frame dump buffer memory");
+		device.bindBufferMemory(m_buffer, m_buffer_memory, 0);
+		RequireVulkanSuccess(device.mapMemory(m_buffer_memory, 0, VK_WHOLE_SIZE, {}, &m_mapped),
+		                     "frame dump map");
+	}
+
+	int              m_limit    = 0;
+	int              m_every    = 1;
+	int              m_dumped   = 0;
+	bool             m_full     = false;
+	bool             m_recorded = false;
+	uint64_t         m_presents = 0;
+	uint64_t         m_from     = 0; // KYTY_DUMP_FRAMES_FROM: first present considered
+	vk::Format       m_format   = vk::Format::eUndefined;
+	vk::Extent2D     m_extent {};
+	vk::Image        m_image         = nullptr;
+	vk::DeviceMemory m_image_memory  = nullptr;
+	vk::Buffer       m_buffer        = nullptr;
+	vk::DeviceMemory m_buffer_memory = nullptr;
+	void*            m_mapped        = nullptr;
+};
+
+// nps5 diagnostic: KYTY_DUMP_TARGETS=<n> [KYTY_DUMP_TARGETS_FROM=<flip>] [KYTY_DUMP_TARGETS_EVERY=<m>]
+// [KYTY_DUMP_TARGETS_MINW=<px>, default 512]: at such a flip, level 0 / layer 0 of every cached colour
+// image at least that wide is blitted to an sRGB-encoded BGRA image of at most 960 px width and saved
+// as k3_<dump>_<address>_<w>x<h>_<format>.bmp in the working directory, with one [kyty-target] line
+// per image (address, extent, formats, usage, state). The files are written KYTY_DUMP_TARGETS_DELAY
+// (20) flips later, when the recording command buffer has long completed.
+class TargetDump final {
+public:
+	static TargetDump& Instance() {
+		static TargetDump dump;
+		return dump;
+	}
+	void OnFlip(GraphicContext& graphics, TextureCache& cache, CommandBuffer& command_buffer) {
+		if (m_limit <= 0) {
+			return;
+		}
+		++m_flips;
+		if (!m_pending.empty() && m_flips >= m_pending_flip + m_delay) {
+			Write(graphics);
+		}
+		if (!m_pending.empty() || m_dumped >= m_limit || m_flips < m_from ||
+		    (m_flips - m_from) % m_every != 0) {
+			return;
+		}
+		command_buffer.EndRendering();
+		auto command = command_buffer.Handle();
+		const int index = m_dumped++;
+		m_pending_flip  = m_flips;
+		cache.ForEachImageDebug([&](auto, Image& image) {
+			const auto& info    = image.info;
+			const auto  format  = image.backing.format;
+			const auto  name    = vk::to_string(format);
+			const bool  integer = name.find("int") != std::string::npos;
+			const bool  wanted  = image.backing.image != nullptr && !info.IsDepth() && !info.IsBlock() &&
+			                      !info.IsVolume() && image.backing.extent.width >= m_min_width;
+			const bool  blit    = wanted && info.samples == 1 && !integer &&
+			                      static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
+			                                        vk::FormatFeatureFlagBits::eBlitSrc) &&
+			                      m_pending.size() < 64;
+			if (wanted) {
+				std::fprintf(stderr,
+				             "[kyty-target] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile %u samples %u "
+				             "levels %u layers %u usage%s%s%s%s%s gpu-modified %d cpu-dirty %d buffer-modified %d writes %llu "
+				             "metadata %u 0x%llx clear-word 0x%08x%s\n",
+				             index, static_cast<unsigned long long>(m_flips),
+				             static_cast<unsigned long long>(info.data.address),
+				             static_cast<unsigned long long>(info.data.size), image.backing.extent.width,
+				             image.backing.extent.height, name.c_str(), static_cast<unsigned>(info.guest_format),
+				             static_cast<unsigned>(info.tile_mode), info.samples, info.resources.levels,
+				             info.resources.layers, image.usage.texture ? " texture" : "",
+				             image.usage.storage ? " storage" : "", image.usage.render_target ? " rt" : "",
+				             image.usage.depth_target ? " depth" : "", image.usage.video_out ? " video-out" : "",
+				             image.IsGpuModified() ? 1 : 0, image.IsCpuDirty() ? 1 : 0,
+				             image.IsBufferModified() ? 1 : 0,
+				             static_cast<unsigned long long>(image.DefiniteWrites()),
+				             static_cast<unsigned>(info.metadata.kind),
+				             static_cast<unsigned long long>(info.metadata.range.address),
+				             info.metadata.dcc_clear_word, blit ? "" : " (not dumped)");
+			}
+			if (!blit) {
+				return;
+			}
+			Entry entry {};
+			entry.extent.width  = std::min(image.backing.extent.width, 960u);
+			entry.extent.height = std::max(
+			    1u, image.backing.extent.height * entry.extent.width / image.backing.extent.width);
+			std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
+			              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+			              image.backing.extent.height, name.c_str());
+			Create(graphics, entry);
+			image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+			              command);
+			const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+			vk::ImageMemoryBarrier          barrier {};
+			barrier.dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
+			barrier.oldLayout           = vk::ImageLayout::eUndefined;
+			barrier.newLayout           = vk::ImageLayout::eTransferDstOptimal;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image               = entry.image;
+			barrier.subresourceRange    = range;
+			command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+			                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0, nullptr,
+			                        0, nullptr, 1, &barrier);
+			vk::ImageBlit region {};
+			region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+			region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(image.backing.extent.width),
+			                                      static_cast<int>(image.backing.extent.height), 1};
+			region.dstSubresource = region.srcSubresource;
+			region.dstOffsets[1]  = vk::Offset3D {static_cast<int>(entry.extent.width),
+			                                      static_cast<int>(entry.extent.height), 1};
+			command.blitImage(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, entry.image,
+			                  vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eNearest);
+			barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+			barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+			barrier.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
+			barrier.newLayout     = vk::ImageLayout::eTransferSrcOptimal;
+			command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+			                        vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags {}, 0,
+			                        nullptr, 0, nullptr, 1, &barrier);
+			vk::BufferImageCopy copy {};
+			copy.imageSubresource = region.srcSubresource;
+			copy.imageExtent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
+			command.copyImageToBuffer(entry.image, vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
+			                          &copy);
+			m_pending.push_back(entry);
+		});
+		std::fprintf(stderr, "[kyty-target] %d flip %llu: %zu images recorded\n", index,
+		             static_cast<unsigned long long>(m_flips), m_pending.size());
+	}
+
+private:
+	struct Entry {
+		char             name[160] {};
+		vk::Extent2D     extent {};
+		vk::Image        image         = nullptr;
+		vk::DeviceMemory image_memory  = nullptr;
+		vk::Buffer       buffer        = nullptr;
+		vk::DeviceMemory buffer_memory = nullptr;
+		void*            mapped        = nullptr;
+	};
+	TargetDump() {
+		const auto number = [](const char* name, int fallback) {
+			const char* value = std::getenv(name);
+			return value != nullptr ? std::atoi(value) : fallback;
+		};
+		m_limit     = number("KYTY_DUMP_TARGETS", 0);
+		m_from      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_FROM", 1), 1));
+		m_every     = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_EVERY", 1), 1));
+		m_delay     = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_DELAY", 20), 1));
+		m_min_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MINW", 512), 1));
+	}
+	static void Create(GraphicContext& graphics, Entry& entry) {
+		auto       device      = graphics.device;
+		const auto memory_type = [&](uint32_t bits, vk::MemoryPropertyFlags wanted) {
+			const auto& memory = graphics.physical_device_memory_properties;
+			for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
+				if ((bits & (1u << i)) != 0 && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
+					return i;
+				}
+			}
+			EXIT("target dump: no memory type\n");
+			return 0u;
+		};
+		vk::ImageCreateInfo create {};
+		create.imageType   = vk::ImageType::e2D;
+		create.extent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
+		create.mipLevels   = 1;
+		create.arrayLayers = 1;
+		create.format      = vk::Format::eB8G8R8A8Srgb;
+		create.usage   = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+		create.samples = vk::SampleCountFlagBits::e1;
+		RequireVulkanSuccess(device.createImage(&create, nullptr, &entry.image), "target dump image");
+		vk::MemoryRequirements requirements {};
+		device.getImageMemoryRequirements(entry.image, &requirements);
+		vk::MemoryAllocateInfo allocate {};
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &entry.image_memory),
+		                     "target dump image memory");
+		device.bindImageMemory(entry.image, entry.image_memory, 0);
+		vk::BufferCreateInfo buffer {};
+		buffer.size  = static_cast<vk::DeviceSize>(entry.extent.width) * entry.extent.height * 4u;
+		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
+		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &entry.buffer), "target dump buffer");
+		device.getBufferMemoryRequirements(entry.buffer, &requirements);
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(
+		    requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+		                                     vk::MemoryPropertyFlagBits::eHostCoherent);
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &entry.buffer_memory),
+		                     "target dump buffer memory");
+		device.bindBufferMemory(entry.buffer, entry.buffer_memory, 0);
+		RequireVulkanSuccess(device.mapMemory(entry.buffer_memory, 0, VK_WHOLE_SIZE, {}, &entry.mapped),
+		                     "target dump map");
+	}
+	void Write(GraphicContext& graphics) {
+		auto device = graphics.device;
+		for (auto& entry: m_pending) {
+			const uint32_t bytes = entry.extent.width * entry.extent.height * 4u;
+			uint8_t        header[54] {};
+			const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+			header[0] = 'B';
+			header[1] = 'M';
+			put(2, 54u + bytes);
+			put(10, 54u);
+			put(14, 40u);
+			put(18, entry.extent.width);
+			put(22, static_cast<uint32_t>(-static_cast<int32_t>(entry.extent.height)));
+			header[26] = 1;
+			header[28] = 32;
+			put(34, bytes);
+			put(38, 2835u);
+			put(42, 2835u);
+			std::vector<uint8_t> pixels(bytes);
+			std::memcpy(pixels.data(), entry.mapped, bytes);
+			uint64_t sum = 0, alpha = 0;
+			for (uint32_t i = 0; i < bytes; i += 4) {
+				sum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+				alpha += pixels[i + 3];
+				pixels[i + 3] = 0xff;
+			}
+			if (auto* file = std::fopen(DumpPath(entry.name).c_str(), "wb"); file != nullptr) {
+				std::fwrite(header, 1, sizeof(header), file);
+				std::fwrite(pixels.data(), 1, bytes, file);
+				std::fclose(file);
+			}
+			std::fprintf(stderr, "[kyty-target] %s: mean %.1f alpha %.1f\n", entry.name,
+			             static_cast<double>(sum) / (static_cast<double>(bytes) * 0.75),
+			             static_cast<double>(alpha) / (static_cast<double>(bytes) * 0.25));
+			device.unmapMemory(entry.buffer_memory);
+			device.destroyBuffer(entry.buffer, nullptr);
+			device.freeMemory(entry.buffer_memory, nullptr);
+			device.destroyImage(entry.image, nullptr);
+			device.freeMemory(entry.image_memory, nullptr);
+		}
+		m_pending.clear();
+	}
+
+	int                m_limit        = 0;
+	int                m_dumped       = 0;
+	uint64_t           m_from         = 1;
+	uint64_t           m_every        = 1;
+	uint64_t           m_delay        = 20;
+	uint32_t           m_min_width    = 512;
+	uint64_t           m_flips        = 0;
+	uint64_t           m_pending_flip = 0;
+	std::vector<Entry> m_pending;
+};
+
+
 class Swapchain final {
 public:
 	enum class Status : uint8_t { Success, Recreate, SurfaceLost, Minimized };
@@ -301,7 +806,8 @@ private:
 	vk::SurfaceFormatKHR SelectFormat();
 	/// Destroys the swapchain Vulkan objects and resets all members.
 	void Destroy();
-	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer);
+	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer,
+	                 const PresentGeometry::Rect& area);
 
 	WindowContext&   m_window;
 	vk::SwapchainKHR m_handle = nullptr;
@@ -371,6 +877,24 @@ struct Presenter::Impl {
 		const auto image_id   = cache.FindImage(desc);
 		auto&      image      = cache.GetImage(image_id);
 		image.usage.video_out = true;
+		// nps5 diagnostic, KYTY_FLIP_LOG=1: the state of the flipped image before it is refreshed
+		// (a CPU-dirty image is uploaded again from guest bytes), on change and every 120th flip.
+		static const bool flip_log = std::getenv("KYTY_FLIP_LOG") != nullptr;
+		if (flip_log) {
+			static uint64_t flips = 0, dirty_flips = 0;
+			static uint32_t last = ~0u;
+			const uint32_t  state = (image.IsCpuDirty() ? 1u : 0u) | (image.IsGpuModified() ? 2u : 0u) |
+			                        (image.IsBufferModified() ? 4u : 0u);
+			dirty_flips += state & 1u;
+			if (state != last || ++flips % 120 == 0) {
+				last = state;
+				std::fprintf(stderr, "[kyty-flip] image 0x%llx %ux%u: cpu-dirty %u gpu-modified %u buffer-modified %u (%llu of %llu flips cpu-dirty)\n",
+				             static_cast<unsigned long long>(info.data.address), info.extent.width,
+				             info.extent.height, state & 1u, (state >> 1u) & 1u, (state >> 2u) & 1u,
+				             static_cast<unsigned long long>(dirty_flips),
+				             static_cast<unsigned long long>(flips));
+			}
+		}
 		cache.UpdateImage(image_id);
 		return image;
 	}
@@ -464,12 +988,22 @@ void Swapchain::Create() {
 
 	m_extent = surface.capabilities.currentExtent;
 	if (m_extent.width == std::numeric_limits<uint32_t>::max()) {
-		m_extent.width =
-		    std::clamp(m_window_extent.width, surface.capabilities.minImageExtent.width,
-		               surface.capabilities.maxImageExtent.width);
-		m_extent.height =
-		    std::clamp(m_window_extent.height, surface.capabilities.minImageExtent.height,
-		               surface.capabilities.maxImageExtent.height);
+		// winresize: the surface lets the swapchain choose: the drawable size clamped to the surface
+		// limits and to KYTY_SWAPCHAIN_MAX_MB (default 512 MiB of images; the self memory limit is
+		// never raised for a big window).
+		static const uint64_t budget = [] {
+			const char* v = std::getenv("KYTY_SWAPCHAIN_MAX_MB");
+			const long  mb = v != nullptr && *v != '\0' ? std::strtol(v, nullptr, 10) : 512;
+			return static_cast<uint64_t>(mb > 0 ? mb : 512) << 20u;
+		}();
+		const auto& caps    = surface.capabilities;
+		auto        chosen  = PresentGeometry::ClampExtent(
+            {m_window_extent.width, m_window_extent.height}, {m_extent.width, m_extent.height},
+            {caps.minImageExtent.width, caps.minImageExtent.height},
+            {caps.maxImageExtent.width, caps.maxImageExtent.height});
+		chosen = PresentGeometry::FitToBudget(chosen, std::max(caps.minImageCount + 1, 3u), budget);
+		m_extent.width  = chosen.w;
+		m_extent.height = chosen.h;
 	}
 	if (m_extent.width == 0 || m_extent.height == 0) {
 		LOGF("Swapchain::Create(): surface currentExtent is zero while window is not minimized; "
@@ -506,6 +1040,9 @@ void Swapchain::Create() {
 	create_info.imageArrayLayers = 1;
 	create_info.imageUsage =
 	    vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst;
+	if (FrameDump::Instance().Enabled()) {
+		create_info.imageUsage |= vk::ImageUsageFlagBits::eTransferSrc; // KYTY_DUMP_FRAMES
+	}
 	create_info.imageSharingMode = vk::SharingMode::eExclusive;
 	create_info.preTransform     = transform;
 	create_info.compositeAlpha   = composite;
@@ -519,12 +1056,22 @@ void Swapchain::Create() {
 		case Config::PresentMode::Fifo:
 		default: create_info.presentMode = vk::PresentModeKHR::eFifo; break;
 	}
+	// nps5 KYTY_PRESENT_MODE=fifo|immediate|mailbox overrides the configured mode (KosmicKrisp offers immediate and fifo only;
+	// immediate = CAMetalLayer displaySyncEnabled=NO: the frame is shown at once instead of at the next vblank).
+	if (const char* mode = std::getenv("KYTY_PRESENT_MODE"); mode != nullptr) {
+		if (std::strcmp(mode, "immediate") == 0) create_info.presentMode = vk::PresentModeKHR::eImmediate;
+		else if (std::strcmp(mode, "mailbox") == 0) create_info.presentMode = vk::PresentModeKHR::eMailbox;
+		else if (std::strcmp(mode, "fifo") == 0) create_info.presentMode = vk::PresentModeKHR::eFifo;
+	}
 	if (std::find(surface.present_modes.begin(), surface.present_modes.end(),
 	              create_info.presentMode) == surface.present_modes.end()) {
 		LOGF("warning: requested present mode is unavailable; falling back to Fifo\n");
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
+	if (Common::LatTrace::Enabled()) {
+		std::fprintf(stderr, "[klat] swapchain present_mode=%s images=%u\n", vk::to_string(create_info.presentMode).c_str(), image_count);
+	}
 	create_info.pNext   = LowLatency::SwapchainCreateNext(create_info.pNext);
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
@@ -912,7 +1459,8 @@ void PresentFilter::Release(vk::Device device) {
 	m_format      = vk::Format::eUndefined;
 }
 
-void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer) {
+void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer,
+                            const PresentGeometry::Rect& area) {
 	auto device = m_window.graphic_ctx.device;
 	if (m_overlay_pipeline == nullptr) {
 		vk::SamplerCreateInfo sampler {};
@@ -1031,10 +1579,10 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 	rendering.colorAttachmentCount = 1;
 	rendering.pColorAttachments    = &attachment;
 	command.beginRendering(&rendering);
-	const vk::Viewport viewport {
-	    0.0f, 0.0f, static_cast<float>(m_extent.width), static_cast<float>(m_extent.height),
-	    0.0f, 1.0f};
-	const vk::Rect2D scissor {{0, 0}, m_extent};
+	// winresize: the overlay layer shares the game frame's letterboxed rectangle.
+	const vk::Viewport viewport {static_cast<float>(area.x), static_cast<float>(area.y),
+	                             static_cast<float>(area.w), static_cast<float>(area.h), 0.0f, 1.0f};
+	const vk::Rect2D scissor {{area.x, area.y}, {area.w, area.h}};
 	command.setViewport(0, 1, &viewport);
 	command.setScissor(0, 1, &scissor);
 	command.draw(3, 1, 0, 0);
@@ -1052,7 +1600,16 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	const vk::Extent2D source_extent =
 	    source != nullptr ? vk::Extent2D {source->image.extent.width, source->image.extent.height}
 	                      : vk::Extent2D {};
-	const bool filtered = source != nullptr && PresentBoxDownscaleEnabled() &&
+	// winresize: aspect-preserving letterbox of the game frame (or, without one, of the overlay
+	// layer) in the swapchain; black bars around it. Full target when the aspects match.
+	const auto letterbox_src = source != nullptr ? source_extent
+	    : overlay.frame != nullptr
+	        ? vk::Extent2D {overlay.frame->image.extent.width, overlay.frame->image.extent.height}
+	        : vk::Extent2D {};
+	const auto area = PresentGeometry::Letterbox(letterbox_src.width, letterbox_src.height,
+	                                             m_extent.width, m_extent.height);
+	const bool boxed = !PresentGeometry::IsFull(area, m_extent.width, m_extent.height);
+	const bool filtered = source != nullptr && !boxed && PresentBoxDownscaleEnabled() &&
 	                      PresentNeedsFilter(source_extent, m_extent);
 	if (filtered) {
 		if (source->view == nullptr) {
@@ -1101,6 +1658,17 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		m_filter.Record(m_window.graphic_ctx.device, vk_command, source->view, 0, source_extent,
 		                m_image_views[m_image_index], m_format, m_extent);
 	} else if (source != nullptr) {
+		if (boxed) {
+			const vk::ClearColorValue black {};
+			vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
+			                           &black, 1, &to_transfer.subresourceRange);
+			vk::MemoryBarrier clear_done {};
+			clear_done.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+			clear_done.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+			vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+			                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {},
+			                           1, &clear_done, 0, nullptr, 0, nullptr);
+		}
 		vk::ImageBlit region {};
 		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.srcSubresource.mipLevel       = 0;
@@ -1113,8 +1681,10 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		region.dstSubresource.mipLevel       = 0;
 		region.dstSubresource.baseArrayLayer = 0;
 		region.dstSubresource.layerCount     = 1;
-		region.dstOffsets[1].x               = static_cast<int>(m_extent.width);
-		region.dstOffsets[1].y               = static_cast<int>(m_extent.height);
+		region.dstOffsets[0].x               = area.x;
+		region.dstOffsets[0].y               = area.y;
+		region.dstOffsets[1].x               = area.x + static_cast<int>(area.w);
+		region.dstOffsets[1].y               = area.y + static_cast<int>(area.h);
 		region.dstOffsets[1].z               = 1;
 		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
@@ -1150,7 +1720,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	                           &to_present);
 	if (draw_attachment) {
 		if (draw_overlay) {
-			DrawOverlay(vk_command, overlay);
+			DrawOverlay(vk_command, overlay, area);
 			if (draw_system_overlay) {
 				to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
 				to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
@@ -1171,6 +1741,9 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		                           vk::PipelineStageFlagBits::eAllCommands,
 		                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
 		                           &to_present);
+	}
+	if (auto& dump = FrameDump::Instance(); dump.Enabled() && dump.Next()) {
+		dump.Record(m_window.graphic_ctx, vk_command, m_images[m_image_index], m_format, m_extent);
 	}
 }
 
@@ -1217,6 +1790,8 @@ Swapchain::Status Swapchain::Present() {
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
 	LowLatency::EndPresent(static_cast<VkSwapchainKHR>(m_handle), latency_id);
+	Common::LatTrace::Log("present");
+	Common::PresentInterval::Note();
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
@@ -1279,6 +1854,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);
+	TargetDump::Instance().OnFlip(m_impl->window.graphic_ctx, m_impl->renderer.GetTextureCache(), buffer);
 	if (headset) {
 		// The frame holds the raw display-encoded pixels the headset needs.
 		frame->Transit(buffer.Handle(), vk::ImageLayout::eTransferSrcOptimal,
@@ -1376,6 +1952,14 @@ void Presenter::ClearLayer(int bus) {
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
 
+	// nps5: a frame that KYTY_DUMP_FRAMES will dump never carries the compile progress overlay.
+	// Decided before the visual state so a progress-only overlay is not even prepared for it.
+	if (const auto& dump = FrameDump::Instance(); dump.Enabled()) {
+		SystemOverlaySuppressProgress(dump.WouldDump() && !ProgressOverlay::InDumps());
+	}
+	if (layers[0].frame != nullptr && !layers[0].frame->blank) {
+		ProgressOverlay::GameFrameSeen().store(true, std::memory_order_relaxed);
+	}
 	const auto overlay_visual = GetSystemOverlayVisualState();
 	// Keep black/blank flips in the current color space; only real main-bus frames switch it.
 	const auto* main_frame = layers[0].frame;
@@ -1406,11 +1990,20 @@ void Presenter::Impl::Present() {
 				render_lock.emplace(renderer.GetMutex());
 			}
 			auto&             command = present_scheduler.BeginCommand();
+			if (attempt != 0) {
+				if (const auto& dump = FrameDump::Instance(); dump.Enabled()) {
+					SystemOverlaySuppressProgress(dump.WouldDump() && !ProgressOverlay::InDumps());
+				}
+			}
 			const bool        draw_system_overlay =
 			    (overlay_visual.active || PerformanceOverlayEnabled()) && swapchain.PrepareSystemOverlay();
 			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 			                                draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);
+			if (auto& dump = FrameDump::Instance(); dump.TakeRecorded()) {
+				present_scheduler.Wait(tick);
+				dump.Write();
+			}
 			for (const auto& layer: layers) {
 				if (layer.frame != nullptr) {
 					layer.frame->present_tick = tick;

@@ -69,8 +69,10 @@ public:
 	// sparse_first_level > 0 (KYTY_TEXTURE_SPARSE_RESIDENCY, TextureCache::InsertImage): try a sparse
 	// residency image with memory behind levels >= it only (GraphicContext::CreateSparseImage);
 	// a format or usage that cannot be sparse gets an ordinary image.
+	// trim_first_level > 0 (KYTY_TEXTURE_RESIDENT_TRIM, residentTrim.h): the native image holds only
+	// guest levels >= it (native_first).
 	Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& info,
-	      uint32_t sparse_first_level = 0);
+	      uint32_t sparse_first_level = 0, uint32_t trim_first_level = 0);
 	~Image();
 	KYTY_CLASS_NO_COPY(Image);
 
@@ -504,6 +506,22 @@ public:
 	bool             residency_refresh = false;
 	VulkanImage      backing;
 	std::vector<CachedImageView> views;
+	// KYTY_TEXTURE_RESIDENT_TRIM (residentTrim.h): `backing` holds guest levels [native_first,
+	// levels) only; 0: the whole chain. Never above resident_first. Level numbers everywhere
+	// outside FindView, GetBarriers and Upload are guest levels.
+	uint32_t         native_first = 0;
+	// Replaces `backing` by a new native image that starts at guest level trim_first_level (0: the
+	// whole chain), with undefined contents and no views: the caller marks every resident level
+	// for refresh (TextureCache::EnsureResidency). The old native image and its views stay alive
+	// in `retired` until this Image is destroyed, so a view handle some cache still holds keeps
+	// sampling valid (coarser) levels instead of a destroyed object.
+	void ReplaceBacking(uint32_t trim_first_level);
+	struct RetiredBacking {
+		VulkanImage                  backing;
+		std::vector<CachedImageView> views;
+	};
+	std::vector<std::unique_ptr<RetiredBacking>> retired;
+	[[nodiscard]] uint64_t RetiredBytes() const;
 	ImageUsage       usage;
 	ImageBinding     binding;
 	bool             registered     = false;
@@ -576,6 +594,9 @@ private:
 	                                                   uint64_t capacity) noexcept;
 	[[nodiscard]] static std::pair<uint32_t, uint32_t>
 	SanitizeCopyLayers(const Image& source, const Image& destination, uint32_t depth);
+
+	// Creates `backing` (empty before) for `info`; see the constructor for the two levels.
+	void CreateBacking(uint32_t sparse_first_level, uint32_t trim_first_level);
 
 	GraphicContext&   m_graphics;
 	CommandScheduler& m_scheduler;

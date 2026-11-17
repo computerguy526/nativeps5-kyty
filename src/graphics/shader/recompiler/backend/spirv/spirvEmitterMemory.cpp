@@ -3,6 +3,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/backend/spirv/atomic64Lowering.h"
 
 #include <algorithm>
 #include <bit>
@@ -1675,6 +1676,46 @@ uint32_t EmitAtomic32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	});
 }
 
+// One 64-bit buffer atomic on `pointer`. With shaderBufferInt64Atomics it is the SPIR-V atomic.
+// Without it (KosmicKrisp) only the forms of atomic64Lowering.h exist: a store (the result is
+// unused) and a load of the unchanged word; SpirvEmitter.cpp refuses a program with any other.
+uint32_t EmitAtomic64Operation(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t pointer) {
+	auto&      state = ctx.state;
+	const auto old   = state.builder.AllocateId();
+	const auto form  = GetHostBufferInt64Atomics() ? BufferAtomic64Form::Native
+	                                               : ClassifyBufferAtomic64(inst);
+	if (form == BufferAtomic64Form::PlainStore) {
+		EmitDeviceAtomicMemoryBarrier(state);
+		state.builder.AddFunction(spv::OpStore, pointer, ctx.Arg(inst, inst.NumArgs() - 2),
+		                          spv::MemoryAccessVolatileMask | spv::MemoryAccessAlignedMask, 8u);
+		EmitDeviceAtomicMemoryBarrier(state);
+		return ConstantU64(state, 0);
+	}
+	if (form == BufferAtomic64Form::PlainLoad) {
+		EmitDeviceAtomicMemoryBarrier(state);
+		state.builder.AddFunction(spv::OpLoad, TypeU64(state), old, pointer,
+		                          spv::MemoryAccessVolatileMask | spv::MemoryAccessAlignedMask, 8u);
+		EmitDeviceAtomicMemoryBarrier(state);
+		return old;
+	}
+	EXIT_IF(!GetHostBufferInt64Atomics());
+	const auto value = ctx.Arg(inst, inst.NumArgs() - 2);
+	if (inst.GetOpcode() == IR::ValueOpcode::BufferAtomicCmpSwap64) {
+		// DATA[0:1] is stored when memory equals the comparator in DATA[2:3].
+		const auto desired = ctx.Arg(inst, inst.NumArgs() - 3);
+		state.builder.AddFunction(spv::OpAtomicCompareExchange, TypeU64(state), old, pointer,
+		                          ConstantU32(state, spv::ScopeDevice),
+		                          ConstantU32(state, spv::MemorySemanticsMaskNone),
+		                          ConstantU32(state, spv::MemorySemanticsMaskNone), desired, value);
+	} else {
+		state.builder.AddFunction(SpirvAtomicOpcode(inst.GetOpcode()), TypeU64(state), old, pointer,
+		                          ConstantU32(state, spv::ScopeDevice),
+		                          ConstantU32(state, spv::MemorySemanticsMaskNone), value);
+	}
+	EmitDeviceAtomicMemoryBarrier(state);
+	return old;
+}
+
 uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto& mem   = ctx.Memory(inst);
 	auto&       state = ctx.state;
@@ -1682,22 +1723,7 @@ uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 		// KYTY_BDA_WRITES: through a V# the shader computed; the same operations on a u64
 		// PhysicalStorageBuffer pointer.
 		return EmitIndirectAtomic(ctx, inst, true, [&](uint32_t pointer) {
-			const auto value = ctx.Arg(inst, inst.NumArgs() - 2);
-			const auto old   = state.builder.AllocateId();
-			if (inst.GetOpcode() == IR::ValueOpcode::BufferAtomicCmpSwap64) {
-				const auto desired = ctx.Arg(inst, inst.NumArgs() - 3);
-				state.builder.AddFunction(spv::OpAtomicCompareExchange, TypeU64(state), old,
-				                          pointer, ConstantU32(state, spv::ScopeDevice),
-				                          ConstantU32(state, spv::MemorySemanticsMaskNone),
-				                          ConstantU32(state, spv::MemorySemanticsMaskNone), desired,
-				                          value);
-			} else {
-				state.builder.AddFunction(SpirvAtomicOpcode(inst.GetOpcode()), TypeU64(state),
-				                          old, pointer, ConstantU32(state, spv::ScopeDevice),
-				                          ConstantU32(state, spv::MemorySemanticsMaskNone), value);
-			}
-			EmitDeviceAtomicMemoryBarrier(state);
-			return old;
+			return EmitAtomic64Operation(ctx, inst, pointer);
 		});
 	}
 	return EmitValueOrDefaultIfCondition(
@@ -1710,27 +1736,9 @@ uint32_t EmitBufferAtomic64(ValueEmitContext& ctx, const IR::Inst& inst) {
 		    return EmitValueOrDefaultIfCondition(
 		        state, EmitMemoryElementInBounds(state, resource, index), TypeU64(state),
 		        ConstantU64(state, 0), [&]() {
-			        const auto value = ctx.Arg(inst, inst.NumArgs() - 2);
-			        const auto old   = state.builder.AllocateId();
 			        const auto pointer = EmitStorageBufferElementPointer(
 			            state, resource, index, TypeStorageBufferElementPointer(state, 64));
-			        if (inst.GetOpcode() == IR::ValueOpcode::BufferAtomicCmpSwap64) {
-				        // DATA[0:1] is stored when memory equals the comparator in DATA[2:3].
-				        const auto desired = ctx.Arg(inst, inst.NumArgs() - 3);
-				        state.builder.AddFunction(
-				            spv::OpAtomicCompareExchange, TypeU64(state), old, pointer,
-				            ConstantU32(state, spv::ScopeDevice),
-				            ConstantU32(state, spv::MemorySemanticsMaskNone),
-				            ConstantU32(state, spv::MemorySemanticsMaskNone), desired, value);
-			        } else {
-				        state.builder.AddFunction(SpirvAtomicOpcode(inst.GetOpcode()),
-				                                  TypeU64(state), old, pointer,
-				                                  ConstantU32(state, spv::ScopeDevice),
-				                                  ConstantU32(state, spv::MemorySemanticsMaskNone),
-				                                  value);
-			        }
-			        EmitDeviceAtomicMemoryBarrier(state);
-			        return old;
+			        return EmitAtomic64Operation(ctx, inst, pointer);
 		        });
 	    });
 }

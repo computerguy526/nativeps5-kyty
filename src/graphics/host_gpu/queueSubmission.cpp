@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/queueSubmission.h"
 
 #include "common/cpuPlacement.h"
+#include "common/gpuSafety.h"
 #include "common/hangWatchdog.h"
 #include "common/profiler.h"
 #include "common/threads.h"
@@ -435,6 +436,8 @@ void QueueSubmissionBroker::SubmitBatch(const QueuedSubmission* records, size_t 
 		    reinterpret_cast<uint64_t>(static_cast<VkQueue>(m_graphics->queue)),
 		    records[count - 1].tick, records[0].tick, native_count, count);
 		HangWatchdog::DebugDelay("submit", records[count - 1].tick);
+		GpuSafety::NoteSubmit(records[count - 1].tick, records[count - 1].debug_submit,
+		                      records[count - 1].debug_op, records[count - 1].debug_arg0);
 		if (HangWatchdog::Enabled()) {
 			for (size_t i = 0; i < native_count; ++i)
 				NoteWatchdogSubmit(m_graphics->queue, submits[i]);

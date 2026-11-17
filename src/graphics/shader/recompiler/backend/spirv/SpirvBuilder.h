@@ -74,7 +74,24 @@ public:
 
 	template <typename... Args>
 	void AddFunction(spv::Op opcode, const Args&... operands) {
+		const auto offset = m_functions.size();
 		AppendInstruction(m_functions, opcode, operands...);
+		if (m_single_lane && opcode >= spv::OpGroupNonUniformElect &&
+		    opcode <= spv::OpGroupNonUniformQuadSwap) [[unlikely]] {
+			RewriteSingleLane(offset);
+		}
+	}
+
+	// nps5: a host without subgroup operations in this module's stage (KosmicKrisp: vertex and
+	// tessellation). Every invocation is then the one lane of its wave: the subgroup operations
+	// added from here on are written as their one-lane results (ballot = the predicate's bit,
+	// shuffle/broadcast/reductions = the value, elect = true). u32_type/zero/one: the module's
+	// uint type and constants 0 and 1.
+	void EnableSingleLane(uint32_t u32_type, uint32_t zero, uint32_t one) {
+		m_single_lane          = true;
+		m_single_lane_u32_type = u32_type;
+		m_single_lane_zero     = zero;
+		m_single_lane_one      = one;
 	}
 
 	void        AddFunction(std::span<const uint32_t> words);
@@ -140,6 +157,13 @@ private:
 	                                 std::initializer_list<TypeAnnotation> annotations);
 	uint32_t    DeclareConstant(spv::Op opcode, std::vector<uint32_t> key);
 	static void AppendString(std::vector<uint32_t>& words, const char* text);
+
+	void RewriteSingleLane(size_t offset);
+
+	bool     m_single_lane          = false;
+	uint32_t m_single_lane_u32_type = 0;
+	uint32_t m_single_lane_zero     = 0;
+	uint32_t m_single_lane_one      = 0;
 
 	uint32_t                                  m_next_id = 1;
 	uint32_t                                  m_version = 0;

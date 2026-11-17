@@ -8,6 +8,7 @@
 #include "graphics/shader/shaderBindings.h"
 
 #include <array>
+#include <compare>
 #include <cstring>
 #include <cstddef>
 #include <span>
@@ -208,6 +209,10 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 
 enum class ShaderAlphaBlendSource : uint8_t { None, SourceAlpha, SourceAlphaOne, SourceAlphaZero };
 enum class ShaderPixelParameterMode : uint8_t { FirstVertex, LastVertex, Rectangle };
+// Interface locations a pixel shader may use with KYTY_PS_PER_VERTEX=gs (ShaderPixelPerVertexSlots):
+// the 32 guest parameter locations plus copies of raw vertices; within Vulkan's minimum of 64
+// fragment input components only when few are used, so the device's limit is checked.
+inline constexpr uint32_t ShaderMaxPerVertexLocations = 32;
 
 struct ShaderPixelInputInfo {
 	uint32_t                                       interpolator_settings[32]    = {0};
@@ -316,7 +321,95 @@ void ShaderLinkVertexPixelParameters(ShaderVertexInputInfo& vertex,
                                      const ShaderPixelInputInfo& pixel,
                                      std::span<const uint32_t> active_inputs);
 bool     ShaderPixelParameterIsFlat(const ShaderPixelInputInfo& info, uint32_t input);
+// Whether this pixel shader's raw-vertex reads (V_INTERP_MOV P0/P10/P20, packed halves) get raw
+// vertices: PerVertexKHR inputs, or with KYTY_PS_PER_VERTEX=gs the generated geometry stage,
+// which rectangle lists (expanded by tessellation stages) do not have. False: the reads take the
+// interpolated or flat value (KYTY_PS_PER_VERTEX=0).
+bool     ShaderPixelRawVertexInputs(const ShaderPixelInputInfo& info);
+// KYTY_PS_PER_VERTEX=gs: the three flat locations that carry the raw vertices 0..2 of one
+// per-vertex parameter (perVertexShader.h writes them, the pixel shader reads them). `source` is
+// the parameter's mapped location (the vertex shader's export). Vertex 0 keeps that location;
+// vertices 1 and 2 take the lowest locations no active parameter maps to.
+struct ShaderPerVertexSlot {
+	uint32_t                source = 0;
+	std::array<uint32_t, 3> locations {};
+};
+// active_inputs: the pixel shader's parameter inputs; per_vertex_inputs: those read as raw vertices.
+std::vector<ShaderPerVertexSlot> ShaderPixelPerVertexSlots(const ShaderPixelInputInfo& info,
+                                                           std::span<const uint32_t> active_inputs,
+                                                           std::span<const uint32_t> per_vertex_inputs);
 bool     ShaderPixelParameterIsCustom(const ShaderPixelInputInfo& info, uint32_t input);
+
+// KYTY_PS_PER_VERTEX=unpack (nps5 kart2): raw-vertex reads without raw vertices. A pixel shader that
+// reads the three vertices of a packed (custom-interpolation) parameter unpacks 16-bit fields and
+// interpolates them itself; the host interpolates each field instead. A field is one 16-bit word
+// (or the whole dword, Raw) of one channel of one pixel input. The vertex shader exports up to
+// four fields of one parameter as floats at a spare location (a slot); the pixel shader reads the
+// slot as an ordinary smooth input (Raw: flat) and uses that one value for P0, P10 and P20.
+enum class ShaderParameterFieldKind : uint8_t {
+	None = 0,
+	S16  = 1, // the word, sign-extended, as a float
+	U16  = 2, // the word, zero-extended, as a float
+	F16  = 3, // the word as a half float (V_INTERP_P2_F16)
+	Raw  = 4, // the dword's bits, flat (a parameter only read at P0)
+};
+// kind | channel << 3 | word << 5; zero: no field.
+[[nodiscard]] constexpr uint32_t ShaderParameterFieldCode(ShaderParameterFieldKind kind, uint32_t channel,
+                                                          uint32_t word) {
+	return static_cast<uint32_t>(kind) | ((channel & 3u) << 3u) | ((word & 1u) << 5u);
+}
+[[nodiscard]] constexpr ShaderParameterFieldKind ShaderParameterFieldCodeKind(uint32_t code) {
+	return static_cast<ShaderParameterFieldKind>(code & 7u);
+}
+[[nodiscard]] constexpr uint32_t ShaderParameterFieldCodeChannel(uint32_t code) {
+	return (code >> 3u) & 3u;
+}
+[[nodiscard]] constexpr uint32_t ShaderParameterFieldCodeWord(uint32_t code) {
+	return (code >> 5u) & 1u;
+}
+struct ShaderParameterField {
+	uint32_t input = 0; // the pixel shader's input index
+	uint32_t code  = 0;
+
+	auto operator<=>(const ShaderParameterField&) const = default;
+};
+struct ShaderParameterFieldSlot {
+	uint32_t                location = 0; // the interface location that carries the fields
+	uint32_t                input    = 0; // pixel input index (pixel side) or vertex export (vertex side)
+	std::array<uint32_t, 4> codes {};
+
+	[[nodiscard]] bool Flat() const {
+		return ShaderParameterFieldCodeKind(codes[0]) == ShaderParameterFieldKind::Raw;
+	}
+	// input | codes << 5: what a pixel program's StageInput (kind ParameterField, component_count)
+	// and a vertex input info's param_alias_source entry hold.
+	[[nodiscard]] constexpr uint32_t Pack() const {
+		return (input & 31u) | (codes[0] << 5u) | (codes[1] << 11u) | (codes[2] << 17u) | (codes[3] << 23u);
+	}
+	[[nodiscard]] static constexpr ShaderParameterFieldSlot Unpack(uint32_t location, uint32_t packed) {
+		return {location,
+		        packed & 31u,
+		        {(packed >> 5u) & 63u, (packed >> 11u) & 63u, (packed >> 17u) & 63u, (packed >> 23u) & 63u}};
+	}
+	auto operator<=>(const ShaderParameterFieldSlot&) const = default;
+};
+// A param_alias_source entry: the source export, and the fields of a field alias (zero: a copy).
+inline constexpr uint32_t ShaderParamAliasSourceMask = 31u;
+[[nodiscard]] constexpr uint32_t ShaderParamAliasFields(uint32_t alias_source) {
+	return alias_source >> 5u;
+}
+// Whether this pixel shader's raw-vertex reads are replaced by unpacked fields
+// (ShaderRecompiler::PsPerVertexUnpack; not for rectangle lists, whose vertex stage is not linked).
+bool ShaderPixelRawVertexUnpack(const ShaderPixelInputInfo& info);
+// The slots of a pixel shader's fields: the fields sorted, grouped by input (Raw fields apart),
+// four to a slot, at the highest locations that no active input maps or is relocated to.
+// Fields that find no location are left out (`dropped`, when given, counts them).
+std::vector<ShaderParameterFieldSlot> ShaderPixelFieldSlots(const ShaderPixelInputInfo& info,
+                                                            std::span<const uint32_t> active_inputs,
+                                                            std::span<const ShaderParameterField> fields,
+                                                            uint32_t* dropped = nullptr);
+// Whether the bound pixel program reads field slots (its vertex stage must be linked).
+bool ShaderPixelHasFieldSlots(const ShaderPixelInputInfo& info);
 
 struct ShaderSharp {
 	uint16_t offset_dw : 15;

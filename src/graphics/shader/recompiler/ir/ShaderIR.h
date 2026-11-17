@@ -275,6 +275,10 @@ enum class StageInputKind {
 	BaryCoordSmoothSample,
 	BaryCoordNoPerspectiveCentroid,
 	BaryCoordNoPerspectiveSample,
+	// KYTY_PS_PER_VERTEX=unpack (pixel): a slot of unpacked parameter fields. location: the
+	// interface location; component_count: ShaderParameterFieldSlot::Pack (pixel input and the
+	// four field codes).
+	ParameterField,
 };
 
 // How a V_INTERP_P2 read is interpolated, from the I/J pair it uses (GetAttribute flags).

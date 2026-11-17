@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/ir/passes/RawVertexUnpack.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/Tessellation.h"
 
@@ -1044,15 +1045,24 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 					if (source.kind != IR::ExportTargetKind::Parameter) continue;
 					for (uint32_t destination = 0; destination < 32u; ++destination) {
 						if ((vertex.param_alias_mask & (1u << destination)) == 0 ||
-						    vertex.param_alias_source[destination] != source.index) continue;
+						    (vertex.param_alias_source[destination] & ShaderParamAliasSourceMask) !=
+						        source.index) continue;
 						auto alias = source;
 						alias.index = destination;
 						alias.target = 0x20u + destination;
 						auto alias_flags = flags;
 						alias_flags.index = static_cast<uint32_t>(ir.export_info.size());
 						ir.export_info.push_back(alias);
+						auto data = inst.Arg(0);
+						if (ShaderParamAliasFields(vertex.param_alias_source[destination]) != 0) {
+							// KYTY_PS_PER_VERTEX=unpack: the fields the pixel shader reads, as floats.
+							data = IR::EmitParameterFieldExport(
+							    *block, it, data,
+							    ShaderParameterFieldSlot::Unpack(destination,
+							                                     vertex.param_alias_source[destination]));
+						}
 						auto copy = block->PrependNewInst(it, IR::ValueOpcode::SetAttribute,
-						                                 {inst.Arg(0), inst.Arg(1)});
+						                                 {data, inst.Arg(1)});
 						copy->SetFlags(alias_flags);
 					}
 					// Spare destinations are not sources of any active PS input.
@@ -1062,6 +1072,15 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 					}
 				}
 			}
+		}
+	}
+	if (ir.stage == ShaderType::Pixel && options.input_info.pixel != nullptr &&
+	    ShaderPixelRawVertexUnpack(*options.input_info.pixel)) {
+		// KYTY_PS_PER_VERTEX=unpack: raw-vertex reads take host-interpolated fields.
+		if (IR::UnpackRawVertexParameters(ir, *options.input_info.pixel).Any()) {
+			IR::RemoveIdentities(ir.blocks);
+			IR::EliminateDeadCode(ir.blocks);
+			(void)IR::DropDeadPlanReferences(ir);
 		}
 	}
 	IR::CollectShaderInfo(ir, options.input_info);

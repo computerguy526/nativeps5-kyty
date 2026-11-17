@@ -1,3 +1,4 @@
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/eopTimestamps.h"
 
 #include "common/hangTrace.h"
@@ -8,6 +9,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/gpuTiming.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "graphics/host_gpu/renderer/sync.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
 
@@ -94,7 +96,10 @@ Mode GetMode() {
 		if (std::strcmp(value, "gpu-verify") == 0) {
 			return Mode::GpuVerify;
 		}
-		std::printf("KYTY_EOP_TIMESTAMPS must be record, gpu or gpu-verify (got '%s'): record\n",
+		if (std::strcmp(value, "cbtime") == 0) {
+			return Mode::CbTime;
+		}
+		std::printf("KYTY_EOP_TIMESTAMPS must be record, gpu, gpu-verify or cbtime (got '%s'): record\n",
 		            value);
 		return Mode::Record;
 	}();
@@ -244,7 +249,7 @@ void EopTimestampRing::PublishEntry(const Entry& entry, bool available, uint64_t
 		g_flip.unavailable.fetch_add(1, std::memory_order_relaxed);
 		return;
 	}
-	auto* slot = reinterpret_cast<uint64_t*>(entry.address);
+	auto* slot = Guest::Ptr<uint64_t>(entry.address);
 	// The guest may have reused the slot since (a ring of timer slots): keep what it wrote.
 	uint64_t current = 0;
 	std::memcpy(&current, slot, sizeof(current));
@@ -353,6 +358,269 @@ uint64_t EopTimestampRing::TakeDeferred(uint32_t slot, uint64_t record_value) {
 	g_flip.deferred.fetch_add(1, std::memory_order_relaxed);
 	CountShift(published, record_value);
 	return published;
+}
+
+namespace {
+std::atomic<EopCompletionClock*> g_guest_completion_clock {nullptr};
+VkSemaphore                      g_guest_completion_timeline = VK_NULL_HANDLE;
+} // namespace
+
+void EopCompletionClock::CreateGuest(GraphicContext& graphics, vk::Semaphore timeline) {
+	if (g_guest_completion_clock.load(std::memory_order_acquire) != nullptr) {
+		return; // one guest scheduler has it
+	}
+	g_guest_completion_timeline = static_cast<VkSemaphore>(timeline);
+	g_guest_completion_clock.store(new EopCompletionClock(graphics, timeline),
+	                               std::memory_order_release);
+}
+
+void EopCompletionClock::DestroyGuest(vk::Semaphore timeline) {
+	auto* clock = g_guest_completion_clock.load(std::memory_order_acquire);
+	if (clock == nullptr || g_guest_completion_timeline != static_cast<VkSemaphore>(timeline)) {
+		return;
+	}
+	g_guest_completion_clock.store(nullptr, std::memory_order_release);
+	delete clock;
+}
+
+EopCompletionClock* EopCompletionClock::Guest(vk::Semaphore timeline) noexcept {
+	auto* clock = g_guest_completion_clock.load(std::memory_order_acquire);
+	return clock != nullptr && g_guest_completion_timeline == static_cast<VkSemaphore>(timeline)
+	           ? clock
+	           : nullptr;
+}
+
+EopCompletionClock::EopCompletionClock(GraphicContext& graphics, vk::Semaphore timeline)
+    : m_graphics(graphics), m_timeline(timeline) {
+	m_observations.reserve(256);
+	m_taken.reserve(256);
+	std::fprintf(stderr, "Kyty end-of-pipe timestamps: command-buffer completion times "
+	                     "(KYTY_EOP_TIMESTAMPS=cbtime), no timestamp queries\n");
+	m_watcher = std::jthread([this](std::stop_token stop) { Watch(stop); });
+}
+
+EopCompletionClock::~EopCompletionClock() {
+	m_watcher.request_stop();
+	if (m_watcher.joinable()) {
+		m_watcher.join(); // within one wait timeout
+	}
+}
+
+void EopCompletionClock::Watch(std::stop_token stop) {
+	// Bounded waits: the stop request is seen within one timeout, and a tick that is never
+	// submitted (an idle guest) costs a wake-up per timeout only.
+	constexpr uint64_t kWaitNs = 10'000'000;
+	// Observations the recording thread has not taken (it takes them at each clock write).
+	constexpr size_t kMaxObservations = 65536;
+	uint64_t         seen             = 0;
+	while (!stop.stop_requested()) {
+		const uint64_t        next = seen + 1u;
+		vk::SemaphoreWaitInfo wait {};
+		wait.semaphoreCount = 1;
+		wait.pSemaphores    = &m_timeline;
+		wait.pValues        = &next;
+		const auto waited   = m_graphics.device.waitSemaphores(&wait, kWaitNs);
+		if (waited != vk::Result::eSuccess && waited != vk::Result::eTimeout) {
+			return; // device lost: the scheduler reports it
+		}
+		uint64_t counter = 0;
+		if (m_graphics.device.getSemaphoreCounterValue(m_timeline, &counter) !=
+		    vk::Result::eSuccess) {
+			return;
+		}
+		if (counter <= seen) {
+			continue;
+		}
+		const auto now = Sync::ReadReferenceClock();
+		seen           = counter;
+		{
+			std::lock_guard lock(m_mutex);
+			if (m_observations.size() < kMaxObservations) {
+				m_observations.push_back({counter, now});
+			} else {
+				// Nobody publishes (no clock writes): keep the newest completion only.
+				m_observations.back() = {counter, now};
+				m_dropped.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
+		m_observed_tick.store(counter, std::memory_order_release);
+	}
+}
+
+void EopCompletionClock::Queue(uint64_t tick, uint64_t address, uint64_t record_value) {
+	m_queue.push_back({tick, address, record_value});
+}
+
+void EopCompletionClock::NoteDeferred(uint64_t tick, uint64_t record_value) {
+	std::lock_guard lock(m_deferred_mutex);
+	if (m_deferred_spans.empty() || m_deferred_spans.back().tick != tick) {
+		m_deferred_spans.push_back({tick, record_value, record_value});
+	} else {
+		m_deferred_spans.back().last_record = record_value;
+	}
+}
+
+uint64_t EopCompletionClock::DeferredValue(uint64_t tick, uint64_t record_value) {
+	uint64_t value = 0;
+	{
+		std::lock_guard lock(m_deferred_mutex);
+		if (m_deferred_group_tick != tick || m_deferred_groups == 0) {
+			// The tick's first deferred write: its command buffer has just completed.
+			const auto now   = Sync::ReadReferenceClock();
+			uint64_t   first = record_value;
+			uint64_t   last  = record_value;
+			bool       found = false;
+			while (!m_deferred_spans.empty() && m_deferred_spans.front().tick <= tick) {
+				const auto& span = m_deferred_spans.front();
+				if (!found) {
+					first = span.first_record;
+				}
+				last  = span.last_record;
+				found = true;
+				m_deferred_spans.pop_front();
+			}
+			m_deferred_group = EopTimestamps::CompletionGroup::Make(m_deferred_previous_end,
+			                                                        first, last, now);
+			m_deferred_previous_end = m_deferred_group.gpu_end;
+			m_deferred_group_tick   = tick;
+			m_deferred_groups++;
+			m_deferred_span_sum += m_deferred_group.gpu_end - m_deferred_group.gpu_begin;
+			// One line per 10 s (reference-clock ticks are 10 ns).
+			constexpr uint64_t kPeriod = 1'000'000'000ull;
+			if (m_deferred_report_at == 0) {
+				m_deferred_report_at = now;
+			} else if (now - m_deferred_report_at >= kPeriod) {
+				const double seconds = static_cast<double>(now - m_deferred_report_at) / 1e8;
+				std::fprintf(stderr,
+				             "[cbtime] %.1f s: %" PRIu64 " groups, %" PRIu64
+				             " deferred clock writes, shift mean %.2f ms max %.2f ms, group spans "
+				             "%.0f%% of the time\n",
+				             seconds, m_deferred_groups, m_deferred_writes,
+				             m_deferred_writes != 0 ? static_cast<double>(m_deferred_shift_sum) /
+				                                          static_cast<double>(m_deferred_writes) / 1e5
+				                                    : 0.0,
+				             static_cast<double>(m_deferred_shift_max) / 1e5,
+				             static_cast<double>(m_deferred_span_sum) / 1e8 / seconds * 100.0);
+				m_deferred_report_at = now;
+				m_deferred_groups    = 1; // 0 means no group yet
+				m_deferred_writes    = 0;
+				m_deferred_shift_sum = 0;
+				m_deferred_shift_max = 0;
+				m_deferred_span_sum  = 0;
+			}
+		}
+		value = m_deferred_group.Value(record_value);
+		const auto shift = value - record_value;
+		m_deferred_writes++;
+		m_deferred_shift_sum += shift;
+		m_deferred_shift_max = std::max(m_deferred_shift_max, shift);
+	}
+	Profiler::CountFrameEvent(Profiler::FrameEvent::EopTimestampsDeferred);
+	g_flip.deferred.fetch_add(1, std::memory_order_relaxed);
+	CountShift(value, record_value);
+	return value;
+}
+
+void EopCompletionClock::Publish() {
+	if (m_queue.empty() ||
+	    m_queue.front().tick > m_observed_tick.load(std::memory_order_acquire)) {
+		return;
+	}
+	Profiler::ScopedFrameWait wait(Profiler::FrameWait::EopTimestampPublish);
+	const auto                start = NowNs();
+	m_taken.clear();
+	{
+		std::lock_guard lock(m_mutex);
+		m_taken.swap(m_observations);
+	}
+	for (const auto& observation : m_taken) {
+		size_t count = 0;
+		while (count < m_queue.size() && m_queue[count].tick <= observation.tick) {
+			count++;
+		}
+		if (count == 0) {
+			// Ticks without a clock write: their GPU time still precedes the next group.
+			m_previous_end = std::max(m_previous_end, observation.time);
+			continue;
+		}
+		const auto group = EopTimestamps::CompletionGroup::Make(
+		    m_previous_end, m_queue.front().record_value, m_queue[count - 1u].record_value,
+		    observation.time);
+		for (size_t i = 0; i < count; i++) {
+			const auto& entry     = m_queue[i];
+			const auto  published = group.Value(entry.record_value);
+			auto*       slot      = Guest::Ptr<uint64_t>(entry.address);
+			// The guest may have reused the slot since (a ring of timer slots): keep its value.
+			uint64_t current = 0;
+			std::memcpy(&current, slot, sizeof(current));
+			if (current != entry.record_value) {
+				Profiler::CountFrameEvent(Profiler::FrameEvent::EopTimestampsSkipped);
+				g_flip.skipped.fetch_add(1, std::memory_order_relaxed);
+				m_skipped++;
+				continue;
+			}
+			std::memcpy(slot, &published, sizeof(published));
+			// Emulator write outside the draw-prep log's fence positions (like deferred labels).
+			Coherence::NoteContentWrite(entry.address, sizeof(published),
+			                            Coherence::Source::CpWrite);
+			Profiler::CountFrameEvent(Profiler::FrameEvent::EopTimestampsRewritten);
+			g_flip.rewritten.fetch_add(1, std::memory_order_relaxed);
+			CountShift(published, entry.record_value);
+			m_rewritten++;
+			const auto shift = published - entry.record_value;
+			m_shift_sum += shift;
+			m_shift_max = std::max(m_shift_max, shift);
+			if (HangTrace::CpTraceEnabled()) {
+				HangTrace::CpEvent event;
+				event.event   = "label-ts-cb";
+				event.address = entry.address;
+				event.value   = published;
+				event.ref     = entry.record_value;
+				event.size    = sizeof(published);
+				HangTrace::RecordCp(event);
+			}
+		}
+		m_groups++;
+		m_gpu_span_sum += group.gpu_end - group.gpu_begin;
+		m_previous_end = group.gpu_end;
+		m_queue.erase(m_queue.begin(), m_queue.begin() + static_cast<std::ptrdiff_t>(count));
+	}
+	g_flip.publishes.fetch_add(1, std::memory_order_relaxed);
+	g_flip.publish_ns.fetch_add(NowNs() - start, std::memory_order_relaxed);
+	Report(start);
+}
+
+// One line per 10 s: how far the published values are from record time, and the GPU busy share
+// they imply (the groups' GPU intervals over the window).
+void EopCompletionClock::Report(uint64_t now) {
+	constexpr uint64_t kPeriodNs = 10'000'000'000ull;
+	if (m_report_at == 0) {
+		m_report_at = now;
+		return;
+	}
+	if (now - m_report_at < kPeriodNs) {
+		return;
+	}
+	const double seconds = static_cast<double>(now - m_report_at) / 1e9;
+	// Reference-clock ticks are 10 ns.
+	std::fprintf(stderr,
+	             "[cbtime] %.1f s: %" PRIu64 " groups, %" PRIu64 " clock writes rewritten, %" PRIu64
+	             " kept (guest rewrote), shift mean %.2f ms max %.2f ms, group spans %.0f%% of the time, "
+	             "%" PRIu64 " observations merged\n",
+	             seconds, m_groups, m_rewritten, m_skipped,
+	             m_rewritten != 0
+	                 ? static_cast<double>(m_shift_sum) / static_cast<double>(m_rewritten) / 1e5
+	                 : 0.0,
+	             static_cast<double>(m_shift_max) / 1e5,
+	             static_cast<double>(m_gpu_span_sum) / 1e8 / seconds * 100.0,
+	             m_dropped.exchange(0, std::memory_order_relaxed));
+	m_report_at    = now;
+	m_groups       = 0;
+	m_rewritten    = 0;
+	m_skipped      = 0;
+	m_shift_sum    = 0;
+	m_shift_max    = 0;
+	m_gpu_span_sum = 0;
 }
 
 namespace EopTimestamps {

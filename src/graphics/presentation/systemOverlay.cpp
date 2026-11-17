@@ -8,6 +8,7 @@
 #include "common/stringUtils.h"
 #include "gpu_blit_shaders/gpu_imgui_hdr_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/progressOverlay.h"
 #include "graphics/presentation/ddsImage.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/window/hostInput.h"
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <fmt/format.h>
@@ -250,6 +252,24 @@ std::array<std::filesystem::path, 2> g_splash_paths;
 std::atomic<bool>                    g_splash_active {false};
 std::atomic<Clock::duration::rep>    g_splash_hidden_at {0};
 bool                                 g_splash_fast = false;
+
+// nps5: on-screen compile progress (graphics/progressOverlay.h). The state machine runs on the
+// present thread only (PrepareFrame); the atomics let other threads ask whether a repaint is needed.
+std::atomic<bool>     g_progress_visible {false};    // card/badge on screen or fading
+std::atomic<bool>     g_progress_suppressed {false}; // the next presented frame is dumped: no overlay on it
+std::atomic<uint32_t> g_progress_revision {0};       // bumped when the overlay appears or disappears
+
+bool ProgressWanted() noexcept {
+	if (!ProgressOverlay::Enabled() || g_progress_suppressed.load(std::memory_order_acquire)) {
+		return false;
+	}
+	if (ProgressOverlay::DemoEnabled()) {
+		return true; // the demo needs a repaint every present until it ends (cheap: the machine hides itself)
+	}
+	return g_progress_visible.load(std::memory_order_acquire) ||
+	       ProgressOverlay::Wanted(CompileProgress::Read(), ProgressOverlay::GameFrameSeen().load(std::memory_order_relaxed)) !=
+	           ProgressOverlay::Mode::Hidden;
+}
 
 std::vector<std::string_view> WrapTrophyTitle(std::string_view text, float font_size, float width) {
 	std::vector<std::string_view> lines;
@@ -710,10 +730,14 @@ SystemOverlayVisualState GetSystemOverlayVisualState() noexcept {
 	const bool splash        = g_splash_active.load(std::memory_order_acquire);
 	const auto cursor        = GetHostInputTouchPadVisualState();
 	return {core.active || dialog.active || system.active || trophy_active || splash ||
-	            (cursor.enabled && cursor.cursor_visible),
+	            (cursor.enabled && cursor.cursor_visible) || ProgressWanted(),
 	        core.revision + dialog.revision + system.revision + (trophy_active ? 1u : 0u) +
 	            (splash ? 2u : 0u) + static_cast<decltype(core.revision)>(cursor.revision) +
-	            PerformanceOverlayRevision()};
+	            PerformanceOverlayRevision() + g_progress_revision.load(std::memory_order_relaxed)};
+}
+
+void SystemOverlaySuppressProgress(bool suppress) noexcept {
+	g_progress_suppressed.store(suppress, std::memory_order_release);
 }
 
 bool ProcessSystemOverlayInput(const SDL_Event& event) {
@@ -894,6 +918,28 @@ struct SystemOverlay::Impl {
 		}
 	}
 
+	// crisptext: dedicated font for the compile progress card/badge (see DrawProgress). KYTY_PROGRESS_FONT=<ttf path>
+	// overrides; KYTY_PROGRESS_FONT=default keeps the old bitmap default font.
+	static ImFont* LoadProgressFont(ImGuiIO& io) {
+		const char* env = std::getenv("KYTY_PROGRESS_FONT");
+		if (env != nullptr && std::string_view(env) == "default") {
+			return nullptr;
+		}
+		ImFontConfig config;
+		config.Flags |= ImFontFlags_NoLoadError;
+		const char* candidates[] = {env != nullptr ? env : "", "/System/Library/Fonts/HelveticaNeue.ttc",
+		                            "/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/SFNS.ttf",
+		                            "C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"};
+		for (const char* path : candidates) {
+			if (*path != '\0' && Common::File::IsFileExisting(path)) {
+				if (ImFont* f = io.Fonts->AddFontFromFileTTF(path, 0.0f, &config); f != nullptr) {
+					return f;
+				}
+			}
+		}
+		return io.Fonts->AddFontDefaultVector();
+	}
+
 	void EnsureContext() {
 		if (imgui_context != nullptr) {
 			ImGui::SetCurrentContext(imgui_context);
@@ -910,6 +956,7 @@ struct SystemOverlay::Impl {
 		io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 		io.BackendPlatformName = "Kyty system overlay input";
 		AddSystemFontFallbacks(io);
+		progress_font = LoadProgressFont(io);
 		ImGui::StyleColorsDark();
 		auto& style          = ImGui::GetStyle();
 		style.WindowRounding = 10.0f;
@@ -1793,13 +1840,132 @@ struct SystemOverlay::Impl {
 		draw->PopClipRect();
 	}
 
+	// nps5: compile progress card (before the first game frame) and corner badge (during play).
+	// Allocation free: stack text buffers and ImGui draw-list primitives only.
+	void DrawProgress(vk::Extent2D frame_extent) {
+		if (!ProgressWanted()) {
+			return;
+		}
+		using namespace ProgressOverlay;
+		const auto now_ms = static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+		auto snapshot   = CompileProgress::Read();
+		bool game_frame = GameFrameSeen().load(std::memory_order_relaxed);
+		if (ApplyDemo(now_ms, snapshot)) {
+			game_frame = false;
+		}
+		const View view = progress.Step(now_ms, snapshot, game_frame);
+		const bool visible = progress.Visible();
+		if (g_progress_visible.exchange(visible, std::memory_order_acq_rel) != visible) {
+			g_progress_revision.fetch_add(1, std::memory_order_relaxed);
+		}
+		if (LogEnabled() && (view.mode != logged_mode || view.waiting != logged_waiting)) {
+			std::fprintf(stderr, "[progress-overlay] %llu ms: %s (alpha %.2f) replay %llu/%llu live %d%s\n",
+			             static_cast<unsigned long long>(now_ms), ModeName(view.mode), static_cast<double>(view.alpha),
+			             static_cast<unsigned long long>(view.done), static_cast<unsigned long long>(view.total), view.live,
+			             view.waiting ? " draw-waiting" : "");
+			logged_mode    = view.mode;
+			logged_waiting = view.waiting;
+		}
+		if (view.mode == Mode::Hidden) {
+			return;
+		}
+		auto*        draw = ImGui::GetForegroundDrawList();
+		// crisptext: the progress text uses its own smooth outline font (a macOS system font, else ImGui's vector
+		// default), never the default bitmap ProggyClean that ImGui picks at 13 px.
+		auto*        font = progress_font != nullptr ? progress_font : ImGui::GetFont();
+		const ImVec2 screen {static_cast<float>(frame_extent.width), static_cast<float>(frame_extent.height)};
+		const float  a  = std::clamp(view.alpha, 0.0f, 1.0f);
+		const float  f  = std::max(0.5f, screen.y / 720.0f);
+		const auto   col = [a](int r, int g, int b, int alpha = 255) {
+			return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(alpha) * a));
+		};
+		const auto text_width = [font](float size, const char* text) {
+			return font->CalcTextSizeA(size, std::numeric_limits<float>::max(), 0.0f, text).x;
+		};
+		// Spinner: a faint ring with a 0.3-turn amber arc rotating once per kSpinnerMs.
+		const auto spinner = [&](ImVec2 center, float radius, float thickness) {
+			draw->AddCircle(center, radius, col(56, 61, 74), 0, thickness);
+			const float a0 = view.spinner * 6.2831853f - 1.5707963f;
+			draw->PathArcTo(center, radius, a0, a0 + 0.3f * 6.2831853f, 0);
+			draw->PathStroke(col(255, 199, 51), 0, thickness);
+		};
+		char text[64];
+
+		if (view.mode == Mode::Card) {
+			draw->AddRectFilled({0.0f, 0.0f}, screen, col(15, 18, 23, 247));
+			const float title_size = 28.0f * f, small_size = 14.0f * f, gap = 18.0f * f, bar_h = std::max(6.0f, 12.0f * f);
+			const float bar_w   = std::min(400.0f * f, screen.x * 0.75f);
+			const float spin_r  = 16.0f * f;
+			const float block_h = spin_r * 2.0f + gap + title_size + gap + bar_h + gap + small_size + gap * 0.5f + small_size;
+			float       y       = std::max(0.0f, (screen.y - block_h) * 0.5f);
+			const float left    = (screen.x - bar_w) * 0.5f;
+			spinner({screen.x * 0.5f, y + spin_r}, spin_r, std::max(2.0f, 3.0f * f));
+			y += spin_r * 2.0f + gap;
+			const char* title = view.total != 0 ? "COMPILING SHADERS" : "LOADING";
+			draw->AddText(font, title_size, {(screen.x - text_width(title_size, title)) * 0.5f, y}, col(255, 255, 255), title);
+			y += title_size + gap;
+			draw->AddRectFilled({left, y}, {left + bar_w, y + bar_h}, col(56, 61, 74), bar_h * 0.5f);
+			if (view.total != 0) {
+				const float fill = std::max(bar_h, view.bar * bar_w);
+				draw->AddRectFilled({left, y}, {left + fill, y + bar_h}, col(255, 199, 51), bar_h * 0.5f);
+			} else {
+				// Indeterminate: a pill sweeping along the track.
+				const float seg = bar_w * 0.25f, t = view.spinner;
+				const float x0  = left + (bar_w - seg) * (0.5f - 0.5f * std::cos(t * 6.2831853f));
+				draw->AddRectFilled({x0, y}, {x0 + seg, y + bar_h}, col(255, 199, 51), bar_h * 0.5f);
+			}
+			y += bar_h + gap;
+			if (view.total == 0 && view.live > 0) {
+				std::snprintf(text, sizeof(text), "COMPILING %d LIVE", view.live);
+				draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, y}, col(255, 255, 255), text);
+			}
+			if (view.total != 0) {
+				std::snprintf(text, sizeof(text), "%llu / %llu", static_cast<unsigned long long>(view.done),
+				              static_cast<unsigned long long>(view.total));
+				draw->AddText(font, small_size, {left, y}, col(255, 255, 255), text);
+				const double fraction = static_cast<double>(view.done) / static_cast<double>(view.total);
+				std::snprintf(text, sizeof(text), "%u%%", static_cast<unsigned>(std::lround(fraction * 100.0)));
+				draw->AddText(font, small_size, {left + bar_w - text_width(small_size, text), y}, col(255, 255, 255), text);
+				FormatEta(text, sizeof(text), view.eta_seconds);
+				draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, y + small_size + gap * 0.5f},
+				              col(255, 255, 255), text);
+			}
+			return;
+		}
+
+		// Badge: bottom-left pill (the performance overlay and trophies use the top-right).
+		const float size = 14.0f * f, pad = 10.0f * f, r = 8.0f * f, margin = 16.0f * f;
+		if (view.live > 1) {
+			std::snprintf(text, sizeof(text), "COMPILING SHADERS (%d)", view.live);
+		} else {
+			std::snprintf(text, sizeof(text), "COMPILING SHADER");
+		}
+		const char* extra = view.waiting ? "DRAW WAITING" : nullptr;
+		const float w1    = text_width(size, text), w2 = extra != nullptr ? text_width(size * 0.85f, extra) : 0.0f;
+		const float tw    = std::max(w1, w2);
+		const float h     = pad * 2.0f + (extra != nullptr ? size * 1.0f + size * 0.85f + 2.0f * f : std::max(size, r * 2.0f));
+		const float w     = pad * 3.0f + r * 2.0f + tw;
+		const ImVec2 tl {margin, screen.y - margin - h}, br {margin + w, screen.y - margin};
+		draw->AddRectFilled(tl, br, col(15, 18, 23, 235), h * 0.5f > 14.0f * f ? 14.0f * f : h * 0.5f);
+		draw->AddRect(tl, br, col(255, 255, 255, 28), h * 0.5f > 14.0f * f ? 14.0f * f : h * 0.5f, ImDrawFlags_RoundCornersAll, 1.0f);
+		spinner({tl.x + pad + r, tl.y + h * 0.5f}, r, std::max(2.0f, 2.0f * f));
+		const float tx = tl.x + pad * 2.0f + r * 2.0f;
+		if (extra != nullptr) {
+			draw->AddText(font, size, {tx, tl.y + pad}, col(255, 255, 255), text);
+			draw->AddText(font, size * 0.85f, {tx, tl.y + pad + size + 2.0f * f}, col(176, 180, 192), extra);
+		} else {
+			draw->AddText(font, size, {tx, tl.y + (h - size) * 0.5f}, col(255, 255, 255), text);
+		}
+	}
+
 	bool PrepareFrame(vk::Extent2D frame_extent, vk::Format format, uint32_t image_count) {
 		OverlaySnapshot snapshot;
 		const bool      has_overlay = GetOverlaySnapshot(&snapshot);
 		const auto now = Clock::now();
 		if (!has_overlay && !g_trophy_notification_active.load(std::memory_order_acquire) &&
 		    !g_splash_active.load(std::memory_order_acquire) &&
-		    !GetHostInputTouchPadVisualState().enabled && !PerformanceOverlayEnabled()) {
+		    !GetHostInputTouchPadVisualState().enabled && !PerformanceOverlayEnabled() && !ProgressWanted()) {
 			return false;
 		}
 		const auto prepared_session = snapshot.session;
@@ -1841,6 +2007,7 @@ struct SystemOverlay::Impl {
 		}
 		DrawTrophyNotification(frame_extent, now, performance_bottom);
 		DrawTouchPadCursor(GetHostInputTouchPadVisualState());
+		DrawProgress(frame_extent);
 		ImGui::Render();
 		extent = frame_extent;
 		return true;
@@ -1921,6 +2088,10 @@ struct SystemOverlay::Impl {
 	bool                                        trophy_sound_initialized = false;
 	vk::Extent2D                                extent {};
 	std::chrono::steady_clock::time_point       last_frame;
+	ImFont*                                     progress_font  = nullptr;
+	ProgressOverlay::Machine                    progress;
+	ProgressOverlay::Mode                       logged_mode    = ProgressOverlay::Mode::Hidden;
+	bool                                        logged_waiting = false;
 };
 
 SystemOverlay::SystemOverlay(GraphicContext& graphics): m_impl(std::make_unique<Impl>(graphics)) {}

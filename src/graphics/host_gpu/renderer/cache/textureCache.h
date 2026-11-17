@@ -218,6 +218,9 @@ public:
 	[[nodiscard]] uint64_t Frame() const noexcept { return m_frame.load(std::memory_order_relaxed); }
 	// The image of a slot id, or nullptr when the slot is free (GPU thread).
 	[[nodiscard]] Image* TryGetImage(ImageId id) noexcept { return m_slot_images.try_get(id); }
+	// nps5 diagnostic (KYTY_DUMP_TARGETS): every cached image; GPU thread, under the renderer's lock.
+	template <typename F>
+	void ForEachImageDebug(F&& fn) { m_slot_images.ForEach(fn); }
 	void RunGarbageCollector();
 	// KYTY_VRAM_STATS report lines (vramStats.h): images by binding kind, frame age, residency,
 	// render-target sizes and aliases, the largest images, the GC thresholds (GPU thread).
@@ -736,6 +739,12 @@ private:
 	ResidencyMode                            m_residency            = ResidencyMode::On;
 	// KYTY_TEXTURE_SPARSE_RESIDENCY: partially resident textures are sparse residency images.
 	bool                                     m_sparse_textures      = false;
+	// KYTY_TEXTURE_RESIDENT_TRIM (residentTrim.h): partially resident textures get native images
+	// of their resident levels only. Totals for the KYTY_VRAM_STATS report.
+	bool                                     m_trim_textures        = false;
+	uint64_t                                 m_trim_creates         = 0;
+	uint64_t                                 m_trim_grows           = 0;
+	uint64_t                                 m_trim_full            = 0;
 	uint64_t                                 m_residency_violations = 0;
 	uint64_t                                 m_residency_overlap_logs = 0;
 	// Partially resident images (stale ids are dropped by the once-per-frame scan).

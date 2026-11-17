@@ -853,7 +853,8 @@ bool TileManager::ImageTransferEligible(const Image& image, bool load,
 		// region must start on a block and cover exactly the tile's elements.
 		if (info.bytes_per_element != element || info.depth != 1 || info.width == 0 ||
 		    info.height == 0 || subresource.aspectMask != vk::ImageAspectFlagBits::eColor ||
-		    subresource.layerCount != 1 || subresource.mipLevel >= backing.mip_levels ||
+		    subresource.layerCount != 1 || subresource.mipLevel < image.native_first ||
+		    subresource.mipLevel - image.native_first >= backing.mip_levels ||
 		    subresource.baseArrayLayer >= backing.layers || region.imageOffset.x < 0 ||
 		    region.imageOffset.y < 0 || region.imageOffset.z != 0 ||
 		    region.imageOffset.x % texel != 0 || region.imageOffset.y % texel != 0 ||
@@ -865,10 +866,13 @@ bool TileManager::ImageTransferEligible(const Image& image, bool load,
 			return false;
 		}
 		// The view's extent at this level, in view texels (blocks for block formats).
+		// (KYTY_TEXTURE_RESIDENT_TRIM: regions name guest levels, the backing starts at
+		// image.native_first.)
+		const uint32_t native_level = subresource.mipLevel - image.native_first;
 		const uint32_t mip_width =
-		    (std::max(backing.extent.width >> subresource.mipLevel, 1u) + texel - 1u) / texel;
+		    (std::max(backing.extent.width >> native_level, 1u) + texel - 1u) / texel;
 		const uint32_t mip_height =
-		    (std::max(backing.extent.height >> subresource.mipLevel, 1u) + texel - 1u) / texel;
+		    (std::max(backing.extent.height >> native_level, 1u) + texel - 1u) / texel;
 		if (static_cast<uint64_t>(region.imageOffset.x) / texel + info.width > mip_width ||
 		    static_cast<uint64_t>(region.imageOffset.y) / texel + info.height > mip_height) {
 			return false;

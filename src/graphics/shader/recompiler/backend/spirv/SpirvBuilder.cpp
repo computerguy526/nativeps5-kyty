@@ -28,6 +28,89 @@ Builder::Builder(uint32_t version): m_version(version) {
 	m_functions.reserve(InitialSpirvFunctionSectionReserve);
 }
 
+// The subgroup operation at m_functions[offset] as its one-lane result (EnableSingleLane), with
+// the same result id. Operations without a rule here stay as they are.
+void Builder::RewriteSingleLane(size_t offset) {
+	const std::vector<uint32_t> words(m_functions.begin() + static_cast<std::ptrdiff_t>(offset), m_functions.end());
+	const auto opcode = static_cast<spv::Op>(words[0] & spv::OpCodeMask);
+	if (words.size() < 4) {
+		return;
+	}
+	const auto type   = words[1];
+	const auto result = words[2];
+	const auto emit   = [&](std::initializer_list<uint32_t> instruction) {
+		const auto at = m_functions.size();
+		m_functions.insert(m_functions.end(), instruction.begin(), instruction.end());
+		m_functions[at] |= static_cast<uint32_t>(instruction.size()) << spv::WordCountShift;
+	};
+	switch (opcode) {
+		case spv::OpGroupNonUniformElect: // (scope): true
+			m_functions.resize(offset);
+			emit({spv::OpIEqual, type, result, words[3], words[3]});
+			break;
+		case spv::OpGroupNonUniformBroadcastFirst: // (scope, value)
+		case spv::OpGroupNonUniformShuffle:        // (scope, value, id)
+			m_functions.resize(offset);
+			emit({spv::OpCopyObject, type, result, words[4]});
+			break;
+		case spv::OpGroupNonUniformIAdd:
+		case spv::OpGroupNonUniformFAdd:
+		case spv::OpGroupNonUniformIMul:
+		case spv::OpGroupNonUniformFMul:
+		case spv::OpGroupNonUniformSMin:
+		case spv::OpGroupNonUniformUMin:
+		case spv::OpGroupNonUniformFMin:
+		case spv::OpGroupNonUniformSMax:
+		case spv::OpGroupNonUniformUMax:
+		case spv::OpGroupNonUniformFMax:
+		case spv::OpGroupNonUniformBitwiseAnd:
+		case spv::OpGroupNonUniformBitwiseOr:
+		case spv::OpGroupNonUniformBitwiseXor:
+		case spv::OpGroupNonUniformLogicalAnd:
+		case spv::OpGroupNonUniformLogicalOr:
+		case spv::OpGroupNonUniformLogicalXor: // (scope, group operation, value)
+			if (words.size() < 6) {
+				return;
+			}
+			m_functions.resize(offset);
+			emit({spv::OpCopyObject, type, result, words[5]});
+			break;
+		case spv::OpGroupNonUniformAll:
+		case spv::OpGroupNonUniformAny: // (scope, predicate)
+			m_functions.resize(offset);
+			emit({spv::OpCopyObject, type, result, words[4]});
+			break;
+		case spv::OpGroupNonUniformBallot: { // (scope, predicate): uvec4(predicate ? 1 : 0, 0, 0, 0)
+			m_functions.resize(offset);
+			const auto bit = AllocateId();
+			emit({spv::OpSelect, m_single_lane_u32_type, bit, words[4], m_single_lane_one, m_single_lane_zero});
+			emit({spv::OpCompositeConstruct, type, result, bit, m_single_lane_zero, m_single_lane_zero,
+			      m_single_lane_zero});
+			break;
+		}
+		case spv::OpGroupNonUniformBallotFindLSB: { // (scope, ballot): 0 with the bit, else ~0
+			m_functions.resize(offset);
+			const auto bit = AllocateId();
+			emit({spv::OpCompositeExtract, m_single_lane_u32_type, bit, words[4], 0});
+			const auto low = AllocateId();
+			emit({spv::OpBitwiseAnd, m_single_lane_u32_type, low, bit, m_single_lane_one});
+			emit({spv::OpISub, type, result, low, m_single_lane_one});
+			break;
+		}
+		case spv::OpGroupNonUniformBallotBitCount: { // (scope, group operation, ballot)
+			if (words.size() < 6) {
+				return;
+			}
+			m_functions.resize(offset);
+			const auto bit = AllocateId();
+			emit({spv::OpCompositeExtract, m_single_lane_u32_type, bit, words[5], 0});
+			emit({spv::OpBitwiseAnd, type, result, bit, m_single_lane_one});
+			break;
+		}
+		default: break;
+	}
+}
+
 uint32_t Builder::AllocateId() {
 	return m_next_id++;
 }

@@ -73,6 +73,52 @@ struct ClockMap {
 	return Sync::ScaleReferenceClock(tsc, map.tsc_frequency, reference);
 }
 
+// KYTY_EOP_TIMESTAMPS=cbtime: the clock values of one observation group. A group is every queued
+// clock write whose tick was seen complete by one observation of the timeline (one or more whole
+// command buffers). No device timestamp exists: the only GPU times known are the completion of
+// the previous group and of this one. The GPU interval between them is spread over the group's
+// clock writes in proportion to their record times, the available measure of the work between
+// two writes (an end/begin pair recorded back to back gets no time).
+// - The GPU starts the group when the previous one completed, but not before its first clock
+//   write was recorded (an idle GPU).
+// - Every value is at least its record value, values never decrease in recording order, and the
+//   last write gets the completion time.
+struct CompletionGroup {
+	uint64_t first_record = 0; // record value of the group's first clock write
+	uint64_t last_record  = 0; // record value of its last one
+	uint64_t gpu_begin    = 0; // when the GPU started the group
+	uint64_t gpu_end      = 0; // when the group was seen complete
+
+	// previous_end: gpu_end of the previous group (0: none). completed: the observation time.
+	[[nodiscard]] static constexpr CompletionGroup Make(uint64_t previous_end,
+	                                                    uint64_t first_record, uint64_t last_record,
+	                                                    uint64_t completed) noexcept {
+		CompletionGroup group;
+		group.first_record = first_record;
+		group.last_record  = last_record > first_record ? last_record : first_record;
+		group.gpu_begin    = previous_end > first_record ? previous_end : first_record;
+		group.gpu_end      = completed > group.last_record ? completed : group.last_record;
+		if (group.gpu_end < group.gpu_begin) {
+			group.gpu_end = group.gpu_begin;
+		}
+		return group;
+	}
+
+	// The value published for a clock write of this group recorded at `record`.
+	[[nodiscard]] constexpr uint64_t Value(uint64_t record) const noexcept {
+		uint64_t value = gpu_end; // the last write (and a group of one): the completion
+		if (record >= last_record) {
+		} else if (record <= first_record) {
+			value = gpu_begin;
+		} else {
+			const auto span = static_cast<unsigned __int128>(gpu_end - gpu_begin);
+			value = gpu_begin + static_cast<uint64_t>(span * (record - first_record) /
+			                                          (last_record - first_record));
+		}
+		return value > record ? value : record;
+	}
+};
+
 // The timestamp query slots, in ring order.
 // - Life cycle: Free --Allocate--> Pending --Consume--> Done --Reset--> Free.
 // - Allocate and Reset run on the recording thread only. Reset is called at a command-buffer begin,

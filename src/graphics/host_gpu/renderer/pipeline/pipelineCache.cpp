@@ -1,4 +1,6 @@
+#include "common/guestAddress.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/compileProgress.h"
 #include "common/ramStats.h"
 
 #include "common/assert.h"
@@ -39,6 +41,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderCodeSnapshot.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/shader/shaderVertexAliases.h"
 #include "graphics/shader/recompiler/CodegenFingerprint.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
@@ -51,6 +54,10 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#ifndef _WIN32
+#include <csignal>
+#include <unistd.h>
+#endif
 #include <array>
 #include <atomic>
 #include <bit>
@@ -137,6 +144,16 @@ bool MayRelocatePixelParameters(const ShaderPixelInputInfo& pixel) {
 		(ShaderPixelParameterIsFlat(pixel, input) ? flat_locations : smooth_locations) |= bit;
 	}
 	return (flat_locations & smooth_locations) != 0;
+}
+
+// nps5: KYTY_REPLAY_VERTEX_ALIASES (default 1): the journal / pipeline list replay builds a vertex
+// source with the PS parameter aliases its recorded static key names (shaderVertexAliases.h).
+bool ReplayVertexAliases() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_REPLAY_VERTEX_ALIASES");
+		return v == nullptr || *v != '0';
+	}();
+	return on;
 }
 
 // Ordinary VS outputs follow the bound PS program's active inputs (PR #27); every other draw
@@ -2775,6 +2792,9 @@ struct PipelineCache::ProgramCache {
 			bool account;
 			~StallScope() { if (account) AddCompileStall(CompileClockNs() - begin); }
 		} stall {.account = !speculative && !replay};
+		// Window-title progress: a program compile in flight; the draw waits unless it is speculative.
+		CompileProgress::LiveScope  title_live(!replay);
+		CompileProgress::WaitScope  title_wait(!speculative && !replay);
 		std::vector<uint32_t> owned_code;
 		auto translation_code = params.code;
 		if (speculative) {
@@ -3340,14 +3360,14 @@ struct PipelineCache::ProgramCache {
 				source.code = code_words;
 			} else {
 				source.code.resize(code.size());
-				if (!LibKernel::Memory::TryReadGpuCleanBacking(reinterpret_cast<uint64_t>(code.data()),
+				if (!LibKernel::Memory::TryReadGpuCleanBacking(Guest::AddrIfGuest(code.data()),
 				                                               source.code.data(), code.size_bytes())) {
 					std::memcpy(source.code.data(), code.data(), code.size_bytes());
 				}
 			}
 			if (!params.back_code.empty()) {
 				source.back_code.resize(params.back_code.size());
-				if (!LibKernel::Memory::TryReadGpuCleanBacking(reinterpret_cast<uint64_t>(params.back_code.data()),
+				if (!LibKernel::Memory::TryReadGpuCleanBacking(Guest::AddrIfGuest(params.back_code.data()),
 				                                               source.back_code.data(), params.back_code.size_bytes())) {
 					std::memcpy(source.back_code.data(), params.back_code.data(), params.back_code.size_bytes());
 				}
@@ -3379,7 +3399,11 @@ struct PipelineCache::ProgramCache {
 		input_info.stage = {};
 		ShaderSanitizeStoredInputInfo(input_info);
 		if constexpr (std::is_same_v<InputInfo, ShaderVertexInputInfo>) {
-			input_info.param_alias_mask = 0;
+			// nps5: the aliases are not in the stored bytes; the recorded static key has them
+			// (shaderVertexAliases.h). KYTY_REPLAY_VERTEX_ALIASES=0: the old replay without them.
+			if (!ReplayVertexAliases() || !ShaderRestoreVertexAliases(input_info, source.static_state)) {
+				input_info.param_alias_mask = 0;
+			}
 		}
 		auto& scratch = ThreadScratch();
 		ProgramKey key;
@@ -3655,6 +3679,12 @@ struct PipelineCache::ProgramCache {
 			return false;
 		}
 		ps_program = Bind(*ps_permutation, ps_info, ps_prep, push_data_cursor);
+		// KYTY_PS_PER_VERTEX=unpack: a pixel program that reads unpacked fields needs its vertex
+		// stage linked (field aliases), which the serial path does.
+		if (vs_info.logical_stage == ShaderType::Vertex && ShaderPixelHasFieldSlots(ps_info)) {
+			Profiler::CountFrameEvent(Profiler::FrameEvent::StagePrepLookupFallbacks);
+			return false;
+		}
 		const auto* vs_permutation = FindPermutationMemo(*vs_source, vs_key.stage,
 		                                                 vs_prep.specialization, push_data_cursor,
 		                                                 scratch);
@@ -4573,6 +4603,7 @@ struct PipelineCache::PrefetchState {
 		}
 		queue.Promote(ticket);
 		const auto begin = CompileClockNs();
+		CompileProgress::WaitScope title_wait;
 		auto result = future.get(); // Always wait: writes, depth and color draws all execute.
 		const auto elapsed = CompileClockNs() - begin;
 		used.fetch_add(1, std::memory_order_relaxed);
@@ -4891,7 +4922,10 @@ bool DecodeJournalPayload(std::span<const uint8_t> bytes, JournalPayload& out) {
 // dropped: wasted work, never a wait. KYTY_PIPELINE_PREWARM_THREADS (default 1, 4 when preparing, 1..8).
 struct PipelineCache::ComputePrewarm {
 	ComputePrewarm(PipelineCache& owner, size_t threads)
-	    : cache(owner), queue(threads, SIZE_MAX, Common::PlaceCurrentThreadCold) {}
+	    : cache(owner), queue(threads, SIZE_MAX, [] {
+		      CompileProgress::MarkReplayThread();
+		      Common::PlaceCurrentThreadCold();
+	      }) {}
 	~ComputePrewarm() { Stop(); }
 	ComputePrewarm(const ComputePrewarm&)            = delete;
 	ComputePrewarm& operator=(const ComputePrewarm&) = delete;
@@ -5066,6 +5100,7 @@ struct PipelineCache::JournalReplay {
 		std::stable_sort(rest.begin(), rest.end(), [&](uint32_t a, uint32_t b) { return items[a].rank > items[b].rank; });
 		order.insert(order.end(), rest.begin(), rest.end());
 		total.store(order.size(), std::memory_order_release);
+		CompileProgress::Get().pipeline_total.store(order.size(), std::memory_order_relaxed);
 	}
 
 	// Once, before the shader precompile replay goes (its Wait is what the workers block in).
@@ -5121,6 +5156,7 @@ struct PipelineCache::JournalReplay {
 		if (low_priority) LowerCurrentThreadPriority();
 		Profiler::SetThreadName("PipelineJournal");
 		Common::PlaceCurrentThreadCold();
+		CompileProgress::MarkReplayThread();
 		// The pipelines need the programs' modules: wait for the shader precompile replay.
 		if (cache.m_shader_precompiler != nullptr) cache.m_shader_precompiler->Wait();
 		std::call_once(order_once, [this] {
@@ -5132,9 +5168,11 @@ struct PipelineCache::JournalReplay {
 			if (index >= order.size()) break;
 			Replay(items[order[index]]);
 			done.fetch_add(1, std::memory_order_relaxed);
+			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
 			MaybeReport();
 		}
 		if (running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+			CompileProgress::ClearPipelineReplay();
 			size_t cache_bytes = 0;
 			if (cache.m_driver_cache != nullptr) {
 				(void)cache.m_graphics.device.getPipelineCacheData(cache.m_driver_cache, &cache_bytes, nullptr);
@@ -5544,6 +5582,8 @@ bool NormalizeListSource(const GraphicContext& graphics, ShaderJournal::Source& 
 				const auto& limits      = graphics.mesh_shader_properties;
 				mesh.split_groups = limits.maxMeshWorkGroupCount[0] < limits.maxMeshWorkGroupTotalCount ? 1u : 0u;
 			}
+			// nps5: keep the list source's PS parameter aliases in the key derived again below.
+			if (!ReplayVertexAliases() || !ShaderRestoreVertexAliases(*info, source.static_state)) info->param_alias_mask = 0;
 			store(*info);
 			return true;
 		}
@@ -5571,8 +5611,17 @@ void PipelineCache::InitializePipelineList() {
 	const bool  prepare = EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0;
 	const bool  off     = setting == nullptr || *setting == '\0' || std::strcmp(setting, "0") == 0;
 	if (off && !prepare) return;
-	const auto title_id = PipelineCacheTitleId();
-	if (title_id.empty()) return;
+	// nps5 hosted: the host process owns the loader, so the title, its version and the executable's
+	// host path come from the cache title override and KYTY_PIPELINE_LIST_APP_VER / _EXE. The list's
+	// shader hashes still decide whether the executable is the right one.
+	const auto title_id = PipelineCacheFileTitleId();
+	if (title_id.empty()) {
+		PipelineCacheLog("Pipeline list: no title id (loader metadata or ASTROHYBRID_CACHE_TITLE_ID): ignored");
+		return;
+	}
+	if (const auto* exe = std::getenv("KYTY_PIPELINE_LIST_EXE"); exe != nullptr && *exe != '\0') {
+		SetPipelineListExecutable(exe);
+	}
 	const auto begin = CompileClockNs();
 	const auto path  = off || std::strcmp(setting, "1") == 0
 	                       ? std::filesystem::path("PipelineLists") / (title_id + ".kyplst")
@@ -5601,6 +5650,7 @@ void PipelineCache::InitializePipelineList() {
 	bytes = {};
 	std::string version;
 	(void)Loader::SystemContentParamSfoGetString("APP_VER", &version);
+	if (const auto* hosted = std::getenv("KYTY_PIPELINE_LIST_APP_VER"); version.empty() && hosted != nullptr) version = hosted;
 	if (file.info.title_id != title_id || file.info.app_version != version) {
 		PipelineCacheLog("Pipeline list: {} is for {} version {}, the game is {} version {}: ignored",
 		                 Common::PathToString(path), file.info.title_id, file.info.app_version, title_id, version);
@@ -5831,7 +5881,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 		                 threads, m_skip_wait_ns / 1000);
 	}
 	if (EnvU64("KYTY_PIPELINE_STATS", 0) != 0) m_stats_reporter = std::make_unique<StatsReporter>(*this);
-	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheTitleId().empty()) RunListPrepare();
+	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheFileTitleId().empty()) RunListPrepare();
 }
 
 PipelineCache::~PipelineCache() {
@@ -6022,8 +6072,32 @@ void PipelineCache::InitializeProgramDiskCache() {
 // exit (window close), so every killed, crashed or stalled run threw away all pipelines it had
 // compiled and the next boot compiled them again. The thread wakes once a second and saves by the
 // DriverCacheSaveSettings rules; the command processor only bumps two atomics per new pipeline.
+//
+// KYTY_PIPELINE_CACHE_SAVE_ON_TERM=1 (nps5, default off): SIGTERM (how a timed run ends) makes the
+// saver write whatever is pending, whatever the rules say, and then hands the signal to the
+// disposition that was installed before (the Vulkan driver's own flush handler, or the default
+// action), so a run cut short loses nothing compiled before the signal.
+#ifndef _WIN32
+namespace {
+volatile std::sig_atomic_t g_term_requested = 0;
+struct sigaction           g_term_previous {};
+void                       TermSaveHandler(int /*sig*/) {
+	                      g_term_requested = 1;
+}
+} // namespace
+#endif
+
 struct PipelineCache::DriverCacheSaver {
 	explicit DriverCacheSaver(PipelineCache& owner): cache(owner), last_save_ns(CompileClockNs()) {
+#ifndef _WIN32
+		if (EnvU64("KYTY_PIPELINE_CACHE_SAVE_ON_TERM", 0) != 0) {
+			struct sigaction action {};
+			action.sa_handler = TermSaveHandler;
+			sigemptyset(&action.sa_mask);
+			action.sa_flags = SA_RESTART;
+			term_hook       = sigaction(SIGTERM, &action, &g_term_previous) == 0;
+		}
+#endif
 		thread = std::jthread([this](std::stop_token stop) { Run(stop); });
 	}
 	~DriverCacheSaver() { Stop(); }
@@ -6067,7 +6141,25 @@ struct PipelineCache::DriverCacheSaver {
 		std::condition_variable_any wake;
 		std::unique_lock            lock(mutex);
 		while (!stop.stop_requested()) {
-			wake.wait_for(lock, stop, std::chrono::seconds(1), [] { return false; });
+			wake.wait_for(lock, stop, term_hook ? std::chrono::milliseconds(200) : std::chrono::milliseconds(1000),
+			              [] { return false; });
+#ifndef _WIN32
+			if (term_hook && g_term_requested != 0 && !stop.stop_requested()) {
+				const auto pending = created.load(std::memory_order_acquire) - saved_created;
+				if (pending != 0 && !oversized) {
+					const auto covered = created.load(std::memory_order_acquire);
+					if (const auto written = cache.WriteDriverCache(true); written != 0 && written != WriteOversized) {
+						saved_created = covered;
+					}
+				}
+				PipelineCacheLog("Vulkan pipeline cache: SIGTERM, {} pipelines were pending; passing the signal on", pending);
+				sigaction(SIGTERM, &g_term_previous, nullptr);
+				term_hook        = false;
+				g_term_requested = 0;
+				kill(getpid(), SIGTERM);
+				continue;
+			}
+#endif
 			if (stop.stop_requested() || !Due(CompileClockNs())) {
 				continue;
 			}
@@ -6098,6 +6190,7 @@ struct PipelineCache::DriverCacheSaver {
 	uint64_t last_save_ns   = 0;
 	uint64_t retry_after_ns = 0;
 	bool     oversized      = false;
+	bool     term_hook      = false;
 	// While a save runs vkGetPipelineCacheData; pipelines created meanwhile are counted as overlaps.
 	std::atomic<bool> serializing {false};
 	std::jthread      thread; // Last: stopped before the members it uses are destroyed.
@@ -6330,6 +6423,7 @@ void PipelineCache::InitializeShaderPrecompile() {
 	replay.thread_init = [](uint32_t) {
 		Profiler::SetThreadName("ShaderPrecompile");
 		Common::PlaceCurrentThreadCold();
+		CompileProgress::MarkReplayThread();
 	};
 	// The software ray-tracing kernels first (and their pipelines, started as each is published):
 	// a cold pipeline build takes seconds, and the game needs them at its first lighting pass.
@@ -6756,6 +6850,17 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 			LinkPixelParameters(pixel_active && !tess_active && !mesh_active &&
 			                        !Prospero::IsRectList(user_config.GetPrimType()),
 			                    vertex_inputs[0], pixel_input);
+			if (pixel_active && (tess_active || mesh_active) && ShaderPixelHasFieldSlots(pixel_input)) {
+				// KYTY_PS_PER_VERTEX=unpack: only an ordinary vertex shader exports the fields.
+				static std::atomic<uint32_t> unlinked {0};
+				const auto count = unlinked.fetch_add(1, std::memory_order_relaxed) + 1;
+				if (count <= 8 || (count & (count - 1)) == 0) {
+					std::printf("nps5: pixel shader 0x%016llx reads unpacked parameter fields after %s: "
+					            "undefined (%u draws)\n",
+					            static_cast<unsigned long long>(pixel_params.hash),
+					            mesh_active ? "a mesh program" : "tessellation stages", count);
+				}
+			}
 			for (uint32_t i = 0; i < (tess_active ? 3u : 1u) &&
 			                     !read_attempt.materialization_failed; ++i) {
 				result.vertex[i] =
@@ -7167,6 +7272,10 @@ bool PipelineCache::BuildGraphicsPipelineKey(const PipelineTargets& targets, con
 	static_params.provoking_vtx_last = mc.provoking_vtx_last;
 	static_params.polygon_mode =
 	    ResolvePolygonMode(mc, static_params.cull_front, static_params.cull_back);
+	if (!m_graphics.fill_mode_non_solid_enabled) {
+		// No fillModeNonSolid (KosmicKrisp): wireframe and point fill modes draw filled.
+		static_params.polygon_mode = vk::PolygonMode::eFill;
+	}
 	NormalizePipelineKey(static_params, with_depth);
 
 	if (vs_input_info.stage.program->stage != ShaderType::Mesh) {
@@ -7541,6 +7650,10 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
 		if (ready.pipeline != nullptr) ready_from = m_prefetch.get();
 	}
 	Common::LockGuard lock(m_mutex);
+	if (!m_failed_graphics.empty() && ready.pipeline == nullptr &&
+	    std::find(m_failed_graphics.begin(), m_failed_graphics.end(), key) != m_failed_graphics.end()) {
+		return nullptr; // nps5: the host driver refused this pipeline
+	}
 	if (auto iter = m_graphics_pipelines.find(key); iter != m_graphics_pipelines.end()) {
 		if (ready.pipeline != nullptr) {
 			m_graphics.device.destroyPipeline(ready.pipeline->pipeline, nullptr);
@@ -7610,6 +7723,7 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
 		Common::CrashContext::Scope note("graphics pipeline build (VS, PS)", vs_hash, ps_hash);
 		LOGF("PipelineTrace: graphics build begin VS=0x%016" PRIx64 " PS=0x%016" PRIx64 "\n",
 		     vs_hash, ps_hash);
+		CompileProgress::WaitScope title_wait;
 		CreatePipelineInternal(m_graphics, *cached, key.rendering, key.vertex_input, vertex_info,
 		                       ps_input_info, programs, key.static_params, m_driver_cache,
 		                       library_hook ? &library_hook : nullptr);
@@ -7618,6 +7732,11 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
 	}
 	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
 
+	if (cached->pipeline == nullptr && !prefetched) {
+		// nps5: refused by the host driver (shaders.cpp): remembered, its draws are skipped.
+		m_failed_graphics.push_back(key);
+		return nullptr;
+	}
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
 	Profiler::CountFrameEvent(Profiler::FrameEvent::GraphicsPipelinesCreated);
@@ -7729,8 +7848,11 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 			                                   pipeline, fast_result);
 		};
 	}
-	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache,
-	                       fast_hook ? &fast_hook : nullptr);
+	{
+		CompileProgress::WaitScope title_wait;
+		CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache,
+		                       fast_hook ? &fast_hook : nullptr);
+	}
 	GpuOpProfiler::RegisterComputePipeline(cached->pipeline, compute_program.id);
 	const auto created_pipeline = cached->pipeline;
 
@@ -7841,6 +7963,7 @@ PipelineCache::Pipeline* PipelineCache::TryGetComputePipeline(const ShaderComput
 		case RtSession::DispatchAction::WaitBounded: {
 			rt.queue.Promote(ticket);
 			const auto begin = CompileClockNs();
+			CompileProgress::WaitScope title_wait;
 			if (rt.wait_ms == UINT32_MAX) {
 				future.wait();
 			} else {

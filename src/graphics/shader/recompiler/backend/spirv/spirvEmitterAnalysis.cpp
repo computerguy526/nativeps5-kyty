@@ -1,5 +1,6 @@
 #include "common/assert.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -22,6 +23,11 @@ uint32_t PixelParameterLocation(const EmitterState& state, uint32_t attr) {
 	           ? ShaderPixelParameterLocation(*state.input_info.pixel,
 	                                          {active_inputs.data(), active_count}, attr)
 	           : attr;
+}
+
+bool PixelPerVertexEmulated(const EmitterState& state) {
+	return state.program.stage == ShaderType::Pixel && PsPerVertexGeometry() &&
+	       state.input_info.pixel->parameter_mode != ShaderPixelParameterMode::Rectangle;
 }
 
 bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr) {

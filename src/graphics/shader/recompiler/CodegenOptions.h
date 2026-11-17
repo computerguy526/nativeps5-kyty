@@ -374,6 +374,18 @@ struct CodegenOptions {
 	// shader reading raw vertex attributes) use the interpolated attribute instead of PerVertexKHR
 	// inputs and fragment barycentrics. Wrong values in those shaders; for a driver that crashes
 	// compiling per-vertex inputs (two RX 6900 XT crashes in the same VS/PS pair, AMD test 2).
+	// KYTY_PS_PER_VERTEX=gs (nps5; also taken when the host has no PerVertexKHR inputs, see
+	// SetHostPsPerVertex and PsPerVertexGeometry): the raw vertices of such inputs come from a
+	// generated geometry stage (graphics/shader/perVertexShader.h) as three flat inputs per
+	// parameter, instead of PerVertexKHR inputs. Astro Bot's material shaders read their packed
+	// (custom-interpolation) parameters this way; KYTY_PS_PER_VERTEX=0 hands them interpolated
+	// bit patterns (black triangles).
+	// KYTY_PS_PER_VERTEX=unpack (nps5 kart2; the choice when the host has no PerVertexKHR inputs,
+	// PsPerVertexUnpack): no geometry stage. The vertex shader exports each 16-bit field such a
+	// pixel shader unpacks as a smooth float at a spare location (parameter aliases with fields,
+	// ShaderLinkVertexPixelParameters), and the pixel shader takes the host-interpolated field in
+	// place of the three raw vertices (ir/passes/RawVertexUnpack.h): the shader's own
+	// interpolation P0 + i*(P1-P0) + j*(P2-P0) then yields that value.
 	bool ps_per_vertex = true;
 	// KYTY_CLIP_GUARD=0 (AMD test 3 diagnostic, default on): vertex shaders do not reserve a clip
 	// plane for the zero-position cull (the "emitted zero-position clip guard").
@@ -411,6 +423,28 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 // KYTY_LANE_LOCAL needs every compute subgroup of a wave64 program to be exactly 32 lanes: a device
 // whose subgroup size is fixed at 32, or one whose compute pipelines require 32 (the device layer sets
 // it once; false until then, which keeps lane-local programs off).
+// Whether the host device has shaderBufferInt64Atomics (true until the device layer says
+// otherwise). Without it (KosmicKrisp / Metal) the emitter lowers the 64-bit buffer atomics whose
+// effect is a plain 64-bit load or store (EmitBufferAtomic64) and names a program with any other.
+void               SetHostBufferInt64Atomics(bool supported);
+[[nodiscard]] bool GetHostBufferInt64Atomics();
+// nps5: whether the host device runs subgroup operations in vertex and tessellation stages (true
+// until the device layer says otherwise). Without it (KosmicKrisp / Metal: fragment, compute and
+// mesh only) those stages get no SubgroupLocalInvocationId: an invocation is lane 0 of its wave.
+void               SetHostVertexSubgroups(bool supported);
+// nps5: whether the device has PerVertexKHR fragment inputs (VK_KHR_fragment_shader_barycentric).
+// Without them (KosmicKrisp: Metal has no per-vertex fragment inputs) pixel shaders that read raw
+// vertices take them from a generated geometry stage (CodegenOptions::ps_per_vertex_gs).
+void               SetHostPsPerVertex(bool supported);
+[[nodiscard]] bool GetHostPsPerVertex();
+// Raw-vertex pixel inputs are emulated through the generated geometry stage (KYTY_PS_PER_VERTEX=gs).
+[[nodiscard]] bool PsPerVertexGeometry();
+// Raw-vertex pixel inputs are replaced by smooth unpacked fields (KYTY_PS_PER_VERTEX=unpack, and
+// the default on a host without PerVertexKHR inputs).
+[[nodiscard]] bool PsPerVertexUnpack();
+// Tests: -1 the environment, 0 PerVertexKHR / interpolated, 1 geometry stage, 2 unpack.
+void               SetPsPerVertexModeForTests(int mode);
+[[nodiscard]] bool GetHostVertexSubgroups();
 void               SetHostComputeSubgroups32(bool fixed_32);
 [[nodiscard]] bool GetHostComputeSubgroups32();
 // KYTY_UNIFORM_BUFFERS needs a device that reads 0 for a uniform dword past the bound range

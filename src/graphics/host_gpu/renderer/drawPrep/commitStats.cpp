@@ -45,13 +45,7 @@ uint64_t Hash(const void* data, uint64_t size, uint64_t seed) {
 namespace {
 
 uint64_t Tsc() {
-#if defined(_M_X64) || defined(__x86_64__)
-	return __rdtsc();
-#else
-	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-	                                 std::chrono::steady_clock::now().time_since_epoch())
-	                                 .count());
-#endif
+	return Common::FastTicks(); // nps5 cpcommit: arm64 = CNTVCT_EL0, not steady_clock
 }
 
 uint64_t NowNs() {

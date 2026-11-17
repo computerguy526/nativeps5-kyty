@@ -89,6 +89,11 @@ struct GraphicContext {
 	// colour-write enables. Without it (older drivers, MoltenVK) pipelines keep their static write
 	// masks; an attachment without an image view discards its writes anyway.
 	bool                               color_write_enable_enabled            = false;
+	// nps5 (KosmicKrisp lacks all three; the device is accepted without them):
+	// VK_EXT_image_view_min_lod, shaderBufferInt64Atomics, fillModeNonSolid.
+	bool                               image_view_min_lod_enabled            = false;
+	bool                               buffer_int64_atomics_enabled          = false;
+	bool                               fill_mode_non_solid_enabled           = false;
 	// VK_EXT_depth_clip_enable: depth clipping set apart from the always-on depth clamp (the DB's
 	// behaviour). Without it, pipelines clamp only where the guest turns Z clipping off.
 	bool                               depth_clip_enable_enabled             = false;

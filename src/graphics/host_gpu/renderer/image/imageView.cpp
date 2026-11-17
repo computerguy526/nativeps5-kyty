@@ -1,8 +1,13 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/image.h"
+#include "graphics/host_gpu/renderer/image/residentTrim.h"
+
+#include <atomic>
+#include <cinttypes>
 
 namespace Libs::Graphics {
 
@@ -322,6 +327,13 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 		normalized.aspect = vk::ImageAspectFlagBits::eStencil;
 	}
 	normalized.usage = is_storage ? vk::ImageUsageFlagBits::eStorage : vk::ImageUsageFlags {};
+	if (!m_graphics.image_view_min_lod_enabled) {
+		// Before the cache lookup: the cache holds the views as created.
+		ImageViewOps::ApplyMinLodWithoutExtension(
+		    normalized, image.image_type == vk::ImageType::e3D &&
+		                    (normalized.type == vk::ImageViewType::e2D ||
+		                     normalized.type == vk::ImageViewType::e2DArray));
+	}
 	for (const auto& cached: views) {
 		if (cached.info == normalized) {
 			return cached.view;
@@ -347,9 +359,26 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	const bool slice_view =
 	    image.image_type == vk::ImageType::e3D && (normalized.type == vk::ImageViewType::e2D ||
 	                                               normalized.type == vk::ImageViewType::e2DArray);
-	const bool levels_valid = normalized.level_count != 0 &&
-	                          normalized.base_level < image.mip_levels &&
-	                          normalized.level_count <= image.mip_levels - normalized.base_level;
+	// KYTY_TEXTURE_RESIDENT_TRIM (residentTrim.h): the view names guest levels, the native image
+	// starts at guest level native_first.
+	uint32_t native_base  = normalized.base_level;
+	uint32_t native_count = normalized.level_count;
+	if (native_first != 0) {
+		const auto native = ResidentTrim::NativeView(normalized.base_level, normalized.level_count,
+		                                             info.resources.levels, native_first);
+		native_base       = native.base;
+		native_count      = native.count;
+		if (native.clamped) {
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+				LOGF("Image: view of levels %u+%u cut to the trimmed image 0x%016" PRIx64
+				     " (levels from %u)\n",
+				     normalized.base_level, normalized.level_count, info.data.address, native_first);
+			}
+		}
+	}
+	const bool levels_valid = native_count != 0 && native_base < image.mip_levels &&
+	                          native_count <= image.mip_levels - native_base;
 	const auto view_layers  = slice_view && levels_valid
 	                              ? std::max(image.extent.depth >> normalized.base_level, 1u)
 	                              : image.layers;
@@ -376,7 +405,7 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	                         : image.usage & ~vk::ImageUsageFlagBits::eStorage;
 	vk::ImageViewMinLodCreateInfoEXT min_lod {};
 	if (normalized.min_lod != 0) {
-		min_lod.minLod = static_cast<float>(normalized.base_level) +
+		min_lod.minLod = static_cast<float>(native_base) +
 		                 static_cast<float>(normalized.min_lod) / 256.0f;
 		usage.pNext    = &min_lod;
 	}
@@ -387,8 +416,8 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	create.format                          = normalized.format;
 	create.components                      = normalized.mapping;
 	create.subresourceRange.aspectMask     = normalized.aspect;
-	create.subresourceRange.baseMipLevel   = normalized.base_level;
-	create.subresourceRange.levelCount     = normalized.level_count;
+	create.subresourceRange.baseMipLevel   = native_base;
+	create.subresourceRange.levelCount     = native_count;
 	create.subresourceRange.baseArrayLayer = normalized.base_layer;
 	create.subresourceRange.layerCount     = normalized.layer_count;
 

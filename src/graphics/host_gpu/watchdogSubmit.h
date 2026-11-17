@@ -1,4 +1,5 @@
 #pragma once
+#include "common/gpuSafety.h"
 #include "common/hangWatchdog.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 
@@ -7,7 +8,9 @@
 
 namespace Libs::Graphics {
 // Copy only host submission operands; the watchdog never follows Vulkan or guest pointers.
-inline void NoteWatchdogSubmit(vk::Queue queue, const vk::SubmitInfo& info, uint64_t tick = 0) {
+inline void NoteWatchdogSubmit(vk::Queue queue, const vk::SubmitInfo& info, uint64_t tick = 0,
+                               uint64_t guest_submit = 0, uint32_t op = 0) {
+	GpuSafety::NoteSubmit(tick, guest_submit, op, info.commandBufferCount);
 	if (!HangWatchdog::Enabled()) return;
 	const VkTimelineSemaphoreSubmitInfo* timeline = nullptr;
 	auto*                                chain = static_cast<const VkBaseInStructure*>(info.pNext);

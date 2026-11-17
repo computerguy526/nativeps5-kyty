@@ -6,6 +6,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/residentTrim.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cinttypes>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -352,11 +354,15 @@ Image::Barriers Image::GetBarriers(vk::ImageLayout                      destinat
 					barrier.dstQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
 					barrier.image                           = backing.image;
 					barrier.subresourceRange.aspectMask     = FullAspectMask(backing.format);
-					barrier.subresourceRange.baseMipLevel   = level;
+					barrier.subresourceRange.baseMipLevel   = level - std::min(level, native_first);
 					barrier.subresourceRange.levelCount     = 1;
 					barrier.subresourceRange.baseArrayLayer = layer;
 					barrier.subresourceRange.layerCount     = 1;
-					barriers.push_back(barrier);
+					// KYTY_TEXTURE_RESIDENT_TRIM: a guest level the native image does not hold
+					// has only its tracked state.
+					if (level >= native_first) {
+						barriers.push_back(barrier);
+					}
 					subresource_state = {destination_stage, destination_access, destination_layout,
 					                     guest};
 				}
@@ -491,6 +497,28 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffer, uint64_t offset,
                    uint64_t size) {
 	KYTY_GPU_OP_SITE("image.upload");
+	// KYTY_TEXTURE_RESIDENT_TRIM: the regions name guest levels.
+	std::vector<vk::BufferImageCopy> native_copies;
+	if (native_first != 0) {
+		native_copies.reserve(copies.size());
+		for (auto copy: copies) {
+			if (copy.imageSubresource.mipLevel < native_first) {
+				static std::atomic<uint32_t> logged {0};
+				if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+					LOGF("Image: upload of level %u dropped, the trimmed image 0x%016" PRIx64
+					     " starts at level %u\n",
+					     copy.imageSubresource.mipLevel, info.data.address, native_first);
+				}
+				continue;
+			}
+			copy.imageSubresource.mipLevel -= native_first;
+			native_copies.push_back(copy);
+		}
+		if (native_copies.empty()) {
+			return;
+		}
+		copies = native_copies;
+	}
 	NoteContentWrite();
 	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
 	m_scheduler.EndRendering();
@@ -533,6 +561,8 @@ void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buf
                      uint64_t offset, uint64_t size) {
 	KYTY_GPU_OP_SITE("image.download");
 	EXIT_IF(copies.empty() || buffer == nullptr || size == 0);
+	// A download reads the whole chain: TextureCache::RequireFullResidency comes first.
+	EXIT_IF(native_first != 0);
 	m_scheduler.EndRendering();
 	vk::BufferMemoryBarrier2 buffer_barrier {};
 	buffer_barrier.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
@@ -604,6 +634,8 @@ void Image::CopyDepthColorImage(Image& source) {
 }
 
 void Image::CopyImageRegions(Image& source) {
+	// Copies read and write whole chains: TextureCache::RequireFullResidency comes first.
+	EXIT_IF(native_first != 0 || source.native_first != 0);
 	NoteContentWrite();
 	EXIT_IF(source.backing.samples != backing.samples);
 	m_scheduler.EndRendering();
@@ -731,6 +763,8 @@ uint32_t Image::CopyRows(uint64_t row_size, uint32_t rows, uint64_t capacity) no
 }
 
 void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler) {
+	// Copies read and write whole chains: TextureCache::RequireFullResidency comes first.
+	EXIT_IF(native_first != 0 || source.native_first != 0);
 	KYTY_GPU_OP_SITE("image.copy_via_buffer");
 	NoteContentWrite();
 	EXIT_IF(buffer.Handle() == nullptr || source.backing.samples != 1 || backing.samples != 1);
@@ -873,6 +907,8 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 }
 
 void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
+	// Copies read and write whole chains: TextureCache::RequireFullResidency comes first.
+	EXIT_IF(native_first != 0 || source.native_first != 0);
 	KYTY_GPU_OP_SITE("image.copy_mip");
 	NoteContentWrite();
 	EXIT_IF(source.backing.samples != backing.samples || mip >= backing.mip_levels ||
@@ -1012,7 +1048,7 @@ Prospero::BufferFormat RenderTargetTransferFormat(uint32_t bytes_per_element) {
 } // namespace ImageOps
 
 Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageInfo& image_info,
-             uint32_t sparse_first_level)
+             uint32_t sparse_first_level, uint32_t trim_first_level)
     : info(image_info), live(image_info.data),
       stencil_subresources {0, image_info.resources.levels, 0, image_info.resources.layers},
       m_graphics(graphics), m_scheduler(scheduler) {
@@ -1024,6 +1060,78 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	if (info.pixel_format == vk::Format::eUndefined) {
 		return;
 	}
+	CreateBacking(sparse_first_level, trim_first_level);
+}
+
+namespace {
+
+// VulkanImage is neither copyable nor movable: hand `from`'s native image to the empty `to`.
+void MoveBacking(VulkanImage& to, VulkanImage& from) {
+	EXIT_IF(to.image != nullptr || to.allocation != nullptr || to.sparse != nullptr);
+	to.format             = from.format;
+	to.image_type         = from.image_type;
+	to.extent             = from.extent;
+	to.layers             = from.layers;
+	to.mip_levels         = from.mip_levels;
+	to.samples            = from.samples;
+	to.usage              = from.usage;
+	to.flags              = from.flags;
+	to.image              = from.image;
+	to.state              = from.state;
+	to.subresource_states = std::move(from.subresource_states);
+	to.allocation         = from.allocation;
+	to.pool_eligible      = from.pool_eligible;
+	to.pool_create_info   = from.pool_create_info;
+	to.sparse             = std::move(from.sparse);
+	from.format           = vk::Format::eUndefined;
+	from.image_type       = vk::ImageType::e2D;
+	from.extent           = vk::Extent3D {1, 1, 1};
+	from.layers           = 1;
+	from.mip_levels       = 1;
+	from.samples          = 1;
+	from.usage            = {};
+	from.flags            = {};
+	from.image            = nullptr;
+	from.state            = {};
+	from.subresource_states.clear();
+	from.allocation       = nullptr;
+	from.pool_eligible    = false;
+	from.pool_create_info = vk::ImageCreateInfo {};
+}
+
+} // namespace
+
+void Image::ReplaceBacking(uint32_t trim_first_level) {
+	KYTY_PROFILER_FUNCTION();
+	EXIT_IF(backing.image == nullptr || backing.sparse != nullptr);
+	auto old = std::make_unique<RetiredBacking>();
+	MoveBacking(old->backing, backing);
+	old->views = std::move(views);
+	views.clear();
+	retired.push_back(std::move(old));
+	CreateBacking(0, trim_first_level);
+	NoteImageStateChange();
+}
+
+uint64_t Image::RetiredBytes() const {
+	uint64_t bytes = 0;
+	for (const auto& old: retired) {
+		bytes += m_graphics.NativeImageBytes(old->backing);
+	}
+	return bytes;
+}
+
+void Image::CreateBacking(uint32_t sparse_first_level, uint32_t trim_first_level) {
+	auto& graphics = m_graphics;
+	// KYTY_TEXTURE_RESIDENT_TRIM (residentTrim.h): only guest levels >= trim_first_level. Only for
+	// the images TextureCache::ResidentPrefixSize admits (2D colour, one layer, one sample).
+	const bool trim = trim_first_level != 0 && sparse_first_level == 0 &&
+	                  info.type == Prospero::ImageType::kColor2D && info.resources.layers == 1 &&
+	                  info.samples == 1 && info.extent.depth == 1 &&
+	                  ResidentTrim::TrimFirst(trim_first_level, info.resources.levels) != 0;
+	native_first    = trim ? trim_first_level : 0u;
+	m_dropped_usage = {};
+	m_dropped_flags = {};
 
 	vk::ImageCreateInfo create {};
 	create.usage         = ImageUsageFlags(graphics, info);
@@ -1031,6 +1139,11 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	create.imageType     = HostImageType(info.type);
 	create.extent        = info.extent;
 	create.mipLevels     = info.resources.levels;
+	if (native_first != 0) {
+		create.extent.width  = ResidentTrim::LevelExtent(info.extent.width, native_first);
+		create.extent.height = ResidentTrim::LevelExtent(info.extent.height, native_first);
+		create.mipLevels     = ResidentTrim::NativeLevels(info.resources.levels, native_first);
+	}
 	create.arrayLayers   = info.IsVolume() ? 1u : info.resources.layers;
 	create.format        = info.pixel_format;
 	create.tiling        = vk::ImageTiling::eOptimal;
@@ -1083,10 +1196,10 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	}
 	SetVulkanObjectNameF(
 	    graphics.device, backing.image,
-	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} format={} mips={} layers={} samples={}]",
+	    "Kyty.Image[guest=0x{:016x} size=0x{:x} extent={}x{}x{} format={} mips={} layers={} samples={} first={}]",
 	    info.data.address, info.data.size, info.extent.width, info.extent.height, info.extent.depth,
 	    static_cast<uint32_t>(info.pixel_format), info.resources.levels, info.resources.layers,
-	    info.samples);
+	    info.samples, native_first);
 }
 
 uint64_t Image::HashGuestEdges() const {
@@ -1117,6 +1230,17 @@ Image::~Image() {
 	}
 	if (backing.image != nullptr) {
 		m_graphics.DeleteImage(backing);
+	}
+	// KYTY_TEXTURE_RESIDENT_TRIM: the native images ReplaceBacking retired.
+	for (const auto& old: retired) {
+		for (const auto& cached: old->views) {
+			if (cached.view != nullptr) {
+				m_graphics.device.destroyImageView(cached.view, nullptr);
+			}
+		}
+		if (old->backing.image != nullptr) {
+			m_graphics.DeleteImage(old->backing);
+		}
 	}
 }
 

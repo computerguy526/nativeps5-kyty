@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "common/spinRelax.h"
 
 #include "common/assert.h"
 #include "common/cpuPlacement.h"
@@ -131,6 +132,9 @@ CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graph
 			m_gpu_timing.reset();
 		}
 	}
+	if (role == Role::Guest && EopTimestamps::CbTimeEnabled()) {
+		EopCompletionClock::CreateGuest(graphics, m_master.Handle());
+	}
 	if (role == Role::Guest && EopTimestamps::GpuEnabled()) {
 		m_eop_timestamps = std::make_unique<EopTimestampRing>(graphics);
 		if (!m_eop_timestamps->Valid()) {
@@ -191,6 +195,8 @@ void CommandScheduler::Shutdown() {
 	}
 	PopPendingOperations();
 	DrainPriorityOperations();
+	// After the last deferred clock write; joins the watcher before the timeline is destroyed.
+	EopCompletionClock::DestroyGuest(m_master.Handle());
 	m_priority_thread.request_stop();
 	m_operation_available.notify_all();
 	{
@@ -545,11 +551,7 @@ static uint64_t PriorityWaitSpinNs() {
 }
 
 static void PriorityWaitRelax() {
-#if defined(_M_X64) || defined(__x86_64__)
-	_mm_pause();
-#else
-	std::this_thread::yield();
-#endif
+	Common::SpinRelax(); // KYTY_SPIN_RELAX (common/spinRelax.h)
 }
 
 void CommandScheduler::WaitPriorityOperations(uint64_t tick) {
@@ -835,7 +837,8 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit, bool force_completion) {
 			    "vkQueueSubmit-direct",
 			    reinterpret_cast<uint64_t>(static_cast<VkQueue>(graphics.queue)), tick, 0,
 			    submit.num_wait_semaphores, submit.num_signal_semaphores);
-			NoteWatchdogSubmit(graphics.queue, submit_info, tick);
+			NoteWatchdogSubmit(graphics.queue, submit_info, tick, m_command.m_debug_submit_id,
+			                   m_command.m_debug_op);
 			result = graphics.queue.submit(1, &submit_info, nullptr);
 		}
 	}

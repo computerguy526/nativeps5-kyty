@@ -433,6 +433,8 @@ private:
 	std::unique_ptr<ComputePrewarm> m_compute_prewarm;
 	std::unordered_map<GraphicsPipelineKey, std::unique_ptr<Pipeline>, GraphicsPipelineKeyHash>
 	                                                        m_graphics_pipelines;
+	                                                        // nps5: keys whose pipeline the host driver refused (KosmicKrisp shader gaps): their draws are skipped.
+	                                                        std::vector<GraphicsPipelineKey> m_failed_graphics;
 	std::unordered_map<uint64_t, std::unique_ptr<Pipeline>> m_compute_pipelines;
 	// Why new graphics pipelines were needed (compiles.csv, compile totals); guarded by m_mutex.
 	std::unique_ptr<PipelineDiagnostics> m_diagnostics;

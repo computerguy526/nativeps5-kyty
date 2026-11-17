@@ -30,6 +30,9 @@ namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
 struct InputBinding : IR::StageInput {
 	uint32_t variable_id = 0;
+	// KYTY_PS_PER_VERTEX=gs: a per-vertex pixel parameter is three flat vec4 inputs (the raw
+	// vertices 0..2, written by the generated geometry stage); variable_id is vertex 0's.
+	std::array<uint32_t, 3> vertex_variable_ids {};
 };
 
 struct OutputBinding : IR::StageOutput {
@@ -360,6 +363,9 @@ struct F32Class {
 uint32_t PixelParameterLocation(const EmitterState& state, uint32_t attr);
 
 bool PixelParameterIsFlat(const EmitterState& state, uint32_t attr);
+// KYTY_PS_PER_VERTEX=gs: this pixel shader's per-vertex parameters are flat copies from the
+// generated geometry stage (not PerVertexKHR arrays).
+bool PixelPerVertexEmulated(const EmitterState& state);
 
 bool PixelParameterIsCustom(const EmitterState& state, uint32_t attr);
 

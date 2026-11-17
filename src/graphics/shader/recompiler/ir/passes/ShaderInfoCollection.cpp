@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
+#include <cstdio>
 #include <algorithm>
 #include <fmt/format.h>
 
@@ -118,6 +119,16 @@ void ValidateValueReferences(const Program& program, ShaderStageInputInfo input_
 					if (inst.Arg(0).U32() >= input_info.pixel->input_num ||
 					    inst.Arg(1).U32() >= 4u || inst.Arg(2).U32() >= 3u) {
 						return Fail("interpolation parameter reference is out of range");
+					}
+					break;
+				}
+				case ValueOpcode::GetParameterField: {
+					if (program.stage != ShaderType::Pixel || !inst.Arg(0).IsImmediate() ||
+					    inst.Arg(0).GetType() != Type::U32 || !inst.Arg(1).IsImmediate() ||
+					    inst.Arg(1).GetType() != Type::U32 ||
+					    inst.Arg(0).U32() >= input_info.pixel->input_num || inst.Arg(1).U32() >= 64u ||
+					    (inst.Arg(1).U32() & 7u) == 0u || (inst.Arg(1).U32() & 7u) > 4u) {
+						return Fail("parameter field reference is invalid");
 					}
 					break;
 				}
@@ -245,7 +256,7 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 				used[input] = true;
 				// KYTY_PS_PER_VERTEX=0: no raw-vertex inputs (the reads take the interpolated value).
 				per_vertex[input] =
-				    GetCodegenOptions().ps_per_vertex &&
+				    ShaderPixelRawVertexInputs(*pixel) &&
 				    (per_vertex[input] || mode < 2u || !ShaderPixelParameterIsFlat(*pixel, input));
 			}
 		}
@@ -254,7 +265,7 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 	// Rectangle expansion alone supplies separate flat and smooth outputs, and so does
 	// KYTY_PS_PER_VERTEX=0 (no raw-vertex inputs; ShaderPixelParameterLocation).
 	const bool shared_slots = pixel->parameter_mode != ShaderPixelParameterMode::Rectangle &&
-	                          GetCodegenOptions().ps_per_vertex;
+	                          ShaderPixelRawVertexInputs(*pixel);
 	for (uint32_t input = 0; input < pixel->input_num; input++) {
 		for (uint32_t alias = 0; alias < pixel->input_num; alias++) {
 			const bool same_mode = ShaderPixelParameterIsFlat(*pixel, input) ==
@@ -271,6 +282,35 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 		if (!used[input]) continue;
 		AddInput(info, StageInputKind::Parameter, input, 4, fmt::format("in_param_{}", input),
 		         per_vertex[input]);
+	}
+	// KYTY_PS_PER_VERTEX=unpack: the slots of the fields the program reads (RawVertexUnpack), at
+	// spare locations; the vertex shader writes them (ShaderLinkVertexPixelParameters).
+	std::vector<ShaderParameterField> fields;
+	for (const auto* block: program.blocks) {
+		for (const auto& inst: *block) {
+			if (inst.GetOpcode() == ValueOpcode::GetParameterField) {
+				fields.push_back({inst.Arg(0).U32(), inst.Arg(1).U32()});
+			}
+		}
+	}
+	if (!fields.empty()) {
+		std::vector<uint32_t> active;
+		for (uint32_t input = 0; input < pixel->input_num; input++) {
+			if (used[input]) {
+				active.push_back(input);
+			}
+		}
+		uint32_t   dropped = 0;
+		const auto slots   = ShaderPixelFieldSlots(*pixel, active, fields, &dropped);
+		for (const auto& slot: slots) {
+			info.inputs.push_back({StageInputKind::ParameterField, slot.location, slot.Pack(),
+			                       fmt::format("in_field_{}_{}", slot.input, slot.location), false});
+		}
+		if (dropped != 0) {
+			std::printf("nps5: pixel shader 0x%016llx: %u unpacked parameter fields found no interface "
+			            "location (read as zero)\n",
+			            static_cast<unsigned long long>(program.shader_hash), dropped);
+		}
 	}
 	for (uint32_t input = 0; input < pixel->input_num; input++) {
 		if (interpolated[input] && per_vertex[input] &&

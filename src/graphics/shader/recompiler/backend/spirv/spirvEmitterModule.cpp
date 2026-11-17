@@ -3,6 +3,8 @@
 
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 
+#include <atomic>
+#include <cstdio>
 #include <algorithm>
 #include <bit>
 #include <cinttypes>
@@ -601,7 +603,36 @@ void DefineInputs(EmitterState& state) {
 			});
 			if (alias != state.inputs.end()) {
 				EXIT_IF(alias->per_vertex != input.per_vertex);
-				input.variable_id = alias->variable_id;
+				input.variable_id         = alias->variable_id;
+				input.vertex_variable_ids = alias->vertex_variable_ids;
+				continue;
+			}
+			if (input.per_vertex && PixelPerVertexEmulated(state)) {
+				// Three flat inputs with the raw vertices, at the locations the generated geometry
+				// stage writes (ShaderPixelPerVertexSlots).
+				std::vector<uint32_t> active;
+				std::vector<uint32_t> raw;
+				for (const auto& other: state.inputs) {
+					if (other.kind == IR::StageInputKind::Parameter) {
+						active.push_back(other.location);
+						if (other.per_vertex) {
+							raw.push_back(other.location);
+						}
+					}
+				}
+				const auto slots = ShaderPixelPerVertexSlots(*state.input_info.pixel, active, raw);
+				const auto slot  = std::ranges::find(slots, location, &ShaderPerVertexSlot::source);
+				EXIT_IF(slot == slots.end());
+				for (uint32_t vertex = 0; vertex < 3u; vertex++) {
+					const auto variable = DefineInterfaceVariable(
+					    state, TypeF32Vector(state, 4), spv::StorageClassInput,
+					    fmt::format("{}_v{}", input.debug_name, vertex).c_str());
+					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
+					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation,
+					                            slot->locations[vertex]);
+					input.vertex_variable_ids[vertex] = variable;
+				}
+				input.variable_id = input.vertex_variable_ids[0];
 				continue;
 			}
 		}
@@ -623,6 +654,7 @@ void DefineInputs(EmitterState& state) {
 			case IR::StageInputKind::BaryCoordSmooth:
 			case IR::StageInputKind::BaryCoordNoPerspective: type = TypeF32Vector(state, 3); break;
 			case IR::StageInputKind::FrontFacing: type = TypeBool(state); break;
+			case IR::StageInputKind::ParameterField: type = TypeF32Vector(state, 4); break;
 			case IR::StageInputKind::Parameter:
 				if (state.program.stage == ShaderType::Vertex ||
 				    state.program.stage == ShaderType::Local) {
@@ -680,12 +712,36 @@ void DefineInputs(EmitterState& state) {
 			}
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationLocation,
 			                            PixelParameterLocation(state, input.location));
+		} else if (input.kind == IR::StageInputKind::ParameterField) {
+			// KYTY_PS_PER_VERTEX=unpack: unpacked fields the vertex shader exports at a spare
+			// location; interpolated like the shader's own I/J (Raw fields: flat).
+			if (ShaderParameterFieldSlot::Unpack(input.location, input.component_count).Flat()) {
+				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationFlat);
+			} else if (state.input_info.pixel->ps_no_perspective) {
+				state.builder.AddAnnotation(spv::OpDecorate, input.variable_id,
+				                            spv::DecorationNoPerspective);
+			}
+			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationLocation,
+			                            input.location);
 		} else if (const auto builtin = BuiltInForInput(input.kind); builtin != UINT32_MAX) {
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationBuiltIn,
 			                            builtin);
 		}
 	}
-	if (state.requirements.subgroup_local_invocation_id || state.split_wave) {
+	// nps5: no subgroup builtin in a vertex or tessellation stage the host cannot give one
+	// (GetHostVertexSubgroups); EmitSubgroupLocalInvocationId answers lane 0 there.
+	const bool host_lane_missing =
+	    !GetHostVertexSubgroups() && state.program.stage != ShaderType::Pixel &&
+	    state.program.stage != ShaderType::Compute && state.program.stage != ShaderType::Mesh;
+	if (host_lane_missing && (state.requirements.subgroup_local_invocation_id || state.split_wave)) {
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+			std::printf("nps5: stage %d program without a host subgroup lane id (lane 0), split_wave=%d lanes=%u\n",
+			            static_cast<int>(state.program.stage), state.split_wave ? 1 : 0,
+			            static_cast<unsigned>(state.lane_count));
+		}
+	}
+	if ((state.requirements.subgroup_local_invocation_id || state.split_wave) && !host_lane_missing) {
 		const auto variable = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassInput,
 		                                              "gl_SubgroupInvocationID");
 		state.subgroup_local_invocation_id_variable = variable;
@@ -881,6 +937,9 @@ void DefineModule(EmitterState& state) {
 	}
 	if (state.requirements.buffer_int64_atomics || state.requirements.shared_int64_atomics) {
 		state.builder.RequireCapability(spv::CapabilityInt64);
+	}
+	if ((state.requirements.buffer_int64_atomics && GetHostBufferInt64Atomics()) ||
+	    state.requirements.shared_int64_atomics) {
 		state.builder.RequireCapability(spv::CapabilityInt64Atomics);
 	}
 	if (state.requirements.shared_int64_atomics &&
@@ -943,8 +1002,12 @@ void DefineModule(EmitterState& state) {
 	}
 	const bool fragment_barycentric =
 	    state.program.stage == ShaderType::Pixel &&
-	    std::any_of(state.inputs.begin(), state.inputs.end(), [](const InputBinding& input) {
-		    return input.per_vertex || input.kind == IR::StageInputKind::BaryCoordSmooth ||
+	    std::any_of(state.inputs.begin(), state.inputs.end(), [&](const InputBinding& input) {
+		    // Emulated per-vertex inputs (KYTY_PS_PER_VERTEX=gs) are plain flat inputs.
+		    return (input.per_vertex && input.vertex_variable_ids[0] == 0 &&
+		            input.kind == IR::StageInputKind::Parameter) ||
+		           (input.per_vertex && input.kind != IR::StageInputKind::Parameter) ||
+		           input.kind == IR::StageInputKind::BaryCoordSmooth ||
 		           input.kind == IR::StageInputKind::BaryCoordNoPerspective;
 	    });
 	if (fragment_barycentric) {

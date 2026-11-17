@@ -1,4 +1,5 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include "common/guestAddress.h" // nps5: guest addresses are dereferenced at guest + bias
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 
 #include "common/assert.h"
@@ -71,6 +72,8 @@
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
+#elif defined(__aarch64__)
+#include "compat/arm64/nps5Arm64Intrin.h" // nps5: _mm_pause
 #endif
 
 namespace Libs::Graphics {
@@ -167,7 +170,7 @@ void ReadGuestForCp(uint64_t vaddr, uint64_t size, void* dst) {
 	    LibKernel::Memory::TryReadGpuCleanBacking(vaddr, dst, size)) {
 		return;
 	}
-	std::memcpy(dst, reinterpret_cast<const void*>(vaddr), size);
+	std::memcpy(dst, LibKernel::Memory::GuestReadPtr(vaddr, size), size);
 }
 
 class GpuMutexLock final {
@@ -697,6 +700,8 @@ void GuestGpu::Done() {
 	if (pace_start != 0) {
 		PaceLog::NoteDone(pace_start, PaceLog::NowNs() - pace_start);
 	}
+	// nps5 frame pacing: hold the guest until the next frame may start (off by default; videoOut.cpp).
+	VideoOut::PaceFrameStart();
 }
 
 int GuestGpu::GetFrameNum() const {
@@ -1075,7 +1080,7 @@ void CommandProcessor::DumpConstRam(uint32_t* dst, uint32_t offset, uint32_t dw_
 
 void CommandProcessor::ExecDumpConstRam(const CpSeq::DumpConstRamOp& op, const uint32_t* src) {
 	StreamCopyDefer::NoteGpuOnlyWrite(op.dst, uint64_t {op.dw_num} * 4u);
-	memcpy(reinterpret_cast<uint32_t*>(op.dst), src, static_cast<size_t>(op.dw_num) * 4);
+	memcpy(Guest::Ptr<uint32_t>(op.dst), src, static_cast<size_t>(op.dw_num) * 4);
 	NoteCpWrite(op.dst, uint64_t {op.dw_num} * 4u);
 }
 
@@ -1347,7 +1352,7 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
 
 	StreamCopyDefer::NoteGuestWrite(op.dst, write_one_address ? sizeof(uint32_t) : uint64_t {dw_num} * 4u);
 	// Completion labels can be reused immediately; memcpy may write a destination twice.
-	auto* output = static_cast<volatile uint32_t*>(dst);
+	auto* output = static_cast<volatile uint32_t*>(Guest::Host(dst));
 	for (uint32_t i = 0; i < dw_num; i++) {
 		*output = src[i];
 		output += !write_one_address;
@@ -1372,7 +1377,7 @@ void CommandProcessor::ExecReferenceClock(const CpSeq::ReferenceClockOp& op) {
 	}
 	const auto value = GuestGpuTimestamp();
 	StreamCopyDefer::NoteGpuOnlyWrite(dst_address, num_bytes);
-	std::memcpy(reinterpret_cast<void*>(dst_address), &value, num_bytes);
+	std::memcpy(Guest::Ptr<void>(dst_address), &value, num_bytes);
 	NoteCpWrite(dst_address, num_bytes);
 	static std::atomic<uint32_t> clock_log_count {0};
 	if (clock_log_count.fetch_add(1) < 64) {
@@ -1503,7 +1508,7 @@ void GuestGpu::Enqueue(Submission submission) {
 		event.event   = submission.type == SubmissionType::Compute   ? "admit-compute"
 		                : submission.type == SubmissionType::Graphics ? "admit-graphics"
 		                                                               : "admit-flip";
-		event.address = reinterpret_cast<uint64_t>(submission.commands.data());
+		event.address = Guest::Addr(submission.commands.data());
 		event.value   = submission.frame_fence;
 		event.ref     = static_cast<uint64_t>(m_done_num.load());
 		event.size    = submission.commands.size() * sizeof(uint32_t);
@@ -2112,7 +2117,7 @@ bool CommandProcessor::ProcessPacket(Pm4Execution& execution) {
 	// The packet's guest address (a lockstep copy of a command buffer is parsed elsewhere).
 	const uint64_t guest_packet =
 	    cursor.copy != nullptr ? cursor.guest_address + uint64_t {cursor.offset_dw} * 4u
-	                           : reinterpret_cast<uint64_t>(packet);
+	                           : Guest::Addr(packet);
 	const auto        total_dw      = static_cast<uint32_t>(cursor.commands.size());
 	const auto        remaining_dw  = total_dw - cursor.offset_dw;
 	const auto        packet_header = packet[0];
@@ -2369,7 +2374,7 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 			}
 			// One begin/end pair per DB; bit 63 marks each counter ready.
 			constexpr uint64_t ready_bit = 1ull << 63u;
-			const auto* results = reinterpret_cast<const volatile uint64_t*>(address);
+			const auto* results = Guest::Host(reinterpret_cast<const volatile uint64_t*>(address));
 			for (uint32_t db = 0; db < 16u; db++) {
 				const auto begin = results[db * 2u];
 				const auto end   = results[db * 2u + 1u];
@@ -3397,16 +3402,26 @@ bool CommandProcessor::TryDeferLabel(void* dst, uint64_t value, uint32_t size, b
 	// KYTY_EOP_TIMESTAMPS=gpu: a clock value is written with its query's GPU time.
 	auto* timestamps =
 	    timestamp_slot != EopTimestampRing::NoSlot ? scheduler.GuestTimestamps() : nullptr;
+	// KYTY_EOP_TIMESTAMPS=cbtime: the clock value becomes its tick's completion time.
+	auto* completion_time =
+	    timestamp_slot == EopCompletionClock::Slot
+	        ? EopCompletionClock::Guest(scheduler.GetMasterSemaphore().Handle())
+	        : nullptr;
+	if (completion_time != nullptr) {
+		completion_time->NoteDeferred(tick, value);
+	}
 	// Runs on the completion runner once `tick` has completed, after every priority operation
 	// registered before it (FIFO), including this tick's occlusion publications. The write itself
 	// is handed to the GPU thread: a label page may be protected by resource tracking, and only
 	// the GPU thread may take the resulting fault/readback. The interrupt follows the write.
 	scheduler.DeferPriorityOperation(
 	    [renderer, &gpu, address, value, size, tick, interrupt, event_id, interrupt_context_id,
-	     trace_queue, timestamps, timestamp_slot] {
+	     trace_queue, timestamps, timestamp_slot, completion_time] {
 		    // The tick has completed, so a timestamp query's result is final.
 		    const uint64_t written =
-		        timestamps != nullptr ? timestamps->TakeDeferred(timestamp_slot, value) : value;
+		        timestamps != nullptr ? timestamps->TakeDeferred(timestamp_slot, value)
+		        : completion_time != nullptr ? completion_time->DeferredValue(tick, value)
+		                                     : value;
 		    const bool sent = gpu.TrySendCommand([renderer, &gpu, address, written, size, tick,
 		                                          interrupt, event_id, interrupt_context_id,
 		                                          trace_queue] {
@@ -3418,7 +3433,7 @@ bool CommandProcessor::TryDeferLabel(void* dst, uint64_t value, uint32_t size, b
 				    // on it at record time) stays; hardware would have written the label first.
 				    if (!gpu.DeferredLabelSuperseded(address, tick)) {
 					    StreamCopyDefer::NoteGpuOnlyWrite(address, size); // after its tick completed
-					    std::memcpy(reinterpret_cast<void*>(address), &written, size);
+					    std::memcpy(Guest::Ptr<void>(address), &written, size);
 				    }
 			    }
 			    ReadFaultDiag::NoteLabel("label-deferred-write", address, written);
@@ -3483,7 +3498,7 @@ bool CommandProcessor::WriteDroppedLabel(void* dst, uint64_t value, uint32_t siz
 	}
 	KYTY_PROFILER_DETAIL_BLOCK("EndOfPipe::WriteLabel");
 	StreamCopyDefer::NoteGuestWrite(reinterpret_cast<uint64_t>(dst), size);
-	std::memcpy(dst, &value, size);
+	std::memcpy(Guest::Host(dst), &value, size);
 	NoteCpWrite(reinterpret_cast<uint64_t>(dst), size);
 	QueueEopTimestamp(timestamp_slot, dst, value);
 	TraceCpLabel("label-dropped", dst, value, size);
@@ -3492,6 +3507,14 @@ bool CommandProcessor::WriteDroppedLabel(void* dst, uint64_t value, uint32_t siz
 
 uint32_t CommandProcessor::RecordEopTimestamp() {
 	auto& scheduler  = GetScheduler();
+	if (auto* completion = EopTimestamps::CbTimeEnabled()
+	                           ? EopCompletionClock::Guest(scheduler.GetMasterSemaphore().Handle())
+	                           : nullptr;
+	    completion != nullptr) {
+		// KYTY_EOP_TIMESTAMPS=cbtime: a fence position; nothing is recorded in the command buffer.
+		completion->Publish();
+		return EopCompletionClock::Slot;
+	}
 	auto* timestamps = scheduler.GuestTimestamps();
 	if (timestamps == nullptr) {
 		return EopTimestampRing::NoSlot;
@@ -3509,6 +3532,14 @@ void CommandProcessor::QueueEopTimestamp(uint32_t slot, const void* dst, uint64_
 		return;
 	}
 	auto& scheduler = GetScheduler();
+	if (slot == EopCompletionClock::Slot) {
+		if (auto* completion =
+		        EopCompletionClock::Guest(scheduler.GetMasterSemaphore().Handle());
+		    completion != nullptr) {
+			completion->Queue(scheduler.CurrentTick(), reinterpret_cast<uint64_t>(dst), value);
+		}
+		return;
+	}
 	scheduler.GuestTimestamps()->Queue(slot, scheduler.CurrentTick(),
 	                                   reinterpret_cast<uint64_t>(dst), value);
 }
@@ -3605,7 +3636,7 @@ bool CommandProcessor::TryDeferGdsRead(uint32_t* dst, uint32_t dw_offset, uint32
 		                  event_id, interrupt_context_id](bool on_gpu_thread) {
 			    if (on_gpu_thread) {
 				    StreamCopyDefer::NoteGpuOnlyWrite(address, bytes.size()); // after its tick completed
-				    std::memcpy(reinterpret_cast<void*>(address), bytes.data(), bytes.size());
+				    std::memcpy(Guest::Ptr<void>(address), bytes.data(), bytes.size());
 			    } else {
 				    (void)LibKernel::Memory::TryWriteBacking(address, bytes.data(), bytes.size());
 			    }
@@ -3740,7 +3771,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 			// resulting fault separately from the end-of-pipe submission/interrupt work.
 			KYTY_PROFILER_DETAIL_BLOCK("EndOfPipe::WriteLabel32");
 			StreamCopyDefer::NoteGuestWrite(reinterpret_cast<uint64_t>(dst), sizeof(data));
-			std::memcpy(dst, &data, sizeof(data));
+			std::memcpy(Guest::Host(dst), &data, sizeof(data));
 		}
 		NoteCpWrite(reinterpret_cast<uint64_t>(dst), sizeof(data));
 		TraceCpLabel("label-eop", dst, data, sizeof(data));
@@ -3827,7 +3858,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 					{
 						KYTY_PROFILER_DETAIL_BLOCK("EndOfPipe::WriteLabel64");
 						StreamCopyDefer::NoteGuestWrite(reinterpret_cast<uint64_t>(dst), sizeof(value));
-						std::memcpy(dst, &value, sizeof(value));
+						std::memcpy(Guest::Host(dst), &value, sizeof(value));
 					}
 					NoteCpWrite(reinterpret_cast<uint64_t>(dst), sizeof(value));
 					QueueEopTimestamp(timestamp_slot, dst, value);
@@ -4131,7 +4162,7 @@ void CommandProcessor::ExecEventWrite(const CpSeq::EventWriteOp& op) {
 			// ready.
 			constexpr uint64_t ready_bit    = 1ull << 63u;
 			constexpr uint64_t counter_mask = ready_bit - 1u;
-			auto*              results      = reinterpret_cast<volatile uint64_t*>(event_address);
+			auto*              results      = Guest::Ptr<volatile uint64_t>(event_address);
 			const auto         value        = ready_bit | m_synthetic_occlusion_counter;
 			StreamCopyDefer::NoteGpuOnlyWrite(event_address, (16u * 2u - 1u) * sizeof(uint64_t));
 			for (uint32_t db = 0; db < 16u; db++) {
@@ -4331,7 +4362,7 @@ void CommandProcessor::ExecFlip(const CpSeq::FlipOp& op) {
 
 			if (!DeferFlipLabel(dst_gpu_addr, value, false)) {
 				StreamCopyDefer::NoteGuestWrite(op.dst, sizeof(value));
-				std::memcpy(dst_gpu_addr, &value, sizeof(value));
+				std::memcpy(Guest::Host(dst_gpu_addr), &value, sizeof(value));
 				NoteCpWrite(op.dst, sizeof(value));
 			}
 			auto request = Sync::PrepareVideoOutFlip(command, flip.handle, flip.index,
@@ -4377,7 +4408,7 @@ void CommandProcessor::ExecFlip(const CpSeq::FlipOp& op) {
 				return;
 			}
 			StreamCopyDefer::NoteGuestWrite(op.dst, sizeof(value));
-			std::memcpy(dst_gpu_addr, &value, sizeof(value));
+			std::memcpy(Guest::Host(dst_gpu_addr), &value, sizeof(value));
 			NoteCpWrite(op.dst, sizeof(value));
 			auto request = Sync::PrepareVideoOutFlip(command, flip.handle, flip.index,
 			                                         flip.flip_mode, flip.flip_arg);
@@ -4703,7 +4734,7 @@ bool CommandProcessor::CondExec(uint64_t address) {
 }
 
 CpSeq::Result CommandProcessor::ExecCondExec(const CpSeq::CondExecOp& op) {
-	return {false, *reinterpret_cast<const volatile uint32_t*>(op.address) != 0 ? 1u : 0u};
+	return {false, *Guest::Ptr<const volatile uint32_t>(op.address) != 0 ? 1u : 0u};
 }
 
 bool CommandProcessor::Branch(uint64_t compare_addr, uint64_t mask, uint64_t reference,
@@ -4997,7 +5028,7 @@ CpSeq::Result CommandProcessor::SubmitThread(CpSeq::OpKind kind, const void* pay
 			for (auto& cursor: execution->m_buffer_stack) {
 				const auto rest_begin =
 				    cursor.copy != nullptr ? cursor.guest_address + uint64_t {cursor.offset_dw} * 4u
-				                           : reinterpret_cast<uint64_t>(cursor.commands.data() +
+				                           : Guest::Addr(cursor.commands.data() +
 				                                                        cursor.offset_dw);
 				const auto rest_end =
 				    rest_begin + (cursor.commands.size() - cursor.offset_dw) * sizeof(uint32_t);
@@ -5115,7 +5146,7 @@ bool CommandProcessor::ReadGuestForFront(uint64_t address, uint64_t size, void* 
 		// Never GPU-touched: the backing is authoritative and the read cannot fault
 		// (gpuTouchedPages.h); the serial CP would read the same bytes (P3-SEQUENCER.md 2.5).
 		Profiler::CountFrameEvent(Profiler::FrameEvent::CpSeqDirectReads);
-		std::memcpy(dst, reinterpret_cast<const void*>(address), size);
+		std::memcpy(dst, LibKernel::Memory::GuestReadPtr(address, size), size);
 		return true;
 	}
 	Profiler::CountFrameEvent(Profiler::FrameEvent::CpSeqLockstepReads);
@@ -5136,7 +5167,7 @@ bool CommandProcessor::CheckCommandBytes(Pm4Execution::BufferCursor& cursor) {
 	const auto rest_dw    = cursor.commands.size() - cursor.offset_dw;
 	const auto rest_begin = cursor.copy != nullptr
 	                            ? cursor.guest_address + uint64_t {cursor.offset_dw} * 4u
-	                            : reinterpret_cast<uint64_t>(cursor.commands.data() +
+	                            : Guest::Addr(cursor.commands.data() +
 	                                                         cursor.offset_dw);
 	const auto rest_end = rest_begin + rest_dw * sizeof(uint32_t);
 	if (!AwaitPendingWrites(rest_begin, rest_end)) {
@@ -5469,7 +5500,7 @@ uint64_t CommandProcessor::CurrentPacketKey() const {
 	const auto  dw     = std::min<uint64_t>(KYTY_PM4_LEN(packet[0]), rest);
 	const uint64_t guest = cursor.copy != nullptr
 	                           ? cursor.guest_address + uint64_t {cursor.offset_dw} * 4u
-	                           : reinterpret_cast<uint64_t>(packet);
+	                           : Guest::Addr(packet);
 	return XXH3_64bits_withSeed(packet, dw * sizeof(uint32_t), m_adopt_inputs ^ guest);
 }
 
@@ -5579,7 +5610,7 @@ bool CommandProcessor::CheckCommandBytesPrefetch(Pm4Execution::BufferCursor& cur
 	const auto rest_dw    = cursor.commands.size() - cursor.offset_dw;
 	const auto rest_begin = cursor.copy != nullptr
 	                            ? cursor.guest_address + uint64_t {cursor.offset_dw} * 4u
-	                            : reinterpret_cast<uint64_t>(cursor.commands.data() +
+	                            : Guest::Addr(cursor.commands.data() +
 	                                                         cursor.offset_dw);
 	const auto rest_end   = rest_begin + rest_dw * sizeof(uint32_t);
 	const bool readable =
@@ -5605,7 +5636,7 @@ bool CommandProcessor::ReadGuestForPrefetch(uint64_t address, uint64_t size, voi
 		StopPrefetch(Profiler::FrameEvent::CpSeqPrefetchStopRead);
 		return false;
 	}
-	std::memcpy(dst, reinterpret_cast<const void*>(address), size);
+	std::memcpy(dst, LibKernel::Memory::GuestReadPtr(address, size), size);
 	return true;
 }
 
@@ -5645,7 +5676,7 @@ void CommandProcessor::PrefetchDraw(const Op& op) {
 				return;
 			}
 		}
-#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_M_X64) || defined(__x86_64__) || defined(__aarch64__)
 		_mm_pause();
 #endif
 	}
@@ -5779,7 +5810,7 @@ Pm4ProcessResult CommandProcessor::ResolveSubmission(Pm4Execution& execution, ui
 					break;
 				}
 				if ((spins & 63u) != 63u) {
-#if defined(_M_X64) || defined(__x86_64__)
+#if defined(_M_X64) || defined(__x86_64__) || defined(__aarch64__)
 					_mm_pause();
 #endif
 					continue;

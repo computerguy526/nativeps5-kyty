@@ -281,7 +281,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		if (color_write_ext.colorWriteEnable != VK_TRUE) {
 			LOGF("colorWriteEnable is not supported\n");
 		}
-		check_feature(image_view_min_lod.minLod, "image view minLod");
+		// nps5 (KosmicKrisp): optional, GraphicContext::image_view_min_lod_enabled.
+		if (image_view_min_lod.minLod != VK_TRUE) {
+			LOGF("image view minLod is not supported (optional)\n");
+		}
 
 		check_feature(depth_clip_control.depthClipControl, "depthClipControl");
 		if (depth_clip_enable.depthClipEnable != VK_TRUE) {
@@ -309,8 +312,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		              required_features12.shaderOutputViewportIndex);
 		check_feature(features12.bufferDeviceAddress, "bufferDeviceAddress",
 		              required_features12.bufferDeviceAddress);
-		check_feature(features12.shaderBufferInt64Atomics, "shaderBufferInt64Atomics",
-		              required_features12.shaderBufferInt64Atomics);
+		// nps5 (KosmicKrisp): optional, GraphicContext::buffer_int64_atomics_enabled.
+		if (features12.shaderBufferInt64Atomics != VK_TRUE) {
+			LOGF("shaderBufferInt64Atomics is not supported (optional)\n");
+		}
 		check_feature(features12.shaderSampledImageArrayNonUniformIndexing,
 		              "shaderSampledImageArrayNonUniformIndexing",
 		              required_features12.shaderSampledImageArrayNonUniformIndexing);
@@ -325,7 +330,10 @@ static void VulkanFindPhysicalDevice(vk::Instance instance, vk::SurfaceKHR surfa
 		check_feature(device_features2.features.shaderCullDistance, "shaderCullDistance");
 		check_feature(device_features2.features.largePoints, "largePoints");
 		check_feature(device_features2.features.multiViewport, "multiViewport");
-		check_feature(device_features2.features.fillModeNonSolid, "fillModeNonSolid");
+		// nps5 (KosmicKrisp): optional, GraphicContext::fill_mode_non_solid_enabled.
+		if (device_features2.features.fillModeNonSolid != VK_TRUE) {
+			LOGF("fillModeNonSolid is not supported (optional)\n");
+		}
 		check_feature(device_features2.features.fragmentStoresAndAtomics,
 		              "fragmentStoresAndAtomics");
 
@@ -743,7 +751,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	vk::PhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control {};
 	vk::PhysicalDeviceImageViewMinLodFeaturesEXT  image_view_min_lod {};
 	image_view_min_lod.minLod = VK_TRUE;
-	depth_clip_control.pNext  = &image_view_min_lod;
+	graphics.image_view_min_lod_enabled =
+	    HasExtension(device_extensions, VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+	depth_clip_control.pNext = &image_view_min_lod;
 	depth_clip_control.depthClipControl = VK_TRUE;
 
 	// Indirect draws' start instance reaches the shaders as gl_BaseInstance, and byte-aligned
@@ -894,8 +904,43 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 			depth_clip_enable.pNext = optional;
 			optional                = &depth_clip_enable;
 		}
-		image_view_min_lod.pNext = optional;
+		if (graphics.image_view_min_lod_enabled) {
+			image_view_min_lod.pNext = optional;
+		} else {
+			depth_clip_control.pNext = optional;
+		}
 	}
+	// nps5 (KosmicKrisp): 64-bit buffer atomics and non-solid fill are used where the device has them.
+	features12.shaderBufferInt64Atomics   = supported_features12.shaderBufferInt64Atomics;
+	graphics.buffer_int64_atomics_enabled = features12.shaderBufferInt64Atomics == VK_TRUE;
+	// Without it the recompiler lowers the 64-bit store/load forms (atomic64Lowering.h).
+	ShaderRecompiler::SetHostBufferInt64Atomics(graphics.buffer_int64_atomics_enabled);
+	{
+		// nps5: KosmicKrisp has subgroup operations in fragment, compute and mesh stages only.
+		vk::PhysicalDeviceVulkan11Properties subgroup_properties {};
+		vk::PhysicalDeviceProperties2        subgroup_query {};
+		subgroup_query.pNext = &subgroup_properties;
+		physical_device.getProperties2(&subgroup_query);
+		const bool vertex_subgroups =
+		    static_cast<bool>(subgroup_properties.subgroupSupportedStages & vk::ShaderStageFlagBits::eVertex);
+		ShaderRecompiler::SetHostVertexSubgroups(vertex_subgroups);
+		// nps5: without PerVertexKHR fragment inputs (KosmicKrisp) raw-vertex pixel inputs come
+		// from a generated geometry stage (KYTY_PS_PER_VERTEX=gs is then implied).
+		const bool geometry = supported_features2.features.geometryShader == VK_TRUE;
+		ShaderRecompiler::SetHostPsPerVertex(barycentric_supported);
+		LOGF("Vulkan per-vertex fragment inputs: %s\n",
+		     barycentric_supported                    ? "PerVertexKHR"
+		     : ShaderRecompiler::PsPerVertexGeometry() ? (geometry ? "generated geometry stage"
+		                                                           : "geometry stage asked, not available")
+		     : ShaderRecompiler::PsPerVertexUnpack()   ? "unpacked smooth fields"
+		                                               : "none (interpolated)");
+		LOGF("Vulkan subgroup operations in vertex stages: %s\n", vertex_subgroups ? "true" : "false (lane 0)");
+	}
+	graphics.fill_mode_non_solid_enabled  = supported_features2.features.fillModeNonSolid == VK_TRUE;
+	LOGF("Vulkan imageViewMinLod: %s, shaderBufferInt64Atomics: %s, fillModeNonSolid: %s\n",
+	     graphics.image_view_min_lod_enabled ? "true" : "false",
+	     graphics.buffer_int64_atomics_enabled ? "true" : "false",
+	     graphics.fill_mode_non_solid_enabled ? "true" : "false");
 	LOGF("Vulkan colorWriteEnable: %s, depthClipEnable: %s\n",
 	     graphics.color_write_enable_enabled ? "true" : "false (static colour-write masks)",
 	     graphics.depth_clip_enable_enabled ? "true" : "false (depth clamp only without Z clipping)");
@@ -1223,13 +1268,15 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	device_features.independentBlend                     = VK_TRUE;
 	device_features.dualSrcBlend                         = VK_TRUE;
 	device_features.tessellationShader                   = VK_TRUE;
+	// nps5: the generated per-vertex geometry stage (KYTY_PS_PER_VERTEX=gs).
+	device_features.geometryShader = supported_features2.features.geometryShader;
 	device_features.sampleRateShading                    = VK_TRUE;
 	device_features.depthBiasClamp                       = VK_TRUE;
 	device_features.shaderClipDistance                   = VK_TRUE;
 	device_features.shaderCullDistance                   = VK_TRUE;
 	device_features.largePoints                          = VK_TRUE;
 	device_features.multiViewport                        = VK_TRUE;
-	device_features.fillModeNonSolid                      = VK_TRUE;
+	device_features.fillModeNonSolid = supported_features2.features.fillModeNonSolid;
 	device_features.vertexPipelineStoresAndAtomics       = VK_TRUE;
 	graphics.sample_rate_shading_enabled                 = true;
 	device_features.shaderInt64 = VK_TRUE;
@@ -1570,6 +1617,7 @@ static void LogStabilitySwitches(const GraphicContext& graphics) {
 	const auto  eop      = EopTimestamps::GetMode();
 	const char* eop_text = eop == EopTimestamps::Mode::Gpu         ? "gpu"
 	                       : eop == EopTimestamps::Mode::GpuVerify ? "gpu-verify"
+	                       : eop == EopTimestamps::Mode::CbTime    ? "cbtime"
 	                                                               : "record";
 	const auto  targets      = DrawRun::Detail::g_targets.Get();
 	const char* targets_text = targets == 0 ? "0" : targets == 2 ? "verify" : targets == 3 ? "exit" : "1";
@@ -2013,14 +2061,15 @@ void WindowContext::CreateVulkan() {
 
 	std::vector<const char*> device_extensions = {
 	    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME,
-	    VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+	    VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
 	    "VK_KHR_maintenance1"};
 
 #if defined(__APPLE__)
 	// MoltenVK lacks VK_EXT_depth_clip_enable and VK_EXT_color_write_enable; the renderer
 	// falls back to default depth clipping and static color-write masks on macOS. It also
 	// requires VK_KHR_portability_subset per the Vulkan portability spec.
-	device_extensions.push_back("VK_KHR_portability_subset");
+	// nps5: only where the driver is a portability one (MoltenVK); KosmicKrisp is not. Added
+	// with VK_EXT_image_view_min_lod below, once the device's extensions are known.
 #else
 	// VK_EXT_depth_clip_enable, VK_EXT_color_write_enable and VK_KHR_fragment_shader_barycentric are
 	// optional (added below).
@@ -2141,7 +2190,11 @@ void WindowContext::CreateVulkan() {
 		                             VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
 		                             VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
 		                             VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME,
-		                             VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME}) {
+		                             VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME,
+#if defined(__APPLE__)
+		                             "VK_KHR_portability_subset",
+#endif
+		                             VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME}) {
 			if (HasExtension(available_extensions, extension)) {
 				device_extensions.push_back(extension);
 			}

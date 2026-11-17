@@ -775,7 +775,14 @@ uint64_t GraphicContext::GetTotalMemoryBudget() const {
 	}
 	constexpr uint64_t system_reserve = 8ull * 1024 * 1024 * 1024;
 	const auto         available      = budget > usage ? budget - usage : uint64_t {0};
-	return std::max(local, available > system_reserve ? available - system_reserve : uint64_t {0});
+	const auto planned = std::max(local, available > system_reserve ? available - system_reserve : uint64_t {0});
+	// nps5: on an integrated (unified-memory) device the device-local heap size won over the cap
+	// above, so KYTY_VRAM_BUDGET_MB did nothing there (Apple: the caches planned with the whole
+	// 17.8 GiB heap of a 24 GB machine that also holds the guest's memory). The cap is a cap.
+	if (const auto cap = BudgetCapBytes(); cap != 0) {
+		return std::min(planned, cap);
+	}
+	return planned;
 }
 
 bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanImage& image) {

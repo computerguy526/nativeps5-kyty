@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
+#include "common/spinRelax.h"
 
 #include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
 
@@ -1109,11 +1110,7 @@ uint32_t EnvUnsigned(const char* name, uint32_t fallback, uint32_t low, uint32_t
 }
 
 void CpuRelax() {
-#if defined(_M_X64) || defined(__x86_64__)
-	_mm_pause();
-#else
-	std::this_thread::yield();
-#endif
+	Common::SpinRelax(); // KYTY_SPIN_RELAX (common/spinRelax.h)
 }
 
 uint64_t NowNs() {
