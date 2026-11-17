@@ -1,0 +1,47 @@
+nativeps5-kyty
+==============
+
+This repository is licensed under the GNU General Public License, version 2 (LICENSE). It is a fork and carries
+the work of the projects below.
+
+KytyPS5
+-------
+https://github.com/Jetsku/KytyPS5 (GPL-2.0), development tree of https://github.com/KytyPS5/KytyPS5. The history
+of this repository up to tag u59-windows-20261024-int21 (commit 744705ee1df4b0acb1af382ff5c32ca4a20aa5f7) is
+upstream's, unchanged, with its authors.
+
+Kyty
+----
+https://github.com/InoriRus/Kyty, MIT License, Copyright (c) 2021 InoriRus. KytyPS5 is based on it; the
+licence text is LICENSES/Kyty-MIT.txt and stays with the files that derive from it.
+
+AstroHybrid kyty-hybrid patch series
+------------------------------------
+https://github.com/imnotsharingmyname/pcportastrobot, folder Source/kyty-hybrid: 36 patches on KytyPS5 (the
+kyty_gpu bridge in src/hybrid/, tools/hybrid/, the ASTROHYBRID_* switches, pad relay, frame pacing and the
+performance options named ASTROHYBRID_OPT_*). The series is a derivative of the GPL-2.0 KytyPS5 and is used under
+GPL-2.0. It is applied here as 36 commits directly on the upstream tag, with the author recorded in each commit.
+Running Kyty's renderer inside another process is that author's idea and work; the nativeps5 commits port the
+bridge to arm64 macOS and extend its interface (src/hybrid/kytyGpuApi.h, ABI 1.6 and 1.7). Nothing else from
+that repository (its launcher application, documents, release tooling), which carries no licence, is included.
+
+NXNative
+--------
+https://github.com/seedds/nxnative, MIT License, Copyright (c) 2026 seedds. Read as a reference for running
+console games natively on Apple platforms. Reused with attribution: the ordering of MetalFX upscaling relative to
+the game's own passes and the conventions for passing a game's upscaler inputs to MetalFX
+(src/graphics/host_gpu/renderer/metalfx.h, metalfx.cpp). The MIT permission notice applies to those portions:
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+    documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+    to permit persons to whom the Software is furnished to do so, subject to the following conditions: The above
+    copyright notice and this permission notice shall be included in all copies or substantial portions of the
+    Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+Third-party libraries
+---------------------
+The submodules under 3rdparty/ (SDL3, SPIRV-Tools, SPIRV-Headers, Vulkan-Headers, VulkanMemoryAllocator, fmt,
+spdlog, xxHash, magic_enum, nlohmann_json, imgui, tracy, ffmpeg-core, LibAtrac9 and others listed in .gitmodules)
+keep their own licences and are fetched by git, not stored here. Code vendored by upstream under 3rdparty/
+(cpuinfo and others) carries its licence file next to it.

@@ -1,0 +1,6 @@
+# Upstream KytyPS5 user-interface assets (cursor shapes, the hidden-trophy icon). Not game data.
+assets/cursors/*.png
+assets/images/hidden-trophy.png
+# Upstream KytyPS5 test source (identical to upstream at tag u59-windows-20261024-int21): large because it
+# holds many test cases in one file.
+tests/ShaderRecompilerComputeTests.cpp
