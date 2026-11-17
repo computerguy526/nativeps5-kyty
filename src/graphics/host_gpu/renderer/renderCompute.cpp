@@ -737,6 +737,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			}
 		}
 	}
+	// nps5 KYTY_METALFX (metalfx.h): a compute pass that scales the scene to the output size.
+	if (MetalFx::Requested()) [[unlikely]] {
+		TryMetalFxCompute(buffer, bindings);
+	}
 	ResetBindings();
 }
 
@@ -893,6 +897,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	ShaderAccessBarrier(buffer, vk::PipelineStageFlagBits::eComputeShader);
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
+	}
+	if (MetalFx::Requested()) [[unlikely]] {
+		TryMetalFxCompute(buffer, bindings);
 	}
 	ResetBindings();
 }

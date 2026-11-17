@@ -111,6 +111,8 @@ struct State {
 	uint64_t    cycle_from  = 1;
 	std::string cycle_list;
 	int         cycle_index = -1;
+	// A compute pass that scales the scene colour to the output size (TryMetalFxCompute); 0 = none.
+	uint64_t    compute_hash = 0x4bf3b92602fbe696ull; // ASTRO BOT 01.007 levels
 	uint64_t    win_draws = 0, win_scene = 0; // pass draws of the current cycle window; those with a scene-size input
 	uint32_t    win_in_w = 0, win_in_h = 0;
 	uint32_t jitter_index   = 0;
@@ -183,6 +185,9 @@ State& Get() {
 				}
 				s.jitter = s.jitter || (c >= 'a' && c <= 'd');
 			}
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_COMPUTE_PASS"); value != nullptr) {
+			s.compute_hash = std::strtoull(value, nullptr, 16);
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_CYCLE_FROM"); value != nullptr) {
 			s.cycle_from = std::strtoull(value, nullptr, 10);
@@ -548,6 +553,34 @@ bool Execute(State& s, TextureCache& cache, CommandBuffer& buffer, const Pending
 	return true;
 }
 
+// The configuration of this frame: g the game's picture, s spatial, t temporal, a-d temporal with
+// the viewport jitter (KYTY_METALFX_CYCLE); changed: a new cycle window starts with this pass.
+char CycleConfig(State& s, bool& changed) {
+	char config = s.mode == Mode::Spatial ? 's' : s.jitter ? 'a' : 't';
+	changed     = false;
+	if (s.cycle_every != 0) {
+		const auto flips = g_flips.load(std::memory_order_relaxed);
+		const int  index = flips < s.cycle_from
+		                       ? 0
+		                       : static_cast<int>(((flips - s.cycle_from) / s.cycle_every) % s.cycle_list.size());
+		config = s.cycle_list[static_cast<size_t>(index)];
+		if (index != s.cycle_index) {
+			// "prev": the window that just ended (pass draws, those upscaling from a scene size, the last
+			// input size), so an analysis can tell level windows from loading screens.
+			std::printf("MetalFX cycle: flip %llu t_us %lld config %c prev draws %llu scene %llu in %ux%u\n",
+			            static_cast<unsigned long long>(flips), static_cast<long long>(NowNs() / 1000), config,
+			            static_cast<unsigned long long>(s.win_draws), static_cast<unsigned long long>(s.win_scene),
+			            s.win_in_w, s.win_in_h);
+			s.win_draws = 0;
+			s.win_scene = 0;
+			std::fflush(stdout);
+			s.cycle_index = index;
+			changed       = true;
+		}
+	}
+	return config;
+}
+
 } // namespace
 } // namespace MetalFx
 
@@ -582,28 +615,8 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 	const bool v1007 = layout == Layout::V1007;
 	// The configuration of this frame: g the game's picture, s spatial, t temporal, a-d temporal
 	// with the viewport jitter and MetalFX jitter signs ++, --, +-, -+ (KYTY_METALFX_CYCLE).
-	char config  = s.mode == Mode::Spatial ? 's' : s.jitter ? 'a' : 't';
 	bool changed = false;
-	if (s.cycle_every != 0) {
-		const auto flips = g_flips.load(std::memory_order_relaxed);
-		const int  index = flips < s.cycle_from
-		                       ? 0
-		                       : static_cast<int>(((flips - s.cycle_from) / s.cycle_every) % s.cycle_list.size());
-		config = s.cycle_list[static_cast<size_t>(index)];
-		if (index != s.cycle_index) {
-			// "prev": the window that just ended (pass draws, those upscaling from a scene size, the last
-			// input size), so an analysis can tell level windows from loading screens.
-			std::printf("MetalFX cycle: flip %llu t_us %lld config %c prev draws %llu scene %llu in %ux%u\n",
-			            static_cast<unsigned long long>(flips), static_cast<long long>(NowNs() / 1000), config,
-			            static_cast<unsigned long long>(s.win_draws), static_cast<unsigned long long>(s.win_scene),
-			            s.win_in_w, s.win_in_h);
-			s.win_draws = 0;
-			s.win_scene = 0;
-			std::fflush(stdout);
-			s.cycle_index = index;
-			changed       = true;
-		}
-	}
+	char config  = CycleConfig(s, changed);
 	if (s.cycle_every != 0) {
 		s.win_draws++;
 		if (v1007 && !pixel.buffer_sources.empty() && pixel.buffer_sources[0].address != 0 &&
@@ -746,6 +759,69 @@ bool RenderExecutor::FinishMetalFx(CommandBuffer& buffer) {
 		return false;
 	}
 	cache.CommitGpuWrite(cache.GetImage(s.pending.output));
+	return true;
+}
+
+// After a compute dispatch: when it is the pass that scales the scene colour to the output size
+// (State::compute_hash, KYTY_METALFX_COMPUTE_PASS=<hex hash>, 0 = off; ASTRO BOT 01.007 levels:
+// images[0] the colour at the scene size, images[1] the output, both RGBA16F), MetalFX overwrites
+// the output. Always the SPATIAL scaler: the pass has no motion vectors or depth of its own. The
+// game's dispatch has run (its bookkeeping stays as it is); true when the upscale was recorded.
+bool RenderExecutor::TryMetalFxCompute(CommandBuffer& buffer, const PreparedBindings& bindings) {
+	using namespace MetalFx;
+	auto& s = Get();
+	if (s.mode == Mode::Off || s.compute_hash == 0 || bindings.runtime == nullptr || !*bindings.runtime ||
+	    bindings.runtime->program->shader_hash != s.compute_hash) {
+		return false;
+	}
+	s.pass_draws++;
+	auto& cache = m_context.GetTextureCache();
+	if (bindings.images.size() < 2 || !bindings.images[0].image_id || !bindings.images[1].image_id ||
+	    cache.TryGetImage(bindings.images[0].image_id) == nullptr ||
+	    cache.TryGetImage(bindings.images[1].image_id) == nullptr) {
+		return Fail(s, Fallback::Bindings);
+	}
+	Pending p;
+	p.temporal = false;
+	p.layout   = Layout::V1007;
+	p.color    = bindings.images[0].image_id;
+	p.output   = bindings.images[1].image_id;
+	{
+		const auto& in  = cache.GetImage(p.color);
+		const auto& out = cache.GetImage(p.output);
+		p.in_w          = in.info.extent.width;
+		p.in_h          = in.info.extent.height;
+		p.out_w         = out.info.extent.width;
+		p.out_h         = out.info.extent.height;
+	}
+	const bool upscale = p.in_w < p.out_w && p.in_h < p.out_h && p.in_w <= s.max_in_w;
+	if (s.cycle_every != 0) {
+		s.win_draws++;
+		s.win_in_w = p.in_w;
+		s.win_in_h = p.in_h;
+		s.win_scene += upscale ? 1 : 0;
+	}
+	bool       changed = false;
+	const char config  = CycleConfig(s, changed);
+	if (config == 'g') {
+		Summary(s);
+		return false;
+	}
+	if (!upscale) {
+		return Fail(s, Fallback::NoUpscale);
+	}
+	if (!s.lookup_tried) {
+		s.lookup_tried = true;
+		s.command      = Lookup();
+	}
+	if (s.command == nullptr) {
+		return Fail(s, Fallback::NoDriver);
+	}
+	p.frame = s.last_frame + 1;
+	if (!Execute(s, cache, buffer, p)) {
+		return false;
+	}
+	cache.CommitGpuWrite(cache.GetImage(p.output));
 	return true;
 }
 
