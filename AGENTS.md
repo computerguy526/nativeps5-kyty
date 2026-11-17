@@ -37,7 +37,7 @@ cmake --build build-arm64 -j 4 --target kyty_gpu                        # nice 5
 cmake --build build-arm64 -j 4 --target load_card_tests hosted_guard_tests cp_sequencer_tests && ./build-arm64/load_card_tests
 ```
 
-Test executables are `EXCLUDE_FROM_ALL` targets named in `CMakeLists.txt` (`<name>_tests`, no ctest); build the
+Test executables are `EXCLUDE_FROM_ALL` targets named in `CMakeLists.txt` (`<name>_tests`; only some are also registered with ctest); build the
 one you need and run it. `.nps5-check-tests` is the list the checker builds and runs (load card, hosted guard and
 ranges, hybrid seam, CP sequencer, VRAM budget, GPU safety and others). A guard gets a test that fires it and one that
 stays silent on the normal path.
@@ -64,4 +64,4 @@ stays silent on the normal path.
 - Shaders, pipeline lists and journals derived from a title stay under `NPS5_SCRATCH`; the only committed exception is
   a game profile's `pipelines.kyplst` in the entry repository, with its verification record.
 
-Pull requests use `.github/pull_request_template.md` (it points at the entry repository's CONTRIBUTING.md; fill the evidence block with `nps5 report`, see docs/agents/evidence.md there). `scripts/check.sh --tree` of the entry repository run against this checkout must report 0 failures; this repository's `.nps5-check-tests` lists the CPU-only tests it runs.
+Pull requests use `.github/pull_request_template.md` (it points at the entry repository's CONTRIBUTING.md; fill the evidence block with `nps5 report`, see docs/agents/evidence.md there). The entry repository's `scripts/check.sh --tree`, run from inside this checkout, must report 0 failures; this repository's `.nps5-check-tests` lists the CPU-only tests it runs.
