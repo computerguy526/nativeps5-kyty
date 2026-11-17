@@ -299,7 +299,7 @@ public:
 		for (uint32_t i = 0; i < kW * kH * 4u; i += 4) {
 			max = std::max<unsigned>(max, std::max({px[i], px[i + 1], px[i + 2]}));
 		}
-		const bool black = max <= kBlackMax;
+		const bool black = LoadCard::FrameIsBlack(max);
 		if (LoadCard::LogEnabled() && LoadCard::State().probe_state.load(std::memory_order_relaxed) != (black ? 1 : 2)) {
 			std::fprintf(stderr, "[loadcard] probe: game frame is %s (max %u)\n", black ? "black" : "content", max);
 		}
@@ -354,7 +354,7 @@ public:
 	}
 
 private:
-	static constexpr uint32_t kW = 32, kH = 18, kBlackMax = 24; // the game's black loading frames are flat ~13/255
+	static constexpr uint32_t kW = 64, kH = 36; // card3: black = every pixel <= LoadCard::kBlackMax (max luma, not mean)
 	LumaProbe(): m_enabled(LoadCard::BlackEnabled()) {}
 	void Ensure(GraphicContext& graphics) {
 		if (m_image != nullptr) {
@@ -2267,9 +2267,10 @@ void Presenter::Impl::LoadCardLoop(std::stop_token stop) {
 		// load card: the full-screen card belongs to the session start (before the first content frame). Afterwards only a
 		// genuine long stall (>= GapMs without content, compiles pending or VFS bytes still moving) brings it back.
 		const bool content_seen = shared.content_seen.load(std::memory_order_acquire);
-		const bool content = seq != 0 && (!LoadCard::BlackEnabled() || shared.probe_state.load(std::memory_order_relaxed) == 2);
+		const bool video   = LoadCard::VideoPlaying();
+		const bool content = seq != 0 && (video || !LoadCard::BlackEnabled() || shared.probe_state.load(std::memory_order_relaxed) == 2);
 		const auto pol = LoadCard::MakePolicy(content_seen, content, seq, window.loop.paused.load(std::memory_order_acquire),
-		                                      LoadCard::AnyReason(), LoadCard::MidgameEnabled(), LoadCard::StartMs(), LoadCard::GapMs());
+		                                      LoadCard::AnyReason(), LoadCard::MidgameEnabled(), LoadCard::StartMs(), LoadCard::GapMs(), video);
 		wd.SetStartMs(pol.start_ms);
 		bool work = LoadCard::Pending(snap);
 		if (content_seen) {
@@ -2284,7 +2285,7 @@ void Presenter::Impl::LoadCardLoop(std::stop_token stop) {
 			             snap.waiting, static_cast<unsigned long long>(snap.replay_done),
 			             static_cast<unsigned long long>(snap.replay_total));
 		}
-		if (d.present_now && PresentLoadCard(seq, true)) {
+		if (d.present_now && !video && PresentLoadCard(seq, true)) {
 			shown++;
 		}
 		if (d.stopped && LoadCard::LogEnabled()) {

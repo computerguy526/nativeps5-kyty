@@ -16,8 +16,11 @@
 //   KYTY_LOADCARD_MS=<ms>     idle time without a game flip before the card (default 500)
 //   KYTY_LOADCARD_HZ=<hz>     card present rate (default 30, 1..60)
 //   KYTY_LOADCARD_LOG=1       log start/stop to stderr
-//   KYTY_LOADCARD_MIDGAME=0   after the first real content frame the full card never shows again (default 1: only
-//                             for a genuine stall, see below)
+//   KYTY_LOADCARD_MIDGAME=1   re-enable the mid-game card (default 0: the full card belongs to the opening
+//                             load ONLY; later loads show just the small bottom-left "compiling" badge). With 1,
+//                             after the first real content frame the card can return for a genuine stall, see below.
+//   The opening card stops for good at the first frame the game presents that is not fully black (any pixel
+//   above kBlackMax on the probe), and never shows while a video plays (nps5_avplayer_playing_count() > 0).
 //   KYTY_LOADCARD_GAP_S=<s>   policy: the full-screen card belongs to the session start (before the first
 //                             real content frame). Afterwards the game's own black fades/cuts show nothing; the card
 //                             returns only when no content frame was presented for this long (default 4.0 s) AND the
@@ -75,10 +78,21 @@ inline bool BlackEnabled() {
 inline bool MidgameEnabled() {
 	static const bool on = [] {
 		const char* v = std::getenv("KYTY_LOADCARD_MIDGAME");
-		return v == nullptr || v[0] != '0';
+		return v != nullptr && v[0] != '\0' && v[0] != '0';
 	}();
 	return on;
 }
+// card3: a video (AvPlayer, e.g. the PlayStation Studios logo) is playing: that is content, never card.
+// Runtime hook nps5_avplayer_playing_count() (ps5recomp AvPlayer); absent -> 0.
+inline int VideoPlayingCount() {
+	static const auto fn = reinterpret_cast<int (*)()>(dlsym(RTLD_DEFAULT, "nps5_avplayer_playing_count"));
+	return fn != nullptr ? fn() : 0;
+}
+inline bool VideoPlaying() { return VideoPlayingCount() > 0; }
+// card3 luma test: a frame is "black" only when no sampled pixel channel exceeds kBlackMax (max, not mean: a dark
+// frame with a small logo is content).
+inline constexpr unsigned kBlackMax = 2;
+inline bool FrameIsBlack(unsigned max_channel) { return max_channel <= kBlackMax; }
 inline uint64_t GapMs() {
 	static const uint64_t ms = [] {
 		const char* v = std::getenv("KYTY_LOADCARD_GAP_S");
@@ -134,6 +148,7 @@ inline void NoteProbe(bool black) { State().probe_state.store(black ? 1 : 2, std
 // The current game frame is (still) black: the last probe said black, or no answer yet for the first flips.
 inline bool BlackNow() {
 	if (!BlackEnabled()) return false;
+	if (VideoPlaying()) return false; // card3: a playing video is content
 	auto& s     = State();
 	const auto p = s.probe_state.load(std::memory_order_relaxed);
 	if (p == 1) return true;
@@ -180,8 +195,9 @@ struct Policy {
 	uint64_t start_ms = 0;
 };
 inline Policy MakePolicy(bool content_seen, bool content_now, uint64_t seq, bool paused, bool any_reason, bool midgame,
-                         uint64_t start_ms, uint64_t gap_ms) {
+                         uint64_t start_ms, uint64_t gap_ms, bool video = false) {
 	Policy p;
+	if (video) return p; // card3: never over a video
 	if (!content_seen) {
 		p.armed    = (any_reason || seq != 0) && !content_now && !paused;
 		p.any      = any_reason;

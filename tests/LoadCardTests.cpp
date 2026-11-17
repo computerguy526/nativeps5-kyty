@@ -290,6 +290,23 @@ int main() {
 			for (int i = 0; i < 400; i++) m.Tick(false, true, true, true);
 			CHECK(!m.shown_ever);
 		}
+		// card3: the mid-game card is OFF by default: a long stall with compiles + VFS bytes shows nothing.
+		{
+			CHECK(!MidgameEnabled()); // env unset in the test process
+			Sim m;
+			m.midgame = MidgameEnabled();
+			for (int i = 0; i < 100; i++) m.Tick(true, false, false, false);
+			for (int i = 0; i < 600; i++) m.Tick(false, true, true, true);
+			CHECK(!m.shown_ever);
+		}
+		// card3: dark logo frame (small bright logo on a near-black frame) is content; only fully black is black.
+		CHECK(FrameIsBlack(0) && FrameIsBlack(kBlackMax) && !FrameIsBlack(kBlackMax + 1));
+		CHECK(!FrameIsBlack(13)); // flat dark game frame / dark logo frame
+		CHECK(!FrameIsBlack(40)); // dim logo on black
+		// card3: a playing video is content: policy never arms, before or after the first content frame.
+		CHECK(!MakePolicy(false, false, 0, false, true, true, 500, 4000, true).armed);
+		CHECK(!MakePolicy(true, false, 9, false, true, true, 500, 4000, true).armed);
+		CHECK(VideoPlayingCount() >= 0 && !VideoPlaying()); // no AvPlayer hook in the test process
 		// Policy: startup is any-reason with the short start, afterwards pending-only with the gap.
 		{
 			auto a = MakePolicy(false, false, 0, false, true, true, 500, 4000);
