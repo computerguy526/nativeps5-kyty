@@ -655,6 +655,21 @@ target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ProgressOverlayTests.cpp")
 target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5: the hosted guest-memory seam without the kernel or the renderer (header only): the reader
+# slots, the range map (cut ranges lose their alias, one-step replace) and the bridge's pre-start
+# notification queue, self memory limit and main-queue shutdown gate.
+add_executable(hosted_guard_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostedGuardTests.cpp")
+target_include_directories(hosted_guard_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(hosted_ranges_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostedRangesTests.cpp")
+target_include_directories(hosted_ranges_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(hybrid_seam_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HybridSeamTests.cpp")
+target_include_directories(hybrid_seam_tests PRIVATE "${KYTY_SOURCE_DIR}")
+if(LINUX)
+	target_link_libraries(hosted_guard_tests Threads::Threads)
+	target_link_libraries(hosted_ranges_tests Threads::Threads)
+	target_link_libraries(hybrid_seam_tests Threads::Threads)
+endif()
+
 # nps5 kmem: trimmed native images of partially resident textures (residentTrim.h), no GPU.
 add_executable(resident_trim_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ResidentTrimTests.cpp"

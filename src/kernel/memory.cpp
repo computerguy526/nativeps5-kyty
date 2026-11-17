@@ -40,6 +40,7 @@
 #include <optional>
 #include <shared_mutex>
 #include "kernel/hostedGuard.h"
+#include "kernel/hostedRanges.h"
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1095,16 +1096,12 @@ static std::recursive_mutex g_memory_operation_mutex;
 // ---- nps5 hosted memory (memory.h HostedEnable) ----
 namespace Hosted {
 
-struct Range {
-	uint64_t       size  = 0;
-	uint32_t       flags = 0;
-	const uint8_t* alias = nullptr; // host view of the range's first byte, or null
-};
+using Range = Common::HostedRanges::Range; // kernel/hostedRanges.h
 
 static bool                      g_active = false;
 static HostedCallbacks           g_callbacks;
 static std::shared_mutex         g_mutex;
-static std::map<uint64_t, Range> g_ranges; // by guest base, never overlapping
+static Common::HostedRanges::Map g_ranges; // by guest base, never overlapping
 static std::atomic<uint64_t>     g_map_generation {1};
 
 // nps5 slowlvl (kernel/hostedGuard.h): readers of g_ranges announce themselves in a per-thread slot
@@ -2107,11 +2104,13 @@ bool HostedRegister(uint64_t base, uint64_t size, uint32_t flags, const void* al
 	if (!Hosted::g_active || g_virtual_ranges == nullptr || size == 0 || UINT64_MAX - base < size) {
 		return false;
 	}
-	(void)HostedUnregister(base, size);
-	{
-		const Hosted::ExclusiveGuard lock;
-		Hosted::g_ranges[base] = {size, flags, static_cast<const uint8_t*>(alias)};
-		Hosted::g_map_generation.fetch_add(1, std::memory_order_relaxed);
+	// Replaces what is registered there (the map: kernel/hostedRanges.h), then the tracker's view.
+	Common::HostedRanges::Pieces removed;
+	Common::HostedRanges::Register<Hosted::ExclusiveGuard>(Hosted::g_ranges, Hosted::g_map_generation, base, size, flags,
+	                                                       static_cast<const uint8_t*>(alias), removed);
+	for (const auto& [start, bytes]: removed) {
+		UnmapGpuRange(start, bytes);
+		g_virtual_ranges->Remove(start, bytes);
 	}
 	int protection = 0;
 	protection |= (flags & Hosted::FlagCpuRead) != 0 ? PROT_CPU_READ : 0;
@@ -2128,37 +2127,9 @@ bool HostedUnregister(uint64_t base, uint64_t size) {
 	if (!Hosted::g_active || g_virtual_ranges == nullptr || size == 0 || UINT64_MAX - base < size) {
 		return false;
 	}
-	const auto end = base + size;
-	std::vector<std::pair<uint64_t, uint64_t>> removed; // the parts of registered ranges inside [base, end)
-	{
-		const Hosted::ExclusiveGuard lock;
-		auto             it = Hosted::g_ranges.upper_bound(base);
-		if (it != Hosted::g_ranges.begin()) {
-			--it;
-		}
-		while (it != Hosted::g_ranges.end() && it->first < end) {
-			const auto start = it->first;
-			const auto range = it->second;
-			const auto stop  = start + range.size;
-			if (stop <= base) {
-				++it;
-				continue;
-			}
-			it = Hosted::g_ranges.erase(it);
-			if (start < base) {
-				Hosted::g_ranges[start] = {base - start, range.flags, range.alias};
-			}
-			if (stop > end) {
-				Hosted::g_ranges[end] = {stop - end, range.flags,
-				                         range.alias != nullptr ? range.alias + (end - start) : nullptr};
-			}
-			removed.emplace_back(std::max(start, base), std::min(stop, end) - std::max(start, base));
-			it = Hosted::g_ranges.lower_bound(std::min(stop, end));
-		}
-		if (!removed.empty()) {
-			Hosted::g_map_generation.fetch_add(1, std::memory_order_relaxed);
-		}
-	}
+	Common::HostedRanges::Pieces removed; // the parts of registered ranges inside [base, base + size)
+	(void)Common::HostedRanges::Unregister<Hosted::ExclusiveGuard>(Hosted::g_ranges, Hosted::g_map_generation, base, size,
+	                                                               removed);
 	for (const auto& [start, bytes]: removed) {
 		UnmapGpuRange(start, bytes);
 		g_virtual_ranges->Remove(start, bytes);

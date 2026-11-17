@@ -255,7 +255,10 @@ typedef struct KytyGpuApi {
 	/* Guest memory notifications (guest addresses). Hosted memory: register_memory may name a range that
 	 * overlaps registered ones (it replaces them); unregister_memory may name any part of them (the rest
 	 * stays) and is called BEFORE the host releases the pages, so it may wait for GPU work that still
-	 * reads them; when it returns the library has disarmed every watch in the range. */
+	 * reads them; when it returns the library has disarmed every watch in the range.
+	 * Aliases: an alias belongs to the range as it was registered. When unregister_memory cuts a range,
+	 * the library stops using the alias for the parts that stay (it reads them through the guest view)
+	 * until the host registers them again; the host may free the alias once unregister_memory returned. */
 	int (*register_memory)(uint64_t base, uint64_t size, uint32_t flags, const void* alias);
 	int (*unregister_memory)(uint64_t base, uint64_t size);
 	int (*invalidate_memory)(uint64_t base, uint64_t size); /* the CPU wrote the range behind the watch */
