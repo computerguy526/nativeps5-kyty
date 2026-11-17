@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/lodStats.h"
+#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 
 #include "common/assert.h"
 #include "common/hangTrace.h"
@@ -141,6 +142,25 @@ void LodStatsCounter::Report(uint64_t destination, uint32_t size, uint32_t contr
 	// into their newest statistics.
 	if (mode == Publish::Completion && m_initialized && !writes_report && !reset_requested) {
 		return;
+	}
+	// KYTY_LOD_STATS_EARLY_LOG=1: per report (Astro Bot: one per frame), the pixel draws since
+	// the last one by variant (lodStatsEarlyDraw.h).
+	static const bool early_log = [] {
+		const auto* value = std::getenv("KYTY_LOD_STATS_EARLY_LOG");
+		return value != nullptr && value[0] != 0 && std::strcmp(value, "0") != 0;
+	}();
+	if (early_log) [[unlikely]] {
+		static uint64_t reports = 0;
+		auto&           totals  = ShaderRecompiler::g_lod_stats_early_totals;
+		std::fprintf(stderr,
+		             "[lodstats] report %llu draws instrumented-early %llu instrumented-guest-early "
+		             "%llu instrumented-late %llu plain-for-writes %llu plain-no-counter %llu\n",
+		             static_cast<unsigned long long>(reports++),
+		             static_cast<unsigned long long>(totals.instrumented_early.exchange(0)),
+		             static_cast<unsigned long long>(totals.instrumented_guest.exchange(0)),
+		             static_cast<unsigned long long>(totals.instrumented_late.exchange(0)),
+		             static_cast<unsigned long long>(totals.plain_for_writes.exchange(0)),
+		             static_cast<unsigned long long>(totals.plain_no_counter.exchange(0)));
 	}
 	auto& scheduler = m_context.GetCommandScheduler();
 	scheduler.EndRendering();

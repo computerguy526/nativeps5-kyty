@@ -1053,6 +1053,263 @@ void CheckLodStatsPlainVariant() {
               plain.size());
 }
 
+// KYTY_LOD_STATS_EARLY_TESTS (recompiler/LodStatsEarlyTests.h): the instrumented module of a pixel
+// shader whose only write is the GET_LOD_STATS feedback declares EarlyFragmentTests, whatever the
+// guest's Z order and KILL_ENABLE say; its feedback-free twin and the option-off module are the
+// modules of before. Compile-only, needs no GPU (--lod-stats-codegen-only).
+void CheckLodStatsEarlyTests() {
+  constexpr const char *name = "CodegenLodStatsEarlyTests";
+  // Words of every `OpExecutionMode %main EarlyFragmentTests`, and the module without them.
+  const auto strip_early = [](const std::vector<u32> &spirv, u32 *found) {
+    std::vector<u32> out(spirv.begin(), spirv.begin() + 5);
+    *found = 0;
+    for (size_t i = 5; i < spirv.size();) {
+      const u32 words = spirv[i] >> 16u;
+      Require("CodegenLodStatsEarlyTests", "module walk", words != 0u && i + words <= spirv.size(),
+              "malformed SPIR-V module");
+      if ((spirv[i] & 0xffffu) == 16u /* OpExecutionMode */ && words == 3u &&
+          spirv[i + 2] == 9u /* EarlyFragmentTests */) {
+        (*found)++;
+      } else {
+        out.insert(out.end(), spirv.begin() + static_cast<std::ptrdiff_t>(i),
+                   spirv.begin() + static_cast<std::ptrdiff_t>(i + words));
+      }
+      i += words;
+    }
+    return out;
+  };
+  struct Shape {
+    const char *what;
+    bool kill, early_z, depth_export, mask_export;
+    u32 on_instrumented; // EarlyFragmentTests declarations expected with the option on
+    u32 guest;           // ... in every other module (the guest's own early tests)
+  };
+  static const Shape shapes[] = {
+      {"late Z order", false, false, false, false, 1u, 0u},
+      {"late Z order, kill", true, false, false, false, 1u, 0u},
+      {"early Z order", false, true, false, false, 1u, 1u},
+      {"early Z order, kill", true, true, false, false, 1u, 0u},
+      {"depth export", false, false, true, false, 0u, 0u},
+      {"sample mask export", true, false, false, true, 0u, 0u},
+  };
+  u32 checked = 0;
+  for (const auto &shape : shapes) {
+    GraphicsCase test;
+    test.name = name;
+    AppendVMovLiteral(&test.fragment_code, 20, 0x3f000000u);
+    AppendVMovLiteral(&test.fragment_code, 21, 0x3f000000u);
+    test.fragment_code.push_back(EncodeMimg0(0x20, 0xf)); // image_sample v[0:3], v[20:21]
+    test.fragment_code.push_back(EncodeMimg1(0, 20));
+    test.fragment_code.push_back(EncodeExp0(0, 0xf, true, false, true));
+    test.fragment_code.push_back(EncodeExp1(0, 1, 2, 3));
+    AppendEnd(&test.fragment_code);
+    test.user_data = MakeSampledTextureData(Prospero::BufferFormat::k32Float);
+    test.has_user_data = true;
+    test.opcodes = {ShaderOpcode::V_MOV_B32, ShaderOpcode::IMAGE_SAMPLE, ShaderOpcode::EXP,
+                    ShaderOpcode::S_ENDPGM};
+    test.pixel_kill = shape.kill;
+    test.pixel_early_z = shape.early_z;
+    test.pixel_depth_export = shape.depth_export;
+    test.pixel_sample_mask_export = shape.mask_export;
+    CodegenOptions on = GetCodegenOptions();
+    on.lod_stats_early_tests = true;
+    CodegenOptions off = on;
+    off.lod_stats_early_tests = false;
+    CompiledShader with, without;
+    {
+      ScopedCodegenOptions scope(on);
+      with = CompileFragmentCase(test, true); // validates both modules (spirv-val)
+    }
+    {
+      ScopedCodegenOptions scope(off);
+      without = CompileFragmentCase(test, true);
+    }
+    u32 on_instrumented = 0, on_plain = 0, off_instrumented = 0, off_plain = 0;
+    const auto on_stripped = strip_early(with.spirv, &on_instrumented);
+    strip_early(with.spirv_plain, &on_plain);
+    const auto off_stripped = strip_early(without.spirv, &off_instrumented);
+    strip_early(without.spirv_plain, &off_plain);
+    const std::string what = shape.what;
+    Require(name, "instrumented module",
+            on_instrumented == shape.on_instrumented && CountSpirv(with.spirv, "OpAtomicUMin") == 1u,
+            what + ": the instrumented module declares EarlyFragmentTests " +
+                std::to_string(on_instrumented) + " times, expected " +
+                std::to_string(shape.on_instrumented));
+    Require(name, "other modules",
+            on_plain == shape.guest && off_instrumented == shape.guest && off_plain == shape.guest,
+            what + ": the plain or the option-off module changed its early tests (" +
+                std::to_string(on_plain) + ", " + std::to_string(off_instrumented) + ", " +
+                std::to_string(off_plain) + ", expected " + std::to_string(shape.guest) + ")");
+    // Option off: word for word the module of the emitter before the option (golden FNV-1a 64 of
+    // the late-Z shape, the value of CodegenLodStatsLaneRecord's default module).
+    if (!shape.kill && !shape.early_z && !shape.depth_export && !shape.mask_export) {
+      uint64_t hash = 1469598103934665603ull;
+      for (const u32 word : without.spirv) {
+        for (u32 shift = 0; shift < 32u; shift += 8u) {
+          hash = (hash ^ ((word >> shift) & 0xffu)) * 1099511628211ull;
+        }
+      }
+      Require(name, "golden (option off)",
+              without.spirv.size() == 837u && hash == 0xf9ed23be184182eeull,
+              "the option-off instrumented pixel shader changed (words " +
+                  std::to_string(without.spirv.size()) + ", fnv " + std::to_string(hash) + ")");
+      Require(name, "three words", with.spirv.size() == without.spirv.size() + 3u,
+              "the option adds something other than one execution mode");
+    }
+    // Nothing but the execution mode differs, and the plain variant does not depend on the option.
+    Require(name, "only the execution mode", on_stripped == off_stripped,
+            what + ": the option changed more than the execution mode");
+    Require(name, "plain variant unchanged", with.spirv_plain == without.spirv_plain,
+            what + ": the option changed the feedback-free variant");
+    // The predicate the renderer uses for the same program agrees with the emitted module.
+    ShaderPixelInputInfo ps{};
+    ps.ps_pixel_kill_enable = shape.kill;
+    ps.ps_early_z = shape.early_z;
+    ps.ps_depth_export_enable = shape.depth_export;
+    ps.ps_sample_mask_export_enable = shape.mask_export;
+    {
+      ScopedCodegenOptions scope(on);
+      Require(name, "predicate (on)",
+              ShaderRecompiler::LodStatsEarlyTests(with.program, ps) ==
+                  (shape.on_instrumented != shape.guest),
+              what + ": LodStatsEarlyTests disagrees with the emitted module");
+    }
+    {
+      ScopedCodegenOptions scope(off);
+      Require(name, "predicate (off)", !ShaderRecompiler::LodStatsEarlyTests(with.program, ps),
+              what + ": LodStatsEarlyTests is true with the option off");
+    }
+    checked++;
+  }
+  std::printf("[codegen] %-32s ok (%u shader shapes)\n", name, checked);
+}
+
+// KYTY_LOD_STATS_EARLY_TESTS, the draw side (renderer/lodStatsEarlyDraw.h): which draws of an
+// instrumented, early-tested program must run the feedback-free variant. Every combination of
+// the registers the rule reads. No GPU.
+void CheckLodStatsEarlyDraws() {
+  constexpr const char *name = "CodegenLodStatsEarlyDraws";
+  using ShaderRecompiler::DrawWritesDepthOrStencil;
+  // A pixel program whose only write is the mip-statistics buffer, and variants with another one.
+  ShaderRecompiler::IR::CompiledShaderInfo program;
+  program.stage = ShaderType::Pixel;
+  program.bindings.mip_stats_count = 1;
+  program.bindings.descriptors.push_back({.kind = ShaderRecompiler::IR::DescriptorBindingKind::MipStats});
+  program.bindings.descriptors.push_back({.kind = ShaderRecompiler::IR::DescriptorBindingKind::FaultBuffer});
+  Require(name, "only write", ShaderRecompiler::MipStatsIsOnlyWrite(program),
+          "a pixel program with only the mip-statistics binding was rejected");
+  {
+    auto other = program;
+    other.has_address_writes = true;
+    Require(name, "address writes", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a program with address writes was accepted");
+    other = program;
+    other.bindings.descriptors.push_back({.kind = ShaderRecompiler::IR::DescriptorBindingKind::Gds});
+    Require(name, "gds", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a program that binds GDS was accepted");
+    other = program;
+    other.info.buffers.emplace_back();
+    other.info.buffers.back().written = true;
+    Require(name, "written buffer", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a program that writes a buffer was accepted");
+    other = program;
+    other.info.buffers.emplace_back();
+    other.info.buffers.back().atomic = true;
+    Require(name, "atomic buffer", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a program with a buffer atomic was accepted");
+    other = program;
+    other.info.images.emplace_back();
+    other.info.images.back().written = true;
+    Require(name, "written image", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a program that writes an image was accepted");
+    other = program;
+    other.stage = ShaderType::Compute;
+    Require(name, "stage", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a compute program was accepted");
+    other = program;
+    other.bindings.mip_stats_count = 0;
+    other.bindings.descriptors.clear();
+    Require(name, "no statistics", !ShaderRecompiler::MipStatsIsOnlyWrite(other),
+            "a program without mip statistics was accepted");
+  }
+  CodegenOptions on = GetCodegenOptions();
+  on.lod_stats_early_tests = true;
+  CodegenOptions off = on;
+  off.lod_stats_early_tests = false;
+  u32 checked = 0;
+  // z_enable, z_write, zfunc 0..7, stencil_enable, backface, front op set, back op set,
+  // front mask, back mask, kill, alpha to mask (+ its per-shader disable).
+  for (u32 bits = 0; bits < (1u << 11u); bits++) {
+    for (u32 zfunc = 0; zfunc < 8u; zfunc++) {
+      const bool z_enable = (bits & 1u) != 0, z_write = (bits & 2u) != 0;
+      const bool stencil = (bits & 4u) != 0, backface = (bits & 8u) != 0;
+      const bool front_op = (bits & 16u) != 0, back_op = (bits & 32u) != 0;
+      const bool front_mask = (bits & 64u) != 0, back_mask = (bits & 128u) != 0;
+      const bool kill = (bits & 256u) != 0, a2m = (bits & 512u) != 0;
+      const bool a2m_disable = (bits & 1024u) != 0;
+      HW::Context hw;
+      HW::DepthControl dc;
+      dc.z_enable = z_enable;
+      dc.z_write_enable = z_write;
+      dc.zfunc = static_cast<uint8_t>(zfunc);
+      dc.stencil_enable = stencil;
+      dc.backface_enable = backface;
+      hw.SetDepthControl(dc);
+      HW::StencilControl sc;
+      // One of the three operations each, chosen by the function value to cover all three.
+      (zfunc % 3u == 0 ? sc.stencil_fail : zfunc % 3u == 1 ? sc.stencil_zpass : sc.stencil_zfail) =
+          front_op ? 2u : 0u;
+      (zfunc % 3u == 0 ? sc.stencil_zfail_bf : zfunc % 3u == 1 ? sc.stencil_fail_bf
+                                                                : sc.stencil_zpass_bf) =
+          back_op ? 1u : 0u;
+      hw.SetStencilControl(sc);
+      HW::StencilMask sm;
+      sm.stencil_writemask = front_mask ? 0x80u : 0u;
+      sm.stencil_writemask_bf = back_mask ? 0x01u : 0u;
+      hw.SetStencilMask(sm);
+      HW::DepthShaderControl db;
+      db.alpha_to_mask_disable = a2m_disable;
+      hw.SetDepthShaderControl(db);
+      hw.SetAlphaToMaskEnable(a2m);
+      const bool depth_write = z_enable && z_write && zfunc != 2u;
+      const bool stencil_write =
+          stencil && ((front_op && front_mask) || (backface && back_op && back_mask));
+      const bool writes = depth_write || stencil_write;
+      Require(name, "writes", DrawWritesDepthOrStencil(hw) == writes,
+              "DrawWritesDepthOrStencil is wrong for register combination " +
+                  std::to_string(bits) + " / zfunc " + std::to_string(zfunc));
+      ShaderPixelInputInfo ps{};
+      ps.ps_pixel_kill_enable = kill;
+      const bool coverage = kill || (a2m && !a2m_disable);
+      {
+        ScopedCodegenOptions scope(on);
+        Require(name, "plain (on)",
+                ShaderRecompiler::LodStatsEarlyTestsNeedPlain(program, ps, hw) ==
+                    (coverage && writes),
+                "LodStatsEarlyTestsNeedPlain is wrong for register combination " +
+                    std::to_string(bits) + " / zfunc " + std::to_string(zfunc));
+        // Depth or sample-mask export, or another write: the module is not early, nothing to avoid.
+        auto exporting = ps;
+        exporting.ps_depth_export_enable = true;
+        auto writer = program;
+        writer.has_address_writes = true;
+        Require(name, "not early",
+                !ShaderRecompiler::LodStatsEarlyTestsNeedPlain(program, exporting, hw) &&
+                    !ShaderRecompiler::LodStatsEarlyTestsNeedPlain(writer, ps, hw),
+                "a draw of a module without forced early tests was sent to the plain variant");
+      }
+      {
+        ScopedCodegenOptions scope(off);
+        Require(name, "plain (off)",
+                !ShaderRecompiler::LodStatsEarlyTestsNeedPlain(program, ps, hw),
+                "LodStatsEarlyTestsNeedPlain is true with the option off");
+      }
+      checked++;
+    }
+  }
+  std::printf("[codegen] %-32s ok (%u register combinations)\n", name, checked);
+}
+
 // Buffer and scalar-buffer loads that straddle the end of a guest descriptor range whose size is
 // not a multiple of 4 bytes, with the shader's bounds check and with the device's
 // robustBufferAccess2 check. Out-of-range dwords (any byte past the range) must read 0, and so
@@ -2106,6 +2363,8 @@ void RunAll(VulkanHarness *vulkan) {
   CheckLodStatsGate();
   CheckLodStatsPlainVariant();
   CheckIndirectImageLodStats();
+  CheckLodStatsEarlyTests();
+  CheckLodStatsEarlyDraws();
   CheckMoveRelValueSet(vulkan);
   CheckMoveRelKnownZeros(vulkan);
   CheckUniformLaneReads(vulkan);

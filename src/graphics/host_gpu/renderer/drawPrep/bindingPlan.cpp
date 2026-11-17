@@ -16,6 +16,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/lodStats.h"
+#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/pipeline/textureBindingMemo.h"
@@ -544,7 +545,9 @@ void PrefetchBindingPipeline(const BindingPlanContext& context, const RegisterSn
 		bool active = false;
 		static thread_local std::vector<uint32_t> scratch;
 		if (!PlanShaderData(*prepared.pixel_info.stage.program, prepared.pixel_prep.resources, scratch, active)) return;
-		plan.plain_pixel = !active;
+		plan.plain_pixel = !active || ShaderRecompiler::LodStatsEarlyTestsNeedPlain(
+		                                  *prepared.pixel_info.stage.program, prepared.pixel_info,
+		                                  registers.context);
 	}
 	PlanPipeline(context, registers, index_args, prepared, plan, true);
 }
@@ -610,7 +613,11 @@ void ComputeBindingPlan(const BindingPlanContext& context, const RegisterSnapsho
 				return; // no pipeline or statics without the choice
 			}
 		}
-		plan.plain_pixel = !mip_stats_active;
+		// KYTY_LOD_STATS_EARLY_TESTS: or the early tests of the instrumented program would not be
+		// equivalent for this draw (lodStatsEarlyDraw.h).
+		plan.plain_pixel = !mip_stats_active ||
+		                   ShaderRecompiler::LodStatsEarlyTestsNeedPlain(
+		                       *pixel_program, prepared.pixel_info, registers.context);
 	}
 	if (BindingPartEnabled(parts, BindingPart::Statics)) {
 		PlanStatics(registers, prepared, plan);

@@ -19,6 +19,17 @@ bool EnvFlag(const char* name, bool default_value) {
 	return std::strcmp(value, "0") != 0;
 }
 
+} // namespace
+
+// LodStatsCounter::PlainVariant()'s reading of the same variable: unset, empty or anything but
+// "0" and "verify" is on.
+bool LodStatsPlainVariantOn(const char* value) {
+	return value == nullptr || value[0] == '\0' ||
+	       (std::strcmp(value, "0") != 0 && std::strcmp(value, "verify") != 0);
+}
+
+namespace {
+
 CodegenOptions FromEnvironment() {
 	CodegenOptions options;
 	options.movrel_range = EnvFlag("KYTY_MOVREL_RANGE", options.movrel_range);
@@ -37,6 +48,9 @@ CodegenOptions FromEnvironment() {
 	options.single_f2i_saturation =
 	    EnvFlag("KYTY_SINGLE_F2I_SATURATION", options.single_f2i_saturation);
 	options.lod_stats_gate = EnvFlag("KYTY_LOD_STATS_GATE", options.lod_stats_gate);
+	options.lod_stats_early_tests =
+	    EnvFlag("KYTY_LOD_STATS_EARLY_TESTS", options.lod_stats_early_tests) &&
+	    LodStatsPlainVariantOn(std::getenv("KYTY_LOD_STATS_PLAIN_VARIANT"));
 	options.robust_buffer_loads = EnvFlag("KYTY_ROBUST_BUFFER_LOADS", options.robust_buffer_loads);
 	options.branchless_loads    = EnvFlag("KYTY_BRANCHLESS_LOADS", options.branchless_loads);
 	options.branchless_lds      = EnvFlag("KYTY_BRANCHLESS_LDS", options.branchless_lds);

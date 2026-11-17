@@ -132,6 +132,14 @@ struct CodegenOptions {
 	// KYTY_LOD_STATS_GATE=0: record GET_LOD_STATS feedback for every sample, including images whose
 	// T# has no mip-statistics counter, and issue the finest-level AtomicUMin unconditionally.
 	bool lod_stats_gate = true;
+	// KYTY_LOD_STATS_EARLY_TESTS=0: leave the depth/stencil tests of an instrumented pixel shader
+	// where the guest's DB_SHADER_CONTROL puts them. By default the instrumented module declares
+	// EarlyFragmentTests whenever the GET_LOD_STATS feedback is the program's only write, and a
+	// draw for which that is not equivalent takes the feedback-free variant (recompiler/
+	// LodStatsEarlyTests.h: the late tests of a memory-writing fragment shader miss the depth of a
+	// pre-pass by one ulp on Apple GPUs = dark specks on the presents that record statistics).
+	// Off as well whenever KYTY_LOD_STATS_PLAIN_VARIANT is not on (no variant to fall back to).
+	bool lod_stats_early_tests = true;
 	// KYTY_ROBUST_BUFFER_LOADS=0: bounds-check every plain dword storage-buffer load in the shader
 	// even when the device's robustBufferAccess2 already returns zero for out-of-range dwords.
 	bool robust_buffer_loads = true;
@@ -420,6 +428,8 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 [[nodiscard]] bool LoopGuardApplies(uint64_t shader_hash);
 
 [[nodiscard]] const CodegenOptions& GetCodegenOptions();
+// KYTY_LOD_STATS_PLAIN_VARIANT's value means "on" (the renderer's default).
+[[nodiscard]] bool LodStatsPlainVariantOn(const char* value);
 // KYTY_LANE_LOCAL needs every compute subgroup of a wave64 program to be exactly 32 lanes: a device
 // whose subgroup size is fixed at 32, or one whose compute pipelines require 32 (the device layer sets
 // it once; false until then, which keeps lane-local programs off).

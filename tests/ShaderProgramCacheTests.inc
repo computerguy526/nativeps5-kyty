@@ -187,6 +187,8 @@ void CheckFingerprint() {
   options_differ("single_f2i_saturation",
                  [](CodegenOptions &o) { o.single_f2i_saturation = !o.single_f2i_saturation; });
   options_differ("lod_stats_gate", [](CodegenOptions &o) { o.lod_stats_gate = !o.lod_stats_gate; });
+  options_differ("lod_stats_early_tests",
+                 [](CodegenOptions &o) { o.lod_stats_early_tests = !o.lod_stats_early_tests; });
   options_differ("robust_buffer_loads",
                  [](CodegenOptions &o) { o.robust_buffer_loads = !o.robust_buffer_loads; });
   options_differ("readonly_buffers",

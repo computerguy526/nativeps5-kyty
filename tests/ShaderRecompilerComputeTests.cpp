@@ -42,6 +42,7 @@
 #include "graphics/host_gpu/renderer/image/blitHelper.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/meshIndirect.h"
@@ -1405,7 +1406,11 @@ void EnsureConfigInitialized() {
     options.printf_direction = Config::LogDirection::Silent;
     Config::Load(options);
     subsystems.Initialize<Log::Lifecycle>();
-    subsystems.Initialize<Libs::LibKernel::Memory::Lifecycle>();
+    // KYTY_TEST_NO_GUEST_MEMORY=1: codegen-only runs on a host that cannot reserve the guest
+    // address space (arm64 macOS without the x86_64 link layout).
+    if (std::getenv("KYTY_TEST_NO_GUEST_MEMORY") == nullptr) {
+      subsystems.Initialize<Libs::LibKernel::Memory::Lifecycle>();
+    }
     ShaderInit();
     config_initialized = true;
   }
@@ -1906,6 +1911,10 @@ struct GraphicsCase {
   bool pixel_position_w = false;
   float vertex_clip_w = 1.0f;
   bool pixel_depth_export = false;
+  // DB_SHADER_CONTROL of the pixel stage: KILL_ENABLE, MASK_EXPORT_ENABLE, early Z_ORDER.
+  bool pixel_kill = false;
+  bool pixel_sample_mask_export = false;
+  bool pixel_early_z = false;
   u32 pixel_perspective_sample_vgpr = UINT32_MAX;
   u32 pixel_perspective_centroid_vgpr = UINT32_MAX;
   u32 pixel_custom_interpolation_mask = 0;
@@ -2762,6 +2771,9 @@ CompiledShader CompileFragmentCase(const GraphicsCase &test, bool plain_variant 
   pixel_info.ps_front_face_all_bits = test.pixel_front_face_all_bits;
   pixel_info.ps_pos_w = test.pixel_position_w;
   pixel_info.ps_depth_export_enable = test.pixel_depth_export;
+  pixel_info.ps_pixel_kill_enable = test.pixel_kill;
+  pixel_info.ps_sample_mask_export_enable = test.pixel_sample_mask_export;
+  pixel_info.ps_early_z = test.pixel_early_z;
   pixel_info.ps_system_input_base = 2;
   pixel_info.ps_perspective_sample_vgpr = test.pixel_perspective_sample_vgpr;
   pixel_info.ps_perspective_centroid_vgpr = test.pixel_perspective_centroid_vgpr;
@@ -59269,6 +59281,8 @@ int main(int argc, char **argv) {
     CodegenTests::CheckLodStatsGate();
     CodegenTests::CheckLodStatsPlainVariant();
     CodegenTests::CheckIndirectImageLodStats();
+    CodegenTests::CheckLodStatsEarlyTests();
+    CodegenTests::CheckLodStatsEarlyDraws();
     return 0;
   }
   // Only the recompiler semantic cases (compute and graphics), without the host/runtime

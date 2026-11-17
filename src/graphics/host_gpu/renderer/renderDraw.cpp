@@ -1,4 +1,5 @@
 #include <chrono>
+#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 #include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
 #include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/renderDraw.h"
@@ -4295,9 +4296,28 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                            ? PipelineCache::PlainPixelProgram(state.stage_preps.pixel)
 		                            : ShaderProgram {};
 		if (plain) {
-			if (bindings.pixel->mip_stats_active) {
+			// KYTY_LOD_STATS_EARLY_TESTS: the instrumented program is tested early; a draw whose
+			// shader changes its coverage while depth or stencil can be written must not be
+			// (lodStatsEarlyDraw.h) and runs the feedback-free variant like a counter-free draw.
+			auto&      early_totals = ShaderRecompiler::g_lod_stats_early_totals;
+			const auto* ps_program  = state.ps_input_info.stage.program;
+			const bool early_plain =
+			    bindings.pixel->mip_stats_active && plain_mode == LodStatsCounter::Plain::On &&
+			    ps_program != nullptr &&
+			    ShaderRecompiler::LodStatsEarlyTestsNeedPlain(*ps_program, state.ps_input_info,
+			                                                 buffer.GetRegisters());
+			if (bindings.pixel->mip_stats_active && !early_plain) {
 				Profiler::CountFrameEvent(Profiler::FrameEvent::LodStatsInstrumentedDraws);
+				(ps_program != nullptr &&
+				         ShaderRecompiler::LodStatsEarlyTests(*ps_program, state.ps_input_info)
+				     ? early_totals.instrumented_early
+				     : ShaderRecompiler::GuestEarlyTests(state.ps_input_info)
+				           ? early_totals.instrumented_guest
+				           : early_totals.instrumented_late)
+				    .fetch_add(1, std::memory_order_relaxed);
 			} else if (plain_mode == LodStatsCounter::Plain::On) {
+				(early_plain ? early_totals.plain_for_writes : early_totals.plain_no_counter)
+				    .fetch_add(1, std::memory_order_relaxed);
 				Profiler::CountFrameEvent(Profiler::FrameEvent::LodStatsPlainDraws);
 				plain_programs       = state.programs;
 				plain_programs.pixel = plain;
