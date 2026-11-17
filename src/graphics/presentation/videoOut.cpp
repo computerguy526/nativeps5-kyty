@@ -23,6 +23,7 @@
 #include "common/threads.h"
 #include "common/timer.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/loadCard.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/renderer/eopTimestamps.h"
@@ -1291,7 +1292,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 
 		VblankBegin();
 		bool presented = flip(limit);
-		if (!presented && m_presenter.NeedsSystemOverlayRefresh()) {
+		if (!presented && !Libs::Graphics::LoadCard::Active() && m_presenter.NeedsSystemOverlayRefresh()) {
 			if (m_presenter.PresentLastFrame()) {
 				presented = true;
 			} else {

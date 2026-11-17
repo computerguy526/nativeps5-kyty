@@ -9,6 +9,7 @@
 // KYTY_PROGRESS_TITLE=0 turns the title text off; KYTY_PROGRESS_TITLE_LOG=1 logs each title change
 // to stderr. Header-only so the unit test (tests/CompileProgressTests.cpp) needs no emulator.
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -22,9 +23,15 @@ struct Counters {
 	// Replay of the shader precompile journal and of the pipeline journal (done counts finished entries).
 	std::atomic<uint64_t> shader_total {0}, shader_done {0};
 	std::atomic<uint64_t> pipeline_total {0}, pipeline_done {0};
+	// The loaded pipeline list: entries in the list (known when the list is loaded; every entry resolved counts in
+	// pipeline_done: a driver/archive cache hit at once, a compile when it finishes). Shader permutations (Metal
+	// libraries) are a sub-step and stay in shader_*; they are never added to the list count.
+	std::atomic<uint64_t> list_total {0};
 	// Pipeline/program compiles in flight that are not replay work, and draws blocked on a compile.
 	std::atomic<int32_t> live {0};
 	std::atomic<int32_t> waiting {0};
+	// load card: cumulative live compiles started / finished (the load card's N / M).
+	std::atomic<uint64_t> live_started {0}, live_finished {0};
 };
 
 inline Counters& Get() {
@@ -41,10 +48,16 @@ inline void MarkReplayThread() { t_replay_thread = true; }
 struct LiveScope {
 	bool counted;
 	explicit LiveScope(bool count = true) : counted(count && !t_replay_thread) {
-		if (counted) Get().live.fetch_add(1, std::memory_order_relaxed);
+		if (counted) {
+			Get().live_started.fetch_add(1, std::memory_order_relaxed);
+			Get().live.fetch_add(1, std::memory_order_relaxed);
+		}
 	}
 	~LiveScope() {
-		if (counted) Get().live.fetch_sub(1, std::memory_order_relaxed);
+		if (counted) {
+			Get().live.fetch_sub(1, std::memory_order_relaxed);
+			Get().live_finished.fetch_add(1, std::memory_order_relaxed);
+		}
 	}
 	LiveScope(const LiveScope&)            = delete;
 	LiveScope& operator=(const LiveScope&) = delete;
@@ -73,6 +86,7 @@ inline void ClearPipelineReplay() {
 	auto& c = Get();
 	c.pipeline_total.store(0, std::memory_order_relaxed);
 	c.pipeline_done.store(0, std::memory_order_relaxed);
+	c.list_total.store(0, std::memory_order_relaxed);
 }
 
 struct Snapshot {
@@ -80,6 +94,8 @@ struct Snapshot {
 	uint64_t replay_total = 0;
 	int32_t  live         = 0;
 	int32_t  waiting      = 0;
+	// Pipeline list unit (0 total = no list loaded) and the library sub-step.
+	uint64_t list_done = 0, list_total = 0, lib_done = 0, lib_total = 0;
 };
 
 inline Snapshot Read() {
@@ -89,6 +105,10 @@ inline Snapshot Read() {
 	s.replay_done  = c.shader_done.load(std::memory_order_relaxed) + c.pipeline_done.load(std::memory_order_relaxed);
 	s.live         = c.live.load(std::memory_order_relaxed);
 	s.waiting      = c.waiting.load(std::memory_order_relaxed);
+	s.list_total   = c.list_total.load(std::memory_order_relaxed);
+	s.list_done    = std::min<uint64_t>(c.pipeline_done.load(std::memory_order_relaxed), s.list_total);
+	s.lib_total    = c.shader_total.load(std::memory_order_relaxed);
+	s.lib_done     = c.shader_done.load(std::memory_order_relaxed);
 	return s;
 }
 

@@ -8,6 +8,7 @@
 #include "common/stringUtils.h"
 #include "gpu_blit_shaders/gpu_imgui_hdr_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/loadCard.h"
 #include "graphics/progressOverlay.h"
 #include "graphics/presentation/ddsImage.h"
 #include "graphics/presentation/performanceOverlay.h"
@@ -266,7 +267,7 @@ bool ProgressWanted() noexcept {
 	if (ProgressOverlay::DemoEnabled()) {
 		return true; // the demo needs a repaint every present until it ends (cheap: the machine hides itself)
 	}
-	return g_progress_visible.load(std::memory_order_acquire) ||
+	return g_progress_visible.load(std::memory_order_acquire) || LoadCard::Active() ||
 	       ProgressOverlay::Wanted(CompileProgress::Read(), ProgressOverlay::GameFrameSeen().load(std::memory_order_relaxed)) !=
 	           ProgressOverlay::Mode::Hidden;
 }
@@ -738,6 +739,10 @@ SystemOverlayVisualState GetSystemOverlayVisualState() noexcept {
 
 void SystemOverlaySuppressProgress(bool suppress) noexcept {
 	g_progress_suppressed.store(suppress, std::memory_order_release);
+}
+
+bool SystemOverlayProgressWanted() noexcept {
+	return ProgressWanted();
 }
 
 bool ProcessSystemOverlayInput(const SDL_Event& event) {
@@ -1850,9 +1855,34 @@ struct SystemOverlay::Impl {
 		const auto now_ms = static_cast<uint64_t>(
 		    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
 		auto snapshot   = CompileProgress::Read();
+		// One well-defined unit: pipelines of the loaded list resolved / list total (cache hits count at once). Shader
+		// permutations (libraries) are a sub-step, shown as detail only; live compiles outside the list are "+N new".
+		lib_done  = 0;
+		lib_total = 0;
+		if (snapshot.list_total != 0) {
+			snapshot.replay_total = snapshot.list_total;
+			snapshot.replay_done  = snapshot.list_done;
+			lib_done              = snapshot.lib_done;
+			lib_total             = snapshot.lib_total;
+		}
 		bool game_frame = GameFrameSeen().load(std::memory_order_relaxed);
 		if (ApplyDemo(now_ms, snapshot)) {
 			game_frame = false;
+		}
+		// load card: the presenter's watchdog asks for the load card (game flips stopped while compiles run): the
+		// card look with the live compile counts as N / M; when the game flips again the card is cut at once.
+		auto& lc = LoadCard::State();
+		if (const auto gen = lc.cut_gen.load(std::memory_order_relaxed); gen != logged_cut_gen) {
+			logged_cut_gen = gen;
+			progress.Cut();
+		}
+		if (LoadCard::Active()) {
+			game_frame = false;
+			const auto& c = CompileProgress::Get();
+			snapshot      = LoadCard::CardSnapshot(snapshot, c.live_started.load(std::memory_order_relaxed),
+			                                       c.live_finished.load(std::memory_order_relaxed),
+			                                       lc.base_started.load(std::memory_order_relaxed),
+			                                       lc.base_finished.load(std::memory_order_relaxed), LoadCard::AnyReason());
 		}
 		const View view = progress.Step(now_ms, snapshot, game_frame);
 		const bool visible = progress.Visible();
@@ -1902,7 +1932,7 @@ struct SystemOverlay::Impl {
 			const float left    = (screen.x - bar_w) * 0.5f;
 			spinner({screen.x * 0.5f, y + spin_r}, spin_r, std::max(2.0f, 3.0f * f));
 			y += spin_r * 2.0f + gap;
-			const char* title = view.total != 0 ? "COMPILING SHADERS" : "LOADING";
+			const char* title = view.total != 0 ? "PREPARING SHADERS" : (LoadCard::Active() ? "LOADING..." : "LOADING");
 			draw->AddText(font, title_size, {(screen.x - text_width(title_size, title)) * 0.5f, y}, col(255, 255, 255), title);
 			y += title_size + gap;
 			draw->AddRectFilled({left, y}, {left + bar_w, y + bar_h}, col(56, 61, 74), bar_h * 0.5f);
@@ -1916,7 +1946,14 @@ struct SystemOverlay::Impl {
 				draw->AddRectFilled({x0, y}, {x0 + seg, y + bar_h}, col(255, 199, 51), bar_h * 0.5f);
 			}
 			y += bar_h + gap;
-			if (view.total == 0 && view.live > 0) {
+			if (view.total == 0 && LoadCard::Active() && view.live == 0) {
+				const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				                                              std::chrono::steady_clock::now().time_since_epoch())
+				                                              .count());
+				const auto flip_ms = LoadCard::State().last_flip_ms.load(std::memory_order_relaxed);
+				std::snprintf(text, sizeof(text), "%llus", static_cast<unsigned long long>(now_ms > flip_ms ? (now_ms - flip_ms) / 1000 : 0));
+				draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, y}, col(255, 255, 255), text);
+			} else if (view.total == 0 && view.live > 0) {
 				std::snprintf(text, sizeof(text), "COMPILING %d LIVE", view.live);
 				draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, y}, col(255, 255, 255), text);
 			}
@@ -1930,6 +1967,17 @@ struct SystemOverlay::Impl {
 				FormatEta(text, sizeof(text), view.eta_seconds);
 				draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, y + small_size + gap * 0.5f},
 				              col(255, 255, 255), text);
+				float line_y = y + (small_size + gap * 0.5f) * 2.0f;
+				if (view.live > 0) {
+					std::snprintf(text, sizeof(text), "+%d new", view.live);
+					draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, line_y}, col(255, 199, 51), text);
+					line_y += small_size + gap * 0.5f;
+				}
+				if (lib_total != 0 && lib_done < lib_total) {
+					std::snprintf(text, sizeof(text), "libraries %llu / %llu", static_cast<unsigned long long>(lib_done),
+					              static_cast<unsigned long long>(lib_total));
+					draw->AddText(font, small_size, {(screen.x - text_width(small_size, text)) * 0.5f, line_y}, col(176, 180, 192), text);
+				}
 			}
 			return;
 		}
@@ -1937,9 +1985,9 @@ struct SystemOverlay::Impl {
 		// Badge: bottom-left pill (the performance overlay and trophies use the top-right).
 		const float size = 14.0f * f, pad = 10.0f * f, r = 8.0f * f, margin = 16.0f * f;
 		if (view.live > 1) {
-			std::snprintf(text, sizeof(text), "COMPILING SHADERS (%d)", view.live);
+			std::snprintf(text, sizeof(text), "COMPILING %d", view.live);
 		} else {
-			std::snprintf(text, sizeof(text), "COMPILING SHADER");
+			std::snprintf(text, sizeof(text), "COMPILING 1");
 		}
 		const char* extra = view.waiting ? "DRAW WAITING" : nullptr;
 		const float w1    = text_width(size, text), w2 = extra != nullptr ? text_width(size * 0.85f, extra) : 0.0f;
@@ -2090,6 +2138,8 @@ struct SystemOverlay::Impl {
 	std::chrono::steady_clock::time_point       last_frame;
 	ImFont*                                     progress_font  = nullptr;
 	ProgressOverlay::Machine                    progress;
+	uint32_t                                    logged_cut_gen = 0;
+	uint64_t                                    lib_done = 0, lib_total = 0;
 	ProgressOverlay::Mode                       logged_mode    = ProgressOverlay::Mode::Hidden;
 	bool                                        logged_waiting = false;
 };

@@ -19,6 +19,10 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
+#include "graphics/loadCard.h"
+#include <chrono>
+#include <dlfcn.h>
+#include <thread>
 #include "graphics/progressOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
@@ -269,6 +273,143 @@ void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColor
 	command.clearColorImage(image.image, vk::ImageLayout::eTransferDstOptimal, &color, 1, &range);
 }
 
+// nps5 load card: "is the game frame black?" probe. The presented game frame is blitted to a 32x18 RGBA8 image and copied
+// to a host buffer on the present command buffer; the result is read at the next present (after the tick of the
+// previous one completed: never a stall). The card then also covers the game's own black loading frames and stops on
+// the first frame with content (LoadCard::NoteGameFlip(black)). Probed every present while the state is unknown/black,
+// every 16th otherwise. Skipped for the filtered present path (state stays unknown: flips count as content after
+// kUnknownFlips).
+class LumaProbe final {
+public:
+	static LumaProbe& Instance() {
+		static LumaProbe probe;
+		return probe;
+	}
+	[[nodiscard]] bool Enabled() const noexcept { return m_enabled; }
+	// Reads the previous probe if its tick completed (call before recording the next present).
+	void Collect(CommandScheduler& scheduler) {
+		if (!m_pending) {
+			return;
+		}
+		scheduler.Wait(m_tick);
+		m_pending = false;
+		const auto* px  = static_cast<const uint8_t*>(m_mapped);
+		unsigned    max = 0;
+		for (uint32_t i = 0; i < kW * kH * 4u; i += 4) {
+			max = std::max<unsigned>(max, std::max({px[i], px[i + 1], px[i + 2]}));
+		}
+		const bool black = max <= kBlackMax;
+		if (LoadCard::LogEnabled() && LoadCard::State().probe_state.load(std::memory_order_relaxed) != (black ? 1 : 2)) {
+			std::fprintf(stderr, "[loadcard] probe: game frame is %s (max %u)\n", black ? "black" : "content", max);
+		}
+		LoadCard::NoteProbe(black);
+	}
+	[[nodiscard]] bool Wanted() noexcept {
+		if (!m_enabled) {
+			return false;
+		}
+		const auto state = LoadCard::State().probe_state.load(std::memory_order_relaxed);
+		return state != 2 || (++m_count % 16) == 0 || LoadCard::Active();
+	}
+	void Record(GraphicContext& graphics, vk::CommandBuffer command, vk::Image source, vk::Extent2D source_extent) {
+		Ensure(graphics);
+		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		vk::ImageMemoryBarrier          barrier {};
+		barrier.dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
+		barrier.oldLayout           = vk::ImageLayout::eUndefined;
+		barrier.newLayout           = vk::ImageLayout::eTransferDstOptimal;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image               = m_image;
+		barrier.subresourceRange    = range;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
+		                        vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &barrier);
+		vk::ImageBlit region {};
+		region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+		region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(source_extent.width), static_cast<int>(source_extent.height), 1};
+		region.dstSubresource = region.srcSubresource;
+		region.dstOffsets[1]  = vk::Offset3D {static_cast<int>(kW), static_cast<int>(kH), 1};
+		command.blitImage(source, vk::ImageLayout::eTransferSrcOptimal, m_image, vk::ImageLayout::eTransferDstOptimal, 1,
+		                  &region, vk::Filter::eLinear);
+		barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+		barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+		barrier.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
+		barrier.newLayout     = vk::ImageLayout::eTransferSrcOptimal;
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
+		                        vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &barrier);
+		vk::BufferImageCopy copy {};
+		copy.imageSubresource = region.srcSubresource;
+		copy.imageExtent      = vk::Extent3D {kW, kH, 1};
+		command.copyImageToBuffer(m_image, vk::ImageLayout::eTransferSrcOptimal, m_buffer, 1, &copy);
+		m_recorded = true;
+	}
+	// After Submit: the tick of the command buffer that carries the probe.
+	void Submitted(uint64_t tick) noexcept {
+		if (m_recorded) {
+			m_recorded = false;
+			m_pending  = true;
+			m_tick     = tick;
+		}
+	}
+
+private:
+	static constexpr uint32_t kW = 32, kH = 18, kBlackMax = 24; // the game's black loading frames are flat ~13/255
+	LumaProbe(): m_enabled(LoadCard::BlackEnabled()) {}
+	void Ensure(GraphicContext& graphics) {
+		if (m_image != nullptr) {
+			return;
+		}
+		auto device = graphics.device;
+		const auto memory_type = [&](uint32_t bits, vk::MemoryPropertyFlags wanted) {
+			const auto& memory = graphics.physical_device_memory_properties;
+			for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
+				if ((bits & (1u << i)) != 0 && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
+					return i;
+				}
+			}
+			EXIT("luma probe: no memory type\n");
+			return 0u;
+		};
+		vk::ImageCreateInfo create {};
+		create.imageType   = vk::ImageType::e2D;
+		create.extent      = vk::Extent3D {kW, kH, 1};
+		create.mipLevels   = 1;
+		create.arrayLayers = 1;
+		create.format      = vk::Format::eB8G8R8A8Unorm;
+		create.usage       = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+		create.samples     = vk::SampleCountFlagBits::e1;
+		RequireVulkanSuccess(device.createImage(&create, nullptr, &m_image), "luma probe image");
+		vk::MemoryRequirements requirements {};
+		device.getImageMemoryRequirements(m_image, &requirements);
+		vk::MemoryAllocateInfo allocate {};
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_image_memory), "luma probe image memory");
+		device.bindImageMemory(m_image, m_image_memory, 0);
+		vk::BufferCreateInfo buffer {};
+		buffer.size  = static_cast<vk::DeviceSize>(kW) * kH * 4u;
+		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
+		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &m_buffer), "luma probe buffer");
+		device.getBufferMemoryRequirements(m_buffer, &requirements);
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+		                                                                        vk::MemoryPropertyFlagBits::eHostCoherent);
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_buffer_memory), "luma probe buffer memory");
+		device.bindBufferMemory(m_buffer, m_buffer_memory, 0);
+		RequireVulkanSuccess(device.mapMemory(m_buffer_memory, 0, VK_WHOLE_SIZE, {}, &m_mapped), "luma probe map");
+	}
+	bool             m_enabled  = false;
+	bool             m_recorded = false;
+	bool             m_pending  = false;
+	uint64_t         m_tick     = 0;
+	uint64_t         m_count    = 0;
+	vk::Image        m_image         = nullptr;
+	vk::DeviceMemory m_image_memory  = nullptr;
+	vk::Buffer       m_buffer        = nullptr;
+	vk::DeviceMemory m_buffer_memory = nullptr;
+	void*            m_mapped        = nullptr;
+};
+
 // nps5: KYTY_DUMP_DIR=<directory> (default: working directory) for the frame and target dumps.
 static std::string DumpPath(const char* name) {
 	const char* dir = std::getenv("KYTY_DUMP_DIR");
@@ -297,7 +438,7 @@ public:
 		return ++m_presents >= m_from && m_presents % static_cast<uint64_t>(m_every) == 0;
 	}
 	void Record(GraphicContext& graphics, vk::CommandBuffer command, vk::Image swapchain_image,
-	            vk::Format swapchain_format, vk::Extent2D swapchain_extent) {
+	            vk::Format swapchain_format, vk::Extent2D swapchain_extent, bool from_attachment = false) {
 		const bool srgb = swapchain_format == vk::Format::eB8G8R8A8Srgb ||
 		                  swapchain_format == vk::Format::eR8G8B8A8Srgb;
 		const auto format = srgb ? vk::Format::eB8G8R8A8Srgb : vk::Format::eB8G8R8A8Unorm;
@@ -305,9 +446,9 @@ public:
 		Ensure(graphics, format, extent);
 		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 		std::array<vk::ImageMemoryBarrier, 2> barriers {};
-		barriers[0].srcAccessMask       = vk::AccessFlagBits::eMemoryRead;
+		barriers[0].srcAccessMask       = from_attachment ? vk::AccessFlagBits::eColorAttachmentWrite : vk::AccessFlagBits::eMemoryRead;
 		barriers[0].dstAccessMask       = vk::AccessFlagBits::eTransferRead;
-		barriers[0].oldLayout           = vk::ImageLayout::ePresentSrcKHR;
+		barriers[0].oldLayout           = from_attachment ? vk::ImageLayout::eColorAttachmentOptimal : vk::ImageLayout::ePresentSrcKHR;
 		barriers[0].newLayout           = vk::ImageLayout::eTransferSrcOptimal;
 		barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -332,9 +473,10 @@ public:
 		command.blitImage(swapchain_image, vk::ImageLayout::eTransferSrcOptimal, m_image,
 		                  vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eLinear);
 		barriers[0].srcAccessMask = vk::AccessFlagBits::eTransferRead;
-		barriers[0].dstAccessMask = vk::AccessFlagBits::eMemoryRead;
+		barriers[0].dstAccessMask = from_attachment ? vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
+		                                            : vk::AccessFlagBits::eMemoryRead;
 		barriers[0].oldLayout     = vk::ImageLayout::eTransferSrcOptimal;
-		barriers[0].newLayout     = vk::ImageLayout::ePresentSrcKHR;
+		barriers[0].newLayout     = from_attachment ? vk::ImageLayout::eColorAttachmentOptimal : vk::ImageLayout::ePresentSrcKHR;
 		barriers[1].srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 		barriers[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
 		barriers[1].oldLayout     = vk::ImageLayout::eTransferDstOptimal;
@@ -848,6 +990,9 @@ struct Presenter::Impl {
 		swapchain.Create();
 		const uint32_t image_count = swapchain.ImageCount() > 0 ? swapchain.ImageCount() : 3;
 		frames.Initialize(image_count, swapchain.Format());
+		if (LoadCard::Enabled()) {
+			loadcard_thread = std::jthread([this](std::stop_token stop) { LoadCardLoop(stop); });
+		}
 	}
 
 	void RecoverSwapchain(Swapchain::Status status) {
@@ -899,6 +1044,12 @@ struct Presenter::Impl {
 		return image;
 	}
 	void Present();
+	// nps5 load card: the watchdog thread (below Presenter::Impl::Present).
+	void LoadCardLoop(std::stop_token stop);
+	// Presents the last frame with (card = true) or without the load card, only if no game flip happened since
+	// `seq` (decided under present_mutex, the lock of every present: no concurrent acquire/queue present, and the
+	// card can never land on a game frame). False when nothing was presented.
+	bool PresentLoadCard(uint64_t seq, bool card);
 
 	RenderContext&        renderer;
 	WindowContext&        window;
@@ -908,6 +1059,7 @@ struct Presenter::Impl {
 	Common::Mutex         present_mutex;
 	std::array<Layer, 2>  layers {};
 	std::atomic<uint64_t> presented_overlay_revision {0};
+	std::jthread          loadcard_thread; // last member: joined first
 };
 
 vk::SurfaceFormatKHR Swapchain::SelectFormat() {
@@ -1591,6 +1743,7 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 
 void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
                                       const Presenter::Layer& overlay, bool draw_system_overlay) {
+	bool dump_checked = false;
 	EXIT_IF(m_image_index >= m_images.size());
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
@@ -1657,6 +1810,11 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	if (filtered) {
 		m_filter.Record(m_window.graphic_ctx.device, vk_command, source->view, 0, source_extent,
 		                m_image_views[m_image_index], m_format, m_extent);
+		if (!source->blank && LumaProbe::Instance().Wanted()) {
+			// The filtered path read the frame as a texture: back to transfer-source for the probe blit.
+			source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead);
+			LumaProbe::Instance().Record(m_window.graphic_ctx, vk_command, source->image.image, source_extent);
+		}
 	} else if (source != nullptr) {
 		if (boxed) {
 			const vk::ClearColorValue black {};
@@ -1689,6 +1847,9 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
 		                     &region, vk::Filter::eLinear);
+		if (!source->blank && LumaProbe::Instance().Wanted()) {
+			LumaProbe::Instance().Record(m_window.graphic_ctx, vk_command, source->image.image, source_extent);
+		}
 	} else {
 		const vk::ClearColorValue black {};
 		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
@@ -1730,6 +1891,16 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 				                           nullptr, 1, &to_present);
 			}
 		}
+		// load card: dumping never changes the screen. A dumped present that carries the progress card/badge copies the
+		// frame BEFORE the overlay is drawn (BMP without the card; KYTY_PROGRESS_OVERLAY_IN_DUMPS=1 dumps it after).
+		if (draw_system_overlay && !ProgressOverlay::InDumps() && SystemOverlayProgressWanted()) {
+			if (auto& dump = FrameDump::Instance(); dump.Enabled()) {
+				dump_checked = true;
+				if (dump.Next()) {
+					dump.Record(m_window.graphic_ctx, vk_command, m_images[m_image_index], m_format, m_extent, true);
+				}
+			}
+		}
 		if (draw_system_overlay) {
 			m_system_overlay->Record(vk_command, m_image_views[m_image_index]);
 		}
@@ -1742,7 +1913,7 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
 		                           &to_present);
 	}
-	if (auto& dump = FrameDump::Instance(); dump.Enabled() && dump.Next()) {
+	if (auto& dump = FrameDump::Instance(); dump.Enabled() && !dump_checked && dump.Next()) {
 		dump.Record(m_window.graphic_ctx, vk_command, m_images[m_image_index], m_format, m_extent);
 	}
 }
@@ -1925,6 +2096,15 @@ void Presenter::Present(Frame& frame) {
 
 void Presenter::Present(std::span<const Layer> layers) {
 	Common::LockGuard lock(m_impl->present_mutex);
+	bool hold = false;
+	for (const auto& layer: layers) {
+		// nps5 load card: a real game flip ends the load card before this frame is presented.
+		if (layer.bus == 0 && layer.frame != nullptr && !layer.frame->blank) {
+			const bool black = LoadCard::BlackNow();
+			hold             = layers.size() == 1 && LoadCard::HoldGameFrame(black, LoadCard::Active());
+			LoadCard::NoteGameFlip(black);
+		}
+	}
 	for (const auto& layer: layers) {
 		EXIT_IF(layer.bus < 0 || layer.bus >= static_cast<int>(m_impl->layers.size()));
 		m_impl->frames.ValidateForPresent(layer.frame);
@@ -1934,7 +2114,9 @@ void Presenter::Present(std::span<const Layer> layers) {
 		}
 		previous = layer;
 	}
-	m_impl->Present();
+	if (!hold) {
+		m_impl->Present(); // load card: a held black frame is repainted by the load card watchdog
+	}
 }
 
 void Presenter::ClearLayer(int bus) {
@@ -1952,11 +2134,6 @@ void Presenter::ClearLayer(int bus) {
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
 
-	// nps5: a frame that KYTY_DUMP_FRAMES will dump never carries the compile progress overlay.
-	// Decided before the visual state so a progress-only overlay is not even prepared for it.
-	if (const auto& dump = FrameDump::Instance(); dump.Enabled()) {
-		SystemOverlaySuppressProgress(dump.WouldDump() && !ProgressOverlay::InDumps());
-	}
 	if (layers[0].frame != nullptr && !layers[0].frame->blank) {
 		ProgressOverlay::GameFrameSeen().store(true, std::memory_order_relaxed);
 	}
@@ -1989,17 +2166,16 @@ void Presenter::Impl::Present() {
 			if (!PresentUnlocked()) {
 				render_lock.emplace(renderer.GetMutex());
 			}
+			LumaProbe::Instance().Collect(present_scheduler);
 			auto&             command = present_scheduler.BeginCommand();
 			if (attempt != 0) {
-				if (const auto& dump = FrameDump::Instance(); dump.Enabled()) {
-					SystemOverlaySuppressProgress(dump.WouldDump() && !ProgressOverlay::InDumps());
-				}
 			}
 			const bool        draw_system_overlay =
 			    (overlay_visual.active || PerformanceOverlayEnabled()) && swapchain.PrepareSystemOverlay();
 			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 			                                draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);
+			LumaProbe::Instance().Submitted(tick);
 			if (auto& dump = FrameDump::Instance(); dump.TakeRecorded()) {
 				present_scheduler.Wait(tick);
 				dump.Write();
@@ -2028,6 +2204,81 @@ void Presenter::Impl::Present() {
 	}
 	LOGF("Vulkan presentation retry exhausted; dropping frame\n");
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::DroppedPresents);
+}
+
+bool Presenter::Impl::PresentLoadCard(uint64_t seq, bool card) {
+	Common::LockGuard lock(present_mutex);
+	auto&             shared = LoadCard::State();
+	if (shared.flip_seq.load(std::memory_order_acquire) != seq) {
+		return false; // the game flipped meanwhile: nothing of ours is inserted
+	}
+	// Before the very first game frame there is nothing to repaint: the card is drawn over black.
+	if (layers[0].frame == nullptr && layers[1].frame == nullptr && !(card && LoadCard::AnyReason())) {
+		return false;
+	}
+	if (card) {
+		shared.active.store(true, std::memory_order_release);
+	} else if (shared.active.exchange(false, std::memory_order_acq_rel)) {
+		shared.cut_gen.fetch_add(1, std::memory_order_relaxed);
+	}
+	Present();
+	return true;
+}
+
+// nps5 load card: polls the flip sequence and the compile counters (LoadCard::Watchdog decides) and presents the
+// load card from this thread. Never touches the command processor or the compile workers: it only reads relaxed
+// counters and takes present_mutex for its own present.
+void Presenter::Impl::LoadCardLoop(std::stop_token stop) {
+	using Clock = std::chrono::steady_clock;
+	LoadCard::Watchdog wd(LoadCard::StartMs(), LoadCard::PresentIntervalMs());
+	auto&              shared   = LoadCard::State();
+	uint64_t           last_seq = ~uint64_t {0};
+	uint64_t           shown    = 0;
+	LoadCard::VfsActivity vfs;
+	while (!stop.stop_requested()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		const auto now = static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+		const auto seq  = shared.flip_seq.load(std::memory_order_acquire);
+		const auto snap = CompileProgress::Read();
+		if (seq != last_seq) {
+			last_seq = seq;
+			const auto& c = CompileProgress::Get();
+			shared.base_started.store(c.live_started.load(std::memory_order_relaxed), std::memory_order_relaxed);
+			shared.base_finished.store(c.live_finished.load(std::memory_order_relaxed), std::memory_order_relaxed);
+		}
+		// load card: the full-screen card belongs to the session start (before the first content frame). Afterwards only a
+		// genuine long stall (>= GapMs without content, compiles pending or VFS bytes still moving) brings it back.
+		const bool content_seen = shared.content_seen.load(std::memory_order_acquire);
+		const bool content = seq != 0 && (!LoadCard::BlackEnabled() || shared.probe_state.load(std::memory_order_relaxed) == 2);
+		const auto pol = LoadCard::MakePolicy(content_seen, content, seq, window.loop.paused.load(std::memory_order_acquire),
+		                                      LoadCard::AnyReason(), LoadCard::MidgameEnabled(), LoadCard::StartMs(), LoadCard::GapMs());
+		wd.SetStartMs(pol.start_ms);
+		bool work = LoadCard::Pending(snap);
+		if (content_seen) {
+			static const auto* vfs_bytes = reinterpret_cast<const std::atomic<unsigned long long>*>(dlsym(RTLD_DEFAULT, "nps5_vfs_bytes_read"));
+			if (vfs_bytes != nullptr) work = vfs.Update(now, vfs_bytes->load(std::memory_order_relaxed)) || work;
+		}
+		const auto d = wd.Step(now, seq, work, pol.armed, pol.any);
+		shared.last_flip_ms.store(wd.LastFlipMs(), std::memory_order_relaxed);
+		if (d.started && LoadCard::LogEnabled()) {
+			std::fprintf(stderr, "[loadcard] %llu ms: start (no game flip for %llu ms, seq %llu, live %d waiting %d replay %llu/%llu)\n",
+			             static_cast<unsigned long long>(now), static_cast<unsigned long long>(now - wd.LastFlipMs()), static_cast<unsigned long long>(seq), snap.live,
+			             snap.waiting, static_cast<unsigned long long>(snap.replay_done),
+			             static_cast<unsigned long long>(snap.replay_total));
+		}
+		if (d.present_now && PresentLoadCard(seq, true)) {
+			shown++;
+		}
+		if (d.stopped && LoadCard::LogEnabled()) {
+			std::fprintf(stderr, "[loadcard] %llu ms: stop (%s) after %llu card presents\n", static_cast<unsigned long long>(now),
+			             d.repaint_clean ? "work ended" : "game flipped", static_cast<unsigned long long>(shown));
+			shown = 0;
+		}
+		if (d.repaint_clean) {
+			(void)PresentLoadCard(seq, false);
+		}
+	}
 }
 
 void Presenter::Discard(Frame& frame) {

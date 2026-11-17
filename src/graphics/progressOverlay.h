@@ -25,7 +25,7 @@
 namespace Libs::Graphics::ProgressOverlay {
 
 inline constexpr uint64_t kBadgeDelayMs  = 300;  // continuous need before the badge shows
-inline constexpr uint64_t kBadgeHoldMs   = 800;  // minimum time on screen once shown
+inline constexpr uint64_t kBadgeHoldMs   = 1000; // minimum time on screen once shown (and after the last compile ends)
 inline constexpr uint64_t kCardHoldMs    = 250;  // card lingers after the work ends
 inline constexpr uint64_t kFadeInMs      = 150;
 inline constexpr uint64_t kBadgeFadeMs   = 400;
@@ -202,6 +202,12 @@ public:
 			v.eta_seconds    = per * static_cast<double>(s.replay_total - s.replay_done);
 		}
 		return v;
+	}
+
+	// load card: the load card stops at once (no fade) when the game flips again.
+	void Cut() {
+		m_card_alpha      = 0.0f;
+		m_card_hold_until = 0;
 	}
 
 	// Still on screen (shown or fading): the presenter must keep repainting.

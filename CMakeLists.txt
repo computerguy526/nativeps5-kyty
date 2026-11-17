@@ -655,6 +655,10 @@ target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ProgressOverlayTests.cpp")
 target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5: load card self-present watchdog state machine (header only), no GPU.
+add_executable(load_card_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LoadCardTests.cpp")
+target_include_directories(load_card_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5: the hosted guest-memory seam without the kernel or the renderer (header only): the reader
 # slots, the range map (cut ranges lose their alias, one-step replace) and the bridge's pre-start
 # notification queue, self memory limit and main-queue shutdown gate.

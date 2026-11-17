@@ -5078,6 +5078,7 @@ struct PipelineCache::JournalReplay {
 		force    = force_known;
 		begin_ns = CompileClockNs();
 		running  = std::max<uint32_t>(1, thread_count);
+		CompileProgress::Get().list_total.store(items.size(), std::memory_order_relaxed); // exact value at BuildOrder
 		for (uint32_t i = 0; i < running; i++) threads.emplace_back([this] { Worker(); });
 	}
 
@@ -5101,6 +5102,7 @@ struct PipelineCache::JournalReplay {
 		order.insert(order.end(), rest.begin(), rest.end());
 		total.store(order.size(), std::memory_order_release);
 		CompileProgress::Get().pipeline_total.store(order.size(), std::memory_order_relaxed);
+		CompileProgress::Get().list_total.store(order.size(), std::memory_order_relaxed);
 	}
 
 	// Once, before the shader precompile replay goes (its Wait is what the workers block in).
