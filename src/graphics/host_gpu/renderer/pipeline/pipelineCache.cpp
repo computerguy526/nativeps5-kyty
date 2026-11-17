@@ -5043,6 +5043,47 @@ struct PipelineCache::ComputePrewarm {
 // KYTY_PIPELINE_LIST_PREPARE=1 ("Prepare shaders"): builds everything at start-up with more threads
 // (KYTY_SHADER_PRECOMPILE_THREADS and KYTY_PIPELINE_JOURNAL_THREADS default 8), prints progress, saves
 // the caches and exits (exit code 0; 2 when there is no usable list) before the game starts.
+// Launch phase hold (KYTY_PIPELINE_REPLAY_ALL): while the replay of everything known runs, the game's
+// first draw or dispatch waits here, so nothing the game renders is presented before the phase is
+// over and the loading card ("PREPARING SHADERS X / T", fed by CompileProgress) stays up until
+// X == T. The game keeps loading its files meanwhile. Replay and prewarm threads never wait.
+// KYTY_PIPELINE_REPLAY_ALL_HOLD=0 runs the phase in the background instead; a hold longer than
+// KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S (default 900) is given up with a log line.
+static std::atomic<bool>       g_launch_hold {false};
+static std::mutex              g_launch_mutex;
+static std::condition_variable g_launch_cv;
+
+static void LaunchHoldRelease() {
+	{
+		std::scoped_lock lock(g_launch_mutex);
+		if (!g_launch_hold.exchange(false, std::memory_order_acq_rel)) return;
+	}
+	g_launch_cv.notify_all();
+}
+
+static void LaunchHoldWaitSlow() {
+	if (CompileProgress::t_replay_thread) return;
+	const auto       begin = CompileClockNs();
+	const auto       limit = std::chrono::seconds(EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900));
+	std::unique_lock lock(g_launch_mutex);
+	const bool       released =
+	    g_launch_cv.wait_for(lock, limit, [] { return !g_launch_hold.load(std::memory_order_acquire); });
+	lock.unlock();
+	if (!released) {
+		PipelineCacheLog("Launch phase: still running after {} s; the game goes on", limit.count());
+		LaunchHoldRelease();
+	}
+	static std::atomic<bool> logged {false};
+	if (!logged.exchange(true)) {
+		PipelineCacheLog("Launch phase: the game's first draw waited {:.0f} ms for it",
+		                 static_cast<double>(CompileClockNs() - begin) / 1e6);
+	}
+}
+
+static inline void LaunchHoldWait() {
+	if (g_launch_hold.load(std::memory_order_relaxed)) [[unlikely]] LaunchHoldWaitSlow();
+}
+
 // The number of compile workers of a prepare, of the launch phase and of a list replay: the logical
 // cores minus 4 (the game, the presents, the UI and audio keep theirs), at least 2;
 // NPS5_COMPILE_THREADS=<n> overrides (1..16). 8 where the core count is not known.
@@ -5145,6 +5186,7 @@ struct PipelineCache::JournalReplay {
 	void Stop() {
 		if (stopped_once.exchange(true)) return;
 		stop.store(true, std::memory_order_release);
+		LaunchHoldRelease();
 		if (cache.m_shader_precompiler != nullptr) cache.m_shader_precompiler->Stop();
 		for (auto& thread: threads) {
 			if (thread.joinable()) thread.join();
@@ -5207,6 +5249,16 @@ struct PipelineCache::JournalReplay {
 			const auto index = next.fetch_add(1, std::memory_order_relaxed);
 			if (index >= order.size()) break;
 			Replay(items[order[index]]);
+			// KYTY_SHADER_PREPARE=scene: the hold ends with the last record of the scene being loaded;
+			// the rest of the replay goes on behind the game on these same utility-QoS workers.
+			if (hold_scene && index < first_level &&
+			    scene_done.fetch_add(1, std::memory_order_acq_rel) + 1 == first_level) {
+				PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are built after {:.1f} s; {} more go "
+				                 "on in the background",
+				                 first_level, Level(), static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
+				                 order.size() - first_level);
+				LaunchHoldRelease();
+			}
 			done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::UnitAddDone(1);
@@ -5214,6 +5266,7 @@ struct PipelineCache::JournalReplay {
 		}
 		if (running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 			CompileProgress::ClearPipelineReplay();
+			LaunchHoldRelease();
 			size_t cache_bytes = 0;
 			if (cache.m_driver_cache != nullptr) {
 				(void)cache.m_graphics.device.getPipelineCacheData(cache.m_driver_cache, &cache_bytes, nullptr);
@@ -5424,6 +5477,10 @@ struct PipelineCache::JournalReplay {
 	bool                         once         = false;
 	std::mutex                   once_mutex;
 	std::unordered_set<uint64_t> once_keys;
+	// KYTY_SHADER_PREPARE=scene: hold the game only for the records of the scene it starts in (the
+	// first first_level entries of the order). No such record (scene not known): the whole replay.
+	bool                         hold_scene   = false;
+	std::atomic<uint64_t>        scene_done {0};
 	// Coverage bookkeeping (KYTY_PIPELINE_LIST or _VERIFY): every key the replay computed and every key
 	// the game created.
 	bool                         track        = false;
@@ -5583,7 +5640,7 @@ void PipelineCache::InitializePipelineJournal() {
 	// anyway (tests).
 	// KYTY_PIPELINE_REPLAY_ALL=1 (nps5, default off): the launch phase "build everything known". Every
 	// journal and list pipeline is created again through the driver before the game starts, known to
-	// the driver cache or not, on normal-priority threads, and the start waits for it (the loading
+	// the driver cache or not, and the game's first draw waits for it (LaunchHoldWait; the loading
 	// card shows the count). On a prepared cache every one is a cache hit (2176 pipelines: about 1 s);
 	// a pipeline whose driver-side entry was lost or re-keyed since (an OS update, a library that
 	// moved from source to a prebuilt metallib, an archive segment that was never written) compiles
@@ -5607,8 +5664,19 @@ void PipelineCache::InitializePipelineJournal() {
 	const uint64_t sized = CompileFanout();
 	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? sized : 4), 1, 16);
 	PipelineCacheLog("Pipeline replay: {} worker thread(s){}", threads, replay_all ? "; launch phase, the start waits for it" : "");
+	// The launch phase holds the game's first draw (LaunchHoldWait), not this constructor: the window
+	// and the loading card come up meanwhile and show the count.
+	// KYTY_SHADER_PREPARE=all|scene (default all): what the hold covers. scene = only the pipelines
+	// recorded for the scene this start loads (journal records carry the level they were recorded
+	// in, list records their levels); everything else is built behind the game. A start whose scene
+	// has no records falls back to all.
+	if (const auto* mode = std::getenv("KYTY_SHADER_PREPARE"); mode != nullptr && std::strcmp(mode, "scene") == 0) {
+		replay.hold_scene = replay_all;
+	}
+	const bool hold = replay_all && !prepare && EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD", 1) != 0;
+	if (hold) g_launch_hold.store(true, std::memory_order_release);
 	replay.Start(static_cast<uint32_t>(threads), force);
-	if (EnvU64("KYTY_PIPELINE_JOURNAL_WAIT", 0) != 0 || replay_all) replay.Wait();
+	if (EnvU64("KYTY_PIPELINE_JOURNAL_WAIT", 0) != 0) replay.Wait();
 }
 
 void PipelineCache::StopBackgroundPipelines() {
@@ -5983,6 +6051,7 @@ void PipelineCache::RunListPrepareIfRequested() {
 }
 
 PipelineCache::~PipelineCache() {
+	LaunchHoldRelease();
 	g_live_pipeline_cache.store(nullptr, std::memory_order_release);
 	m_stats_reporter.reset();
 	StopBackgroundPipelines();
@@ -6929,6 +6998,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping, bool pixel_active,
     std::array<ShaderVertexInputInfo, 3>& vertex_info, ShaderPixelInputInfo& pixel_info,
     GraphicsStagePreps& stage_preps) {
+	LaunchHoldWait();
 	KYTY_PROFILER_DETAIL_FUNCTION();
 	const bool tess_active = TessellationActive(user_config);
 	std::array<ShaderParams, 3> vertex_params;
@@ -7085,6 +7155,7 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
                                                const HW::ShaderRegisters&   sh,
                                                ShaderComputeInputInfo&      input_info,
                                                StagePrep&                   stage_prep) {
+	LaunchHoldWait();
 	input_info.host_subgroup_size = m_graphics.SupportsComputeWave64() ? 64u : 32u;
 	std::optional<CpGaps::Scope> prepare_gap;
 	prepare_gap.emplace(CpGaps::Cat::ProgPrepare);
