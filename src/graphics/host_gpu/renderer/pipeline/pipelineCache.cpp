@@ -33,6 +33,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineLibrary.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
+#include "graphics/host_gpu/renderer/pipeline/launchPhase.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCompileQueue.h"
 #include "graphics/host_gpu/renderer/pipeline/programDiskCache.h"
 #include "graphics/host_gpu/renderer/pipeline/rtSession.h"
@@ -56,6 +57,9 @@
 #include <algorithm>
 #ifndef _WIN32
 #include <csignal>
+#if defined(__APPLE__) || defined(__linux__)
+#include <dlfcn.h>
+#endif
 #include <unistd.h>
 #endif
 #include <array>
@@ -5049,14 +5053,30 @@ struct PipelineCache::ComputePrewarm {
 // X == T. The game keeps loading its files meanwhile. Replay and prewarm threads never wait.
 // KYTY_PIPELINE_REPLAY_ALL_HOLD=0 runs the phase in the background instead; a hold longer than
 // KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S (default 900) is given up with a log line.
-static std::atomic<bool>       g_launch_hold {false};
+static std::atomic<bool>       g_launch_hold {false};         // the pipeline replay part
+static std::atomic<bool>       g_launch_hold_prewarm {false}; // "all": the compute prewarm part too
 static std::mutex              g_launch_mutex;
 static std::condition_variable g_launch_cv;
 
-static void LaunchHoldRelease() {
+// The card (loadCard.h, card3) follows the hold: launch_hold 1 while it holds, 2 once it is over.
+static void LaunchHoldPublish(int state) { CompileProgress::Get().launch_hold.store(state, std::memory_order_release); }
+
+static bool LaunchHoldDone() {
+	if (g_launch_hold.load(std::memory_order_acquire)) return false;
+	if (!g_launch_hold_prewarm.load(std::memory_order_acquire)) return true;
+	const auto& c = CompileProgress::Get();
+	return c.prewarm_done.load(std::memory_order_relaxed) >= c.prewarm_total.load(std::memory_order_relaxed);
+}
+
+// The replay part is over (all: the compute prewarm still counts; with_prewarm: everything is over, e.g. the
+// scene's records are built, the cache goes, the replay stopped).
+static void LaunchHoldRelease(bool with_prewarm = true) {
 	{
 		std::scoped_lock lock(g_launch_mutex);
-		if (!g_launch_hold.exchange(false, std::memory_order_acq_rel)) return;
+		const bool was = g_launch_hold.exchange(false, std::memory_order_acq_rel);
+		const bool pw  = with_prewarm && g_launch_hold_prewarm.exchange(false, std::memory_order_acq_rel);
+		if (!was && !pw) return;
+		if (with_prewarm) LaunchHoldPublish(2);
 	}
 	g_launch_cv.notify_all();
 }
@@ -5065,14 +5085,16 @@ static void LaunchHoldWaitSlow() {
 	if (CompileProgress::t_replay_thread) return;
 	const auto       begin = CompileClockNs();
 	const auto       limit = std::chrono::seconds(EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900));
+	const auto       until = std::chrono::steady_clock::now() + limit;
 	std::unique_lock lock(g_launch_mutex);
-	const bool       released =
-	    g_launch_cv.wait_for(lock, limit, [] { return !g_launch_hold.load(std::memory_order_acquire); });
-	lock.unlock();
-	if (!released) {
-		PipelineCacheLog("Launch phase: still running after {} s; the game goes on", limit.count());
-		LaunchHoldRelease();
+	// The prewarm part has no notifier: poll it every 10 ms (only while the game is held).
+	while (!LaunchHoldDone() && std::chrono::steady_clock::now() < until) {
+		g_launch_cv.wait_for(lock, std::chrono::milliseconds(10));
 	}
+	const bool released = LaunchHoldDone();
+	lock.unlock();
+	if (!released) PipelineCacheLog("Launch phase: still running after {} s; the game goes on", limit.count());
+	LaunchHoldRelease();
 	static std::atomic<bool> logged {false};
 	if (!logged.exchange(true)) {
 		PipelineCacheLog("Launch phase: the game's first draw waited {:.0f} ms for it",
@@ -5081,23 +5103,52 @@ static void LaunchHoldWaitSlow() {
 }
 
 static inline void LaunchHoldWait() {
-	if (g_launch_hold.load(std::memory_order_relaxed)) [[unlikely]] LaunchHoldWaitSlow();
+	if (g_launch_hold.load(std::memory_order_relaxed) || g_launch_hold_prewarm.load(std::memory_order_relaxed))
+	    [[unlikely]]
+		LaunchHoldWaitSlow();
+}
+
+// The scene the running game is in: the runtime's VFS names it (nps5_vfs_current_scene: the last folder under
+// the profile's scene key that a file was opened in, menus excluded by NPS5_SCENE_TAG_SKIP); empty without
+// that symbol or before any scene opened.
+static std::string CurrentSceneName() {
+#if defined(__APPLE__) || defined(__linux__)
+	using Fn       = const char* (*)();
+	static Fn func = reinterpret_cast<Fn>(dlsym(RTLD_DEFAULT, "nps5_vfs_current_scene"));
+	if (func != nullptr) {
+		if (const char* name = func(); name != nullptr) return LaunchPhase::ParseLastScene(name);
+	}
+#endif
+	return {};
+}
+
+static bool CurrentSceneKnown() {
+#if defined(__APPLE__) || defined(__linux__)
+	static const bool known = dlsym(RTLD_DEFAULT, "nps5_vfs_current_scene") != nullptr;
+	return known;
+#else
+	return false;
+#endif
+}
+
+static std::vector<std::string> SceneAlways() {
+	const char* v = std::getenv("KYTY_SHADER_PREPARE_ALWAYS");
+	return LaunchPhase::ParsePatterns(v != nullptr ? v : "");
 }
 
 // The number of compile workers of a prepare, of the launch phase and of a list replay: the logical
 // cores minus 4 (the game, the presents, the UI and audio keep theirs), at least 2;
 // NPS5_COMPILE_THREADS=<n> overrides (1..16). 8 where the core count is not known.
 static uint64_t CompileFanout() {
-	if (const auto forced = EnvU64("NPS5_COMPILE_THREADS", 0); forced != 0) return std::clamp<uint64_t>(forced, 1, 16);
-	uint64_t count = 8;
+	uint64_t cores = 0;
 #ifdef __APPLE__
-	int    cores = 0;
-	size_t len   = sizeof(cores);
-	if (sysctlbyname("hw.logicalcpu", &cores, &len, nullptr, 0) == 0 && cores > 0) {
-		count = static_cast<uint64_t>(std::max(2, cores - 4));
-	}
+	int    n   = 0;
+	size_t len = sizeof(n);
+	if (sysctlbyname("hw.logicalcpu", &n, &len, nullptr, 0) == 0 && n > 0) cores = static_cast<uint64_t>(n);
+#else
+	cores = std::thread::hardware_concurrency();
 #endif
-	return std::clamp<uint64_t>(count, 2, 16);
+	return LaunchPhase::CompileFanoutFor(cores, EnvU64("NPS5_COMPILE_THREADS", 0));
 }
 
 struct PipelineCache::ListState {
@@ -5144,9 +5195,58 @@ struct PipelineCache::JournalReplay {
 	};
 
 	// The boot level, read once the game's file system is mounted (after the cache is created).
+	// The scene this start goes to: the boot level marker (-lvl), else the last scene of the previous session
+	// (<cache>/<title>.last_scene, KYTY_PIPELINE_LAST_SCENE_PATH).
 	const std::string& Level() {
-		std::call_once(level_once, [this] { level = BootLevelMarker(); });
+		std::call_once(level_once, [this] {
+			level = BootLevelMarker();
+			if (level.empty() && !last_scene_path.empty()) {
+				std::ifstream in(last_scene_path);
+				std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+				level      = LaunchPhase::ParseLastScene(text);
+				remembered = level;
+			}
+		});
 		return level;
+	}
+
+	// The last-scene memory: the scene the game is in now, unless it is an "always" scene (world map, hub,
+	// menus); written when it changes (scene changes are rare) and at the end of the session.
+	void NoteScene() {
+		if (last_scene_path.empty()) return;
+		(void)Level();
+		const auto       current = CurrentSceneName();
+		std::scoped_lock lock(scene_mutex);
+		auto             next = LaunchPhase::NextLastScene(remembered, current, always);
+		if (next == remembered) return;
+		remembered = std::move(next);
+		std::error_code ec;
+		const auto      tmp = last_scene_path + ".tmp";
+		{
+			std::ofstream out(tmp, std::ios::trunc);
+			out << remembered << '\n';
+		}
+		std::filesystem::rename(tmp, last_scene_path, ec);
+	}
+
+	// KYTY_PIPELINE_DELTA_OUT: the keys this replay built that the driver cache did not know before.
+	void WriteDelta() {
+		if (delta_out_path.empty()) return;
+		std::vector<uint64_t> keys;
+		{
+			std::scoped_lock lock(delta_mutex);
+			keys = delta_keys;
+		}
+		std::sort(keys.begin(), keys.end());
+		const auto      tmp = delta_out_path + ".tmp";
+		std::error_code ec;
+		{
+			std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+			out << LaunchPhase::FormatKeyFile(keys);
+		}
+		std::filesystem::rename(tmp, delta_out_path, ec);
+		PipelineCacheLog("Pipeline replay: {} new pipelines written to {} (KYTY_PIPELINE_DELTA_OUT){}", keys.size(),
+		                 delta_out_path, ec ? " - rename failed" : "");
 	}
 
 	void Start(uint32_t thread_count, bool force_known) {
@@ -5159,10 +5259,13 @@ struct PipelineCache::JournalReplay {
 	}
 
 	// The boot level's records first, then the rest by rank (stable: first-needed order within one).
+	// KYTY_SHADER_PREPARE=scene: the hold set first (the target scene's records, untagged ones and the "always"
+	// scenes'); no record of the target scene at all = the whole replay holds ("all").
 	void BuildOrder() {
 		const auto&           boot = Level();
 		std::vector<uint32_t> rest;
 		order.reserve(items.size());
+		uint64_t target_hits = 0;
 		for (uint32_t i = 0; i < items.size(); i++) {
 			const auto&    item = items[i];
 			JournalPayload payload;
@@ -5171,9 +5274,35 @@ struct PipelineCache::JournalReplay {
 			for (const auto level: item.list_levels) {
 				current = current || (!boot.empty() && level < list_level_names.size() && list_level_names[level] == boot);
 			}
+			target_hits += current ? 1 : 0;
+			if (hold_scene) {
+				std::vector<std::string_view> tags;
+				if (item.from_list) {
+					for (const auto level: item.list_levels) {
+						if (level < list_level_names.size()) tags.emplace_back(list_level_names[level]);
+					}
+				} else {
+					tags.emplace_back(payload.level);
+				}
+				current = LaunchPhase::InSceneHold(tags, boot, always);
+			}
 			(current ? order : rest).push_back(i);
 		}
+		if (hold_scene && target_hits == 0) {
+			PipelineCacheLog("Launch phase (scene): no record of the scene '{}' (the list or journal carries no scene "
+			                 "tags for it): the whole replay holds the game (all)",
+			                 boot);
+			hold_scene = false;
+		}
 		first_level = static_cast<uint32_t>(order.size());
+		if (hold_scene) {
+			PipelineCacheLog("Launch phase (scene): '{}': {} of {} pipelines hold the game ({} of the scene, the "
+			                 "rest untagged or always: {}), {} build behind it",
+			                 boot, first_level, items.size(), target_hits,
+			                 std::getenv("KYTY_SHADER_PREPARE_ALWAYS") != nullptr ? std::getenv("KYTY_SHADER_PREPARE_ALWAYS") : "",
+			                 items.size() - first_level);
+			if (first_level == 0) LaunchHoldRelease();
+		}
 		std::stable_sort(rest.begin(), rest.end(), [&](uint32_t a, uint32_t b) { return items[a].rank > items[b].rank; });
 		order.insert(order.end(), rest.begin(), rest.end());
 		total.store(order.size(), std::memory_order_release);
@@ -5257,7 +5386,7 @@ struct PipelineCache::JournalReplay {
 				                 "on in the background",
 				                 first_level, Level(), static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
 				                 order.size() - first_level);
-				LaunchHoldRelease();
+				LaunchHoldRelease(true);
 			}
 			done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
@@ -5266,7 +5395,8 @@ struct PipelineCache::JournalReplay {
 		}
 		if (running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 			CompileProgress::ClearPipelineReplay();
-			LaunchHoldRelease();
+			LaunchHoldRelease(false); // "all": the compute prewarm part still holds until it is done
+			WriteDelta();
 			size_t cache_bytes = 0;
 			if (cache.m_driver_cache != nullptr) {
 				(void)cache.m_graphics.device.getPipelineCacheData(cache.m_driver_cache, &cache_bytes, nullptr);
@@ -5398,6 +5528,7 @@ struct PipelineCache::JournalReplay {
 				ok = true;
 			} else if (check.key == record.key || (retargeted && check.key != 0)) {
 				if (retargeted && !item.from_list) retargets.fetch_add(1, std::memory_order_relaxed);
+				const bool was_known = !delta_out_path.empty() && cache.IsKnownPipeline(check.key);
 				const auto          begin = CompileClockNs();
 				HangWatchdog::Scope compile("graphics-pipeline-journal", record.key, 0, 0);
 				// A driver fault on a rebuilt create info (another translator's modules) costs the
@@ -5411,6 +5542,10 @@ struct PipelineCache::JournalReplay {
 					g_compile_totals.journal_built.fetch_add(1, std::memory_order_relaxed);
 					built.fetch_add(1, std::memory_order_relaxed);
 					if (item.from_list) built_list.fetch_add(1, std::memory_order_relaxed);
+					if (!delta_out_path.empty() && !was_known) {
+						std::scoped_lock lock(delta_mutex);
+						delta_keys.push_back(record.key);
+					}
 					cache.NoteKnownPipeline(check.key);
 					cache.NotePipelineCreated(ns);
 				}
@@ -5481,6 +5616,13 @@ struct PipelineCache::JournalReplay {
 	// first first_level entries of the order). No such record (scene not known): the whole replay.
 	bool                         hold_scene   = false;
 	std::atomic<uint64_t>        scene_done {0};
+	std::vector<std::string>     always = SceneAlways();
+	// Last-scene memory (NoteScene) and the prepare's delta (KYTY_PIPELINE_DELTA_OUT / _REPLAY_KEYS).
+	std::string                  last_scene_path, remembered;
+	std::mutex                   scene_mutex;
+	std::string                  delta_out_path;
+	std::mutex                   delta_mutex;
+	std::vector<uint64_t>        delta_keys;
 	// Coverage bookkeeping (KYTY_PIPELINE_LIST or _VERIFY): every key the replay computed and every key
 	// the game created.
 	bool                         track        = false;
@@ -5519,9 +5661,11 @@ void PipelineCache::NoteJournalPipeline(uint64_t key, std::span<const uint32_t> 
 	if (m_journal_replay != nullptr) m_journal_replay->NoteCreated(key, guest);
 	if (m_journal == nullptr) return;
 	if (!m_journal->Contains(key)) {
-		(void)m_journal->Add(key, EncodePipelineJournalPayload(m_journal_replay != nullptr ? m_journal_replay->Level()
-		                                                                                    : std::string(),
-		                                                       words, snapshot_words, identities));
+		// The scene tag: the scene the game is in now (runtime VFS), else the boot level marker.
+		std::string level = CurrentSceneKnown() ? CurrentSceneName() : std::string();
+		if (!CurrentSceneKnown() && m_journal_replay != nullptr) level = m_journal_replay->Level();
+		(void)m_journal->Add(key, EncodePipelineJournalPayload(level, words, snapshot_words, identities));
+		if (m_journal_replay != nullptr) m_journal_replay->NoteScene();
 	}
 }
 
