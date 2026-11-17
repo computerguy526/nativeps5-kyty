@@ -16,6 +16,7 @@
 #include <mach-o/dyld.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -42,15 +43,17 @@ struct KkMetalFxInfo {
 	uint32_t reset;
 	uint32_t depth_reversed;
 	uint32_t auto_exposure;
+	uint32_t depth_mode; // 0: the depth image; 1: colour.w is linear view depth (near / w, reversed)
+	float    depth_near;
 	uint32_t reserved;
 };
 using KkCmdMetalFx = int (*)(VkCommandBuffer, const KkMetalFxInfo*);
 
 enum class Mode { Off, Temporal, Spatial };
 
-enum class Fallback : uint8_t { NoDriver, Bindings, Sizes, NoDepth, NoMotionVectors, Refused, Count };
+enum class Fallback : uint8_t { NoDriver, Bindings, Sizes, NoDepth, NoMotionVectors, Refused, NoUpscale, Count };
 constexpr std::array<const char*, static_cast<size_t>(Fallback::Count)> FALLBACK_NAMES {
-    "no-driver-command", "bindings", "sizes", "no-depth", "no-mv", "metalfx-refused"};
+    "no-driver-command", "bindings", "sizes", "no-depth", "no-mv", "metalfx-refused", "not-an-upscale"};
 
 struct DepthPair {
 	ImageId color;
@@ -58,7 +61,34 @@ struct DepthPair {
 };
 
 // 2936e5eca99d75e7: the pass in 01.019 (ASTROHYBRID_DLSS).
-constexpr std::array<uint64_t, 1> KNOWN_PASSES {0x2936e5eca99d75e7ull};
+// Pass profiles: pixel shader hash + constant layout (the shape is checked against the draw).
+//   V1019 (2936e5eca99d75e7, ASTROHYBRID_DLSS): jitter UV dwords 0-3, out 4-5, in 6-7, frame 11,
+//     motion used 13; images motion, colour; depth = the attachment drawn with the motion target.
+//   V1007 (5a34b303576ee324): out 0-1, in 2-3, in-1 4-5, 6 == 1 "copy, no history" (camera cut),
+//     frame 7, motion valid 9; images motion (.xy UV, previous = uv - mv), colour (.w = linear view
+//     depth), history. No projection jitter. Its history target is read by other passes, so the
+//     game's pass draws and MetalFX then overwrites target 0 ("after").
+// KYTY_METALFX_PASS=<hash>[:1019|:1007] names another pass (the title profile's value).
+enum class Layout : uint8_t { V1019, V1007 };
+struct PassProfile {
+	uint64_t hash;
+	Layout   layout;
+};
+constexpr std::array<PassProfile, 2> KNOWN_PASSES {
+    {{0x2936e5eca99d75e7ull, Layout::V1019}, {0x5a34b303576ee324ull, Layout::V1007}}};
+
+struct Pending {
+	bool     valid = false;
+	bool     after = false;
+	bool     temporal = false;
+	Layout   layout = Layout::V1019;
+	ImageId  color, motion, depth, output;
+	uint32_t in_w = 0, in_h = 0, out_w = 0, out_h = 0, frame = 0;
+	bool     cut = false;
+	float    jitter_uv[4] {};
+};
+
+std::atomic<uint64_t> g_flips {0};
 
 struct State {
 	Mode     mode           = Mode::Off;
@@ -66,6 +96,23 @@ struct State {
 	bool     find_all       = false;
 	bool     pass_auto      = false;
 	uint64_t pass_hash      = 0; // 0: KNOWN_PASSES
+	Layout   pass_layout    = Layout::V1007;
+	bool     depth_attachment = false; // V1007: the depth attachment instead of colour.w
+	float    depth_near     = 0.1f;
+	float    mv_sign        = 1.0f;
+	uint32_t max_in_w       = 1920;
+	Pending  pending;
+	std::array<ImageId, 8> recent_depths {};
+	uint32_t               recent_depth_next = 0;
+	uint64_t pass_draws = 0;
+	bool     jitter         = false;
+	float    jitter_sign_y  = 1.0f;
+	uint64_t    cycle_every = 0;
+	uint64_t    cycle_from  = 1;
+	std::string cycle_list;
+	int         cycle_index = -1;
+	uint32_t jitter_index   = 0;
+	float    jitter_px[2] {}; // the viewport offset of the frame being drawn
 	float    jitter_sign    = 1.0f;
 	float    mv_jitter      = 1.0f;
 	bool     depth_reversed = false;
@@ -101,7 +148,14 @@ State& Get() {
 			if (std::strcmp(value, "auto") == 0) {
 				s.pass_auto = true;
 			} else {
-				s.pass_hash = std::strtoull(value, nullptr, 16);
+				char* end   = nullptr;
+				s.pass_hash = std::strtoull(value, &end, 16);
+				s.pass_layout = (end != nullptr && std::strcmp(end, ":1019") == 0) ? Layout::V1019 : Layout::V1007;
+				for (const auto& known: KNOWN_PASSES) {
+					if (known.hash == s.pass_hash && (end == nullptr || *end == '\0')) {
+						s.pass_layout = known.layout;
+					}
+				}
 			}
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_JITTER_SIGN"); value != nullptr) {
@@ -110,6 +164,38 @@ State& Get() {
 		if (const char* value = std::getenv("KYTY_METALFX_MV_JITTER"); value != nullptr) {
 			const float v = std::strtof(value, nullptr);
 			s.mv_jitter   = v < 0 ? -1.0f : v > 0 ? 1.0f : 0.0f;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_JITTER"); value != nullptr) {
+			s.jitter = std::strcmp(value, "0") != 0 && s.mode == Mode::Temporal;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_JITTER_SIGN_Y"); value != nullptr) {
+			s.jitter_sign_y = std::strtof(value, nullptr) < 0 ? -1.0f : 1.0f;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_CYCLE"); value != nullptr && s.mode != Mode::Off) {
+			char* end     = nullptr;
+			s.cycle_every = std::strtoull(value, &end, 10);
+			s.cycle_list  = end != nullptr && *end == ',' ? end + 1 : "gst";
+			for (const char c: s.cycle_list) {
+				if (std::strchr("gstabcd", c) == nullptr) {
+					s.cycle_every = 0;
+				}
+				s.jitter = s.jitter || (c >= 'a' && c <= 'd');
+			}
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_CYCLE_FROM"); value != nullptr) {
+			s.cycle_from = std::strtoull(value, nullptr, 10);
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_DEPTH"); value != nullptr) {
+			s.depth_attachment = std::strcmp(value, "attachment") == 0;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_DEPTH_NEAR"); value != nullptr) {
+			s.depth_near = std::strtof(value, nullptr);
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_MAX_IN_W"); value != nullptr) {
+			s.max_in_w = static_cast<uint32_t>(std::atoi(value));
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_MV_SIGN"); value != nullptr) {
+			s.mv_sign = std::strtof(value, nullptr) < 0 ? -1.0f : 1.0f;
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_DEPTH_REVERSED"); value != nullptr) {
 			s.depth_reversed = std::strcmp(value, "0") != 0;
@@ -140,14 +226,16 @@ void Summary(State& s) {
 			text += " " + std::string(FALLBACK_NAMES[i]) + "=" + std::to_string(s.fallbacks[i]);
 		}
 	}
-	std::printf("MetalFX 10s: %s evaluations %llu resets %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game pass kept:%s\n",
-	            s.mode == Mode::Spatial ? "spatial" : "temporal",
+	std::printf("MetalFX 10s: %s evaluations %llu of %llu pass draws, resets %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game picture kept:%s\n",
+	            s.cycle_every != 0 ? "cycle" : s.mode == Mode::Spatial ? "spatial" : "temporal",
 	            static_cast<unsigned long long>(s.evaluations),
+	            static_cast<unsigned long long>(s.pass_draws),
 	            static_cast<unsigned long long>(s.resets), s.in_w, s.in_h, s.out_w, s.out_h,
 	            static_cast<double>(s.last_jitter[0]), static_cast<double>(s.last_jitter[1]),
 	            text.empty() ? " none" : text.c_str());
 	std::fflush(stdout);
 	s.evaluations = 0;
+	s.pass_draws  = 0;
 	s.resets      = 0;
 	s.fallbacks   = {};
 }
@@ -199,6 +287,27 @@ bool LogOnce(State& s, uint64_t hash) {
 bool Requested() {
 	static const bool requested = Get().mode != Mode::Off || Get().find || FindWide();
 	return requested;
+}
+
+bool JitterRequested() {
+	static const bool requested = Get().jitter;
+	return requested;
+}
+
+bool ViewportJitter(uint32_t width, uint32_t height, bool has_depth, uint32_t vertices, float& x, float& y) {
+	const auto& s = Get();
+	// (an indirect draw has no vertex count here: scene geometry)
+	if (!has_depth || (vertices != 0 && vertices <= 4) || width != s.in_w || height != s.in_h || s.in_w == 0 ||
+	    (s.jitter_px[0] == 0.0f && s.jitter_px[1] == 0.0f)) {
+		return false;
+	}
+	x = s.jitter_px[0];
+	y = s.jitter_px[1];
+	return true;
+}
+
+void NoteFlip() {
+	g_flips.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool FindWide() {
@@ -316,10 +425,21 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 } // namespace MetalFx
 
 void RenderExecutor::NoteMetalFxTargets(std::span<const RenderColorInfo> colors, ImageId depth) {
+	auto& s = MetalFx::Get();
+	// Called for every draw before TryMetalFxUpscale: an upscale planned for a draw that was then
+	// not recorded (its pipeline not built yet) is dropped.
+	s.pending.valid = false;
 	if (!depth) {
 		return;
 	}
-	auto& s = MetalFx::Get();
+	bool  recent = false;
+	for (const auto id: s.recent_depths) {
+		recent = recent || id == depth;
+	}
+	if (!recent) {
+		s.recent_depths[s.recent_depth_next] = depth;
+		s.recent_depth_next                  = (s.recent_depth_next + 1) % s.recent_depths.size();
+	}
 	for (const auto& color: colors) {
 		if (!color.image_id) {
 			continue;
@@ -339,121 +459,154 @@ void RenderExecutor::NoteMetalFxTargets(std::span<const RenderColorInfo> colors,
 	}
 }
 
+namespace MetalFx {
+namespace {
+
+bool SameSize(const Image& image, uint32_t w, uint32_t h) {
+	return image.info.extent.width == w && image.info.extent.height == h && image.backing.image != nullptr &&
+	       image.info.samples == 1;
+}
+
+// Records the upscale of a decoded pass (outside rendering). False: nothing was recorded.
+bool Execute(State& s, TextureCache& cache, CommandBuffer& buffer, const Pending& p) {
+	const auto alive = [&cache](ImageId id) { return id && cache.TryGetImage(id) != nullptr; };
+	if (!alive(p.color) || !alive(p.output) || (p.temporal && !alive(p.motion)) || (p.depth && !alive(p.depth))) {
+		return Fail(s, Fallback::Bindings);
+	}
+	auto&  color = cache.GetImage(p.color);
+	auto&  out   = cache.GetImage(p.output);
+	Image* mv    = p.temporal ? &cache.GetImage(p.motion) : nullptr;
+	Image* depth = p.temporal && p.depth ? &cache.GetImage(p.depth) : nullptr;
+	if (!SameSize(color, p.in_w, p.in_h) || !SameSize(out, p.out_w, p.out_h) ||
+	    (mv != nullptr && !SameSize(*mv, p.in_w, p.in_h)) ||
+	    (depth != nullptr && (!SameSize(*depth, p.in_w, p.in_h) || !depth->info.IsDepth()))) {
+		return Fail(s, Fallback::Sizes);
+	}
+
+	// Native recording: outside rendering, the recorder drained (CommandBuffer::Handle).
+	buffer.EndRendering();
+	const auto cmd = buffer.Handle();
+	color.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
+	if (mv != nullptr) {
+		mv->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
+	}
+	if (depth != nullptr) {
+		depth->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {},
+		               cmd);
+	}
+	out.Transit(vk::ImageLayout::eGeneral,
+	            vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite, {}, cmd);
+
+	KkMetalFxInfo info {};
+	info.size   = sizeof(info);
+	info.mode   = p.temporal ? 1 : 2;
+	info.color  = static_cast<VkImage>(color.backing.image);
+	info.depth  = depth != nullptr ? static_cast<VkImage>(depth->backing.image) : VK_NULL_HANDLE;
+	info.motion = mv != nullptr ? static_cast<VkImage>(mv->backing.image) : VK_NULL_HANDLE;
+	info.output = static_cast<VkImage>(out.backing.image);
+	info.in_w   = p.in_w;
+	info.in_h   = p.in_h;
+	// Jitter in input pixels; motion vectors in UV from previous to current (previous = uv - mv):
+	// MetalFX wants pixels pointing at the previous position, without the jitter.
+	info.jitter[0]   = s.jitter_sign * p.jitter_uv[0] * static_cast<float>(p.in_w);
+	info.jitter[1]   = s.jitter_sign * p.jitter_uv[1] * static_cast<float>(p.in_h);
+	info.mv_scale[0] = -s.mv_sign * static_cast<float>(p.in_w);
+	info.mv_scale[1] = -s.mv_sign * static_cast<float>(p.in_h);
+	info.mv_bias[0]  = s.mv_jitter * (p.jitter_uv[0] - p.jitter_uv[2]);
+	info.mv_bias[1]  = s.mv_jitter * (p.jitter_uv[1] - p.jitter_uv[3]);
+	// A camera cut, a gap in the pass's frame counter or a new size (the game's dynamic resolution
+	// selects another scaler in the driver, with an old history): the history starts again.
+	info.reset = (p.cut || (s.last_frame != 0 && p.frame != s.last_frame + 1) || p.in_w != s.in_w ||
+	              p.in_h != s.in_h || p.out_w != s.out_w || p.out_h != s.out_h)
+	                 ? 1
+	                 : 0;
+	info.depth_reversed = s.depth_reversed ? 1 : 0;
+	info.auto_exposure  = 1;
+	info.depth_mode     = p.temporal && depth == nullptr ? 1 : 0;
+	info.depth_near     = s.depth_near;
+	const int result    = s.command(static_cast<VkCommandBuffer>(cmd), &info);
+	buffer.ForgetBoundState();
+	if (result != 1) {
+		// Nothing was encoded: the game's picture stays.
+		return Fail(s, Fallback::Refused);
+	}
+	s.last_frame     = p.frame;
+	s.last_jitter[0] = info.jitter[0];
+	s.last_jitter[1] = info.jitter[1];
+	s.in_w           = p.in_w;
+	s.in_h           = p.in_h;
+	s.out_w          = p.out_w;
+	s.out_h          = p.out_h;
+	// The output now holds MetalFX's image: a GPU write of the target, as the draw's would be.
+	// (the caller commits it: TextureCache::CommitGpuWrite)
+	out.NoteContentWrite();
+	s.resets += info.reset;
+	s.evaluations++;
+	Summary(s);
+	return true;
+}
+
+} // namespace
+} // namespace MetalFx
+
+// True: the pass was replaced (V1019), the draw is done. False: the draw runs; when the pass is one
+// that keeps its own draw (V1007) FinishMetalFx records the upscale after it.
 bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& pixel, ImageId output,
                                        uint32_t color_count) {
 	using namespace MetalFx;
-	if (pixel.runtime == nullptr || !*pixel.runtime) {
+	auto& s         = Get();
+	s.pending.valid = false;
+	if (s.mode == Mode::Off || pixel.runtime == nullptr || !*pixel.runtime) {
 		return false;
 	}
-	auto&      s    = Get();
-	const auto hash = pixel.runtime->program->shader_hash;
-	auto&      cache = m_context.GetTextureCache();
-
-	bool known = false;
+	const auto hash   = pixel.runtime->program->shader_hash;
+	bool       known  = false;
+	Layout     layout = Layout::V1007;
 	if (s.pass_hash != 0) {
-		known = hash == s.pass_hash;
+		known  = hash == s.pass_hash;
+		layout = s.pass_layout;
 	} else {
-		for (const auto h: KNOWN_PASSES) {
-			known = known || hash == h;
-		}
-	}
-	// KYTY_METALFX_PASS=auto / KYTY_METALFX_FIND: the pass by its shape, from the cached images
-	// alone (another draw's constants are not ours to read): two colour targets, motion and colour
-	// inputs of one size, a larger output.
-	const auto shape_matches = [&] {
-		if (color_count != 2 || pixel.images.size() < 3 || !output || !pixel.images[0].image_id ||
-		    !pixel.images[1].image_id || cache.m_slot_images.try_get(pixel.images[0].image_id) == nullptr ||
-		    cache.m_slot_images.try_get(pixel.images[1].image_id) == nullptr ||
-		    cache.m_slot_images.try_get(output) == nullptr) {
-			return false;
-		}
-		const auto& mv  = cache.GetImage(pixel.images[0].image_id);
-		const auto& in  = cache.GetImage(pixel.images[1].image_id);
-		const auto& out = cache.GetImage(output);
-		return mv.info.extent.width == in.info.extent.width &&
-		       mv.info.extent.height == in.info.extent.height && in.info.extent.width >= 320 &&
-		       out.info.extent.width > in.info.extent.width &&
-		       out.info.extent.height > in.info.extent.height && !out.info.IsDepth() &&
-		       !in.info.IsDepth() && in.backing.format == out.backing.format &&
-		       out.backing.format == vk::Format::eR16G16B16A16Sfloat;
-	};
-	// KYTY_METALFX_FIND=2: every pixel shader that draws into two colour targets, the first an
-	// RGBA16F one, with its images and the first words of its constant buffers (once per shader).
-	if (s.find_all && color_count == 2 && output && cache.m_slot_images.try_get(output) != nullptr &&
-	    cache.GetImage(output).backing.format == vk::Format::eR16G16B16A16Sfloat &&
-	    LogOnce(s, hash ^ 0x5555555555555555ull)) {
-		const auto& out = cache.GetImage(output);
-		std::string text;
-		for (const auto& binding: pixel.images) {
-			if (binding.image_id && cache.m_slot_images.try_get(binding.image_id) != nullptr) {
-				const auto& image = cache.GetImage(binding.image_id);
-				text += fmt::format(" {}x{}:{}{}", image.info.extent.width, image.info.extent.height,
-				                    vk::to_string(image.backing.format), image.info.IsDepth() ? "(depth)" : "");
-			} else {
-				text += " -";
+		for (const auto& pass: KNOWN_PASSES) {
+			if (hash == pass.hash) {
+				known  = true;
+				layout = pass.layout;
 			}
 		}
-		std::printf("MetalFX find2: pixel shader %016llx output %ux%u images:%s\n",
-		            static_cast<unsigned long long>(hash), out.info.extent.width, out.info.extent.height,
-		            text.c_str());
-		for (const auto& source: pixel.buffer_sources) {
-			if (source.address == 0 || source.size < 64) {
-				continue;
-			}
-			const auto* w = Guest::Ptr<const uint32_t>(source.address);
-			const auto* f = reinterpret_cast<const float*>(w);
-			std::string words;
-			for (uint32_t i = 0; i < 16 && (i + 1) * 4 <= source.size; i++) {
-				words += fmt::format(" {}:{:08x}({:.6g})", i, w[i], static_cast<double>(f[i]));
-			}
-			std::printf("MetalFX find2:   buffer %llx+%u:%s\n", static_cast<unsigned long long>(source.address),
-			            static_cast<unsigned>(source.size), words.c_str());
-		}
-		std::fflush(stdout);
 	}
-	const bool structural = (s.find || s.pass_auto) && !known && shape_matches();
-	// The pass's constants (metalfx.h).
-	const bool has_cb = (known || structural) && pixel.images.size() >= 2 && output &&
-	                    !pixel.buffer_sources.empty() && pixel.buffer_sources[0].address != 0 &&
-	                    pixel.buffer_sources[0].size >= 56;
-	// nps5: guest bytes are at guest + bias (dlss.cpp reads the guest address itself: Windows identity map).
-	const auto* cb = has_cb ? Guest::Ptr<const uint32_t>(pixel.buffer_sources[0].address) : nullptr;
-	if ((s.find || s.pass_auto) && (known || structural) && LogOnce(s, hash)) {
-		std::string images;
-		for (const auto& binding: pixel.images) {
-			if (binding.image_id && cache.m_slot_images.try_get(binding.image_id) != nullptr) {
-				const auto& image = cache.GetImage(binding.image_id);
-				images += fmt::format(" {}x{}:{}", image.info.extent.width, image.info.extent.height,
-				                      vk::to_string(image.backing.format));
-			} else {
-				images += " -";
-			}
-		}
-		std::string sources;
-		for (const auto& source: pixel.buffer_sources) {
-			sources += fmt::format(" {:x}+{}", source.address, source.size);
-		}
-		const auto& out = cache.GetImage(output);
-		std::printf("MetalFX find: pixel shader %016llx (%s) targets %u, output %ux%u %s, buffers:%s, images:%s\n",
-		            static_cast<unsigned long long>(hash), known ? "known" : "shape match", color_count,
-		            out.info.extent.width, out.info.extent.height,
-		            vk::to_string(out.backing.format).c_str(), sources.c_str(), images.c_str());
-		std::fflush(stdout);
-	}
-	if (s.find && has_cb && cb[4] == cache.GetImage(output).info.extent.width && s.find_cb_logged < 4) {
-		s.find_cb_logged++;
-		const auto* f = reinterpret_cast<const float*>(cb);
-		std::printf("MetalFX find: constants of %016llx: out %ux%u in %ux%u frame %u mv %u jitter %.6f %.6f "
-		            "prev %.6f %.6f\n",
-		            static_cast<unsigned long long>(hash), cb[4], cb[5], cb[6], cb[7], cb[11], cb[13],
-		            static_cast<double>(f[0]), static_cast<double>(f[1]), static_cast<double>(f[2]),
-		            static_cast<double>(f[3]));
-		std::fflush(stdout);
-	}
-	if (s.mode == Mode::Off || !(known || (s.pass_auto && structural))) {
+	if (!known) {
 		return false;
 	}
-	if (!has_cb) {
+	s.pass_draws++;
+	const bool v1007 = layout == Layout::V1007;
+	// The configuration of this frame: g the game's picture, s spatial, t temporal, a-d temporal
+	// with the viewport jitter and MetalFX jitter signs ++, --, +-, -+ (KYTY_METALFX_CYCLE).
+	char config  = s.mode == Mode::Spatial ? 's' : s.jitter ? 'a' : 't';
+	bool changed = false;
+	if (s.cycle_every != 0) {
+		const auto flips = g_flips.load(std::memory_order_relaxed);
+		const int  index = flips < s.cycle_from
+		                       ? 0
+		                       : static_cast<int>(((flips - s.cycle_from) / s.cycle_every) % s.cycle_list.size());
+		config = s.cycle_list[static_cast<size_t>(index)];
+		if (index != s.cycle_index) {
+			std::printf("MetalFX cycle: flip %llu t_us %lld config %c\n", static_cast<unsigned long long>(flips),
+			            static_cast<long long>(NowNs() / 1000), config);
+			std::fflush(stdout);
+			s.cycle_index = index;
+			changed       = true;
+		}
+	}
+	const bool jittered = config >= 'a' && config <= 'd';
+	if (config == 'g') {
+		s.jitter_px[0] = 0.0f;
+		s.jitter_px[1] = 0.0f;
+		Summary(s);
+		return false;
+	}
+	// The profile's shape: V1007 two colour targets (picture, history) and three images.
+	if (!output || pixel.images.size() < (v1007 ? 3u : 2u) || (v1007 && color_count != 2) ||
+	    pixel.buffer_sources.empty() || pixel.buffer_sources[0].address == 0 ||
+	    pixel.buffer_sources[0].size < (v1007 ? 40u : 56u)) {
 		return Fail(s, Fallback::Bindings);
 	}
 	if (!s.lookup_tried) {
@@ -463,106 +616,116 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 	if (s.command == nullptr) {
 		return Fail(s, Fallback::NoDriver);
 	}
-
-	float jitter_uv[4];
-	std::memcpy(jitter_uv, cb, sizeof(jitter_uv));
-	const uint32_t out_w = cb[4], out_h = cb[5], in_w = cb[6], in_h = cb[7], frame = cb[11];
-	const bool     temporal = s.mode == Mode::Temporal;
-	if (temporal && cb[13] == 0) {
+	// nps5: guest bytes are at guest + bias (dlss.cpp reads the guest address itself: Windows identity map).
+	const auto* cb = Guest::Ptr<const uint32_t>(pixel.buffer_sources[0].address);
+	Pending     p;
+	p.temporal = config != 's';
+	p.layout   = layout;
+	p.output   = output;
+	p.motion   = pixel.images[0].image_id;
+	p.color    = pixel.images[1].image_id;
+	p.after    = v1007;
+	bool mv_valid = false;
+	if (v1007) {
+		p.out_w = cb[0];
+		p.out_h = cb[1];
+		p.in_w  = cb[2];
+		p.in_h  = cb[3];
+		if (p.in_w == 0 || p.in_h == 0 || cb[4] != p.in_w - 1 || cb[5] != p.in_h - 1) {
+			return Fail(s, Fallback::Sizes);
+		}
+		p.cut    = cb[6] == 1;
+		p.frame  = cb[7];
+		mv_valid = cb[9] != 0;
+		p.cut    = p.cut || changed;
+		if (s.jitter) {
+			// The offset the frame's scene draws had (ViewportJitter), then the next frame's.
+			static constexpr float SIGNS[4][2] {{1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
+			const auto* sign    = SIGNS[jittered ? config - 'a' : 0];
+			const bool  applied = jittered && p.in_w == s.in_w && p.in_h == s.in_h;
+			p.jitter_uv[0] = applied ? sign[0] * s.jitter_px[0] / static_cast<float>(p.in_w) : 0.0f;
+			p.jitter_uv[1] = applied ? sign[1] * s.jitter_sign_y * s.jitter_px[1] / static_cast<float>(p.in_h) : 0.0f;
+			p.jitter_uv[2] = p.jitter_uv[0];
+			p.jitter_uv[3] = p.jitter_uv[1];
+			const auto halton = [](uint32_t index, uint32_t base) {
+				float f = 1.0f, r = 0.0f;
+				for (; index > 0; index /= base) {
+					f /= static_cast<float>(base);
+					r += f * static_cast<float>(index % base);
+				}
+				return r;
+			};
+			const float ratio  = static_cast<float>(p.out_w) / static_cast<float>(p.in_w);
+			const auto  phases = std::max<uint32_t>(8, static_cast<uint32_t>(8.0f * ratio * ratio + 0.999f));
+			s.jitter_index     = (s.jitter_index + 1) % phases;
+			s.jitter_px[0]     = jittered ? halton(s.jitter_index + 1, 2) - 0.5f : 0.0f;
+			s.jitter_px[1]     = jittered ? halton(s.jitter_index + 1, 3) - 0.5f : 0.0f;
+		}
+	} else {
+		std::memcpy(p.jitter_uv, cb, sizeof(p.jitter_uv));
+		p.out_w  = cb[4];
+		p.out_h  = cb[5];
+		p.in_w   = cb[6];
+		p.in_h   = cb[7];
+		p.frame  = cb[11];
+		mv_valid = cb[13] != 0;
+	}
+	// Only a real upscale from a scene size (not the 1:1 and near-4K passes of the loading screens'
+	// dynamic-resolution levels, each of which would cost a scaler of its own).
+	if (p.in_w >= p.out_w || p.in_h >= p.out_h || p.in_w > s.max_in_w) {
+		return Fail(s, Fallback::NoUpscale);
+	}
+	if (p.temporal && !mv_valid) {
 		return Fail(s, Fallback::NoMotionVectors);
 	}
-	const auto mv_id    = pixel.images[0].image_id;
-	const auto color_id = pixel.images[1].image_id;
-	ImageId    depth_id {};
-	for (const auto& pair: s.depth_pairs) {
-		if (pair.color == mv_id) {
-			depth_id = pair.depth;
+	auto& cache = m_context.GetTextureCache();
+	if (p.temporal && (!v1007 || s.depth_attachment)) {
+		for (const auto& pair: s.depth_pairs) {
+			if (pair.color == p.motion) {
+				p.depth = pair.depth;
+			}
+		}
+		// V1007: else the last depth attachment of the input size.
+		for (uint32_t i = 0; v1007 && !p.depth && i < s.recent_depths.size(); i++) {
+			const auto id = s.recent_depths[(s.recent_depth_next + s.recent_depths.size() - 1 - i) %
+			                                s.recent_depths.size()];
+			if (id && cache.m_slot_images.try_get(id) != nullptr) {
+				const auto& image = cache.GetImage(id);
+				if (image.info.extent.width == p.in_w && image.info.extent.height == p.in_h) {
+					p.depth = id;
+				}
+			}
+		}
+		if (!p.depth) {
+			return Fail(s, Fallback::NoDepth);
 		}
 	}
-	if (!color_id || cache.m_slot_images.try_get(color_id) == nullptr ||
-	    cache.m_slot_images.try_get(output) == nullptr) {
-		return Fail(s, Fallback::Bindings);
+	if (p.after) {
+		s.pending       = p;
+		s.pending.valid = true;
+		return false;
 	}
-	if (temporal && (!mv_id || cache.m_slot_images.try_get(mv_id) == nullptr)) {
-		return Fail(s, Fallback::Bindings);
+	if (!Execute(s, cache, buffer, p)) {
+		return false;
 	}
-	if (temporal && (!depth_id || cache.m_slot_images.try_get(depth_id) == nullptr)) {
-		return Fail(s, Fallback::NoDepth);
-	}
-	auto& color = cache.GetImage(color_id);
-	auto& out   = cache.GetImage(output);
-	const auto same = [](const Image& image, uint32_t w, uint32_t h) {
-		return image.info.extent.width == w && image.info.extent.height == h &&
-		       image.backing.image != nullptr && image.info.samples == 1;
-	};
-	if (!same(color, in_w, in_h) || !same(out, out_w, out_h)) {
-		return Fail(s, Fallback::Sizes);
-	}
-	Image* mv    = temporal ? &cache.GetImage(mv_id) : nullptr;
-	Image* depth = temporal ? &cache.GetImage(depth_id) : nullptr;
-	if (temporal && (!same(*mv, in_w, in_h) || !same(*depth, in_w, in_h) || !depth->info.IsDepth())) {
-		return Fail(s, Fallback::Sizes);
-	}
+	cache.CommitGpuWrite(cache.GetImage(p.output));
+	return true;
+}
 
-	// Native recording: outside rendering, the recorder drained (CommandBuffer::Handle).
-	buffer.EndRendering();
-	const auto cmd = buffer.Handle();
-	color.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {},
-	              cmd);
-	if (temporal) {
-		mv->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {},
-		            cmd);
-		depth->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead,
-		               {}, cmd);
+// After the draw of a pass that keeps its own draw: true when the upscale was recorded (rendering
+// was ended; no draw-run record may be continued across it).
+bool RenderExecutor::FinishMetalFx(CommandBuffer& buffer) {
+	using namespace MetalFx;
+	auto& s = Get();
+	if (!s.pending.valid) {
+		return false;
 	}
-	out.Transit(vk::ImageLayout::eGeneral,
-	            vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite, {},
-	            cmd);
-
-	KkMetalFxInfo info {};
-	info.size   = sizeof(info);
-	info.mode   = temporal ? 1 : 2;
-	info.color  = static_cast<VkImage>(color.backing.image);
-	info.depth  = temporal ? static_cast<VkImage>(depth->backing.image) : VK_NULL_HANDLE;
-	info.motion = temporal ? static_cast<VkImage>(mv->backing.image) : VK_NULL_HANDLE;
-	info.output = static_cast<VkImage>(out.backing.image);
-	info.in_w   = in_w;
-	info.in_h   = in_h;
-	// Jitter in input pixels; motion vectors in UV from previous to current, including the jitter
-	// (dlss.h): MetalFX wants pixels pointing at the previous position, without the jitter.
-	info.jitter[0]      = s.jitter_sign * jitter_uv[0] * static_cast<float>(in_w);
-	info.jitter[1]      = s.jitter_sign * jitter_uv[1] * static_cast<float>(in_h);
-	info.mv_scale[0]    = -static_cast<float>(in_w);
-	info.mv_scale[1]    = -static_cast<float>(in_h);
-	info.mv_bias[0]     = s.mv_jitter * (jitter_uv[0] - jitter_uv[2]);
-	info.mv_bias[1]     = s.mv_jitter * (jitter_uv[1] - jitter_uv[3]);
-	// A new input size (the game's dynamic resolution) selects another scaler in the driver, whose
-	// history is from the last time that size was used: start it again.
-	info.reset          = ((s.last_frame != 0 && frame != s.last_frame + 1) || in_w != s.in_w ||
-	                       in_h != s.in_h || out_w != s.out_w || out_h != s.out_h)
-	                          ? 1
-	                          : 0;
-	info.depth_reversed = s.depth_reversed ? 1 : 0;
-	info.auto_exposure  = 1;
-	const int result = s.command(static_cast<VkCommandBuffer>(cmd), &info);
-	buffer.ForgetBoundState();
-	if (result != 1) {
-		// Nothing was encoded: the game's pass draws (its targets are bound again by the caller).
-		return Fail(s, Fallback::Refused);
+	s.pending.valid = false;
+	auto& cache = m_context.GetTextureCache();
+	if (!Execute(s, cache, buffer, s.pending)) {
+		return false;
 	}
-	s.last_frame     = frame;
-	s.last_jitter[0] = info.jitter[0];
-	s.last_jitter[1] = info.jitter[1];
-	s.in_w           = in_w;
-	s.in_h           = in_h;
-	s.out_w          = out_w;
-	s.out_h          = out_h;
-	// The output now holds MetalFX's image: a GPU write of the target, as the draw's would be.
-	out.NoteContentWrite();
-	cache.CommitGpuWrite(out);
-	s.resets += info.reset;
-	s.evaluations++;
-	Summary(s);
+	cache.CommitGpuWrite(cache.GetImage(s.pending.output));
 	return true;
 }
 

@@ -1192,6 +1192,7 @@ private:
 	void NoteMetalFxTargets(std::span<const RenderColorInfo> colors, ImageId depth);
 	[[nodiscard]] bool TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& pixel,
 	                                     ImageId output, uint32_t color_count);
+	[[nodiscard]] bool FinishMetalFx(CommandBuffer& buffer);
 	// ASTROHYBRID_DLSSG (frameGen.h): the camera from a draw's bound constants, and the frame's
 	// depth, motion vectors and constants at the temporal upscale pass.
 	void NoteFrameGenCamera(const PreparedBindings& stage);

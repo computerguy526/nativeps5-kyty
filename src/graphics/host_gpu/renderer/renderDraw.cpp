@@ -576,7 +576,8 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, const CommandS
                                      const ShaderVertexInputInfo& vs_input_info,
                                      const RenderDepthInfo& depth, const RenderState& rendering,
                                      GraphicsDynamicStateShadow&            shadow,
-                                     const DrawPrep::DynamicViewportPlan* planned) {
+                                     const DrawPrep::DynamicViewportPlan* planned,
+                                     uint32_t                             draw_vertices) {
 	KYTY_PROFILER_FUNCTION();
 	DynamicStateRecorder recorder(shadow, buffer, vk_buffer.Identity());
 
@@ -639,6 +640,17 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, const CommandS
 			}
 			if (!same) {
 				DrawPrep::ReportBindingMismatch("dynamic viewports", viewport_count);
+			}
+		}
+	}
+	// nps5 KYTY_METALFX_JITTER (metalfx.h): the frame's sub-pixel offset on scene draws.
+	if (MetalFx::JitterRequested()) [[unlikely]] {
+		float jitter_x = 0.0f, jitter_y = 0.0f;
+		if (MetalFx::ViewportJitter(rendering.width, rendering.height, static_cast<bool>(depth.image_id),
+		                            draw_vertices, jitter_x, jitter_y)) {
+			for (uint32_t i = 0; i < viewport_count; i++) {
+				viewports[i].x += jitter_x;
+				viewports[i].y += jitter_y;
 			}
 		}
 	}
@@ -4533,7 +4545,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const CommitStats::SubScope dynamic_scope(CommitStats::Sub::Dynamic);
 		SetGraphicsDynamicParams(buffer, vk_buffer, vertex_stages.back(), state.depth_info,
 		                         rendering, m_dynamic_state,
-		                         plan_stages && plan->viewports.valid ? &plan->viewports : nullptr);
+		                         plan_stages && plan->viewports.valid ? &plan->viewports : nullptr,
+		                         draw.index_count);
 		if (m_context.GetGraphics().attachment_feedback_loop_enabled) {
 			// Declared dynamic by every renderer pipeline; the shadow (valid for this command
 			// buffer and bound pipeline, established just above) covers it too.
@@ -4907,6 +4920,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		if (DrawRun::KeyDiagEnabled()) [[unlikely]] {
 			DrawRunKeyDiagResolved(buffer, stages, pipeline, rendering, eligible && m_run.valid);
+		}
+	}
+	// nps5 KYTY_METALFX: a pass that keeps its own draw (metalfx.cpp V1007) has MetalFX write its
+	// first target after it. That ends rendering: no run record may be continued across it.
+	if (MetalFx::Requested() && FinishMetalFx(buffer)) [[unlikely]] {
+		m_run.valid        = false;
+		m_run_active       = false;
+		m_run_targets_kept = false;
+		for (auto& record: m_run_kept) {
+			record.valid = false;
 		}
 	}
 	CommitStats::StepMark(CommitStats::Step::RunRecord);

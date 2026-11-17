@@ -11,6 +11,7 @@
 #include "gpu_blit_shaders/gpu_video_out_downscale_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -703,8 +704,11 @@ public:
 		}
 		// A series with KYTY_DUMP_TARGETS_EVERY below the delay (consecutive flips for a flicker
 		// check) is recorded whole and written after its last dump.
-		if ((!m_pending.empty() && m_every >= m_delay) || m_dumped >= m_limit || m_flips < m_from ||
-		    (m_flips - m_from) % m_every != 0) {
+		// KYTY_DUMP_TARGETS_BURST=<k> (default 1): k consecutive flips at each dump point (two give a
+		// frame-to-frame difference per point), written together after the last.
+		const auto phase = m_flips < m_from ? m_every : (m_flips - m_from) % m_every;
+		if ((!m_pending.empty() && m_every >= m_delay && phase == 0) || m_dumped >= m_limit ||
+		    m_flips < m_from || phase >= m_burst) {
 			return;
 		}
 		command_buffer.EndRendering();
@@ -817,6 +821,7 @@ private:
 		m_min_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MINW", 512), 1));
 		m_max_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MAXW", 960), 16));
 		m_only_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_ONLYW", 0), 0));
+		m_burst      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_BURST", 1), 1));
 	}
 	static void Create(GraphicContext& graphics, Entry& entry) {
 		auto       device      = graphics.device;
@@ -913,6 +918,7 @@ private:
 	uint32_t           m_min_width    = 512;
 	uint32_t           m_max_width    = 960;
 	uint32_t           m_only_width   = 0;
+	uint64_t           m_burst        = 1;
 	uint64_t           m_flips        = 0;
 	uint64_t           m_pending_flip = 0;
 	std::vector<Entry> m_pending;
@@ -2034,6 +2040,9 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);
 	TargetDump::Instance().OnFlip(m_impl->window.graphic_ctx, m_impl->renderer.GetTextureCache(), buffer);
+	if (MetalFx::Requested()) [[unlikely]] {
+		MetalFx::NoteFlip();
+	}
 	if (headset) {
 		// The frame holds the raw display-encoded pixels the headset needs.
 		frame->Transit(buffer.Handle(), vk::ImageLayout::eTransferSrcOptimal,
