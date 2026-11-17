@@ -2,6 +2,7 @@
 // and (S6) the preparation window ring, worker parking and the producer's work stealing.
 // --measure-worker-gate [reps]: the parking/stealing configuration sweep (not a test).
 #include "graphics/host_gpu/coherenceLog.h"
+#include "common/spinRelax.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/packetClass.h"
 #include "graphics/host_gpu/renderer/drawPrep/readSet.h"
@@ -1973,6 +1974,12 @@ void TestGapLedgerFlushAndOverflow() {
 }
 
 int main(int argc, char** argv) {
+	// nps5 (kcpu): KYTY_SPIN_RELAX=pause|1 runs every worker/producer spin of these tests with the CPU
+	// pause instead of sched_yield (common/spinRelax.h; arm64 only, the switch itself lives in threads.cpp).
+	if (const char* relax = std::getenv("KYTY_SPIN_RELAX"); relax != nullptr && (relax[0] == '1' || relax[0] == 'p')) {
+		Common::g_spin_relax_pause.store(1);
+	}
+	std::printf("spin relax: %s\n", Common::g_spin_relax_pause.load() != 0 ? "pause" : "yield");
 	if (argc > 1 && std::strcmp(argv[1], "--measure-worker-gate") == 0) {
 		const auto reps = argc > 2 ? std::strtoul(argv[2], nullptr, 10) : 5ul;
 		MeasureWorkerGate(static_cast<uint32_t>(std::clamp(reps, 1ul, 100ul)),

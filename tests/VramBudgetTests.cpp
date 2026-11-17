@@ -2,8 +2,10 @@
 // 8 GB card's planning budgets.
 #include "graphics/host_gpu/vramBudget.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 
 namespace {
 
@@ -54,11 +56,157 @@ void TestPlans() {
 	Expect(!PlanImages(0, 5 * GiB, 0).retire, "no budget: no retirement");
 }
 
+// KYTY_GC_SIDE_SETTLE_LAZY: PlanBufferPass.
+void TestBufferPass() {
+	// Off, or at the critical mark: every pass runs with the old limits, whatever the state.
+	for (uint64_t deferred = 0; deferred <= 2 * BufferSettleMaxDeferred; deferred++) {
+		for (int waits = 0; waits < 2; waits++) {
+			const auto off = PlanBufferPass(false, false, waits != 0, deferred);
+			Expect(off.run && off.limit == 32 && off.deferred == 0, "switch off: the pass as before");
+			for (int lazy = 0; lazy < 2; lazy++) {
+				const auto crit = PlanBufferPass(lazy != 0, true, waits != 0, deferred);
+				Expect(crit.run && crit.limit == 64 && crit.deferred == 0,
+				       "critical mark: the pass as before");
+			}
+		}
+	}
+	// Lazy, nothing to wait for: runs at once with the base limit.
+	const auto free_pass = PlanBufferPass(true, false, false, 0);
+	Expect(free_pass.run && free_pass.limit == 32 && free_pass.deferred == 0, "no wait: runs");
+	// Lazy, would wait: put off, at most BufferSettleMaxDeferred times in a row, then it runs.
+	uint64_t deferred = 0;
+	uint64_t put_off  = 0;
+	for (;;) {
+		const auto pass = PlanBufferPass(true, false, true, deferred);
+		if (pass.run) {
+			Expect(pass.limit == 32 * BufferPassLimitMaxScale, "forced pass: the capped limit");
+			Expect(pass.deferred == 0, "forced pass resets the count");
+			break;
+		}
+		Expect(pass.limit == 0 && pass.deferred == deferred + 1, "put off: counted");
+		deferred = pass.deferred;
+		put_off++;
+		if (put_off > 10 * BufferSettleMaxDeferred) {
+			Expect(false, "a waiting pass is never put off forever");
+			break;
+		}
+	}
+	Expect(put_off == BufferSettleMaxDeferred, "exactly BufferSettleMaxDeferred passes put off");
+	// A pass that runs late makes up for the passes it replaced (capped).
+	Expect(PlanBufferPass(true, false, false, 3).limit == 4 * 32, "3 put off: 4 passes' worth");
+	Expect(PlanBufferPass(true, false, false, 15).limit == 16 * 32, "15 put off: 16 passes' worth");
+	Expect(PlanBufferPass(true, false, false, 40).limit == 16 * 32, "the scale is capped");
+	// Random walks: never more than BufferSettleMaxDeferred passes without a run; the retired
+	// capacity over the walk is at least min(passes, cap) x 32 per run group; state stays bounded.
+	uint64_t seed = 0x9e3779b97f4a7c15ull;
+	const auto next = [&seed] {
+		seed ^= seed << 13;
+		seed ^= seed >> 7;
+		seed ^= seed << 17;
+		return seed;
+	};
+	for (int walk = 0; walk < 2000; walk++) {
+		uint64_t state = 0, streak = 0;
+		const uint64_t bias = next() % 100; // % of passes that would wait
+		for (int step = 0; step < 500; step++) {
+			const bool crit  = next() % 97 == 0;
+			const bool waits = next() % 100 < bias;
+			const auto pass  = PlanBufferPass(true, crit, waits, state);
+			if (pass.run) {
+				Expect(pass.limit >= 32, "a running pass retires at least the base limit");
+				Expect(crit || !waits || state >= BufferSettleMaxDeferred,
+				       "a waiting pass below the critical mark runs only when forced");
+				Expect(crit || pass.limit == 32 * std::min<uint64_t>(state + 1, BufferPassLimitMaxScale),
+				       "late pass limit");
+				streak = 0;
+			} else {
+				Expect(!crit && waits, "only a waiting pass below the critical mark is put off");
+				streak++;
+			}
+			Expect(streak <= BufferSettleMaxDeferred, "bounded run of put-off passes");
+			Expect(pass.deferred <= BufferSettleMaxDeferred, "bounded state");
+			state = pass.deferred;
+		}
+	}
+}
+
+void TestChurn() {
+	const uint64_t budget = 6 * GiB;
+	ChurnTracker   t;
+	Expect(t.Floor() == 0, "floor starts at 0");
+	Expect(!t.NoteCreated(0x1000, 10), "never freed: no hit");
+	t.NoteFreed(0x1000, 100);
+	Expect(!t.NoteCreated(0x2000, 105), "other address: no hit");
+	Expect(t.NoteCreated(0x1000, 105), "re-created 5 frames after the free: hit");
+	Expect(t.Floor() == MinFloor && t.Hits() == 1, "first hit sets the minimum floor");
+	Expect(!t.NoteCreated(0x1000, 106), "entry consumed by the hit");
+	t.NoteFreed(0x1000, 200);
+	Expect(!t.NoteCreated(0x1000, 200 + ChurnWindow + 1), "created after the window: no hit (never reused soon)");
+	Expect(t.Floor() == MinFloor, "a miss leaves the floor");
+	for (uint64_t i = 0; i < 20; ++i) {
+		t.NoteFreed(0x10000 + i * 0x1000, 1000 + i);
+		(void)t.NoteCreated(0x10000 + i * 0x1000, 1001 + i);
+	}
+	Expect(t.Floor() == MaxFloor, "floor doubles up to the maximum");
+	// Decay: halves every DecayFrames frames without a hit, then off.
+	const uint64_t last = 1001 + 19;
+	t.Tick(last + DecayFrames - 1);
+	Expect(t.Floor() == MaxFloor, "no decay before DecayFrames");
+	t.Tick(last + DecayFrames);
+	Expect(t.Floor() == MaxFloor / 2, "decays by half");
+	uint64_t f = last + DecayFrames;
+	for (int i = 0; i < 10; ++i) {
+		f += DecayFrames;
+		t.Tick(f);
+	}
+	Expect(t.Floor() == 0, "decays to zero");
+	// Effective age: the floor protects, the hard limit overrides it, never lowers the plan's age.
+	Expect(EffectiveAge(7, 60, budget, budget) == 60, "floor above the plan age wins");
+	Expect(EffectiveAge(7, 4, budget, budget) == 7, "floor below the plan age: plan age");
+	Expect(EffectiveAge(7, 60, budget, HardLimit(budget)) == 7, "above the hard limit: plan age");
+	Expect(EffectiveAge(7, 0, budget, budget) == 7, "floor 0: plan age");
+	// Table overwrite: a colliding address replaces the older entry, never a false hit.
+	ChurnTracker u;
+	for (uint64_t i = 0; i < 3 * ChurnTracker::Entries; ++i) {
+		u.NoteFreed(i << 12u, 50);
+	}
+	uint64_t hits = 0;
+	for (uint64_t i = 0; i < 3 * ChurnTracker::Entries; ++i) {
+		hits += u.NoteCreated(i << 12u, 60) ? 1 : 0;
+	}
+	Expect(hits <= ChurnTracker::Entries && hits > 0, "bounded table: at most Entries hits");
+	// Stress: random free/create against a reference map, hits must be a subset of true hits.
+	ChurnTracker                              r;
+	std::map<uint64_t, uint64_t>              ref;
+	uint64_t                                  seed = 12345, bad = 0;
+	for (uint64_t frame = 0; frame < 200000; ++frame) {
+		seed         = seed * 6364136223846793005ull + 1442695040888963407ull;
+		const auto a = ((seed >> 33) % 3000) << 12u;
+		if ((seed >> 20) & 1) {
+			r.NoteFreed(a, frame);
+			ref[a] = frame;
+		} else if (r.NoteCreated(a, frame)) {
+			auto it = ref.find(a);
+			if (it == ref.end() || frame - it->second > ChurnWindow) {
+				++bad;
+			}
+		}
+		r.Tick(frame);
+		if (r.Floor() > MaxFloor) {
+			++bad;
+		}
+	}
+	Expect(bad == 0, "stress: no false hit, floor bounded");
+	Expect(BurstBytes == 512ull * MiB, "burst cap 512 MiB");
+}
+
 } // namespace
 
 int main() {
 	TestMarks();
 	TestPlans();
+	TestBufferPass();
+	TestChurn();
 	if (g_failures != 0) {
 		std::printf("%d failure(s)\n", g_failures);
 		return 1;

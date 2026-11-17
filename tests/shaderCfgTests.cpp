@@ -6627,6 +6627,118 @@ void TestNewShaderRecompilerVintrpTranslation() {
   CheckSpirvBinaryValidates(no_perspective_result.spirv);
 }
 
+// nps5 kart2, KYTY_PS_PER_VERTEX=unpack: raw-vertex reads of a custom-interpolation parameter become
+// reads of host-interpolated fields at a spare location that the linked vertex shader exports; no
+// PerVertexKHR inputs, no fragment barycentrics.
+void TestCustomVintrpUnpack() {
+  namespace IR = ShaderRecompiler::IR;
+  ShaderRecompiler::SetPsPerVertexModeForTests(2);
+  const uint32_t shader[] = {
+      EncodeVintrp(2, 12, 0, 3, 2), // v_interp_mov_f32 v12, p0, attr0.w
+      EncodeVintrp(2, 13, 0, 3, 0), // v13 = p10
+      EncodeVintrp(2, 14, 0, 3, 1), // v14 = p20
+      EncodeVop1(0x05, 15, 249),
+      EncodeVop1Sdwa(12, 6, 0, 5, 1), // v_cvt_f32_i32 v15, v12 word1 sext
+      EncodeVop1(0x05, 16, 249),
+      EncodeVop1Sdwa(13, 6, 0, 5, 1), // v_cvt_f32_i32 v16, v13 word1 sext
+      EncodeVop1(0x06, 17, 249),
+      EncodeVop1Sdwa(14, 6, 0, 4, 0), // v_cvt_f32_u32 v17, v14 word0
+      EncodeExp0(0x00, 0xf),
+      EncodeExp1(15, 16, 17, 12), // the raw dword of P0 too: rebuilt from rounded fields
+      0xbf810000u,
+  };
+  ShaderPixelInputInfo pixel{};
+  pixel.input_num = 1;
+  pixel.ps_system_input_base = 2;
+  pixel.custom_interpolation_mask = 1;
+  pixel.ps_perspective_center_vgpr = 0;
+  SetIdentityInterpolatorSettings(&pixel);
+  pixel.interpolator_settings[0] = 0x00000023u; // export 3
+  auto options = MakeCompileOptions(ShaderType::Pixel);
+  options.input_info.pixel = &pixel;
+  options.dump_ir = true;
+  auto ps = RecompileForTest(shader, options);
+  Check(ps.ir_dump.find("GetParameterField") != std::string::npos &&
+            ps.ir_dump.find("GetInterpolationParameter") == std::string::npos,
+        "unpack: raw-vertex reads were not replaced by field reads");
+  Check(!SpirvContainsCapability(ps.spirv, 5284u),
+        "unpack: fragment barycentrics are not needed");
+  Check(!SpirvHasDecorationValueWithDecoration(ps.spirv, 30u, 3u, 5285u) &&
+            !SpirvHasDecorationValueWithDecoration(ps.spirv, 30u, 31u, 5285u),
+        "unpack: no PerVertexKHR input");
+  Check(SpirvHasDecorationValue(ps.spirv, 30u, 31u) &&
+            !SpirvHasDecorationValueWithDecoration(ps.spirv, 30u, 31u, 14u),
+        "unpack: the fields are a smooth input at the highest free location");
+  Check(ProgramInputCount(ps.program, IR::StageInputKind::ParameterField) == 1 &&
+            ProgramInputCount(ps.program, IR::StageInputKind::Parameter) == 0,
+        "unpack: one field slot, the packed parameter itself is not read");
+  CheckSpirvBinaryValidates(ps.spirv);
+  uint32_t packed = 0;
+  for (const auto &input : ps.program.info.inputs) {
+    if (input.kind == IR::StageInputKind::ParameterField) {
+      packed = input.component_count;
+      Check(input.location == 31u, "unpack: slot location");
+    }
+  }
+  const auto slot = ShaderParameterFieldSlot::Unpack(31u, packed);
+  const std::array<uint32_t, 4> expected_codes{
+      ShaderParameterFieldCode(ShaderParameterFieldKind::S16, 3, 0),  // P0's other word, signed by default
+      ShaderParameterFieldCode(ShaderParameterFieldKind::U16, 3, 0),
+      ShaderParameterFieldCode(ShaderParameterFieldKind::S16, 3, 1), 0u};
+  Check(slot.input == 0u && slot.codes == expected_codes,
+        "unpack: the slot holds the signed and unsigned words the shader reads");
+
+  auto ps_info = std::move(ps.program).TakeCompiledInfo();
+  pixel.stage.program = &ps_info;
+  Check(ShaderPixelHasFieldSlots(pixel), "unpack: the pixel program asks for a linked vertex stage");
+  ShaderVertexInputInfo vertex{};
+  ShaderLinkVertexPixelParameters(vertex, pixel);
+  Check(vertex.param_alias_mask == (1u << 31u) &&
+            (vertex.param_alias_source[31] & ShaderParamAliasSourceMask) == 3u &&
+            ShaderParameterFieldSlot::Unpack(31u, vertex.param_alias_source[31]).codes == expected_codes,
+        "unpack: the vertex stage is linked with a field alias of export 3");
+  const uint32_t linked_shader[] = {
+      EncodeVop1(0x01, 0, 242), EncodeVop1(0x01, 1, 244),
+      EncodeExp0(0x23, 0xf, false), EncodeExp1(0, 1, 0, 1),
+      EncodeExp0(0x21, 0xf), EncodeExp1(1, 1, 1, 1), 0xbf810000u};
+  auto vs_options = MakeCompileOptions(ShaderType::Vertex);
+  vs_options.input_info.vertex = &vertex;
+  auto vs = RecompileForTest(linked_shader, vs_options);
+  CheckSpirvBinaryValidates(vs.spirv);
+  Check(SpirvHasDecorationValue(vs.spirv, 30u, 31u) && SpirvHasDecorationValue(vs.spirv, 30u, 3u),
+        "unpack: the vertex shader exports the parameter and its field slot");
+  Check(SpirvInstructionOpcodeCount(vs.spirv, 111u) >= 2u && SpirvInstructionOpcodeCount(vs.spirv, 112u) >= 1u,
+        "unpack: the vertex shader converts the signed and unsigned words");
+  auto vs_info = std::move(vs.program).TakeCompiledInfo();
+  Check((vs_info.param_export_mask & (1u << 31u)) != 0u && (vs_info.param_export_mask & (1u << 3u)) != 0u,
+        "unpack: export mask of the linked vertex shader");
+  auto copy_alias = vertex;
+  copy_alias.param_alias_source[31] = 3u;
+  Check(MakeStageStaticKey(vertex) != MakeStageStaticKey(copy_alias),
+        "unpack: the fields specialize the vertex cache key");
+
+  // A custom parameter only read at P0: a flat copy of the dword.
+  const uint32_t flat_shader[] = {
+      EncodeVintrp(2, 12, 0, 3, 2), EncodeExp0(0x00, 0x1),
+      EncodeExp1(12, 12, 12, 12), 0xbf810000u};
+  pixel.stage = {};
+  auto flat = RecompileForTest(flat_shader, options);
+  Check(SpirvHasDecorationValueWithDecoration(flat.spirv, 30u, 31u, 14u) &&
+            !SpirvContainsCapability(flat.spirv, 5284u),
+        "unpack: a P0-only custom parameter is a flat field");
+  CheckSpirvBinaryValidates(flat.spirv);
+
+  // Rectangle lists have no linked vertex stage: the reads stay (interpolated input).
+  pixel.parameter_mode = ShaderPixelParameterMode::Rectangle;
+  auto rectangle = RecompileForTest(shader, options);
+  Check(rectangle.ir_dump.find("GetParameterField") == std::string::npos &&
+            ProgramInputCount(rectangle.program, IR::StageInputKind::ParameterField) == 0 &&
+            !SpirvContainsCapability(rectangle.spirv, 5284u),
+        "unpack: rectangle lists keep the unlinked behaviour");
+  CheckSpirvBinaryValidates(rectangle.spirv);
+  ShaderRecompiler::SetPsPerVertexModeForTests(-1);
+}
+
 void TestCustomVintrpMovTranslation() {
   const uint32_t shader[] = {
       EncodeVintrp(2, 12, 0, 3, 2),      EncodeVintrp(2, 13, 0, 3, 0),
@@ -15873,6 +15985,8 @@ int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--pixel-interface-only") == 0) {
     TestOrdinaryVertexPixelAliases();
     TestVertexPixelAliasLinkingAndValues();
+    TestCustomVintrpMovTranslation();
+    TestCustomVintrpUnpack();
     std::printf("shader_cfg --pixel-interface-only: ok\n");
     return 0;
   }
@@ -16112,6 +16226,7 @@ int main(int argc, char **argv) {
   TestNewShaderRecompilerNativeBindingPlan();
   TestNewShaderRecompilerStageInputInfo();
   TestCustomVintrpMovTranslation();
+  TestCustomVintrpUnpack();
   TestPerspectiveCentroidInputs();
   TestPerspectiveSampleInputs();
   TestGraphicsCreateInterpolantMapping();

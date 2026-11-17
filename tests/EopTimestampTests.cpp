@@ -271,12 +271,110 @@ void TestGpuTimestampScale() {
 	Check(S::Stretch(anchor + hour, anchor, 200) == anchor + 2 * hour, "scale: one hour without a flip");
 }
 
+// KYTY_EOP_TIMESTAMPS=cbtime: the values of one observation group (CompletionGroup).
+void TestCompletionGroup() {
+	using Group = EopTimestamps::CompletionGroup;
+	// GPU busy: the previous group completed at 3000, after this group was recorded (1000-1400);
+	// this one completes at 6000. The GPU interval 3000-6000 is spread by record time.
+	const auto busy = Group::Make(3000, 1000, 1400, 6000);
+	Check(busy.gpu_begin == 3000 && busy.gpu_end == 6000, "busy GPU: previous completion to this");
+	Check(busy.Value(1000) == 3000, "first write: when the GPU reached the group");
+	Check(busy.Value(1400) == 6000, "last write: the completion");
+	Check(busy.Value(1200) == 4500, "half of the record span: half of the GPU interval");
+	Check(busy.Value(1100) == 3750 && busy.Value(1300) == 5250, "linear in record time");
+	// Back-to-back writes (an end/begin pair) get the same value: no time between them.
+	Check(busy.Value(1200) - busy.Value(1200) == 0, "equal record values: equal values");
+	// GPU idle: the previous completion (500) is before the group was recorded (1000-1400), and it
+	// completes 20 ticks after its last write: the values stay near record time.
+	const auto idle = Group::Make(500, 1000, 1400, 1420);
+	Check(idle.gpu_begin == 1000, "idle GPU: not before the first record");
+	Check(idle.Value(1000) == 1000 && idle.Value(1400) == 1420, "idle GPU: the ends");
+	Check(idle.Value(1200) == 1210, "idle GPU: record time plus a share of the lag");
+	// No previous group.
+	const auto first = Group::Make(0, 1000, 1400, 2000);
+	Check(first.gpu_begin == 1000 && first.Value(1400) == 2000, "first group");
+	// One clock write, or all at one record value: the completion.
+	const auto one = Group::Make(3000, 1000, 1000, 6000);
+	Check(one.Value(1000) == 6000, "a single write gets the completion");
+	// A completion observed before the last record value (clock skew) never goes below it.
+	const auto early = Group::Make(0, 1000, 1400, 1200);
+	Check(early.gpu_end == 1400 && early.Value(1400) == 1400 && early.Value(1200) == 1200,
+	      "an early observation is clamped to record time");
+	// A previous completion after this observation (cannot happen; clamped): values do not go back.
+	const auto back = Group::Make(9000, 1000, 1400, 6000);
+	Check(back.gpu_begin == 9000 && back.gpu_end == 9000 && back.Value(1200) == 9000,
+	      "values never precede the previous group");
+	// Record values outside the group's range (a stretched clock restarting at a flip).
+	Check(busy.Value(900) == 3000 && busy.Value(7000) == 7000, "out-of-range record values");
+	// Large values: no overflow in the interpolation (reference clock after years of uptime).
+	const uint64_t big  = uint64_t {1} << 62u;
+	const auto     wide = Group::Make(big, big - 1000, big + (uint64_t {1} << 40u), big + (uint64_t {1} << 61u));
+	Check(wide.Value(big + (uint64_t {1} << 39u)) > big && wide.Value(big + (uint64_t {1} << 39u)) < wide.gpu_end,
+	      "wide spans do not overflow");
+}
+
+// Random streams through consecutive groups: every value is at least its record value, values
+// never decrease in recording order (within and across groups), the last write of a group is its
+// completion, and a GPU-bound stream's values span exactly the GPU time between completions.
+void TestCompletionGroupRandom() {
+	std::mt19937_64 rng(0xD25C10C);
+	uint64_t        checks = 0;
+	uint64_t        bound  = 0;
+	for (int stream = 0; stream < 2000; stream++) {
+		uint64_t record       = 1'000'000 + rng() % 1'000'000;
+		uint64_t previous_end = stream % 3 == 0 ? 0 : record + rng() % 5'000'000;
+		uint64_t gpu_clock    = std::max(previous_end, record);
+		uint64_t last_value   = 0;
+		const bool gpu_bound  = stream % 2 == 0;
+		for (int group_index = 0; group_index < 20; group_index++) {
+			std::vector<uint64_t> records;
+			const auto            count = 1u + rng() % 60u;
+			for (uint32_t i = 0; i < count; i++) {
+				// Zero gaps (end/begin pairs), small gaps (draws), rare stalls.
+				const auto kind = rng() % 10u;
+				record += kind < 3 ? 0 : kind < 9 ? rng() % 5000u : rng() % 3'000'000u;
+				records.push_back(record);
+			}
+			// GPU bound: completes well after the last record and after the previous group.
+			// Otherwise: just after the last record.
+			gpu_clock = gpu_bound ? std::max(gpu_clock, record) + 100'000 + rng() % 4'000'000
+			                      : record + rng() % 20'000;
+			const auto group = EopTimestamps::CompletionGroup::Make(
+			    previous_end, records.front(), records.back(), gpu_clock);
+			for (size_t i = 0; i < records.size(); i++) {
+				const auto value = group.Value(records[i]);
+				if (value < records[i] || value < last_value || value > group.gpu_end) {
+					Check(false, "random group: record <= value, monotonic, <= completion");
+				}
+				last_value = value;
+				checks++;
+			}
+			if (group.Value(records.back()) != group.gpu_end) {
+				Check(false, "random group: the last write is the completion");
+			}
+			// GPU bound: the group was recorded before the previous one completed.
+			if (gpu_bound && group_index > 0 && records.back() <= previous_end &&
+			    (group.gpu_begin != previous_end || group.gpu_end != gpu_clock ||
+			     (records.front() != records.back() &&
+			      group.Value(records.back()) - group.Value(records.front()) !=
+			          gpu_clock - previous_end))) {
+				Check(false, "random group: a GPU-bound group spans the GPU interval");
+			}
+			bound += gpu_bound && group_index > 0 && records.back() <= previous_end ? 1u : 0u;
+			previous_end = group.gpu_end;
+		}
+	}
+	Check(checks > 500'000 && bound > 5'000, "random groups ran");
+}
+
 int main() {
 	TestDeviceDelta();
 	TestToReference();
 	TestQueryRingOrder();
 	TestQueryRingConcurrent();
 	TestGpuTimestampScale();
+	TestCompletionGroup();
+	TestCompletionGroupRandom();
 	if (g_failures != 0) {
 		std::fprintf(stderr, "EopTimestampTests: %d failure(s)\n", g_failures);
 		return 1;
