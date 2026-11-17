@@ -681,8 +681,9 @@ private:
 };
 
 // nps5 diagnostic: KYTY_DUMP_TARGETS=<n> [KYTY_DUMP_TARGETS_FROM=<flip>] [KYTY_DUMP_TARGETS_EVERY=<m>]
-// [KYTY_DUMP_TARGETS_MINW=<px>, default 512]: at such a flip, level 0 / layer 0 of every cached colour
-// image at least that wide is blitted to an sRGB-encoded BGRA image of at most 960 px width and saved
+// [KYTY_DUMP_TARGETS_MINW=<px>, default 512] [KYTY_DUMP_TARGETS_ONLYW=<px>: images of exactly that width]
+// [KYTY_DUMP_TARGETS_MAXW=<px>, default 960]: at such a flip, level 0 / layer 0 of every cached colour
+// image at least that wide is blitted to an sRGB-encoded BGRA image of at most MAXW px width and saved
 // as k3_<dump>_<address>_<w>x<h>_<format>.bmp in the working directory, with one [kyty-target] line
 // per image (address, extent, formats, usage, state). The files are written KYTY_DUMP_TARGETS_DELAY
 // (20) flips later, when the recording command buffer has long completed.
@@ -714,7 +715,8 @@ public:
 			const auto  name    = vk::to_string(format);
 			const bool  integer = name.find("int") != std::string::npos;
 			const bool  wanted  = image.backing.image != nullptr && !info.IsDepth() && !info.IsBlock() &&
-			                      !info.IsVolume() && image.backing.extent.width >= m_min_width;
+			                      !info.IsVolume() && image.backing.extent.width >= m_min_width &&
+			                      (m_only_width == 0 || image.backing.extent.width == m_only_width);
 			const bool  blit    = wanted && info.samples == 1 && !integer &&
 			                      static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
 			                                        vk::FormatFeatureFlagBits::eBlitSrc) &&
@@ -743,7 +745,7 @@ public:
 				return;
 			}
 			Entry entry {};
-			entry.extent.width  = std::min(image.backing.extent.width, 960u);
+			entry.extent.width  = std::min(image.backing.extent.width, m_max_width);
 			entry.extent.height = std::max(
 			    1u, image.backing.extent.height * entry.extent.width / image.backing.extent.width);
 			std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
@@ -811,6 +813,8 @@ private:
 		m_every     = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_EVERY", 1), 1));
 		m_delay     = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_DELAY", 20), 1));
 		m_min_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MINW", 512), 1));
+		m_max_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MAXW", 960), 16));
+		m_only_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_ONLYW", 0), 0));
 	}
 	static void Create(GraphicContext& graphics, Entry& entry) {
 		auto       device      = graphics.device;
@@ -905,6 +909,8 @@ private:
 	uint64_t           m_every        = 1;
 	uint64_t           m_delay        = 20;
 	uint32_t           m_min_width    = 512;
+	uint32_t           m_max_width    = 960;
+	uint32_t           m_only_width   = 0;
 	uint64_t           m_flips        = 0;
 	uint64_t           m_pending_flip = 0;
 	std::vector<Entry> m_pending;

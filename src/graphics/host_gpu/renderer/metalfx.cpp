@@ -76,6 +76,7 @@ struct State {
 	uint32_t in_w = 0, in_h = 0, out_w = 0, out_h = 0;
 	float    last_jitter[2] {};
 	uint64_t evaluations = 0;
+	uint64_t resets      = 0;
 	std::array<uint64_t, static_cast<size_t>(Fallback::Count)> fallbacks {};
 	int64_t  print_ns = 0;
 	std::array<uint64_t, 16> logged_hashes {};
@@ -137,13 +138,15 @@ void Summary(State& s) {
 			text += " " + std::string(FALLBACK_NAMES[i]) + "=" + std::to_string(s.fallbacks[i]);
 		}
 	}
-	std::printf("MetalFX 10s: %s evaluations %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game pass kept:%s\n",
+	std::printf("MetalFX 10s: %s evaluations %llu resets %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game pass kept:%s\n",
 	            s.mode == Mode::Spatial ? "spatial" : "temporal",
-	            static_cast<unsigned long long>(s.evaluations), s.in_w, s.in_h, s.out_w, s.out_h,
+	            static_cast<unsigned long long>(s.evaluations),
+	            static_cast<unsigned long long>(s.resets), s.in_w, s.in_h, s.out_w, s.out_h,
 	            static_cast<double>(s.last_jitter[0]), static_cast<double>(s.last_jitter[1]),
 	            text.empty() ? " none" : text.c_str());
 	std::fflush(stdout);
 	s.evaluations = 0;
+	s.resets      = 0;
 	s.fallbacks   = {};
 }
 
@@ -385,7 +388,12 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 	info.mv_scale[1]    = -static_cast<float>(in_h);
 	info.mv_bias[0]     = s.mv_jitter * (jitter_uv[0] - jitter_uv[2]);
 	info.mv_bias[1]     = s.mv_jitter * (jitter_uv[1] - jitter_uv[3]);
-	info.reset          = (s.last_frame != 0 && frame != s.last_frame + 1) ? 1 : 0;
+	// A new input size (the game's dynamic resolution) selects another scaler in the driver, whose
+	// history is from the last time that size was used: start it again.
+	info.reset          = ((s.last_frame != 0 && frame != s.last_frame + 1) || in_w != s.in_w ||
+	                       in_h != s.in_h || out_w != s.out_w || out_h != s.out_h)
+	                          ? 1
+	                          : 0;
 	info.depth_reversed = s.depth_reversed ? 1 : 0;
 	info.auto_exposure  = 1;
 	const int result = s.command(static_cast<VkCommandBuffer>(cmd), &info);
@@ -404,6 +412,7 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 	// The output now holds MetalFX's image: a GPU write of the target, as the draw's would be.
 	out.NoteContentWrite();
 	cache.CommitGpuWrite(out);
+	s.resets += info.reset;
 	s.evaluations++;
 	Summary(s);
 	return true;
