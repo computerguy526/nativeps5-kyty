@@ -945,6 +945,9 @@ struct RunState {
 	uint64_t               title_time   = 0;
 	uint64_t               title_frames = 0;
 	bool                   progress_title = false;
+	uint64_t               close_after_ms = 0; // KYTY_TEST_CLOSE_S: test-only window close
+	uint64_t               first_frame_ms = 0;
+	bool                   close_sent     = false;
 };
 std::unique_ptr<RunState> g_run;
 constexpr uint64_t        kTitleIntervalMs = 1000;
@@ -957,6 +960,16 @@ void WindowContext::RunBegin() {
 	if (const char* text = std::getenv("KYTY_TEST_RESIZE"); text != nullptr && *text != '\0') {
 		g_run->script.steps = PresentGeometry::ParseResizeScript(text);
 		std::fprintf(stderr, "[winresize] KYTY_TEST_RESIZE: %zu steps\n", g_run->script.steps.size());
+	}
+	// KYTY_TEST_CLOSE_S=<s> (test only, unset = off): <s> seconds after the first presented frame the window gets the
+	// events a click on its close button produces (CLOSE_REQUESTED, then QUIT for the last window), so a script can
+	// check the normal end of a session (renderer: window loop ended -> stopped, exit code) without GUI scripting.
+	if (const char* text = std::getenv("KYTY_TEST_CLOSE_S"); text != nullptr && *text != '\0') {
+		const double s = std::strtod(text, nullptr);
+		if (s > 0.0 && s < 86400.0) {
+			g_run->close_after_ms = static_cast<uint64_t>(s * 1000.0);
+			std::fprintf(stderr, "[winclose] KYTY_TEST_CLOSE_S: close %.1f s after the first frame\n", s);
+		}
 	}
 	loop.event     = {};
 	loop.need_exit = false;
@@ -999,6 +1012,22 @@ bool WindowContext::RunStep(int max_wait_ms) {
 	}
 	if (r.progress_title) {
 		RefreshProgressTitle(window, now);
+	}
+	if (r.close_after_ms != 0 && !r.close_sent) {
+		if (r.first_frame_ms == 0 && loop.presented_frames.load(std::memory_order_relaxed) > 0) {
+			r.first_frame_ms = now;
+		}
+		if (r.first_frame_ms != 0 && now - r.first_frame_ms >= r.close_after_ms) {
+			r.close_sent = true;
+			SDL_Event ev {};
+			ev.type            = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+			ev.window.windowID = SDL_GetWindowID(window);
+			SDL_PushEvent(&ev);
+			SDL_Event quit {};
+			quit.type = SDL_EVENT_QUIT;
+			SDL_PushEvent(&quit);
+			std::fprintf(stderr, "[winclose] close requested\n");
+		}
 	}
 	if (script.next < script.steps.size() || script.last_log != 0) {
 		const auto frames_now = loop.presented_frames.load(std::memory_order_relaxed);
