@@ -301,12 +301,13 @@ std::atomic<uint64_t> g_gc_settle_deferred_passes {0};
 // only the preparation of the pass's ownership checks and downloads (RetireUnusedBuffers does the
 // same: candidates first); without a candidate it was a wait for the GPU and nothing else.
 Live::Switch g_gc_settle_skip_empty("KYTY_GC_SETTLE_SKIP_EMPTY", Live::ParseDefaultOn);
-// KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL=<passes> (live, default 0 = off; vramBudget.h
-// PlanBufferPassLazyCritical): at or above the critical mark a pass that would wait for the GPU
-// is put off at most that many times in a row.
+// KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL=<passes> (live, default 16; 0 = off: every pass waits as
+// before; vramBudget.h PlanBufferPassLazyCritical): at or above the critical mark a pass that
+// would wait for the GPU is put off at most that many times in a row (16 = about two frames of
+// completed submissions in a level).
 int64_t ParseGcLazyCritical(const char* value) {
 	if (value == nullptr || value[0] == '\0') {
-		return 0;
+		return 16;
 	}
 	const auto passes = std::strtoll(value, nullptr, 10);
 	return std::clamp<int64_t>(passes, 0,
