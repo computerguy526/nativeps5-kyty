@@ -658,6 +658,8 @@ target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
 # nps5: load card self-present watchdog state machine (header only), no GPU.
 add_executable(load_card_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LoadCardTests.cpp")
 target_include_directories(load_card_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(launch_phase_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LaunchPhaseTests.cpp")
+target_include_directories(launch_phase_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
 # nps5: per-page per-frame served-read-fault counter (header only).
 add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")

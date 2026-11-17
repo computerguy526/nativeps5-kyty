@@ -5293,6 +5293,7 @@ struct PipelineCache::JournalReplay {
 			                 "tags for it): the whole replay holds the game (all)",
 			                 boot);
 			hold_scene = false;
+			if (g_launch_hold.load(std::memory_order_acquire)) g_launch_hold_prewarm.store(true, std::memory_order_release);
 		}
 		first_level = static_cast<uint32_t>(order.size());
 		if (hold_scene) {
@@ -5817,8 +5818,38 @@ void PipelineCache::InitializePipelineJournal() {
 	if (const auto* mode = std::getenv("KYTY_SHADER_PREPARE"); mode != nullptr && std::strcmp(mode, "scene") == 0) {
 		replay.hold_scene = replay_all;
 	}
+	// Last-scene memory, next to the journal (KYTY_PIPELINE_LAST_SCENE_PATH names another file).
+	if (const auto* custom = std::getenv("KYTY_PIPELINE_LAST_SCENE_PATH"); custom != nullptr && *custom != '\0') {
+		replay.last_scene_path = custom;
+	} else if (m_journal != nullptr && !m_journal->Path().empty()) {
+		auto path = m_journal->Path();
+		path.replace_extension(".last_scene"); // <title>.pipelines.journal -> <title>.pipelines.last_scene
+		replay.last_scene_path = Common::PathToString(path);
+	}
+	// Prepare delta: KYTY_PIPELINE_DELTA_OUT=<file> gets the keys this replay built that the driver cache did
+	// not know; KYTY_PIPELINE_REPLAY_KEYS=<file> restricts the replay to the keys of such a file (the pass
+	// after the metallib build re-records only those). A missing or empty file = everything.
+	if (const auto* out = std::getenv("KYTY_PIPELINE_DELTA_OUT"); out != nullptr && *out != '\0') replay.delta_out_path = out;
+	if (const auto* only = std::getenv("KYTY_PIPELINE_REPLAY_KEYS"); only != nullptr && *only != '\0') {
+		std::ifstream in(only, std::ios::binary);
+		std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		const auto    keys = LaunchPhase::ParseKeyFile(text);
+		if (!in || keys.empty()) {
+			PipelineCacheLog("Pipeline replay: {} (KYTY_PIPELINE_REPLAY_KEYS) holds no keys; the whole list is replayed", only);
+		} else {
+			const auto before = replay.items.size();
+			std::erase_if(replay.items, [&](const JournalReplay::Item& item) { return !keys.contains(item.record.key); });
+			PipelineCacheLog("Pipeline replay: delta pass, {} of {} records are in {} ({} keys)", replay.items.size(), before,
+			                 only, keys.size());
+		}
+	}
 	const bool hold = replay_all && !prepare && EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD", 1) != 0;
-	if (hold) g_launch_hold.store(true, std::memory_order_release);
+	if (hold) {
+		// all: the compute prewarm counts too (scene: it builds behind the game).
+		if (!replay.hold_scene) g_launch_hold_prewarm.store(true, std::memory_order_release);
+		g_launch_hold.store(true, std::memory_order_release);
+		LaunchHoldPublish(1);
+	}
 	replay.Start(static_cast<uint32_t>(threads), force);
 	if (EnvU64("KYTY_PIPELINE_JOURNAL_WAIT", 0) != 0) replay.Wait();
 }
@@ -6643,6 +6674,7 @@ void PipelineCache::SaveForClose() {
 }
 
 void PipelineCache::Save() {
+	if (m_journal_replay != nullptr) m_journal_replay->NoteScene();
 	StopBackgroundPipelines();
 	StopShaderPrecompile();
 	if (m_prefetch != nullptr) m_prefetch->Stop();
@@ -6773,7 +6805,9 @@ void PipelineCache::InitializeShaderPrecompile() {
 	};
 	if (EnvU64("KYTY_PIPELINE_PREWARM_COMPUTE", m_list != nullptr ? 1 : 0) != 0) {
 		const auto threads = static_cast<size_t>(
-		    std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_PREWARM_THREADS", prepare ? 4 : 1), 1, 8));
+		    std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_PREWARM_THREADS",
+		                                 prepare ? 4 : EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0 ? std::min<uint64_t>(4, CompileFanout()) : 1),
+		                          1, 8));
 		m_compute_prewarm  = std::make_unique<ComputePrewarm>(*this, threads);
 		m_program_cache->prewarm_all_compute = true;
 		PipelineCacheLog("Compute prewarm: the pipelines of replayed compute programs are built on {} background "
