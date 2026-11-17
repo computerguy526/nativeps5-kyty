@@ -4254,6 +4254,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (MetalFx::Requested()) [[unlikely]] {
 		NoteMetalFxTargets(std::span<const RenderColorInfo> {state.color_info, state.color_count},
 		                   state.depth_info.image_id);
+		if (MetalFx::FindWide() && state.ps_active && bindings.pixel.has_value() && state.color_count != 0) {
+			MetalFx::FindLog("draw", *bindings.pixel, m_context.GetTextureCache(), state.color_info[0].image_id,
+			                 state.color_count);
+		}
 		if (state.ps_active && bindings.pixel.has_value() && state.color_count != 0 &&
 		    TryMetalFxUpscale(buffer, *bindings.pixel, state.color_info[0].image_id,
 		                      state.color_count)) {

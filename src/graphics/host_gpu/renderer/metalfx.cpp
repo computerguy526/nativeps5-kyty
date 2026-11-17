@@ -197,8 +197,120 @@ bool LogOnce(State& s, uint64_t hash) {
 } // namespace
 
 bool Requested() {
-	static const bool requested = Get().mode != Mode::Off || Get().find;
+	static const bool requested = Get().mode != Mode::Off || Get().find || FindWide();
 	return requested;
+}
+
+bool FindWide() {
+	static const bool wide = [] {
+		const char* value = std::getenv("KYTY_METALFX_FIND");
+		return value != nullptr && std::strcmp(value, "3") == 0;
+	}();
+	return wide;
+}
+
+void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
+             uint32_t color_count) {
+	static const uint32_t width = [] {
+		const char* value = std::getenv("KYTY_METALFX_FIND_W");
+		return value != nullptr ? static_cast<uint32_t>(std::atoi(value)) : 2432u;
+	}();
+	if (bindings.runtime == nullptr || !*bindings.runtime) {
+		return;
+	}
+	const Image* out   = output ? cache.TryGetImage(output) : nullptr;
+	bool         wanted = out != nullptr && out->info.extent.width == width;
+	if (out == nullptr) {
+		for (const auto& binding: bindings.images) {
+			const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
+			wanted = wanted || (image != nullptr && image->info.extent.width == width);
+		}
+	}
+	auto& s = Get();
+	const auto hash = bindings.runtime->program->shader_hash;
+	// KYTY_METALFX_FIND_RESET_S=<s>: the once-per-shader list starts again that many seconds after
+	// the first call (the steady scene instead of the loading screens), and from then the pass
+	// KYTY_METALFX_PASS=<hash> has its images logged and every buffer of up to 64 KiB written to
+	// KYTY_DUMP_DIR/mfxcb_<call>_<index>_<address>.bin for its next 6 calls (finding jitter words).
+	static const int64_t reset_s = [] {
+		const char* value = std::getenv("KYTY_METALFX_FIND_RESET_S");
+		return value != nullptr ? static_cast<int64_t>(std::atoi(value)) : 0;
+	}();
+	static int64_t  first_ns   = 0;
+	static bool     reset_done = false;
+	static uint32_t pass_calls = 0;
+	const auto      now        = NowNs();
+	if (first_ns == 0) {
+		first_ns = now;
+	}
+	if (reset_s > 0 && !reset_done && now - first_ns > reset_s * 1'000'000'000LL) {
+		reset_done     = true;
+		s.logged_count = 0;
+		std::printf("MetalFX find3: ---- list restarted after %lld s ----\n", static_cast<long long>(reset_s));
+	}
+	if (reset_done && s.pass_hash != 0 && hash == s.pass_hash && pass_calls < 6) {
+		const uint32_t call = pass_calls++;
+		std::string    text;
+		for (const auto& binding: bindings.images) {
+			if (const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
+			    image != nullptr) {
+				text += fmt::format(" {}x{}:{}@{:x}", image->info.extent.width, image->info.extent.height,
+				                    vk::to_string(image->backing.format), image->info.data.address);
+			} else {
+				text += " -";
+			}
+		}
+		std::printf("MetalFX find3: pass call %u output %llx images:%s\n", call,
+		            static_cast<unsigned long long>(out != nullptr ? out->info.data.address : 0), text.c_str());
+		uint32_t index = 0;
+		for (const auto& source: bindings.buffer_sources) {
+			if (source.address != 0 && source.size >= 4 && source.size <= 65536) {
+				const char* dir  = std::getenv("KYTY_DUMP_DIR");
+				const auto  path = fmt::format("{}/mfxcb_{}_{}_{:x}.bin", dir != nullptr ? dir : ".", call, index,
+				                               source.address);
+				if (auto* file = std::fopen(path.c_str(), "wb"); file != nullptr) {
+					std::fwrite(Guest::Ptr<const uint8_t>(source.address), 1, source.size, file);
+					std::fclose(file);
+				}
+			}
+			index++;
+		}
+		std::fflush(stdout);
+	}
+	if (!wanted || !LogOnce(s, hash ^ 0x3333333333333333ull)) {
+		return;
+	}
+	std::string text;
+	for (const auto& binding: bindings.images) {
+		if (const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
+		    image != nullptr) {
+			text += fmt::format(" {}x{}:{}@{:x}", image->info.extent.width, image->info.extent.height,
+			                    vk::to_string(image->backing.format), image->info.data.address);
+		} else {
+			text += " -";
+		}
+	}
+	std::printf("MetalFX find3: %s shader %016llx targets %u output %s images:%s\n", kind,
+	            static_cast<unsigned long long>(hash), color_count,
+	            out != nullptr ? fmt::format("{}x{}:{}@{:x}", out->info.extent.width, out->info.extent.height,
+	                                         vk::to_string(out->backing.format), out->info.data.address)
+	                                 .c_str()
+	                           : "-",
+	            text.c_str());
+	for (const auto& source: bindings.buffer_sources) {
+		if (source.address == 0 || source.size < 16 || source.size > 512) {
+			continue;
+		}
+		const auto* w = Guest::Ptr<const uint32_t>(source.address);
+		const auto* f = reinterpret_cast<const float*>(w);
+		std::string words;
+		for (uint32_t i = 0; i < 24 && (i + 1) * 4 <= source.size; i++) {
+			words += fmt::format(" {}:{:x}({:.5g})", i, w[i], static_cast<double>(f[i]));
+		}
+		std::printf("MetalFX find3:   buffer %llx+%u:%s\n", static_cast<unsigned long long>(source.address),
+		            static_cast<unsigned>(source.size), words.c_str());
+	}
+	std::fflush(stdout);
 }
 
 } // namespace MetalFx

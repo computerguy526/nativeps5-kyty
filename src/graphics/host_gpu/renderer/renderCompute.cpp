@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
+#include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
@@ -521,6 +522,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	bindings.dispatch_groups     = {thread_group_x, thread_group_y, thread_group_z};
 	bindings.has_dispatch_groups = true;
 	FindBuffers(bindings);
+	if (MetalFx::FindWide()) [[unlikely]] {
+		MetalFx::FindLog("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0);
+	}
 	CpGaps::Phase(CpGaps::Cat::DispatchBda);
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
@@ -806,6 +810,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	// GPU-produced dispatch arguments: workgroup ids stay unbounded for write-range proofs.
 	bindings.has_dispatch_groups = false;
 	FindBuffers(bindings);
+	if (MetalFx::FindWide()) [[unlikely]] {
+		MetalFx::FindLog("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0);
+	}
 	CpGaps::Phase(CpGaps::Cat::DispatchBda);
 	const auto& program = *input_info.stage.program;
 	if (program.info.uses_dma) {

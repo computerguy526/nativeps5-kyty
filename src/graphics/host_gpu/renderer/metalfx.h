@@ -24,9 +24,19 @@
 // KYTY_METALFX_FIND=1 (log candidate passes, replace nothing).
 // One "MetalFX 10s:" console line every 10 s with evaluations and fallbacks by reason.
 // The temporal evaluation follows NXNative's DLSS-on-MetalFX path (github.com/seedds/nxnative, MIT).
+#include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+
 namespace Libs::Graphics::MetalFx {
 
 [[nodiscard]] bool Requested();
+
+// KYTY_METALFX_FIND=3 [KYTY_METALFX_FIND_W=<width>, default 2432]: once per shader, every draw into
+// a colour target of that width and every compute dispatch with a bound image of that width, with
+// its images and the first words of its small constant buffers (finding the upscale pass of a build).
+[[nodiscard]] bool FindWide();
+void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
+             uint32_t color_count);
 
 } // namespace Libs::Graphics::MetalFx
 
