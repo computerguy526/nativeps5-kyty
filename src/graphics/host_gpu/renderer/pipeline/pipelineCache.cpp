@@ -85,6 +85,9 @@
 #include <stop_token>
 #include <string_view>
 #include <system_error>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -5580,7 +5583,21 @@ void PipelineCache::InitializePipelineJournal() {
 	replay.report_ns    = prepare ? 5'000'000'000ull : 10'000'000'000ull;
 	// With a pipeline list (a first start builds hundreds at once) 8: a cold spring_punch_sky_aztec
 	// stalled 5.5 s on 8 threads, 10.3 s on 4 (the level needs ~290 pipelines in its first 20 s).
-	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? 8 : 4), 1, 16);
+	// Sized to the machine: a prepare (no game running) uses every performance core, the launch phase
+	// and a list replay leave two for the game and the presents (KYTY_PIPELINE_JOURNAL_THREADS overrides;
+	// 8 where the core count is not known). The plain background journal replay stays at 4.
+	uint64_t sized = 8;
+#ifdef __APPLE__
+	{
+		int    cores = 0;
+		size_t len   = sizeof(cores);
+		if (sysctlbyname("hw.perflevel0.physicalcpu", &cores, &len, nullptr, 0) == 0 && cores > 0) {
+			sized = prepare ? static_cast<uint64_t>(cores) : static_cast<uint64_t>(std::max(2, cores - 2));
+		}
+	}
+#endif
+	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? sized : 4), 1, 16);
+	PipelineCacheLog("Pipeline replay: {} worker thread(s){}", threads, replay_all ? "; launch phase, the start waits for it" : "");
 	replay.Start(static_cast<uint32_t>(threads), force);
 	if (EnvU64("KYTY_PIPELINE_JOURNAL_WAIT", 0) != 0 || replay_all) replay.Wait();
 }
