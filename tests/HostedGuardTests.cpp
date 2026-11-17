@@ -102,18 +102,113 @@ void TestSingleThread() {
 		const Common::ReaderSlots<4>::Shared locked(slots, mutex, false);
 		Expect(!locked.OnSlot(), "lock-only reader");
 	}
-	// Slot exhaustion: threads beyond the capacity read on the lock.
-	std::atomic<int> on_slot {0}, on_lock {0};
+	// Slot exhaustion: live threads beyond the capacity read on the lock (all twelve are alive at once).
+	std::atomic<int> on_slot {0}, on_lock {0}, arrived {0};
+	std::atomic<bool> leave {false};
 	std::vector<std::thread> threads;
 	for (int i = 0; i < 12; i++) {
 		threads.emplace_back([&] {
-			const Common::ReaderSlots<4>::Shared guard(slots, mutex);
-			(guard.OnSlot() ? on_slot : on_lock)++;
+			{
+				const Common::ReaderSlots<4>::Shared guard(slots, mutex);
+				(guard.OnSlot() ? on_slot : on_lock)++;
+			}
+			arrived++;
+			while (!leave.load()) std::this_thread::yield();
 		});
 	}
-	for (auto& t: threads) t.join();
+	while (arrived.load() != 12) std::this_thread::yield();
 	Expect(on_slot == 3 && on_lock == 9, "3 more slots (4 with this thread's), the rest on the lock");
+	leave = true;
+	for (auto& t: threads) t.join();
 	{ const Common::ReaderSlots<4>::Exclusive writer(slots, mutex); }
+}
+
+// nps5: a thread hands its slot back when it ends. The game starts and ends threads all the time; before,
+// the slots were used up for good after SlotCount threads and every later reader took the lock.
+void TestSlotsFollowLiveThreads() {
+	Common::ReaderSlots<4> slots;
+	std::shared_mutex      mutex;
+	int                    on_slot = 0;
+	for (int i = 0; i < 300; i++) {
+		std::thread([&] {
+			const Common::ReaderSlots<4>::Shared guard(slots, mutex);
+			on_slot += guard.OnSlot() ? 1 : 0;
+		}).join();
+	}
+	Expect(on_slot == 300, "300 threads, one alive at a time, 4 slots: every one reads on a slot");
+	// Exhausted while many are alive, available again once they ended.
+	std::atomic<int>  arrived {0};
+	std::atomic<bool> leave {false};
+	std::vector<std::thread> threads;
+	for (int i = 0; i < 8; i++) {
+		threads.emplace_back([&] {
+			{ const Common::ReaderSlots<4>::Shared guard(slots, mutex); }
+			arrived++;
+			while (!leave.load()) std::this_thread::yield();
+		});
+	}
+	while (arrived.load() != 8) std::this_thread::yield();
+	bool late_on_slot = true;
+	std::thread([&] {
+		const Common::ReaderSlots<4>::Shared guard(slots, mutex);
+		late_on_slot = guard.OnSlot();
+	}).join();
+	Expect(!late_on_slot, "nine live threads, 4 slots: the ninth is on the lock");
+	leave = true;
+	for (auto& t: threads) t.join();
+	std::thread([&] {
+		const Common::ReaderSlots<4>::Shared guard(slots, mutex);
+		late_on_slot = guard.OnSlot();
+	}).join();
+	Expect(late_on_slot, "the slots of ended threads are handed out again");
+	{ const Common::ReaderSlots<4>::Exclusive writer(slots, mutex); }
+}
+
+// nps5: one thread reading under several objects keeps one slot in each (it took a new slot at every
+// switch before), and an object built where another one was is a different owner.
+void TestSeveralObjects() {
+	{
+		Common::ReaderSlots<4> objects[3];
+		std::shared_mutex      mutex[3];
+		int                    on_slot = 0;
+		for (int i = 0; i < 3000; i++) {
+			const Common::ReaderSlots<4>::Shared guard(objects[i % 3], mutex[i % 3]);
+			on_slot += guard.OnSlot() ? 1 : 0;
+		}
+		Expect(on_slot == 3000, "a thread alternating between three objects stays on its slots");
+	}
+	alignas(Common::ReaderSlots<4>) unsigned char storage[sizeof(Common::ReaderSlots<4>)];
+	std::shared_mutex                             mutex;
+	std::atomic<int>                              stage {0};
+	std::atomic<bool>                             writer_in {false}, overlap {false};
+	Common::ReaderSlots<4>*                       object = new (storage) Common::ReaderSlots<4>();
+	std::thread                                   reader([&] {
+        { const Common::ReaderSlots<4>::Shared guard(*object, mutex); } // a slot in the first object
+        stage = 1;
+        while (stage.load() != 2) std::this_thread::yield();
+        {
+            const Common::ReaderSlots<4>::Shared guard(*object, mutex); // the second object, same address
+            stage = 3;
+            for (int i = 0; i < 20; i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                if (writer_in.load()) overlap = true;
+            }
+        }
+        stage = 4;
+    });
+	while (stage.load() != 1) std::this_thread::yield();
+	object->~ReaderSlots();
+	object = new (storage) Common::ReaderSlots<4>();
+	stage  = 2;
+	while (stage.load() != 3) std::this_thread::yield();
+	{
+		const Common::ReaderSlots<4>::Exclusive writer(*object, mutex);
+		writer_in = true;
+		writer_in = false;
+	}
+	reader.join();
+	Expect(!overlap.load(), "a writer of a new object at an old address waits for its reader");
+	object->~ReaderSlots();
 }
 
 template <typename Body>
@@ -152,6 +247,8 @@ void Bench() {
 
 int main() {
 	TestSingleThread();
+	TestSlotsFollowLiveThreads();
+	TestSeveralObjects();
 	Stress<128>("slots, readers only", 7, 0, true, 150);
 	Stress<128>("slots, 7 readers 1 writer", 7, 1, true, 400);
 	Stress<128>("slots, 7 readers 3 writers", 7, 3, true, 400);
