@@ -149,6 +149,11 @@ std::vector<uint8_t> CodegenFingerprint() {
 	if (!GetHostVertexSubgroups()) {
 		b.Text("no_vertex_subgroups");
 	}
+	// Host support for per-vertex pixel shader inputs decides which lowering the emitter picks
+	// (src/codegen_version.cmake requires every SetHost* state to be recorded here).
+	if (!GetHostPsPerVertex()) {
+		b.Text("no_ps_per_vertex");
+	}
 	if (PsPerVertexGeometry()) {
 		b.Text("ps_per_vertex_gs");
 	}

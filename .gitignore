@@ -30,3 +30,6 @@ _Textures/
 *.nsys-rep
 *.ngfx-gputrace
 CMakeUserPresets.json
+
+# nativeps5 build tree (README.md)
+/build-arm64/
