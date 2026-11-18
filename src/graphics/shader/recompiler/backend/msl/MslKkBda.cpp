@@ -153,7 +153,7 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	SetMipStats({});
 	if (const uint32_t ms = FirstOf(layout, Kind::MipStats); ms != UINT32_MAX) {
 		const auto& opt = GetCodegenOptions();
-		if (!opt.lod_stats_gate || opt.lod_stats_lane_record) bad("MipStats record mode other than gate (KYTY_LOD_STATS_GATE=1, LANE_RECORD=0)");
+		if (!opt.lod_stats_gate) bad("MipStats record mode other than gate (KYTY_LOD_STATS_GATE=1)");
 		if (!MipStatsPlainRequested()) {
 			b.Line("const ulong kk_ms_a = *(constant ulong*)(kk_set0 + " + KU(ms) + "); const uint kk_ms_n = *(constant uint*)(kk_set0 + " + KU(ms + 8u) + ");");
 			SetMipStats({true, bl.MipStatsOffsetDword(), bl.mip_stats_count});

@@ -943,7 +943,7 @@ add_executable(kyty_msl_dump EXCLUDE_FROM_ALL
 	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
 )
 target_compile_definitions(kyty_msl_dump PRIVATE KYTY_MSL_STANDALONE=1)
-target_link_libraries(kyty_msl_dump common fmt::fmt Zydis::Zydis xbyak::xbyak)
+target_link_libraries(kyty_msl_dump common fmt::fmt Zydis::Zydis xbyak::xbyak Vulkan::Headers)
 target_include_directories(kyty_msl_dump PRIVATE ${inc_headers})
 if (APPLE)
 	target_link_libraries(kyty_msl_dump "-framework CoreFoundation" "-framework IOKit")
