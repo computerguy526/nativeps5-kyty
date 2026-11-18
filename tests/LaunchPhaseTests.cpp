@@ -60,42 +60,48 @@ int main() {
 		CHECK(CompileFanoutFor(4, 0) == 2 && CompileFanoutFor(1, 0) == 2 && CompileFanoutFor(0, 0) == 8);
 		CHECK(CompileFanoutFor(64, 0) == 16 && CompileFanoutFor(14, 3) == 3 && CompileFanoutFor(14, 99) == 16);
 	}
-	// Compile gate: capacity limits concurrent slots, 0 = unlimited, the slot count returns to 0.
-	{
-		auto& gate = CompileGate::Get();
-		gate.Configure(2);
-		{
-			CompileGate::Slot a;
-			CompileGate::Slot b;
-			CHECK(gate.Running() == 2);
-			std::atomic<bool> got {false};
-			std::thread       t([&] {
-                CompileGate::Slot c; // blocks until a slot frees
-                got = true;
-			});
-			std::this_thread::sleep_for(std::chrono::milliseconds(50));
-			CHECK(!got.load() && gate.Running() == 2);
-			// a and b leave at the end of the scope; c then runs
-			gate.Configure(0); // unlimited: c passes at once
-			t.join();
-			CHECK(got.load());
-		}
-		CHECK(gate.Running() == 0);
-	}
-	// Background continuation: the card follows the hold, not the unit (scene mode ends the hold before the unit is done).
-	{
-		using namespace Libs::Graphics;
-		auto& c = CompileProgress::Get();
-		c.unit_total.store(200), c.unit_done.store(50);
-		c.launch_hold.store(1);
-		CHECK(LoadCard::LaunchPhasePending()); // held: the card stays
-		c.launch_hold.store(2);
-		CHECK(!LoadCard::LaunchPhasePending()); // hold over, 150 still building behind the game: no full card
-		c.launch_hold.store(0);
-		CHECK(LoadCard::LaunchPhasePending()); // no hold this session (KYTY_PIPELINE_REPLAY_ALL=0): card3's rule
-		c.unit_done.store(200);
-		CHECK(!LoadCard::LaunchPhasePending());
-	}
-	std::printf(g_failed ? "LaunchPhaseTests: %d FAILED\n" : "LaunchPhaseTests: ok\n", g_failed);
+        // Compile gate: capacity limits concurrent slots, 0 = unlimited, the
+        // slot count returns to 0.
+        {
+          auto &gate = CompileGate::Get();
+          gate.Configure(2);
+          {
+            CompileGate::Slot a;
+            CompileGate::Slot b;
+            CHECK(gate.Running() == 2);
+            std::atomic<bool> got{false};
+            std::thread t([&] {
+              CompileGate::Slot c; // blocks until a slot frees
+              got = true;
+            });
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            CHECK(!got.load() && gate.Running() == 2);
+            // a and b leave at the end of the scope; c then runs
+            gate.Configure(0); // unlimited: c passes at once
+            t.join();
+            CHECK(got.load());
+          }
+          CHECK(gate.Running() == 0);
+        }
+        // Background continuation: the card follows the hold, not the unit
+        // (scene mode ends the hold before the unit is done).
+        {
+          using namespace Libs::Graphics;
+          auto &c = CompileProgress::Get();
+          c.unit_total.store(200), c.unit_done.store(50);
+          c.launch_hold.store(1);
+          CHECK(LoadCard::LaunchPhasePending()); // held: the card stays
+          c.launch_hold.store(2);
+          CHECK(
+              !LoadCard::LaunchPhasePending()); // hold over, 150 still building
+                                                // behind the game: no full card
+          c.launch_hold.store(0);
+          CHECK(LoadCard::LaunchPhasePending()); // no hold this session
+                                                 // (KYTY_PIPELINE_REPLAY_ALL=0):
+                                                 // card3's rule
+          c.unit_done.store(200);
+          CHECK(!LoadCard::LaunchPhasePending());
+        }
+        std::printf(g_failed ? "LaunchPhaseTests: %d FAILED\n" : "LaunchPhaseTests: ok\n", g_failed);
 	return g_failed != 0;
 }

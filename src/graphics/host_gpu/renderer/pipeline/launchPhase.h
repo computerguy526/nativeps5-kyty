@@ -144,11 +144,12 @@ inline uint64_t CompileFanoutFor(uint64_t logical_cores, uint64_t override_threa
 	return n > 16 ? 16 : n;
 }
 
-// Compile gate (compileqos): the pools of a prepare / launch phase (the pipeline replay workers and the compute
-// prewarm threads, plus whatever else joins) are each sized to the fan-out, so together they ran up to 14 Metal
-// compiles at once on a 14-core Mac and starved WindowServer. Every driver pipeline build of those pools passes
-// through this gate; at most `capacity` run at once (the fan-out), the rest wait. Capacity 0 (the default until a
-// prepare / launch phase configures it) = no limit: live draw compiles are never gated.
+// Compile gate (compileqos): the pools of a prepare / launch phase (the pipeline replay workers and
+// the compute prewarm threads, plus whatever else joins) are each sized to the fan-out, so together
+// they ran up to 14 Metal compiles at once on a 14-core Mac and starved WindowServer. Every driver
+// pipeline build of those pools passes through this gate; at most `capacity` run at once (the
+// fan-out), the rest wait. Capacity 0 (the default until a prepare / launch phase configures it) =
+// no limit: live draw compiles are never gated.
 class CompileGate {
 public:
 	static CompileGate& Get() {
