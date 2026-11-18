@@ -173,6 +173,15 @@ struct CodegenOptions {
 	bool readonly_buffers = true;
 	// KYTY_MAD_MODE=exact|position|fused, see MadMode.
 	MadMode mad_mode = MadMode::Position;
+	// KYTY_FAST_MATH=0|1|2 (default 0, shadPS4 #5455 "fast_shader_math"): 1 = pixel and compute
+	// programs drop NoContraction (whatever MadMode says) and the SignedZeroInfNanPreserve 32
+	// execution mode, so KosmicKrisp emits them as Metal fast math (no per-op math_mode(relaxed)
+	// pragmas, no precise:: functions); vertex/geometry/mesh/tessellation stay exact, so depth
+	// pre-pass and EQUAL-tested passes keep identical positions. 2 = also leave the FLOAT_MODE
+	// f32 denormal flush of transcendental and compare inputs to the host. Not bit exact.
+	// KYTY_FAST_MATH_STAGES=fs|cs|fscs (default fscs) narrows the stages for bisecting.
+	uint8_t fast_math        = 0;
+	uint8_t fast_math_stages = 3; // bit 0: pixel, bit 1: compute
 	// KYTY_INTERP_MODES=0: interpolate every pixel input at the pixel center with the shader-wide
 	// perspective (NoPerspective on all inputs when LINEAR_CENTER is enabled) instead of per input
 	// from the I/J pair its V_INTERP_P2 reads use (centroid, sample, linear).

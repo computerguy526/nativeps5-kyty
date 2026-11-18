@@ -629,6 +629,8 @@ inline constexpr auto EmitLogicalNotBool = EmitNative<spv::OpLogicalNot, IR::Typ
 
 // Whether float arithmetic computing this instruction must not be contracted (MadMode).
 bool NoContraction(EmitterState& state, const IR::Inst& inst);
+// KYTY_FAST_MATH level for this program: 0 outside the stages it covers (pixel/compute only).
+uint32_t FastMathLevel(const EmitterState& state);
 
 F32Class EmitClassifyF32Bits(EmitterState& state, uint32_t bits);
 

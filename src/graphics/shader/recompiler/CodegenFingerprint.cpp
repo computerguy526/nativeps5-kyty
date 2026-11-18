@@ -141,6 +141,11 @@ std::vector<uint8_t> CodegenFingerprint() {
 	if (options.uniform_buffers && GetHostUniformBufferRobust()) {
 		b.Text("uniform_buffers");
 	}
+	if (options.fast_math != 0) {
+		b.Text("fast_math");
+		b.U8(options.fast_math);
+		b.U8(options.fast_math_stages);
+	}
 	if (options.lane_local) {
 		b.Text("lane_local");
 		b.U8(GetHostComputeSubgroups32() ? 1u : 0u);

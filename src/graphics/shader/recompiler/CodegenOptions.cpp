@@ -164,6 +164,14 @@ CodegenOptions FromEnvironment() {
 			options.mad_mode = MadMode::Position;
 		}
 	}
+	if (const auto* level = std::getenv("KYTY_FAST_MATH"); level != nullptr) {
+		options.fast_math = static_cast<uint8_t>(std::min<unsigned long>(std::strtoul(level, nullptr, 10), 2ul));
+	}
+	if (const auto* stages = std::getenv("KYTY_FAST_MATH_STAGES"); stages != nullptr) {
+		const std::string text(stages);
+		options.fast_math_stages = static_cast<uint8_t>((text.find("fs") != std::string::npos ? 1u : 0u) |
+		                                                (text.find("cs") != std::string::npos ? 2u : 0u));
+	}
 	return options;
 }
 

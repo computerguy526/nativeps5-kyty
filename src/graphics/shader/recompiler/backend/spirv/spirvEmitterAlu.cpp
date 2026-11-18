@@ -475,7 +475,22 @@ uint32_t EmitFloatBinary(ValueEmitContext& ctx, const IR::Inst& inst, spv::Op op
 // forbids it everywhere; Position only where the value reaches a position export, so that two
 // shaders computing the same position (depth pre-pass and main pass) cannot be compiled to
 // different roundings.
+uint32_t FastMathLevel(const EmitterState& state) {
+	const auto& options = GetCodegenOptions();
+	if (options.fast_math == 0) {
+		return 0;
+	}
+	const auto stage = state.program.stage;
+	const bool covered = (stage == ShaderType::Pixel && (options.fast_math_stages & 1u) != 0) ||
+	                     (stage == ShaderType::Compute && (options.fast_math_stages & 2u) != 0);
+	return covered ? options.fast_math : 0u;
+}
+
 bool NoContraction(EmitterState& state, const IR::Inst& inst) {
+	// KYTY_FAST_MATH: pixel/compute float math may contract; positions are never computed there.
+	if (FastMathLevel(state) != 0) {
+		return false;
+	}
 	switch (GetCodegenOptions().mad_mode) {
 		case MadMode::Exact: return true;
 		case MadMode::Fused: return false;
@@ -566,6 +581,9 @@ uint32_t EmitFPMaxTri32(ValueEmitContext& ctx, IR::Value arg0, IR::Value arg1, I
 // (CodegenTranscendentalDenormInputs checks the host keeps the sign).
 static uint32_t FlushTranscendentalInput(EmitterState& state, uint32_t value) {
 	if (GetCodegenOptions().host_ftz_inputs && GetHostFloatControls().denorm_flush_f32) {
+		return value;
+	}
+	if (FastMathLevel(state) >= 2) {
 		return value;
 	}
 	return EmitFlushF32DenormToSignedZero(state, value);

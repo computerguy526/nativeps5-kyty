@@ -1022,8 +1022,11 @@ void DefineModule(EmitterState& state) {
 	                             spv::MemoryModelGLSL450);
 	// GCN/RDNA arithmetic preserves 32-bit signed zero, infinity, and NaN. Declaring that
 	// contract prevents host compilers from treating synthesized IEEE values as finite.
-	state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
-	                               32u);
+	// KYTY_FAST_MATH: pixel/compute programs leave it out (KosmicKrisp then emits fast math).
+	if (FastMathLevel(state) == 0) {
+		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
+		                               32u);
+	}
 	// FLOAT_MODE 0xC0 flushes f32 denormals (inputs and outputs) and keeps f16/f64 ones.
 	// Declare only what the device supports; otherwise host defaults stay in effect.
 	const auto float_controls = GetHostFloatControls();
