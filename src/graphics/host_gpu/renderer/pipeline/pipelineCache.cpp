@@ -6690,6 +6690,9 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 }
 
 void PipelineCache::SaveForClose() {
+	// The last-scene memory as Save() keeps it (the host ends the process without Save(); with a warm cache no new
+	// journal record would have written the scene this session ended in).
+	if (m_journal_replay != nullptr) m_journal_replay->NoteScene();
 	if (m_saver != nullptr) m_saver->RequestCloseSave();
 }
 
