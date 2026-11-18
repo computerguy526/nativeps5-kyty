@@ -39179,8 +39179,10 @@ TestCase VectorMadF32RoundsProduct() {
   // (1+2^-23)*(1-2^-23)-1 rounds to zero for MAD, but -2^-46 for FMA. Our MAD emission follows
   // KYTY_MAD_MODE: only exact unfuses it in a compute shader (position mode, the default, unfuses
   // the position slice, and compute shaders have none; fused never), so the default expects FMA.
+  // KYTY_FAST_MATH (default 1 since v1.1) drops NoContraction in compute programs whatever the mode.
   const bool unfused_mad =
-      ShaderRecompiler::GetCodegenOptions().mad_mode == ShaderRecompiler::MadMode::Exact;
+      ShaderRecompiler::GetCodegenOptions().mad_mode == ShaderRecompiler::MadMode::Exact &&
+      ShaderRecompiler::GetCodegenOptions().fast_math == 0;
   const u32 mad = unfused_mad ? 0u : 0xa8800000u;
   test.expected = {mad, mad, mad, mad, mad, 0xa8800000u, 0xa8800000u,
                    0xa8800000u, 0xa8800000u, 0xa8800000u};
@@ -39224,8 +39226,10 @@ TestCase VectorMadF32FlushesDenorms() {
   // Our modules declare f32 DenormFlushToZero whatever FLOAT_MODE asks for (where the device
   // supports it). The unfused MAD (KYTY_MAD_MODE=exact) then flushes the denormal product; the
   // default fused FMA in a compute shader keeps the exact 1.5 * 2^-126 of the fourth sample.
+  // KYTY_FAST_MATH (default 1 since v1.1) drops NoContraction in compute programs whatever the mode.
   const bool unfused_mad =
-      ShaderRecompiler::GetCodegenOptions().mad_mode == ShaderRecompiler::MadMode::Exact;
+      ShaderRecompiler::GetCodegenOptions().mad_mode == ShaderRecompiler::MadMode::Exact &&
+      ShaderRecompiler::GetCodegenOptions().fast_math == 0;
   test.expected = {0u, 0u, 0u, unfused_mad ? 0x00800000u : 0x00c00000u, 0x80000000u};
   test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_MAD_F32,
                   O::BUFFER_STORE_DWORD, O::S_ENDPGM};
@@ -39582,8 +39586,10 @@ TestCase VectorFloatControlContractPreservesInfNan() {
   test.opcodes = {O::S_BFM_B32,       O::V_MOV_B32,     O::V_MUL_F32,
                   O::V_CMP_CLASS_F32, O::V_CNDMASK_B32, O::BUFFER_STORE_DWORD,
                   O::S_ENDPGM};
-  test.required_spirv = {"SPV_KHR_float_controls",
-                         "SignedZeroInfNanPreserve 32"};
+  // KYTY_FAST_MATH (default 1 since v1.1) leaves the 32-bit preserve mode out of compute programs.
+  if (ShaderRecompiler::GetCodegenOptions().fast_math == 0) {
+    test.required_spirv = {"SPV_KHR_float_controls", "SignedZeroInfNanPreserve 32"};
+  }
   return test;
 }
 
