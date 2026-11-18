@@ -856,6 +856,19 @@ void StreamCopyProbeAdd(uint64_t size, uint64_t cycles, uint64_t vaddr) {
 	}
 }
 
+// KYTY_SNAPSHOT_CLEAN_READS (default on; =0 off): a small read binding (<= CACHING_PAGESIZE) that
+// is not GPU-dirty is copied into the stream buffer even when none of its pages is CPU-dirty, so
+// the draw reads the guest bytes as they are at bind time instead of the cache buffer. Astro Bot
+// (PPSA21564) rotates its per-frame constants through three arenas; two of them are still
+// CPU-dirty at bind (stream copies), the third is uploaded earlier by another consumer of the
+// large cache buffer that holds it and so binds that buffer: with GC/VRAM pressure (and rarely
+// without) every third frame then reads wrong helmet constants (period-3 visor-crack flicker,
+// flightrec2 2026-11-18). The snapshot makes all three arenas take the same stream path.
+bool SnapshotCleanReadsEnabled() {
+	static const bool enabled = ParseEnvU64("KYTY_SNAPSHOT_CLEAN_READS", 1) != 0;
+	return enabled;
+}
+
 bool StreamDirectReadEnabled() {
 	static const bool enabled = ParseEnvU64("KYTY_STREAM_DIRECT_READ", 0) != 0;
 	return enabled;
@@ -4462,7 +4475,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainReadBindingMemo(uint64_t vaddr, 
 bool BufferCache::TryLeanReadMiss(uint64_t vaddr, uint64_t size, uint64_t epoch, uint64_t before,
                                   BufferId id, std::pair<Buffer*, uint64_t>& result) {
 	if (before == 0 || !m_relaxed_queries || IsBufferInvalid(id) ||
-	    !m_slot_buffers[id].IsInBounds(vaddr, size)) {
+	    !m_slot_buffers[id].IsInBounds(vaddr, size) ||
+	    (SnapshotCleanReadsEnabled() && size <= CACHING_PAGESIZE)) {
+		// KYTY_SNAPSHOT_CLEAN_READS: the normal path copies such a range into the stream buffer.
 		return false;
 	}
 	const BufferLookupStats::PartScope lean_scope(BufferLookupStats::Part::ReadNow);
@@ -4559,7 +4574,9 @@ void BufferCache::RecordBinding(uint64_t vaddr, uint64_t size, uint64_t epoch, u
 			// stream copy (not after a stream decision whose ring allocation failed, nor with hot
 			// pages left CPU-dirty and nothing GPU-dirty).
 			MemoryTracker::DirtyState state;
-			if (!m_memory_tracker.QueryDirtyRelaxed(vaddr, size, state) || (state.cpu && !state.gpu) ||
+			// KYTY_SNAPSHOT_CLEAN_READS: any small read without GPU-dirty pages is a stream copy.
+			if (!m_memory_tracker.QueryDirtyRelaxed(vaddr, size, state) ||
+			    ((state.cpu || SnapshotCleanReadsEnabled()) && !state.gpu) ||
 			    m_memory_tracker.RangeSignature(vaddr, size) != after) {
 				return;
 			}
@@ -4589,7 +4606,8 @@ std::pair<Buffer*, uint64_t> BufferCache::VerifyBindingHit(const BindingMemo&   
 	// transition since the hit's signature read (a guest write fault) raced this check.
 	const auto state          = m_memory_tracker.QueryDirty(vaddr, size);
 	const bool quiet          = m_memory_tracker.RangeSignature(vaddr, size) == memo.signature;
-	const bool decides_stream = size <= CACHING_PAGESIZE && state.cpu && !state.gpu;
+	const bool decides_stream =
+	    size <= CACHING_PAGESIZE && (state.cpu || SnapshotCleanReadsEnabled()) && !state.gpu;
 	BufferId   obtained {};
 	const auto fresh = ObtainBufferNow(vaddr, size, false, false, id, &obtained);
 	const char* problem = nullptr;
@@ -4812,6 +4830,14 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferNow(uint64_t vaddr, uint64
 			}
 		} else {
 			stream = decide();
+		}
+		if (!stream && SnapshotCleanReadsEnabled()) {
+			// KYTY_SNAPSHOT_CLEAN_READS: clean (not GPU-dirty) small reads are copied as well.
+			MemoryTracker::DirtyState state;
+			if (!RelaxedDirtySnapshot(vaddr, size, state)) {
+				state = m_memory_tracker.QueryDirty(vaddr, size);
+			}
+			stream = !state.gpu;
 		}
 		if (stream) {
 			const auto alignment = std::max<uint64_t>(
