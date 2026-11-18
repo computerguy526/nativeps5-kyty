@@ -1,3 +1,4 @@
+#include "common/flightRec.h"
 #include "common/hostException.h"
 
 #include <atomic>
@@ -284,6 +285,7 @@ static void SignalHandler(int sig, siginfo_t* si, void* uctx) {
 	}
 
 	// Unresolved: restore the default action so the re-executed instruction terminates.
+	FlightRec::OnUnresolvedFault(sig);
 	struct sigaction dfl {};
 	dfl.sa_handler = SIG_DFL;
 	sigemptyset(&dfl.sa_mask);

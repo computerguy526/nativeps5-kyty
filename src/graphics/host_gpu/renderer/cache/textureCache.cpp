@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 
 #include "common/alignment.h"
+#include "common/flightRec.h"
 #include "common/assert.h"
 #include "common/hangTrace.h"
 #include "common/debugCounters.h"
@@ -2871,6 +2872,11 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 		}
 		image.NoteUpload();
 		image.ClearDirtySpan();
+		FlightRec::Rec(FlightRec::EvTexUpload, image.info.data.address, uploaded,
+		               partial.done ? FlightRec::TexUploadPartial : FlightRec::TexUpload,
+		               (static_cast<uint64_t>(image.backing.format) << 32u) |
+		                   (static_cast<uint64_t>(image.info.extent.width & 0xffffu) << 16u) |
+		                   (image.info.extent.height & 0xffffu));
 		Profiler::CountFrameEvent(Profiler::FrameEvent::ImageUploads);
 		Profiler::CountFrameEvent(Profiler::FrameEvent::ImageUploadBytes, uploaded);
 		if (partial.done) {

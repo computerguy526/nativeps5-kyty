@@ -6,6 +6,7 @@
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/flightRec.h"
 #include "common/guestAddress.h"
 #include "common/hangTrace.h"
 #include "common/hangWatchdog.h"
@@ -410,6 +411,7 @@ void FlushCompileStall() {
 	AtomicMax(g_compile_totals.stall_max_ns, ns);
 	AtomicMax(g_compile_totals.window_stall_max_ns, ns);
 	HangTrace::RecordCompileStall(ns);
+	FlightRec::Rec(FlightRec::EvPipeCompile, 4, 0, ns / 1000u, 0);
 }
 
 // Content hashes of the program cache's shader modules: XXH3-64 of the SPIR-V the program cache
@@ -657,6 +659,7 @@ void RecordProgramCompile(const char* stage_name, uint64_t guest_hash, uint64_t 
 		Profiler::AddFrameWait(Profiler::FrameWait::ShaderValidate, 1, times.validate_ns);
 	}
 	Profiler::AddFrameWait(Profiler::FrameWait::ShaderModuleCreate, 1, times.module_ns);
+	FlightRec::Rec(FlightRec::EvPipeCompile, 1, guest_hash, total_ns / 1000u, times.from_disk ? 1 : 0);
 	if (times.load_ns != 0) {
 		totals.disk_load_ns.fetch_add(times.load_ns, std::memory_order_relaxed);
 		Profiler::AddFrameWait(Profiler::FrameWait::ShaderDiskLoad, 1, times.load_ns);
@@ -6683,6 +6686,7 @@ struct PipelineCache::DriverCacheSaver {
 };
 
 void PipelineCache::NotePipelineCreated(uint64_t create_ns) {
+	FlightRec::Rec(FlightRec::EvPipeCompile, 2, 0, create_ns / 1000u, 0);
 	if (m_saver == nullptr) {
 		return;
 	}
@@ -8312,6 +8316,9 @@ PipelineCache::Pipeline* PipelineCache::GetGraphicsPipelineImpl(
 		                          .total_ns    = create_ns,
 		                          .detail      = detail});
 	}
+	if (fast_result.cache_hit) {
+		FlightRec::Rec(FlightRec::EvPipeCompile, 3, guest[0], create_ns / 1000u, 0);
+	}
 	AddCompileStall(create_ns);
 	// A fast build left the driver cache untouched; its optimized build notes the creation. A probe
 	// hit added nothing to it.
@@ -8396,6 +8403,9 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 		                          .id          = compute_program.id,
 		                          .pipeline_ns = create_ns,
 		                          .total_ns    = create_ns});
+	}
+	if (fast_result.cache_hit) {
+		FlightRec::Rec(FlightRec::EvPipeCompile, 3, input_info.stage.program->shader_hash, create_ns / 1000u, 1);
 	}
 	AddCompileStall(create_ns);
 	FlushCompileStall();

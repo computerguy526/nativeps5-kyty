@@ -1,5 +1,7 @@
+#include "common/flightRec.h"
 #include "common/assert.h"
 #include "common/nps5Frame.h"
+#include "common/flightRec.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <sys/resource.h>
@@ -62,17 +64,15 @@ static bool Enabled() {
 static double Mb(uint64_t b) { return static_cast<double>(b) / 1048576.0; }
 static void Line() {
 #ifdef __APPLE__
-	task_vm_info_data_t vi {};
-	mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
-	uint64_t foot = 0, res = 0, comp = 0;
-	if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vi), &cnt) == KERN_SUCCESS) {
-		foot = vi.phys_footprint; res = vi.resident_size; comp = vi.compressed;
-	}
+	// One sampler for both: the always-on flight recorder's 1 Hz EvMem (common/flightRec.cpp) reads the same numbers.
+	FlightRec::MemSample ms {};
+	FlightRec::ReadMem(ms);
+	const uint64_t foot = ms.footprint, res = ms.resident, comp = ms.compressed;
 	xsw_usage sw {};
-	size_t    swl = sizeof(sw);
-	sysctlbyname("vm.swapusage", &sw, &swl, nullptr, 0);
+	sw.xsu_used = ms.swap_used;
 	rusage ru {};
-	getrusage(RUSAGE_SELF, &ru);
+	ru.ru_majflt = static_cast<long>(ms.majflt);
+	ru.ru_minflt = static_cast<long>(ms.minflt);
 	const auto ds = Libs::LibKernel::Memory::GetDebugStats();
 	std::fprintf(stderr,
 	             "[mem] footprint %.0f MB resident %.0f MB compressed %.0f MB swap_used %.0f MB direct_total %.0f MB direct_alloc %.0f MB "
@@ -82,9 +82,21 @@ static void Line() {
 	std::fflush(stderr);
 #endif
 }
+static void ExtraForRecorder(FlightRec::MemExtra& e) {
+#ifdef __APPLE__
+	const auto ds = Libs::LibKernel::Memory::GetDebugStats();
+	e.direct_alloc_mb  = static_cast<uint64_t>(Mb(ds.direct_allocated));
+	e.direct_mapped_mb = static_cast<uint64_t>(Mb(ds.direct_mapped));
+	e.flexible_mb      = static_cast<uint64_t>(Mb(ds.flexible_used));
+	e.value            = static_cast<uint64_t>(Mb(ds.direct_total));
+#else
+	(void)e;
+#endif
+}
 static void Start() {
 	static std::once_flag once;
 	std::call_once(once, [] {
+		FlightRec::SetMemExtraProvider(&ExtraForRecorder); // the recorder samples it at 1 Hz, KYTY_MEMLOG or not
 		if (!Enabled()) return;
 		std::thread([] {
 			for (;;) {
@@ -2052,6 +2064,7 @@ Swapchain::Status Swapchain::Present() {
 		m_window.graphic_ctx.submission_queue.DrainReadyForPresentLocked();
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
+	FlightRec::NotePresent();
 	LowLatency::EndPresent(static_cast<VkSwapchainKHR>(m_handle), latency_id);
 	Common::LatTrace::Log("present");
 	Common::PresentInterval::Note();

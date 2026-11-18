@@ -1,3 +1,4 @@
+#include "common/flightRec.h"
 #include "kernel/fileSystem.h"
 
 #include "common/archive.h"
@@ -419,6 +420,17 @@ bool IsOpenDescriptor(int d) {
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
+	// FlightRec: opens slower than 50 ms are recorded (path hash only).
+	struct OpenFlight {
+		const char* path;
+		uint64_t    t0 = FlightRec::Detail::Now();
+		~OpenFlight() {
+			const uint64_t ms = FlightRec::ToNs(FlightRec::Detail::Now() - t0) / 1000000ull;
+			if (ms > 50) {
+				FlightRec::Rec(FlightRec::EvFileOpen, FlightRec::HashStr(path), ms, 0, 0);
+			}
+		}
+	} open_flight {path};
 	PRINT_NAME();
 
 	if (path == nullptr) {

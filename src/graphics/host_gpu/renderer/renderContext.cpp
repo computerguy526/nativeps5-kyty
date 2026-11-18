@@ -3,6 +3,7 @@
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/hangTrace.h"
+#include "common/flightRec.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -199,6 +200,7 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	if (!IsMapped(fault_vaddr, fault_size)) {
 		return false;
 	}
+	FlightRec::RecShared(FlightRec::EvFault, fault_vaddr, access == PageFaultAccess::Write ? 1 : 0);
 	const MemoryStats::ScopedTimer fault_timer(MemoryStats::Counter::FaultNs);
 	const CpGaps::Scope            fault_gap(CpGaps::Cat::Fault);
 	// Live cost numbers (faultCost.h); the slow-PC simulation's wait comes first, outside every lock.

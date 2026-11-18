@@ -1,5 +1,6 @@
 #include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/cache/readFaultFrameBurst.h"
 
 #include "common/alignment.h"
@@ -1480,6 +1481,7 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 	// An older side publication of these pages must reach the backing (and settle its pages)
 	// before this newer download is queued; otherwise it could overwrite newer bytes.
 	CompleteSideReadbacks(vaddr, size);
+	FlightRec::Rec(FlightRec::EvDownload, vaddr, size, buffer.CpuAddress());
 	KYTY_GPU_OP_SITE("buffercache.download");
 	std::vector<vk::BufferCopy> copies;
 	uint64_t                    total_size     = 0;
@@ -2603,6 +2605,7 @@ bool BufferCache::TryFalseSharingWrite(uint64_t vaddr, uint64_t size, ReadMemory
 BufferCache::SideIssueResult BufferCache::TryIssueSideReadback(
     uint64_t vaddr, uint64_t size, std::shared_ptr<SideReadback>& issued) {
 	EXIT_IF(!GuestGpu::IsGpuThread() || m_side == nullptr);
+	FlightRec::Rec(FlightRec::EvSideReadback, vaddr, size, m_scheduler.CurrentTick());
 	auto&      side    = *m_side;
 	const auto current = m_scheduler.CurrentTick();
 	// An address-writing shader in the unsubmitted recording may write any buffer byte.
@@ -2902,6 +2905,7 @@ static void DiagPrintPublication(const std::vector<GuestRange>& ranges, uint64_t
 }
 
 bool BufferCache::CompleteSideReadback(SideReadback& readback) {
+	FlightRec::Rec(FlightRec::EvSideDone, readback.begin, readback.end, readback.eager ? 1 : 0);
 	HangWatchdog::Scope wait("readback-publication", readback.begin, readback.value, readback.end,
 	                         0, readback.eager);
 	HangWatchdog::DebugDelay("readback", readback.begin);
@@ -3146,6 +3150,7 @@ void BufferCache::IssueEagerReadbacks() {
 }
 
 EagerReadbackPages::IssueResult BufferCache::TryIssueEagerReadback(uint64_t page, uint64_t tick) {
+	FlightRec::Rec(FlightRec::EvEagerReadback, page, tick);
 	using Result = EagerReadbackPages::IssueResult;
 	auto&      side = *m_side;
 	const auto end  = page + TRACKER_PAGE_SIZE;
@@ -3389,6 +3394,7 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 		// The joined contents (including GPU-dirty bytes) are copied by this recording.
 		NoteBufferContentWrite(overlap.begin, overlap.end - overlap.begin);
 	}
+	FlightRec::Rec(FlightRec::EvBufCreate, vaddr, size, (static_cast<uint64_t>(id.index) << 32u) | id.generation);
 	Register(id);
 	return id;
 }
@@ -3402,6 +3408,9 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	// GPU-written images; the BDA hot-pass verification scans in full.
 	if (!is_written && !is_texel_buffer && (stats == nullptr || stats->verify_fault_epoch == 0) &&
 	    RelaxedNothingToUpload(vaddr, size)) {
+		if (FlightRecDraw::Keyed()) [[unlikely]] {
+			FlightRec::Rec(FlightRec::EvSyncSkip, vaddr, size, FlightRec::SkipRelaxedClean);
+		}
 		return false;
 	}
 	// KYTY_WRITTEN_SYNC_SKIP (bufferCache.h): a range the GPU already owns entirely. (Only texel
@@ -3412,6 +3421,9 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		Profiler::CountFrameEvent(Profiler::FrameEvent::WrittenSyncSkips);
 		m_written_sync_totals.skips++;
 		if (m_written_sync_skip_verify == 0) {
+			if (FlightRecDraw::Keyed()) [[unlikely]] {
+				FlightRec::Rec(FlightRec::EvSyncSkip, vaddr, size, FlightRec::SkipWrittenOwned);
+			}
 			return false;
 		}
 		written_skip_verify = true;
@@ -3435,6 +3447,9 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 			Profiler::CountFrameEvent(Profiler::FrameEvent::BufferRangeMemoCleanHits);
 			m_range_memo_totals.clean_hits++;
 			if (m_range_memo_verify == 0) {
+				if (FlightRecDraw::Keyed()) [[unlikely]] {
+					FlightRec::Rec(FlightRec::EvSyncSkip, vaddr, size, FlightRec::SkipRangeMemo);
+				}
 				return false;
 			}
 			memo_verify = true;
@@ -3634,6 +3649,26 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		// finish before native copy recording.
 		m_staging_buffer.Commit();
 		Profiler::CountFrameEvent(Profiler::FrameEvent::UploadReservationsOutsideLocks);
+	}
+	if (FlightRec::On()) [[unlikely]] {
+		if (source || late_source) {
+			FlightRec::Rec(FlightRec::EvUpload, buffer.CpuAddress(),
+			               copies.empty() ? vaddr : buffer.CpuAddress() + copies.front().dstOffset,
+			               total_size + late_size,
+			               static_cast<uint64_t>(copies.size() & 0xffff) |
+			                   (static_cast<uint64_t>(hot_ranges.size() & 0xff) << 16u) |
+			                   (static_cast<uint64_t>(late_copies.size() & 0xff) << 24u) |
+			                   (UploadBatchEnabled() && !late_source ? 1ull << 32u : 0) |
+			                   (FlightRecDraw::Keyed() ? 1ull << 33u : 0) |
+			                   (stats != nullptr ? 1ull << 34u : 0));
+			if (total_size + late_size >= (256u << 10u)) {
+				FlightRec::Rec(FlightRec::EvUploadBig, buffer.CpuAddress(), vaddr, total_size + late_size,
+				               static_cast<uint64_t>(copies.size() & 0xffff));
+			}
+		} else if (FlightRecDraw::Keyed()) {
+			FlightRec::Rec(FlightRec::EvSyncSkip, vaddr, size,
+			               FlightRec::SkipNothing | (static_cast<uint64_t>(hot_ranges.size()) << 8u));
+		}
 	}
 	if (source || late_source) {
 		if (stats != nullptr) {
@@ -3982,14 +4017,36 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	if (command.IsInvalid() || !GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: buffer request requires a recording command buffer\n");
 	}
-	if (!is_written && !is_texel_buffer && m_binding_memo != nullptr && size < BindingMemoMaxSize &&
-	    GuestGpu::IsGpuThread()) {
-		return ObtainReadBinding(vaddr, size, id);
+	const auto plain = [&]() -> std::pair<Buffer*, uint64_t> {
+		if (!is_written && !is_texel_buffer && m_binding_memo != nullptr && size < BindingMemoMaxSize &&
+		    GuestGpu::IsGpuThread()) {
+			return ObtainReadBinding(vaddr, size, id);
+		}
+		if (is_written && !is_texel_buffer && m_written_epoch != nullptr && GuestGpu::IsGpuThread()) {
+			return ObtainWrittenEpoch(vaddr, size, {}, false, id);
+		}
+		return ObtainBufferNow(vaddr, size, is_written, is_texel_buffer, id, nullptr);
+	};
+	if (!FlightRecDraw::Keyed()) [[likely]] {
+		return plain();
 	}
-	if (is_written && !is_texel_buffer && m_written_epoch != nullptr && GuestGpu::IsGpuThread()) {
-		return ObtainWrittenEpoch(vaddr, size, {}, false, id);
-	}
-	return ObtainBufferNow(vaddr, size, is_written, is_texel_buffer, id, nullptr);
+	// KYTY_FLIGHTREC keyed draws: the range's state before the lookup and the lookup's result.
+	const auto signature = m_memory_tracker.RangeSignature(vaddr, size);
+	uint64_t   flags     = 0;
+	flags |= m_memory_tracker.IsRegionCpuModified(vaddr, size) ? FlightRec::BindCpuDirty : 0;
+	flags |= m_gpu_modified_ranges.Intersects(vaddr, size) ? FlightRec::BindGpuModified : 0;
+	flags |= m_memory_tracker.IsRangeGpuOwned(vaddr, size) ? FlightRec::BindGpuOwned : 0;
+	flags |= m_side != nullptr && OverlapsPendingSideReadback(vaddr, vaddr + size) ? FlightRec::BindSideReadback : 0;
+	flags |= is_written ? FlightRec::BindWritten : 0;
+	flags |= is_texel_buffer ? FlightRec::BindTexel : 0;
+	flags |= signature == 0 ? FlightRec::BindNoRegion : 0;
+	FlightRec::Rec(FlightRec::EvBindState, vaddr, size, flags, signature);
+	m_last_read_hit   = false;
+	const auto result = plain();
+	const bool stream = result.first == &m_stream_buffer;
+	FlightRec::Rec(FlightRec::EvBindResult, vaddr, size, stream || result.first == nullptr ? 0 : result.first->CpuAddress(),
+	               result.second | (m_last_read_hit ? 1ull << 63u : 0));
+	return result;
 }
 
 namespace {
@@ -4847,6 +4904,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferNow(uint64_t vaddr, uint64
 			bool read = false;
 			if (mapped != nullptr && StreamDirectReadEnabled()) {
 				std::memcpy(mapped, LibKernel::Memory::GuestReadPtr(vaddr, size), size);
+				FlightRec::Rec(FlightRec::EvSnapRead, vaddr, size, 1);
 				read = true;
 			} else if (mapped != nullptr && TryDeferStreamCopy(mapped, vaddr, size)) {
 				read = true; // KYTY_STREAM_COPY_DEFER: the recorder copies the bytes
@@ -5007,6 +5065,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	(void)m_texture_cache.ClearMeta(vaddr);
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
+		FlightRec::Rec(FlightRec::EvCpWrite, FlightRec::CpDmaFillCpu, vaddr, size, value);
 		auto* destination = Guest::Ptr<uint32_t>(vaddr);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
 		return;
@@ -5182,6 +5241,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	    (!TextureCache::AliasBytesEnabled() ||
 	     (!m_texture_cache.IsRegionGpuModified(src_vaddr, size) &&
 	      !m_texture_cache.IsRegionGpuModified(dst_vaddr, size)))) {
+		FlightRec::Rec(FlightRec::EvCpWrite, FlightRec::CpDmaCopyCpu, dst_vaddr, size, src_vaddr);
 		if (!g_cpu_copy_page_skip.On()) {
 			std::memcpy(Guest::Ptr<void>(dst_vaddr), Guest::Ptr<const void>(src_vaddr), size);
 		} else if ((dst_vaddr >= src_vaddr ? dst_vaddr - src_vaddr : src_vaddr - dst_vaddr) < size) {
@@ -5574,11 +5634,23 @@ void BufferCache::RetireUnusedBuffers(uint64_t frame, uint64_t min_age) {
 		m_idle_freed_bytes += buffer.Size();
 		m_idle_freed++;
 		m_memory_tracker.UntrackMemory(buffer.CpuAddress(), buffer.Size());
+		FlightRec::Rec(FlightRec::EvIdleRetire, buffer.CpuAddress(), buffer.Size(),
+		               (static_cast<uint64_t>(id.index) << 32u) | id.generation);
 		DeleteBuffer(id);
 	}
 }
 
 void BufferCache::RunGarbageCollector() {
+	// A pass slower than 2 ms records EvGcPass (a3 = duration in us); the retires are EvGcRetire/EvIdleRetire.
+	struct GcFlight {
+		uint64_t t0 = FlightRec::Detail::Now();
+		~GcFlight() {
+			const uint64_t us = FlightRec::ToNs(FlightRec::Detail::Now() - t0) / 1000ull;
+			if (us > 2000) {
+				FlightRec::Rec(FlightRec::EvGcPass, 0, 0, 0, us);
+			}
+		}
+	} gc_flight;
 	MaintainHotPages();
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
@@ -5735,6 +5807,8 @@ void BufferCache::RunGarbageCollector() {
 			gc_stats.downloads++;
 		} else {
 			m_memory_tracker.UntrackMemory(buffer.CpuAddress(), buffer.Size());
+			FlightRec::Rec(FlightRec::EvGcRetire, buffer.CpuAddress(), buffer.Size(),
+			               (static_cast<uint64_t>(id.index) << 32u) | id.generation);
 			DeleteBuffer(id);
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::BufferEvictions);
 		}

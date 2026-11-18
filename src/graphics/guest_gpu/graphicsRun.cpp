@@ -1,3 +1,4 @@
+#include "common/flightRec.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "common/guestAddress.h" // nps5: guest addresses are dereferenced at guest + bias
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
@@ -592,6 +593,7 @@ void GuestGpu::Submit(std::span<const uint32_t> draw_commands,
 	if (draw_commands.empty()) {
 		return;
 	}
+	FlightRec::Rec(FlightRec::EvSubmit, 0, draw_commands.size(), constant_commands.size(), 0);
 	GpuMutexLock lock(m_submission_mutex);
 	Submission   submission;
 	submission.type              = SubmissionType::Graphics;
@@ -608,6 +610,7 @@ void GuestGpu::SubmitCompute(uint32_t queue, std::span<const uint32_t> commands)
 	GpuMutexLock lock(m_submission_mutex);
 
 	EXIT_NOT_IMPLEMENTED(queue < ComputeQueueBase || queue >= ComputeQueueBase + ComputeQueueCount);
+	FlightRec::Rec(FlightRec::EvSubmit, queue, commands.size(), 0, 0);
 
 	const auto compute_queue = queue - ComputeQueueBase;
 	Submission submission;
@@ -1378,6 +1381,7 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
 			m_defer_next_label = proxy;
 			if (deferred) {
 				Profiler::CountFrameEvent(Profiler::FrameEvent::WriteDataCpu);
+				FlightRec::Rec(FlightRec::EvCpWrite, FlightRec::CpWriteDataDeferred, op.dst, cpu_bytes, value);
 				TraceCpLabel("wd-deferred", dst, value, cpu_bytes);
 				return;
 			}
@@ -1385,6 +1389,7 @@ void CommandProcessor::ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_
 		NoteCpAhead(CpAheadKind::WriteData, op.dst, src[write_one_address ? dw_num - 1u : 0u]);
 	}
 	Profiler::CountFrameEvent(Profiler::FrameEvent::WriteDataCpu);
+	FlightRec::Rec(FlightRec::EvCpWrite, FlightRec::CpWriteData, op.dst, cpu_bytes, src[write_one_address ? dw_num - 1u : 0u]);
 	TraceCpLabel("wd-cpu", dst, src[write_one_address ? dw_num - 1u : 0u], uint64_t {dw_num} * 4u);
 	LogCpAddress("write-data", op.dst, src[write_one_address ? dw_num - 1u : 0u],
 	             uint64_t {dw_num} * 4u,
@@ -2915,6 +2920,7 @@ void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
 	m_pending_num_instances.clear();
 	if (!indexed) {
 		const auto args = ReadGuestForCp<DrawIndirectArgs>(args_addr);
+		FlightRec::Rec(FlightRec::EvIndirect, 2, args_addr, args.vertex_count_per_instance | (static_cast<uint64_t>(args.instance_count) << 32u), 0);
 		m_num_instances = args.instance_count;
 		ExecDrawAuto(CpuIndirectAutoDraw(args.vertex_count_per_instance, args.instance_count,
 		                                 args.start_vertex_location,
@@ -2923,6 +2929,7 @@ void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
 	}
 
 	const auto args       = ReadGuestForCp<DrawIndexedIndirectArgs>(args_addr);
+	FlightRec::Rec(FlightRec::EvIndirect, 3, args_addr, args.index_count_per_instance | (static_cast<uint64_t>(args.instance_count) << 32u), args.start_index_location);
 	const auto index_size = IndexElementSize(op.index_type_and_size);
 
 	const auto index_addr =
@@ -3208,6 +3215,7 @@ void CommandProcessor::ExecDispatchIndirect(const CpSeq::DispatchIndirectOp& op)
 	}
 	if ((op.mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0) {
 		const auto args = ReadGuestForCp<vk::DispatchIndirectCommand>(op.args_addr);
+		FlightRec::Rec(FlightRec::EvIndirect, 1, op.args_addr, args.x | (static_cast<uint64_t>(args.y) << 32u), args.z);
 		CpSeq::DispatchDirectOp direct;
 		direct.x    = args.x;
 		direct.y    = args.y;

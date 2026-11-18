@@ -19,6 +19,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
+#include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -552,6 +553,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		TracePass(m_context.GetTextureCache(), "dispatch", std::span<PreparedBindings* const>(&traced, 1), {});
 	}
 	BindComputeLds(input_info, bindings, input_info.workgroup_counts);
+	PreparedBindings* flight_stage = &bindings;
+	FlightRecDraw::Begin('X', std::span<PreparedBindings* const>(&flight_stage, 1),
+	                     m_context.GetCommandScheduler().CurrentTick());
 	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	RebindBuffers(bindings);
 	// KYTY_REBIND_AFTER_JOIN: a later binding's lookup joined a buffer an earlier one resolved.
@@ -563,6 +567,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			RebindBuffers(bindings);
 		}
 	}
+	FlightRecDraw::End(m_context.GetTextureCache(), std::span<PreparedBindings* const>(&flight_stage, 1), {});
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 
 	PreparedBindings* descriptor_stage = &bindings;
@@ -850,6 +855,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		TracePass(m_context.GetTextureCache(), "dispatch", std::span<PreparedBindings* const>(&traced, 1), {});
 	}
 	// Acquiring arguments can merge cache buffers; finalize shader bindings afterward.
+	PreparedBindings* flight_stage = &bindings;
+	FlightRecDraw::Begin('X', std::span<PreparedBindings* const>(&flight_stage, 1),
+	                     m_context.GetCommandScheduler().CurrentTick());
 	m_rebind_epoch = m_context.GetBufferCache().UnregisterEpoch();
 	auto [args_buffer, args_offset] = m_context.GetBufferCache().ObtainBuffer(
 	    args_addr, sizeof(vk::DispatchIndirectCommand), false);
@@ -867,6 +875,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			RebindBuffers(bindings);
 		}
 	}
+	FlightRecDraw::End(m_context.GetTextureCache(), std::span<PreparedBindings* const>(&flight_stage, 1), {});
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 	PreparedBindings* descriptor_stage = &bindings;
 	// Emission safe point (see DispatchDirect).

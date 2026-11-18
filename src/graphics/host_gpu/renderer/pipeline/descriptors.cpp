@@ -26,6 +26,7 @@
 #include "graphics/host_gpu/hostMemory.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
+#include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/debug.h"
@@ -2546,6 +2547,7 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only
 	// after image identities are final; attachment layout transitions follow buffer alias copies.
 	// The uploads of every stage share one barrier pair (KYTY_UPLOAD_BATCH).
+	FlightRecDraw::Begin('D', stages, m_context.GetCommandScheduler().CurrentTick());
 	{
 		const BufferCache::UploadBatch upload_batch(m_context.GetBufferCache());
 		// KYTY_REBIND_AFTER_JOIN: the count the draw checks after its per-draw ranges.
@@ -2554,6 +2556,7 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 			RebindBuffers(*stage);
 		}
 	}
+	FlightRecDraw::End(cache, stages, colors);
 	CommitStats::StepMark(CommitStats::Step::RbBatchEnd);
 	CommitStats::Mark(CommitStats::Phase::RebindBuffers);
 }

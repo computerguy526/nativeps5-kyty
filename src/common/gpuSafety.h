@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/flightRec.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +34,7 @@ uint64_t NowNs() noexcept;
 [[nodiscard]] bool WatchdogEnabledFromEnv(const char* value) noexcept;
 
 inline void NoteSubmit(uint64_t tick, uint64_t submit, uint32_t op, uint32_t arg0) noexcept {
+	FlightRec::Rec(FlightRec::EvNativeSubmit, tick, submit, op, arg0);
 	int s = g_state.load(std::memory_order_relaxed);
 	if (s == 0) {
 		InitSlow();

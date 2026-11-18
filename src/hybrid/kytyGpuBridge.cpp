@@ -13,6 +13,7 @@
 #define KYTY_GPU_BUILDING_DLL
 #include "common/abi.h"
 #include "common/emulatorConfig.h"
+#include "common/flightRec.h"
 #include "common/guestAddress.h"
 #include "common/guestLoad.h"
 #include "common/hostException.h"
@@ -907,6 +908,7 @@ void ScheduleRendererStep() {
 }
 
 void RendererStepOnMain(void*) {
+	FlightRec::Heartbeat();
 	if (!g_loop_gate.Running()) {
 		return; // ended by a shutdown on this thread, or given up by one that could not wait
 	}
@@ -988,6 +990,7 @@ void StartSelfMemoryLimit() {
 					             static_cast<unsigned long long>(mib), limit);
 					std::fflush(stderr);
 					std::fflush(stdout);
+					FlightRec::BeforeMemoryLimitExit();
 					_exit(86);
 				}
 			}
