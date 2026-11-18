@@ -870,6 +870,10 @@ void ShaderPrecompiler::NoteDone(Outcome outcome) {
 void ShaderPrecompiler::Worker(uint32_t index) {
 #if defined(_WIN32)
 	if (m_settings.low_priority) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#elif defined(__APPLE__)
+	// compileqos: these workers were the one compile pool left at the default QoS (the comment in
+	// PipelineCache said "utility QoS in a prepare as well", but only the Windows branch acted on it).
+	if (m_settings.low_priority) LowerCurrentThreadPriority();
 #endif
 	if (m_settings.thread_init) m_settings.thread_init(index);
 	const auto& sources = m_journal.Sources();
