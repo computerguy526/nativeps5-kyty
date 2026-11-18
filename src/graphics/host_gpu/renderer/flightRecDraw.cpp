@@ -79,8 +79,9 @@ const Config& Cfg() {
 			c.rehash = static_cast<uint32_t>(std::strtoul(r, nullptr, 0));
 		}
 		if (!c.keys.empty()) {
-			std::fprintf(stderr, "[flightrec] %zu draw keys, hash %llu KiB, rehash %u flips\n", c.keys.size(),
-			             static_cast<unsigned long long>(c.hash_bytes / 1024), c.rehash);
+			std::fprintf(stderr, "[flightrec] %zu draw keys, hash %llu KiB, rehash %u flips\n",
+			             c.keys.size(), static_cast<unsigned long long>(c.hash_bytes / 1024),
+			             c.rehash);
 		}
 		return c;
 	}();
@@ -105,11 +106,11 @@ struct Pending {
 std::mutex           g_mutex;
 std::vector<Pending> g_pending;
 
-thread_local uint32_t t_flip       = 0;
-thread_local uint32_t t_index      = 0;
-thread_local uint32_t t_draws      = 0;
-thread_local uint32_t t_keyed_n    = 0;
-thread_local uint32_t t_rehash_n   = 0;
+thread_local uint32_t t_flip     = 0;
+thread_local uint32_t t_index    = 0;
+thread_local uint32_t t_draws    = 0;
+thread_local uint32_t t_keyed_n  = 0;
+thread_local uint32_t t_rehash_n = 0;
 
 uint64_t GuestHash(uint64_t addr, uint64_t size, uint64_t cap) {
 	if (addr == 0 || size == 0) {
@@ -139,7 +140,8 @@ void NewFlip(uint32_t flip, const Config& cfg) {
 		const uint64_t now = GuestHash(p.addr, p.size, cfg.hash_bytes);
 		t_rehash_n++;
 		if (now != p.hash) {
-			FlightRec::Rec(FlightRec::EvRehash, p.addr, p.size, p.hash, now, static_cast<uint8_t>(age));
+			FlightRec::Rec(FlightRec::EvRehash, p.addr, p.size, p.hash, now,
+			               static_cast<uint8_t>(age));
 			continue; // changed: reported once
 		}
 		if (age < cfg.rehash) {
@@ -168,7 +170,9 @@ void Begin(char kind, std::span<PreparedBindings* const> stages, uint64_t tick) 
 		// Light mode: draws are only tallied (EvFrameSum per flip + the 1 Hz counters).
 		t_draws++;
 		FlightRec::Detail::g_count[kind == 'X' ? FlightRec::EvDispatch : FlightRec::EvDraw].store(
-		    FlightRec::Detail::g_count[kind == 'X' ? FlightRec::EvDispatch : FlightRec::EvDraw].load(std::memory_order_relaxed) + 1,
+		    FlightRec::Detail::g_count[kind == 'X' ? FlightRec::EvDispatch : FlightRec::EvDraw]
+		            .load(std::memory_order_relaxed) +
+		        1,
 		    std::memory_order_relaxed);
 		return;
 	}
@@ -188,13 +192,15 @@ void Begin(char kind, std::span<PreparedBindings* const> stages, uint64_t tick) 
 	}
 	// Draws: the last two stages are vs, ps (a single stage: ps 0).
 	if (n > 2) {
-		hashes[0] = stages[stages.size() - 2] != nullptr && stages[stages.size() - 2]->runtime != nullptr &&
+		hashes[0] = stages[stages.size() - 2] != nullptr &&
+		                    stages[stages.size() - 2]->runtime != nullptr &&
 		                    *stages[stages.size() - 2]->runtime
 		                ? stages[stages.size() - 2]->runtime->program->shader_hash
 		                : 0;
-		hashes[1] = stages.back() != nullptr && stages.back()->runtime != nullptr && *stages.back()->runtime
-		                ? stages.back()->runtime->program->shader_hash
-		                : 0;
+		hashes[1] =
+		    stages.back() != nullptr && stages.back()->runtime != nullptr && *stages.back()->runtime
+		        ? stages.back()->runtime->program->shader_hash
+		        : 0;
 	}
 	const uint64_t index = t_index++;
 	t_draws++;
@@ -211,23 +217,24 @@ void End(TextureCache& cache, std::span<PreparedBindings* const> stages,
 	if (!Detail::t_keyed) [[likely]] {
 		return;
 	}
-	Detail::t_keyed = false;
-	const auto&    cfg  = Cfg();
-	const uint32_t flip = FlightRec::Detail::g_flip.load(std::memory_order_relaxed);
+	Detail::t_keyed           = false;
+	const auto&          cfg  = Cfg();
+	const uint32_t       flip = FlightRec::Detail::g_flip.load(std::memory_order_relaxed);
 	std::vector<Pending> fresh;
 	for (auto* stage: stages) {
 		if (stage == nullptr || stage->runtime == nullptr || !*stage->runtime) {
 			continue;
 		}
-		const auto     st      = static_cast<uint64_t>(stage->runtime->program->stage) & 0xff;
-		const auto&    program = *stage->runtime->program;
+		const auto  st      = static_cast<uint64_t>(stage->runtime->program->stage) & 0xff;
+		const auto& program = *stage->runtime->program;
 		for (size_t slot = 0; slot < stage->buffer_sources.size(); slot++) {
 			const auto& src = stage->buffer_sources[slot];
 			if (src.address == 0) {
 				continue;
 			}
-			const bool     written = slot < program.info.buffers.size() && program.info.buffers[slot].written;
-			const uint64_t h       = GuestHash(src.address, src.size, cfg.hash_bytes);
+			const bool written =
+			    slot < program.info.buffers.size() && program.info.buffers[slot].written;
+			const uint64_t h = GuestHash(src.address, src.size, cfg.hash_bytes);
 			FlightRec::Rec(FlightRec::EvBind, src.address,
 			               (src.size & 0xffffffffffffull) | (st << 56u) | ((slot & 0xff) << 48u),
 			               Id(src.id) | (written ? 1ull << 30u : 0), h);
@@ -243,14 +250,17 @@ void End(TextureCache& cache, std::span<PreparedBindings* const> stages,
 			if (image != nullptr) {
 				addr = image->info.data.address;
 				fmt  = (static_cast<uint64_t>(image->info.pixel_format) << 32u) |
-				      ((image->info.extent.width & 0xffffu) << 16u) | (image->info.extent.height & 0xffffu);
+				       ((image->info.extent.width & 0xffffu) << 16u) |
+				       (image->info.extent.height & 0xffffu);
 			}
-			FlightRec::Rec(FlightRec::EvTexture, addr,
-			               (st << 56u) | (storage ? 1ull << 55u : 0) | ((b & 0x7f) << 48u) |
-			                   (static_cast<uint64_t>(binding.image_id.index & 0xffffffffu) << 16u) |
-			                   (binding.image_id.generation & 0xffffu),
-			               fmt, (static_cast<uint64_t>(binding.desc.view_info.base_level) << 16u) |
-			                        binding.desc.view_info.base_layer);
+			FlightRec::Rec(
+			    FlightRec::EvTexture, addr,
+			    (st << 56u) | (storage ? 1ull << 55u : 0) | ((b & 0x7f) << 48u) |
+			        (static_cast<uint64_t>(binding.image_id.index & 0xffffffffu) << 16u) |
+			        (binding.image_id.generation & 0xffffu),
+			    fmt,
+			    (static_cast<uint64_t>(binding.desc.view_info.base_level) << 16u) |
+			        binding.desc.view_info.base_layer);
 		}
 	}
 	for (const auto& color: colors) {
@@ -259,13 +269,15 @@ void End(TextureCache& cache, std::span<PreparedBindings* const> stages,
 		if (image != nullptr) {
 			addr = image->info.data.address;
 			fmt  = (static_cast<uint64_t>(image->info.pixel_format) << 32u) |
-			      ((image->info.extent.width & 0xffffu) << 16u) | (image->info.extent.height & 0xffffu);
+			       ((image->info.extent.width & 0xffffu) << 16u) |
+			       (image->info.extent.height & 0xffffu);
 		}
-		FlightRec::Rec(FlightRec::EvTarget, addr,
-		               (static_cast<uint64_t>(color.target_slot & 0xffff) << 48u) |
-		                   (static_cast<uint64_t>(color.image_id.index & 0xffffffffu) << 16u) |
-		                   (color.image_id.generation & 0xffffu),
-		               fmt, (static_cast<uint64_t>(color.guest_mip_level) << 16u) | color.guest_array_layer);
+		FlightRec::Rec(
+		    FlightRec::EvTarget, addr,
+		    (static_cast<uint64_t>(color.target_slot & 0xffff) << 48u) |
+		        (static_cast<uint64_t>(color.image_id.index & 0xffffffffu) << 16u) |
+		        (color.image_id.generation & 0xffffu),
+		    fmt, (static_cast<uint64_t>(color.guest_mip_level) << 16u) | color.guest_array_layer);
 	}
 	if (!fresh.empty() && cfg.rehash > 0) {
 		std::lock_guard lock(g_mutex);
@@ -273,7 +285,7 @@ void End(TextureCache& cache, std::span<PreparedBindings* const> stages,
 			bool dup = false;
 			for (size_t i = g_pending.size(); i > 0 && i + 512 > g_pending.size() && !dup; i--) {
 				const auto& p = g_pending[i - 1];
-				dup = p.addr == f.addr && p.size == f.size && p.flip == f.flip;
+				dup           = p.addr == f.addr && p.size == f.size && p.flip == f.flip;
 			}
 			if (!dup && g_pending.size() < 65536) {
 				g_pending.push_back(f);

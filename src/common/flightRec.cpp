@@ -16,8 +16,8 @@
 #include <sys/sysctl.h>
 #endif
 #include <dlfcn.h>
-#include <libgen.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -29,8 +29,9 @@ namespace {
 
 // Recording is on by default only when it costs < 0.2 ms a frame (measured: see docs/playbook.md §3
 // flightrec); KYTY_FLIGHTREC=1/0 overrides.
-// Memory bound (light mode): ring 0 (shared) + 16 thread rings of 16384 x 48 B = 768 KiB = 13 MB; threads past
-// the cap record into the shared ring. Verbose mode (KYTY_FLIGHTREC=2) uses 65536-record rings.
+// Memory bound (light mode): ring 0 (shared) + 16 thread rings of 16384 x 48 B = 768 KiB = 13 MB;
+// threads past the cap record into the shared ring. Verbose mode (KYTY_FLIGHTREC=2) uses
+// 65536-record rings.
 constexpr uint32_t kMaxRings    = 17;
 constexpr uint32_t kMaxTriggers = 16;
 constexpr uint32_t kMaxImages   = 192;
@@ -38,13 +39,13 @@ uint64_t           g_shared_n   = 1u << 14;
 
 Detail::Ring          g_rings[kMaxRings];
 std::atomic<uint32_t> g_ring_count {1}; // ring 0 = the shared ring
-uint64_t              g_n          = 1u << 14;
-uint64_t              g_window_ns  = 12ull * 1000000000ull;
-char                  g_tag[96]    = "";
-char                  g_dir[512]   = "flightrec";
-char                  g_ctl[512]   = "";
-int                   g_max_dumps  = 12;
-bool                  g_exit_dump  = true;
+uint64_t              g_n         = 1u << 14;
+uint64_t              g_window_ns = 12ull * 1000000000ull;
+char                  g_tag[96]   = "";
+char                  g_dir[512]  = "flightrec";
+char                  g_ctl[512]  = "";
+int                   g_max_dumps = 12;
+bool                  g_exit_dump = true;
 uint32_t              g_trig_flip[kMaxTriggers];
 uint32_t              g_trig_flip_n = 0;
 uint32_t              g_trig_present[kMaxTriggers];
@@ -106,10 +107,10 @@ struct Out {
 	char   buf[640];
 	size_t len = 0;
 	void   Str(const char* s) noexcept {
-        while (s != nullptr && *s != '\0' && len + 1 < sizeof(buf)) {
-            buf[len++] = *s++;
-        }
-        buf[len] = '\0';
+		while (s != nullptr && *s != '\0' && len + 1 < sizeof(buf)) {
+			buf[len++] = *s++;
+		}
+		buf[len] = '\0';
 	}
 	void U64(uint64_t v) noexcept {
 		char   tmp[24];
@@ -180,7 +181,8 @@ void SetWhy(char* dst, size_t cap, const char* why) noexcept {
 	dst[i] = '\0';
 }
 
-void ChainSignal(const struct sigaction& old, bool valid, int sig, siginfo_t* info, void* ctx) noexcept {
+void ChainSignal(const struct sigaction& old, bool valid, int sig, siginfo_t* info,
+                 void* ctx) noexcept {
 	if (!valid) {
 		return;
 	}
@@ -217,12 +219,14 @@ void OnUsr2(int sig, siginfo_t* info, void* ctx) {
 	errno = saved;
 }
 
-void Install(int sig, void (*fn)(int, siginfo_t*, void*), struct sigaction& old, bool& valid) noexcept {
+void Install(int sig, void (*fn)(int, siginfo_t*, void*), struct sigaction& old,
+             bool& valid) noexcept {
 	struct sigaction prev {};
 	if (sigaction(sig, nullptr, &prev) == 0) {
 		old   = prev;
-		valid = (prev.sa_flags & SA_SIGINFO) != 0 ? prev.sa_sigaction != nullptr
-		                                         : (prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN);
+		valid = (prev.sa_flags & SA_SIGINFO) != 0
+		            ? prev.sa_sigaction != nullptr
+		            : (prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN);
 	}
 	struct sigaction sa {};
 	sa.sa_sigaction = fn;
@@ -252,15 +256,15 @@ void AtExit() {
 }
 
 // --- monitor thread: heartbeat / present-gap detection, 1 Hz samples, main-thread backtrace ---
-std::atomic<uint64_t> g_present_t {0};   // Now() of the last present
-std::atomic<uint64_t> g_hb_t {0};        // Now() of the last main-loop heartbeat
-std::atomic<uint32_t> g_main_port {0};   // mach port of the heartbeating thread
+std::atomic<uint64_t> g_present_t {0}; // Now() of the last present
+std::atomic<uint64_t> g_hb_t {0};      // Now() of the last main-loop heartbeat
+std::atomic<uint32_t> g_main_port {0}; // mach port of the heartbeating thread
 void (*g_mem_extra)(MemExtra&) = nullptr;
 struct ImageEntry {
 	uint64_t base;
 	char     name[56];
 };
-ImageEntry g_images[kMaxImages];
+ImageEntry            g_images[kMaxImages];
 std::atomic<uint32_t> g_image_n {0};
 std::atomic<int>      g_reason_count[8];
 
@@ -291,8 +295,8 @@ void RefreshImages() noexcept {
 #endif
 }
 
-// Walks the frame-pointer chain of a thread (suspended for the walk) into out[]. No allocation while it is
-// suspended; reads go through vm_read_overwrite so a bad frame pointer cannot fault us.
+// Walks the frame-pointer chain of a thread (suspended for the walk) into out[]. No allocation
+// while it is suspended; reads go through vm_read_overwrite so a bad frame pointer cannot fault us.
 uint32_t Backtrace(uint32_t port, uint64_t* out, uint32_t cap) noexcept {
 #if defined(__APPLE__) && defined(__arm64__)
 	if (port == 0 || cap < 2) {
@@ -302,19 +306,20 @@ uint32_t Backtrace(uint32_t port, uint64_t* out, uint32_t cap) noexcept {
 	if (thread_suspend(th) != KERN_SUCCESS) {
 		return 0;
 	}
-	uint32_t                n = 0;
-	arm_thread_state64_t    st {};
-	mach_msg_type_number_t  cnt = ARM_THREAD_STATE64_COUNT;
-	if (thread_get_state(th, ARM_THREAD_STATE64, reinterpret_cast<thread_state_t>(&st), &cnt) == KERN_SUCCESS) {
+	uint32_t               n = 0;
+	arm_thread_state64_t   st {};
+	mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+	if (thread_get_state(th, ARM_THREAD_STATE64, reinterpret_cast<thread_state_t>(&st), &cnt) ==
+	    KERN_SUCCESS) {
 		constexpr uint64_t mask = 0x00007fffffffffffull;
 		out[n++]                = reinterpret_cast<uint64_t>(arm_thread_state64_get_pc(st)) & mask;
 		out[n++]                = reinterpret_cast<uint64_t>(arm_thread_state64_get_lr(st)) & mask;
 		uint64_t fp             = reinterpret_cast<uint64_t>(arm_thread_state64_get_fp(st)) & mask;
-		for (; n < cap && fp != 0 && (fp & 15u) == 0; ) {
-			uint64_t     frame[2] = {0, 0};
-			vm_size_t    got      = 0;
-			if (vm_read_overwrite(mach_task_self(), fp, sizeof(frame), reinterpret_cast<vm_address_t>(frame), &got) !=
-			        KERN_SUCCESS ||
+		for (; n < cap && fp != 0 && (fp & 15u) == 0;) {
+			uint64_t  frame[2] = {0, 0};
+			vm_size_t got      = 0;
+			if (vm_read_overwrite(mach_task_self(), fp, sizeof(frame),
+			                      reinterpret_cast<vm_address_t>(frame), &got) != KERN_SUCCESS ||
 			    got != sizeof(frame)) {
 				break;
 			}
@@ -329,7 +334,9 @@ uint32_t Backtrace(uint32_t port, uint64_t* out, uint32_t cap) noexcept {
 	thread_resume(th);
 	return n;
 #else
-	(void)port; (void)out; (void)cap;
+	(void)port;
+	(void)out;
+	(void)cap;
 	return 0;
 #endif
 }
@@ -338,7 +345,8 @@ void RecordBacktrace(uint32_t kind, uint32_t port) noexcept {
 	uint64_t       pcs[32] = {};
 	const uint32_t n       = Backtrace(port, pcs, 32);
 	for (uint32_t i = 0, g = 0; i < n; i += 4, g++) {
-		Rec(EvBacktrace, pcs[i], pcs[i + 1], pcs[i + 2], pcs[i + 3], static_cast<uint8_t>(g | (kind << 5)));
+		Rec(EvBacktrace, pcs[i], pcs[i + 1], pcs[i + 2], pcs[i + 3],
+		    static_cast<uint8_t>(g | (kind << 5)));
 	}
 }
 
@@ -350,8 +358,8 @@ void MonitorSample(uint64_t& prev_maj, uint64_t& prev_min, uint32_t (&prev_cnt)[
 	MemSample m;
 	ReadMem(m);
 	constexpr uint64_t MB = 1048576;
-	Rec(EvMem, (m.footprint / MB) << 32 | (m.resident / MB), (m.compressed / MB) << 32 | (m.swap_used / MB), m.majflt,
-	    m.minflt);
+	Rec(EvMem, (m.footprint / MB) << 32 | (m.resident / MB),
+	    (m.compressed / MB) << 32 | (m.swap_used / MB), m.majflt, m.minflt);
 	if (g_mem_extra != nullptr) {
 		MemExtra e;
 		g_mem_extra(e);
@@ -377,11 +385,11 @@ void* MonitorMain(void*) {
 	Rec(EvNote, 1); // creates this thread's ring
 	RefreshImages();
 	uint64_t prev_maj = 0, prev_min = 0;
-	uint32_t prev_cnt[64] = {};
-	uint64_t last_sample = Detail::Now();
+	uint32_t prev_cnt[64]  = {};
+	uint64_t last_sample   = Detail::Now();
 	uint32_t armed_present = 0; // bit0: 2 s dumped, bit1: 10 s dumped
 	uint32_t armed_main    = 0;
-	uint64_t seen_present  = 0, seen_hb = 0;
+	uint64_t seen_present = 0, seen_hb = 0;
 	for (;;) {
 		usleep(100 * 1000);
 		const uint64_t now = Detail::Now();
@@ -471,7 +479,8 @@ bool InitImpl() noexcept {
 	}
 	g_n        = p;
 	g_shared_n = verbose ? (1u << 16) : p;
-	g_window_ns = ParseU64(std::getenv("KYTY_FLIGHTREC_WINDOW_S"), verbose ? 0 : 12) * 1000000000ull;
+	g_window_ns =
+	    ParseU64(std::getenv("KYTY_FLIGHTREC_WINDOW_S"), verbose ? 0 : 12) * 1000000000ull;
 	if (const char* d = std::getenv("KYTY_FLIGHTREC_DIR"); d != nullptr && *d != '\0') {
 		std::snprintf(g_dir, sizeof(g_dir), "%s", d);
 	}
@@ -479,7 +488,10 @@ bool InitImpl() noexcept {
 		size_t i = 0; // [A-Za-z0-9_.-] only: no path separators
 		for (; t[i] != '\0' && i + 1 < sizeof(g_tag); i++) {
 			const char c = t[i];
-			g_tag[i]     = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' ? c : '_';
+			g_tag[i] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			                   c == '_' || c == '-'
+			               ? c
+			               : '_';
 		}
 		g_tag[i] = '\0';
 	}
@@ -516,12 +528,13 @@ bool InitImpl() noexcept {
 	Detail::g_on.store(1, std::memory_order_release); // the monitor thread records
 	StartMonitor();
 	std::fprintf(stderr,
-	             "[flightrec] on (%s): %llu records/thread (%llu KiB), <= %u rings, dir %s, window %llu s, exit dump %d, "
+	             "[flightrec] on (%s): %llu records/thread (%llu KiB), <= %u rings, dir %s, window "
+	             "%llu s, exit dump %d, "
 	             "%u flip / %u present triggers%s%s\n",
 	             verbose ? "verbose" : "light", static_cast<unsigned long long>(g_n),
 	             static_cast<unsigned long long>(g_n * sizeof(Record) / 1024), kMaxRings, g_dir,
-	             static_cast<unsigned long long>(g_window_ns / 1000000000ull), g_exit_dump ? 1 : 0, g_trig_flip_n,
-	             g_trig_present_n, g_ctl[0] != '\0' ? ", ctl " : "", g_ctl);
+	             static_cast<unsigned long long>(g_window_ns / 1000000000ull), g_exit_dump ? 1 : 0,
+	             g_trig_flip_n, g_trig_present_n, g_ctl[0] != '\0' ? ", ctl " : "", g_ctl);
 	return true;
 }
 
@@ -553,14 +566,14 @@ Detail::Ring* Detail::NewThreadRing() noexcept {
 		t_failed = true;
 		return nullptr;
 	}
-	auto& r = g_rings[index];
+	auto& r   = g_rings[index];
 	auto* rec = static_cast<Record*>(MapZeroed(g_n * sizeof(Record)));
 	if (rec == nullptr) {
 		t_failed = true;
 		return nullptr;
 	}
-	r.mask  = g_n - 1;
-	r.index = index;
+	r.mask       = g_n - 1;
+	r.index      = index;
 	uint64_t tid = 0;
 #if defined(__APPLE__)
 	pthread_threadid_np(nullptr, &tid);
@@ -572,8 +585,8 @@ Detail::Ring* Detail::NewThreadRing() noexcept {
 	}
 	// Published last: the dump reads rec only for rings whose rec is set.
 	std::atomic_thread_fence(std::memory_order_release);
-	r.rec   = rec;
-	t_ring  = &r;
+	r.rec  = rec;
+	t_ring = &r;
 	return &r;
 }
 
@@ -627,14 +640,15 @@ void NotePresent() noexcept {
 	const uint64_t prev = g_present_t.exchange(now, std::memory_order_relaxed);
 	Rec(EvPresent, p);
 	if (prev != 0) {
-		const uint64_t ms = TicksToNs(now - prev) / 1000000ull;
+		const uint64_t  ms       = TicksToNs(now - prev) / 1000000ull;
 		static uint64_t last_min = 0, last_maj = 0;
 #if defined(__APPLE__)
 		rusage ru {};
 		getrusage(RUSAGE_SELF, &ru);
-		const uint64_t dmin = static_cast<uint64_t>(ru.ru_minflt) - last_min, dmaj = static_cast<uint64_t>(ru.ru_majflt) - last_maj;
-		last_min = static_cast<uint64_t>(ru.ru_minflt);
-		last_maj = static_cast<uint64_t>(ru.ru_majflt);
+		const uint64_t dmin = static_cast<uint64_t>(ru.ru_minflt) - last_min,
+		               dmaj = static_cast<uint64_t>(ru.ru_majflt) - last_maj;
+		last_min            = static_cast<uint64_t>(ru.ru_minflt);
+		last_maj            = static_cast<uint64_t>(ru.ru_majflt);
 #else
 		const uint64_t dmin = 0, dmaj = 0;
 #endif
@@ -700,8 +714,8 @@ void DumpNow(const char* why, int sig) noexcept {
 	path.Str(".");
 	path.Str(tag);
 	path.Str(".flightrec");
-	const int fd = open(path.buf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	bool      ok = fd >= 0;
+	const int fd    = open(path.buf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	bool      ok    = fd >= 0;
 	uint32_t  rings = g_ring_count.load(std::memory_order_acquire);
 	rings           = rings > kMaxRings ? kMaxRings : rings;
 	if (ok) {
@@ -722,10 +736,12 @@ void DumpNow(const char* why, int sig) noexcept {
 		h.window_ns = g_window_ns;
 		h.level     = static_cast<uint32_t>(Detail::g_level.load(std::memory_order_relaxed));
 		h.images    = sig == 0 ? 0 : 0;
-		const uint32_t nimg = g_image_n.load(std::memory_order_acquire);
-		h.images            = nimg;
-		const uint64_t cutoff = g_window_ns == 0 || h.t_dump < NsToTicks(g_window_ns) ? 0 : h.t_dump - NsToTicks(g_window_ns);
-		ok = WriteAll(fd, &h, sizeof(h));
+		const uint32_t nimg   = g_image_n.load(std::memory_order_acquire);
+		h.images              = nimg;
+		const uint64_t cutoff = g_window_ns == 0 || h.t_dump < NsToTicks(g_window_ns)
+		                            ? 0
+		                            : h.t_dump - NsToTicks(g_window_ns);
+		ok                    = WriteAll(fd, &h, sizeof(h));
 		for (uint32_t i = 0; ok && i < rings; i++) {
 			auto&      r   = g_rings[i];
 			Record*    rec = r.rec;
@@ -736,7 +752,8 @@ void DumpNow(const char* why, int sig) noexcept {
 			rh.capacity = rec != nullptr ? r.mask + 1 : 0;
 			rh.head     = r.head.load(std::memory_order_acquire);
 			rh.count    = rec == nullptr ? 0 : (rh.head < rh.capacity ? rh.head : rh.capacity);
-			// Window: keep only records newer than the cutoff (scan back from the newest; a torn slot has ev 0).
+			// Window: keep only records newer than the cutoff (scan back from the newest; a torn
+			// slot has ev 0).
 			if (cutoff != 0 && rh.count > 0) {
 				uint64_t keep = 0;
 				while (keep < rh.count) {
@@ -754,14 +771,16 @@ void DumpNow(const char* why, int sig) noexcept {
 				// Oldest first: [head - count, head).
 				const uint64_t first = rh.head - rh.count;
 				const uint64_t start = first & r.mask;
-				const uint64_t tail  = rh.capacity - start < rh.count ? rh.capacity - start : rh.count;
+				const uint64_t tail =
+				    rh.capacity - start < rh.count ? rh.capacity - start : rh.count;
 				ok = WriteAll(fd, rec + start, tail * sizeof(Record)) &&
 				     (tail == rh.count || WriteAll(fd, rec, (rh.count - tail) * sizeof(Record)));
 			}
 			const uint64_t after = r.head.load(std::memory_order_acquire);
 			ok                   = ok && WriteAll(fd, &after, sizeof(after));
 		}
-		for (uint32_t i = 0; ok && i < nimg; i++) { // image table: base + basename (symbolise frame addresses)
+		for (uint32_t i = 0; ok && i < nimg;
+		     i++) { // image table: base + basename (symbolise frame addresses)
 			ok = WriteAll(fd, &g_images[i], sizeof(ImageEntry));
 		}
 		close(fd);
@@ -820,7 +839,8 @@ void ReadMem(MemSample& out) noexcept {
 #if defined(__APPLE__)
 	task_vm_info_data_t    vi {};
 	mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
-	if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vi), &cnt) == KERN_SUCCESS) {
+	if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vi), &cnt) ==
+	    KERN_SUCCESS) {
 		out.footprint  = vi.phys_footprint;
 		out.resident   = vi.resident_size;
 		out.compressed = vi.compressed;

@@ -1,11 +1,11 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 
 #include "common/alignment.h"
-#include "common/flightRec.h"
 #include "common/assert.h"
-#include "common/hangTrace.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
+#include "common/flightRec.h"
+#include "common/hangTrace.h"
 #include "common/liveSwitch.h"
 #include "common/logging/log.h"
 #include "common/onceValue.h"
@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/dccClear.h"
 #include "graphics/host_gpu/renderer/image/imageClearRange.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
@@ -30,18 +31,16 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/render.h"
-#include "kernel/memory.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/vramBudget.h"
 #include "graphics/host_gpu/vramStats.h"
+#include "kernel/memory.h"
 
 #include <algorithm>
 #include <array>
-#include <optional>
 #include <atomic>
 #include <bit>
-#include <cinttypes>
 #include <chrono>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -49,6 +48,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <tuple>

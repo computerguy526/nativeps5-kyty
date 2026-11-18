@@ -1,7 +1,6 @@
-#include "common/flightRec.h"
 #include "common/assert.h"
-#include "common/nps5Frame.h"
 #include "common/flightRec.h"
+#include "common/nps5Frame.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <sys/resource.h>
@@ -9,10 +8,10 @@
 #endif
 #include "common/common.h"
 #include "common/debugCounters.h"
-#include "common/latTrace.h"
-#include "common/presentInterval.h"
 #include "common/emulatorConfig.h"
+#include "common/latTrace.h"
 #include "common/logging/log.h"
+#include "common/presentInterval.h"
 #include "common/profiler.h"
 #include "common/threads.h"
 #include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
@@ -23,68 +22,76 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/presentation/window/lowLatency.h"
+#include "graphics/loadCard.h"
 #include "graphics/presentation/openxrHeadset.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
-#include "graphics/loadCard.h"
-#include <chrono>
-#include <dlfcn.h>
-#include <thread>
-#include <mutex>
-#include "graphics/progressOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/lowLatency.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "graphics/progressOverlay.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <optional>
+#include <dlfcn.h>
 #include <limits>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
+#include <thread>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
 // IWYU pragma: no_include <intrin.h>
 
-
-// nps5 cachesave: KYTY_MEMLOG=1 -> a 1 Hz '[mem]' line (footprint / resident / compressed / swap / guest direct memory)
-// and a '[slowframe]' line for every frame over 500 ms with the page-fault deltas. Default off.
+// nps5 cachesave: KYTY_MEMLOG=1 -> a 1 Hz '[mem]' line (footprint / resident / compressed / swap /
+// guest direct memory) and a '[slowframe]' line for every frame over 500 ms with the page-fault
+// deltas. Default off.
 namespace Nps5MemLog {
 static bool Enabled() {
-	static const bool v = [] { const char* e = std::getenv("KYTY_MEMLOG"); return e != nullptr && e[0] != '\0' && e[0] != '0'; }();
+	static const bool v = [] {
+		const char* e = std::getenv("KYTY_MEMLOG");
+		return e != nullptr && e[0] != '\0' && e[0] != '0';
+	}();
 	return v;
 }
-static double Mb(uint64_t b) { return static_cast<double>(b) / 1048576.0; }
+static double Mb(uint64_t b) {
+	return static_cast<double>(b) / 1048576.0;
+}
 static void Line() {
 #ifdef __APPLE__
-	// One sampler for both: the always-on flight recorder's 1 Hz EvMem (common/flightRec.cpp) reads the same numbers.
+	// One sampler for both: the always-on flight recorder's 1 Hz EvMem (common/flightRec.cpp) reads
+	// the same numbers.
 	FlightRec::MemSample ms {};
 	FlightRec::ReadMem(ms);
 	const uint64_t foot = ms.footprint, res = ms.resident, comp = ms.compressed;
-	xsw_usage sw {};
+	xsw_usage      sw {};
 	sw.xsu_used = ms.swap_used;
 	rusage ru {};
-	ru.ru_majflt = static_cast<long>(ms.majflt);
-	ru.ru_minflt = static_cast<long>(ms.minflt);
+	ru.ru_majflt  = static_cast<long>(ms.majflt);
+	ru.ru_minflt  = static_cast<long>(ms.minflt);
 	const auto ds = Libs::LibKernel::Memory::GetDebugStats();
 	std::fprintf(stderr,
-	             "[mem] footprint %.0f MB resident %.0f MB compressed %.0f MB swap_used %.0f MB direct_total %.0f MB direct_alloc %.0f MB "
+	             "[mem] footprint %.0f MB resident %.0f MB compressed %.0f MB swap_used %.0f MB "
+	             "direct_total %.0f MB direct_alloc %.0f MB "
 	             "direct_mapped %.0f MB flex_used %.0f MB majflt %ld minflt %ld frame_ms %u\n",
-	             Mb(foot), Mb(res), Mb(comp), Mb(sw.xsu_used), Mb(ds.direct_total), Mb(ds.direct_allocated), Mb(ds.direct_mapped),
-	             Mb(ds.flexible_used), ru.ru_majflt, ru.ru_minflt, Nps5Frame::g_last_frame_ms.load(std::memory_order_relaxed));
+	             Mb(foot), Mb(res), Mb(comp), Mb(sw.xsu_used), Mb(ds.direct_total),
+	             Mb(ds.direct_allocated), Mb(ds.direct_mapped), Mb(ds.flexible_used), ru.ru_majflt,
+	             ru.ru_minflt, Nps5Frame::g_last_frame_ms.load(std::memory_order_relaxed));
 	std::fflush(stderr);
 #endif
 }
 static void ExtraForRecorder(FlightRec::MemExtra& e) {
 #ifdef __APPLE__
-	const auto ds = Libs::LibKernel::Memory::GetDebugStats();
+	const auto ds      = Libs::LibKernel::Memory::GetDebugStats();
 	e.direct_alloc_mb  = static_cast<uint64_t>(Mb(ds.direct_allocated));
 	e.direct_mapped_mb = static_cast<uint64_t>(Mb(ds.direct_mapped));
 	e.flexible_mb      = static_cast<uint64_t>(Mb(ds.flexible_used));
@@ -96,7 +103,8 @@ static void ExtraForRecorder(FlightRec::MemExtra& e) {
 static void Start() {
 	static std::once_flag once;
 	std::call_once(once, [] {
-		FlightRec::SetMemExtraProvider(&ExtraForRecorder); // the recorder samples it at 1 Hz, KYTY_MEMLOG or not
+		FlightRec::SetMemExtraProvider(
+		    &ExtraForRecorder); // the recorder samples it at 1 Hz, KYTY_MEMLOG or not
 		if (!Enabled()) return;
 		std::thread([] {
 			for (;;) {
@@ -108,17 +116,21 @@ static void Start() {
 }
 // Called once per Present().
 static void NoteFrame() {
-	using clock = std::chrono::steady_clock;
-	const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count());
+	using clock    = std::chrono::steady_clock;
+	const auto now = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch())
+	        .count());
 	const auto prev = Nps5Frame::g_last_present_ns.exchange(now, std::memory_order_relaxed);
 #ifdef __APPLE__
 	static long last_maj = 0, last_min = 0;
-	long dmaj = 0, dmin = 0;
+	long        dmaj = 0, dmin = 0;
 	if (Enabled()) {
 		rusage ru {};
 		getrusage(RUSAGE_SELF, &ru);
-		dmaj = ru.ru_majflt - last_maj; dmin = ru.ru_minflt - last_min;
-		last_maj = ru.ru_majflt; last_min = ru.ru_minflt;
+		dmaj     = ru.ru_majflt - last_maj;
+		dmin     = ru.ru_minflt - last_min;
+		last_maj = ru.ru_majflt;
+		last_min = ru.ru_minflt;
 	}
 #endif
 	if (prev == 0) return;

@@ -2,8 +2,8 @@
 
 #include "common/alignment.h"
 #include "common/assert.h"
-#include "common/hangTrace.h"
 #include "common/flightRec.h"
+#include "common/hangTrace.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"

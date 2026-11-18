@@ -1,15 +1,13 @@
-#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
-#include "graphics/host_gpu/renderer/flightRecDraw.h"
-#include "graphics/host_gpu/renderer/cache/readFaultFrameBurst.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/debugCounters.h"
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "common/guestLoad.h"
 #include "common/hangTrace.h"
 #include "common/hangWatchdog.h"
 #include "common/liveSwitch.h"
-#include "common/debugCounters.h"
 #include "common/logging/log.h"
 #include "common/onceValue.h"
 #include "common/profiler.h"
@@ -22,6 +20,7 @@
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/readFaultDiag.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
+#include "graphics/host_gpu/renderer/cache/readFaultFrameBurst.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/cache/uploadDma.h"
 #include "graphics/host_gpu/renderer/commandRecorder.h"
@@ -29,6 +28,7 @@
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
+#include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -40,25 +40,25 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
-#include <bit>
-#include <intrin.h>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
+#include <intrin.h>
 #include <memory>
-#include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <thread>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -1366,15 +1366,16 @@ void BufferCache::Unregister(BufferId id) {
 	ChangeRegister<false>(id);
 }
 
-// KYTY_BDA_PAGETABLE_MB=<n> (memtrim, default 0 = the whole 512 MiB table): the dense BDA page table
-// holds only the entries of guest addresses below n MiB / 8 * 16 KiB (64 MiB: below 128 GiB; Astro's
-// GPU mappings end at 0x10_c800_0000 = 67 GiB). A Metal heap is committed whole as soon as the GPU
-// touches it (work/kyty/mem/mtltest/zero.m), so the zero fill of the 512 MiB table costs 512 MiB of
-// footprint although the entries past the guest's GPU span are never written. Shaders keep indexing
-// up to 2^26 entries: the table is bound with its real size and robustBufferAccess2 (required on
-// KosmicKrisp) reads 0 past it, i.e. "no buffer" (a fault-bitmap bit, as for any unmapped page).
-// No shader or pipeline-cache change. A buffer registered above the covered range would be invisible
-// to BDA reads: counted and reported (stderr, once) - raise n if that line ever appears.
+// KYTY_BDA_PAGETABLE_MB=<n> (memtrim, default 0 = the whole 512 MiB table): the dense BDA page
+// table holds only the entries of guest addresses below n MiB / 8 * 16 KiB (64 MiB: below 128 GiB;
+// Astro's GPU mappings end at 0x10_c800_0000 = 67 GiB). A Metal heap is committed whole as soon as
+// the GPU touches it (work/kyty/mem/mtltest/zero.m), so the zero fill of the 512 MiB table costs
+// 512 MiB of footprint although the entries past the guest's GPU span are never written. Shaders
+// keep indexing up to 2^26 entries: the table is bound with its real size and robustBufferAccess2
+// (required on KosmicKrisp) reads 0 past it, i.e. "no buffer" (a fault-bitmap bit, as for any
+// unmapped page). No shader or pipeline-cache change. A buffer registered above the covered range
+// would be invisible to BDA reads: counted and reported (stderr, once) - raise n if that line ever
+// appears.
 static uint64_t BdaTableEntries() {
 	static const uint64_t entries = [] {
 		uint64_t all = BufferCache::CACHING_NUMPAGES;
@@ -1382,9 +1383,12 @@ static uint64_t BdaTableEntries() {
 			const uint64_t mib = std::strtoull(value, nullptr, 10);
 			if (mib != 0) {
 				all = std::min<uint64_t>(all, (mib << 20u) / sizeof(vk::DeviceAddress));
-				std::fprintf(stderr, "[memtrim] BDA page table %llu MiB: covers guest addresses below 0x%llx (KYTY_BDA_PAGETABLE_MB)\n",
-				             static_cast<unsigned long long>((all * sizeof(vk::DeviceAddress)) >> 20u),
-				             static_cast<unsigned long long>(all << BufferCache::CACHING_PAGEBITS));
+				std::fprintf(
+				    stderr,
+				    "[memtrim] BDA page table %llu MiB: covers guest addresses below 0x%llx "
+				    "(KYTY_BDA_PAGETABLE_MB)\n",
+				    static_cast<unsigned long long>((all * sizeof(vk::DeviceAddress)) >> 20u),
+				    static_cast<unsigned long long>(all << BufferCache::CACHING_PAGEBITS));
 			}
 		}
 		return all;
@@ -1392,13 +1396,15 @@ static uint64_t BdaTableEntries() {
 	return entries;
 }
 static std::atomic<uint64_t> g_bda_pages_uncovered {0};
-static void NoteBdaUncovered(uint64_t first, uint64_t last_exclusive) {
+static void                  NoteBdaUncovered(uint64_t first, uint64_t last_exclusive) {
 	if (last_exclusive <= BdaTableEntries()) {
 		return;
 	}
 	const auto pages = last_exclusive - std::max(first, BdaTableEntries());
 	if (g_bda_pages_uncovered.fetch_add(pages, std::memory_order_relaxed) == 0) {
-		std::fprintf(stderr, "[memtrim] WARNING: guest buffer at 0x%llx is above the BDA page table (KYTY_BDA_PAGETABLE_MB): BDA reads of it fault\n",
+		std::fprintf(stderr,
+		             "[memtrim] WARNING: guest buffer at 0x%llx is above the BDA page table "
+		             "(KYTY_BDA_PAGETABLE_MB): BDA reads of it fault\n",
 		             static_cast<unsigned long long>(first << BufferCache::CACHING_PAGEBITS));
 	}
 }
@@ -1755,8 +1761,7 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_bda_incremental_sync(IncrementalBdaSyncEnabled()),
       m_bda_hot_sync(m_bda_incremental_sync && BdaHotSyncEnabled()),
       m_memory_tracker(page_manager, m_bda_incremental_sync, BufferFaultPolicy()),
-      m_hot_quiet_frames(HotPageQuietFrames()),
-      m_hot_check_limit(HotPageCheckLimit()),
+      m_hot_quiet_frames(HotPageQuietFrames()), m_hot_check_limit(HotPageCheckLimit()),
       m_range_memo(RangeMemoEnabled() ? std::make_unique<RangeMemo[]>(RangeMemoSlots) : nullptr),
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, UploadRingSize(),
                        graphics.transfer_queue != nullptr),
@@ -3440,7 +3445,8 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 		// The joined contents (including GPU-dirty bytes) are copied by this recording.
 		NoteBufferContentWrite(overlap.begin, overlap.end - overlap.begin);
 	}
-	FlightRec::Rec(FlightRec::EvBufCreate, vaddr, size, (static_cast<uint64_t>(id.index) << 32u) | id.generation);
+	FlightRec::Rec(FlightRec::EvBufCreate, vaddr, size,
+	               (static_cast<uint64_t>(id.index) << 32u) | id.generation);
 	Register(id);
 	return id;
 }
@@ -3708,12 +3714,14 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 			                   (FlightRecDraw::Keyed() ? 1ull << 33u : 0) |
 			                   (stats != nullptr ? 1ull << 34u : 0));
 			if (total_size + late_size >= (256u << 10u)) {
-				FlightRec::Rec(FlightRec::EvUploadBig, buffer.CpuAddress(), vaddr, total_size + late_size,
+				FlightRec::Rec(FlightRec::EvUploadBig, buffer.CpuAddress(), vaddr,
+				               total_size + late_size,
 				               static_cast<uint64_t>(copies.size() & 0xffff));
 			}
 		} else if (FlightRecDraw::Keyed()) {
 			FlightRec::Rec(FlightRec::EvSyncSkip, vaddr, size,
-			               FlightRec::SkipNothing | (static_cast<uint64_t>(hot_ranges.size()) << 8u));
+			               FlightRec::SkipNothing |
+			                   (static_cast<uint64_t>(hot_ranges.size()) << 8u));
 		}
 	}
 	if (source || late_source) {
@@ -4064,11 +4072,12 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 		EXIT("BufferCache: buffer request requires a recording command buffer\n");
 	}
 	const auto plain = [&]() -> std::pair<Buffer*, uint64_t> {
-		if (!is_written && !is_texel_buffer && m_binding_memo != nullptr && size < BindingMemoMaxSize &&
-		    GuestGpu::IsGpuThread()) {
+		if (!is_written && !is_texel_buffer && m_binding_memo != nullptr &&
+		    size < BindingMemoMaxSize && GuestGpu::IsGpuThread()) {
 			return ObtainReadBinding(vaddr, size, id);
 		}
-		if (is_written && !is_texel_buffer && m_written_epoch != nullptr && GuestGpu::IsGpuThread()) {
+		if (is_written && !is_texel_buffer && m_written_epoch != nullptr &&
+		    GuestGpu::IsGpuThread()) {
 			return ObtainWrittenEpoch(vaddr, size, {}, false, id);
 		}
 		return ObtainBufferNow(vaddr, size, is_written, is_texel_buffer, id, nullptr);
@@ -4082,7 +4091,9 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	flags |= m_memory_tracker.IsRegionCpuModified(vaddr, size) ? FlightRec::BindCpuDirty : 0;
 	flags |= m_gpu_modified_ranges.Intersects(vaddr, size) ? FlightRec::BindGpuModified : 0;
 	flags |= m_memory_tracker.IsRangeGpuOwned(vaddr, size) ? FlightRec::BindGpuOwned : 0;
-	flags |= m_side != nullptr && OverlapsPendingSideReadback(vaddr, vaddr + size) ? FlightRec::BindSideReadback : 0;
+	flags |= m_side != nullptr && OverlapsPendingSideReadback(vaddr, vaddr + size)
+	             ? FlightRec::BindSideReadback
+	             : 0;
 	flags |= is_written ? FlightRec::BindWritten : 0;
 	flags |= is_texel_buffer ? FlightRec::BindTexel : 0;
 	flags |= signature == 0 ? FlightRec::BindNoRegion : 0;
@@ -4090,7 +4101,8 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	m_last_read_hit   = false;
 	const auto result = plain();
 	const bool stream = result.first == &m_stream_buffer;
-	FlightRec::Rec(FlightRec::EvBindResult, vaddr, size, stream || result.first == nullptr ? 0 : result.first->CpuAddress(),
+	FlightRec::Rec(FlightRec::EvBindResult, vaddr, size,
+	               stream || result.first == nullptr ? 0 : result.first->CpuAddress(),
 	               result.second | (m_last_read_hit ? 1ull << 63u : 0));
 	return result;
 }
@@ -5687,7 +5699,8 @@ void BufferCache::RetireUnusedBuffers(uint64_t frame, uint64_t min_age) {
 }
 
 void BufferCache::RunGarbageCollector() {
-	// A pass slower than 2 ms records EvGcPass (a3 = duration in us); the retires are EvGcRetire/EvIdleRetire.
+	// A pass slower than 2 ms records EvGcPass (a3 = duration in us); the retires are
+	// EvGcRetire/EvIdleRetire.
 	struct GcFlight {
 		uint64_t t0 = FlightRec::Detail::Now();
 		~GcFlight() {
@@ -5982,9 +5995,10 @@ void BufferCache::ReportVram() {
 		                ToMiB(m_bda_sparse->bound_blocks * m_bda_sparse->block_size),
 		                ToMiB(BDA_PAGETABLE_SIZE), m_bda_sparse->chunks.size());
 	} else {
-		VramStats::Line("BDA page table: dense, %.1f MiB (KYTY_BDA_PAGETABLE_MB; pages above it %llu)",
-		                ToMiB(m_bda_pagetable_buffer.Size()),
-		                static_cast<unsigned long long>(g_bda_pages_uncovered.load(std::memory_order_relaxed)));
+		VramStats::Line(
+		    "BDA page table: dense, %.1f MiB (KYTY_BDA_PAGETABLE_MB; pages above it %llu)",
+		    ToMiB(m_bda_pagetable_buffer.Size()),
+		    static_cast<unsigned long long>(g_bda_pages_uncovered.load(std::memory_order_relaxed)));
 	}
 	VramStats::Line("buffer GC: usage %.1f MiB, trigger %.1f critical %.1f MiB, GC tick %llu | idle "
 	                "retirement (KYTY_VRAM_IDLE_BUFFER_FRAMES=%llu) deleted %.1f MiB (%llu) in total",

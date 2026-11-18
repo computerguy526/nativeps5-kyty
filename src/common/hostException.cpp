@@ -1,5 +1,6 @@
-#include "common/flightRec.h"
 #include "common/hostException.h"
+
+#include "common/flightRec.h"
 
 #include <atomic>
 #include <cstdio>

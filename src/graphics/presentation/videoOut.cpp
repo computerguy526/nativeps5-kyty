@@ -1,43 +1,36 @@
 #include "graphics/presentation/videoOut.h"
 
-#include "common/latTrace.h"
 #include "common/abi.h"
-
-#include <algorithm>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/cpuPlacement.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
-#include "common/paceLog.h"
-#include "common/logging/log.h"
+#include "common/flightRec.h"
 #include "common/hangTrace.h"
+#include "common/latTrace.h"
 #include "common/liveSwitch.h"
+#include "common/logging/log.h"
+#include "common/paceLog.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
 #include "graphics/guest_gpu/gpu_defs.h"
-#include "graphics/loadCard.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/renderer/eopTimestamps.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/gpuTiming.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/loadCard.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
-#include "graphics/presentation/window/lowLatency.h"
-#include "graphics/host_gpu/renderer/passTrace.h"
-#include "common/flightRec.h"
 #include "graphics/presentation/renderDoc.h"
+#include "graphics/presentation/window/lowLatency.h"
 #include "kernel/eventQueueFilters.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
@@ -48,6 +41,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
@@ -1382,7 +1377,8 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	r.source     = source;
 	r.state      = RequestState::Reserved;
 	Graphics::PassTrace::NoteFlip();
-	FlightRec::NoteFlip(static_cast<uint64_t>(index), static_cast<uint64_t>(source), static_cast<uint64_t>(flip_arg));
+	FlightRec::NoteFlip(static_cast<uint64_t>(index), static_cast<uint64_t>(source),
+	                    static_cast<uint64_t>(flip_arg));
 	r.latency_frame = source == FlipRequestSource::GpuEop ? Graphics::LowLatency::OnGpuFlipReserved()
 	                                                      : Graphics::LowLatency::TakeCpuFlipFrame();
 	if (cfg.slave_count != 0) {

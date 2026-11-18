@@ -659,7 +659,8 @@ void RecordProgramCompile(const char* stage_name, uint64_t guest_hash, uint64_t 
 		Profiler::AddFrameWait(Profiler::FrameWait::ShaderValidate, 1, times.validate_ns);
 	}
 	Profiler::AddFrameWait(Profiler::FrameWait::ShaderModuleCreate, 1, times.module_ns);
-	FlightRec::Rec(FlightRec::EvPipeCompile, 1, guest_hash, total_ns / 1000u, times.from_disk ? 1 : 0);
+	FlightRec::Rec(FlightRec::EvPipeCompile, 1, guest_hash, total_ns / 1000u,
+	               times.from_disk ? 1 : 0);
 	if (times.load_ns != 0) {
 		totals.disk_load_ns.fetch_add(times.load_ns, std::memory_order_relaxed);
 		Profiler::AddFrameWait(Profiler::FrameWait::ShaderDiskLoad, 1, times.load_ns);
@@ -6566,13 +6567,17 @@ struct PipelineCache::DriverCacheSaver {
 			return false;
 		}
 		if (!LegacySave()) {
-			// cachesave: defer while the game is stalled/loading (frame >100 ms in the last 5 s; the
-			// serialize + 285 MB write competes with it), and back off after saves that found no change.
+			// cachesave: defer while the game is stalled/loading (frame >100 ms in the last 5 s;
+			// the serialize + 285 MB write competes with it), and back off after saves that found
+			// no change.
 			const auto slow = Nps5Frame::g_slow_frame_ns.load(std::memory_order_relaxed);
-			if (slow != 0 && now >= slow && now - slow < 5'000'000'000ull && now - last_save_ns < 10 * settings.interval_ns) {
+			if (slow != 0 && now >= slow && now - slow < 5'000'000'000ull &&
+			    now - last_save_ns < 10 * settings.interval_ns) {
 				return false;
 			}
-			if (identical_saves != 0 && now - last_save_ns < settings.interval_ns << std::min<uint32_t>(identical_saves, 4)) {
+			if (identical_saves != 0 &&
+			    now - last_save_ns < settings.interval_ns
+			                             << std::min<uint32_t>(identical_saves, 4)) {
 				return false;
 			}
 		}
@@ -6676,7 +6681,8 @@ struct PipelineCache::DriverCacheSaver {
 	uint64_t saved_created  = 0;
 	uint64_t last_save_ns   = 0;
 	uint64_t retry_after_ns = 0;
-	uint32_t identical_saves = 0;  // consecutive periodic saves whose bytes equalled the previous file
+	uint32_t identical_saves =
+	    0; // consecutive periodic saves whose bytes equalled the previous file
 	uint64_t last_payload_hash = 0;
 	bool     oversized      = false;
 	bool     term_hook      = false;
@@ -6751,12 +6757,15 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 		return DriverCacheSaver::WriteOversized;
 	}
 	if (m_saver != nullptr && !DriverCacheSaver::LegacySave()) {
-		// cachesave: identical bytes to the last file written by this process (hash of the serialized payload):
-		// skip the 285 MB rewrite (the serialize itself already ran), and back the next periodic save off.
+		// cachesave: identical bytes to the last file written by this process (hash of the
+		// serialized payload): skip the 285 MB rewrite (the serialize itself already ran), and back
+		// the next periodic save off.
 		if (periodic && m_saver->last_payload_hash == payload_hash) {
 			m_saver->identical_saves++;
-			PipelineCacheLog("Vulkan pipeline cache: periodic save skipped, payload unchanged ({} bytes, serialize {:.1f} ms, {} in a row)",
-			                 payload.size(), static_cast<double>(serialized - begin) / 1.0e6, m_saver->identical_saves);
+			PipelineCacheLog("Vulkan pipeline cache: periodic save skipped, payload unchanged ({} "
+			                 "bytes, serialize {:.1f} ms, {} in a row)",
+			                 payload.size(), static_cast<double>(serialized - begin) / 1.0e6,
+			                 m_saver->identical_saves);
 			return payload.size();
 		}
 		if (periodic) m_saver->identical_saves = 0;
@@ -8405,7 +8414,8 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 		                          .total_ns    = create_ns});
 	}
 	if (fast_result.cache_hit) {
-		FlightRec::Rec(FlightRec::EvPipeCompile, 3, input_info.stage.program->shader_hash, create_ns / 1000u, 1);
+		FlightRec::Rec(FlightRec::EvPipeCompile, 3, input_info.stage.program->shader_hash,
+		               create_ns / 1000u, 1);
 	}
 	AddCompileStall(create_ns);
 	FlushCompileStall();

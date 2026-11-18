@@ -1,6 +1,6 @@
-#include "common/debugCounters.h"
 #include "common/assert.h"
 #include "common/common.h"
+#include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
 #include "common/liveSwitch.h"
@@ -15,11 +15,12 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
-#include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
-#include "graphics/host_gpu/renderer/image/imageInfo.h"
-#include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/flightRecDraw.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/metalfx.h"
+#include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -28,17 +29,15 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
-#include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
+#include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
-#include <tuple>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -50,6 +49,7 @@
 #include <limits>
 #include <mutex>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -567,7 +567,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			RebindBuffers(bindings);
 		}
 	}
-	FlightRecDraw::End(m_context.GetTextureCache(), std::span<PreparedBindings* const>(&flight_stage, 1), {});
+	FlightRecDraw::End(m_context.GetTextureCache(),
+	                   std::span<PreparedBindings* const>(&flight_stage, 1), {});
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 
 	PreparedBindings* descriptor_stage = &bindings;
@@ -875,7 +876,8 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 			RebindBuffers(bindings);
 		}
 	}
-	FlightRecDraw::End(m_context.GetTextureCache(), std::span<PreparedBindings* const>(&flight_stage, 1), {});
+	FlightRecDraw::End(m_context.GetTextureCache(),
+	                   std::span<PreparedBindings* const>(&flight_stage, 1), {});
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 	PreparedBindings* descriptor_stage = &bindings;
 	// Emission safe point (see DispatchDirect).
