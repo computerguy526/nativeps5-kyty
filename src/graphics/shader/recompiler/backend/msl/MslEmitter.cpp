@@ -143,7 +143,7 @@ std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
 			t.replace(b0, e1 + 1 - b0, kVsSingleLane);
 	}
 	if (contract) { // mslfix: KK-like pixel math (GfxPixelRelaxed): the host contracts like KK's
-	                // relaxed ops
+		            // relaxed ops
 		const std::string off = "#pragma METAL fp contract(off)\n";
 		t.erase(t.find(off), off.size());
 	}
