@@ -314,10 +314,16 @@ int64_t ParseGcLazyCritical(const char* value) {
 	                           static_cast<int64_t>(VramBudget::BufferSettleMaxDeferredCriticalLimit));
 }
 Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL", ParseGcLazyCritical);
+// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default off; =1 on): a collection pass never
+// settles all pending side readbacks (a wait for the GPU on the command-processor thread after
+// nearly every completed submission in a level: 26-27 % of that thread in Sky Garden). It skips
+// the candidate buffers whose pages a pending side readback covers instead; they are looked at
+// again by a later pass. The other candidates' tracker state does not depend on those readbacks.
+Live::Switch g_gc_settle_selective("KYTY_GC_SETTLE_SELECTIVE", Live::ParseDefaultOff);
 // "BufferGc 10s" line (with KYTY_CP_GAP_STATS): what the collection passes did. GPU thread only.
 struct BufferGcStats {
 	uint64_t passes = 0, below = 0, empty = 0, deferred = 0, ran = 0, waited = 0, wait_ns = 0,
-	         retired = 0, downloads = 0, critical = 0;
+	         retired = 0, downloads = 0, critical = 0, busy = 0;
 	std::chrono::steady_clock::time_point last {};
 };
 BufferGcStats g_buffer_gc_stats;
@@ -335,13 +341,15 @@ void PrintBufferGcStats() {
 		return;
 	}
 	std::printf("BufferGc 10s: passes %llu (critical %llu) | below trigger %llu, no candidate %llu, put "
-	            "off %llu, ran %llu | settle waited %llu times, %.1f ms | retired %llu, downloads %llu\n",
+	            "off %llu, ran %llu | settle waited %llu times, %.1f ms | retired %llu, downloads %llu, "
+	            "skipped (pending readback) %llu\n",
 	            static_cast<unsigned long long>(st.passes), static_cast<unsigned long long>(st.critical),
 	            static_cast<unsigned long long>(st.below), static_cast<unsigned long long>(st.empty),
 	            static_cast<unsigned long long>(st.deferred), static_cast<unsigned long long>(st.ran),
 	            static_cast<unsigned long long>(st.waited), static_cast<double>(st.wait_ns) * 1e-6,
 	            static_cast<unsigned long long>(st.retired),
-	            static_cast<unsigned long long>(st.downloads));
+	            static_cast<unsigned long long>(st.downloads),
+	            static_cast<unsigned long long>(st.busy));
 	std::fflush(stdout);
 	st      = {};
 	st.last = now;
@@ -5487,9 +5495,11 @@ void BufferCache::RunGarbageCollector() {
 			return;
 		}
 	}
+	const bool selective = g_gc_settle_selective.On();
 	const auto lazy_critical =
-	    aggressive ? static_cast<uint64_t>(g_gc_side_settle_lazy_critical.Get()) : uint64_t {0};
-	if (((lazy && !aggressive) || lazy_critical != 0) && m_side != nullptr &&
+	    aggressive && !selective ? static_cast<uint64_t>(g_gc_side_settle_lazy_critical.Get())
+	                             : uint64_t {0};
+	if (!selective && ((lazy && !aggressive) || lazy_critical != 0) && m_side != nullptr &&
 	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
 		// CompleteAllSideReadbacks does not wait when every pending readback is published or is
 		// an eager copy whose recording (master tick `value`) has completed.
@@ -5517,7 +5527,9 @@ void BufferCache::RunGarbageCollector() {
 	// Pending side readbacks keep tracker pages GPU-owned without exact dirty bytes; settle
 	// them so the ownership checks and downloads below see a consistent state.
 	gc_stats.ran++;
-	if (CpGaps::Enabled() && m_side != nullptr &&
+	if (selective) {
+		// KYTY_GC_SETTLE_SELECTIVE: no settle; the loop skips candidates under pending readbacks.
+	} else if (CpGaps::Enabled() && m_side != nullptr &&
 	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
 		const auto settle_start = std::chrono::steady_clock::now();
 		CompleteAllSideReadbacks();
@@ -5536,9 +5548,19 @@ void BufferCache::RunGarbageCollector() {
 
 	std::vector<BufferId> dirty_buffers;
 	size_t                retire_count = 0;
+	size_t                scanned      = 0;
 	m_lru_cache.ForEachItemBelow(tick - age, [&](BufferId id) {
 		auto& buffer = m_slot_buffers[id];
 		EXIT_IF(buffer.is_deleted);
+		if (selective) {
+			const auto first = Common::AlignDown(buffer.CpuAddress(), TRACKER_PAGE_SIZE);
+			const auto last  = Common::AlignUp(buffer.CpuAddress() + buffer.Size(), TRACKER_PAGE_SIZE);
+			if (OverlapsPendingSideReadback(first, last)) {
+				gc_stats.busy++;
+				return ++scanned >= 4096;
+			}
+			++scanned;
+		}
 		m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, buffer.CpuAddress(),
 		                                           buffer.Size(), "garbage collection");
 		const bool dirty = m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size());
