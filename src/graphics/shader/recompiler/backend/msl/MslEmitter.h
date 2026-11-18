@@ -49,7 +49,8 @@ uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info
                      uint32_t lanes_override = 0);
 // Fused V_MAD_F32 (fma + host contraction allowed) vs exact mul+add; thread-local, set by
 // EmitProgram from KYTY_MAD_MODE.
-void                      SetFuseMad(bool fuse);
+void SetFuseMad(bool fuse);
+void SetPreciseTranscendentals(bool on); // mslfix: precise:: exp2/log2 (relaxed pixel text)
 [[nodiscard]] std::string AluExpression(IR::ValueOpcode opcode, std::span<const std::string> args);
 
 // MSL type name of an IR value type ("" for Void/opaque/unsupported).

@@ -44,6 +44,12 @@ static thread_local bool g_fuse_mad = false;
 void                     SetFuseMad(bool fuse) {
 	g_fuse_mad = fuse;
 }
+// mslfix: relaxed pixel text spells exp2/log2 precise:: as KK does (fast:: approximations
+// otherwise).
+static thread_local bool g_precise_tr = false;
+void                     SetPreciseTranscendentals(bool on) {
+	g_precise_tr = on;
+}
 
 std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 	using O = ValueOpcode;
@@ -215,8 +221,8 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPSqrt: return fmt::format("kyty_sqrt({})", a[0]);
 		case O::FPSin: return fmt::format("sin(fract({}) * 6.28318548f)", a[0]);
 		case O::FPCos: return fmt::format("cos(fract({}) * 6.28318548f)", a[0]);
-		case O::FPExp2: return fmt::format("exp2({})", a[0]);
-		case O::FPLog2: return fmt::format("log2({})", a[0]);
+		case O::FPExp2: return (g_precise_tr ? "precise::exp2(" : "exp2(") + a[0] + ")";
+		case O::FPLog2: return (g_precise_tr ? "precise::log2(" : "log2(") + a[0] + ")";
 		case O::FPLdexp: return fmt::format("ldexp({}, {})", a[0], Si(a[1]));
 		case O::FPRoundEven32: return fmt::format("rint({})", a[0]);
 		case O::FPFloor32: return fmt::format("floor({})", a[0]);

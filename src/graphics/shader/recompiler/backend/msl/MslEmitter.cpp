@@ -113,8 +113,13 @@ const char* const kF16RtzInt = R"(static inline ushort kyty_f16_rtz(float x) {
 }
 )";
 
-std::string PreludeText(bool fuse_mad, bool gfx = false) {
+std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false) {
 	std::string t(Prelude);
+	if (contract) { // mslfix: KK-like pixel math (GfxPixelRelaxed): the host contracts like KK's
+	                // relaxed ops
+		const std::string off = "#pragma METAL fp contract(off)\n";
+		t.erase(t.find(off), off.size());
+	}
 	const char* fe = std::getenv("KYTY_MSL_F16_RTZ_INT");
 	if (fe != nullptr ? std::strcmp(fe, "1") == 0 : gfx) {
 		const auto b0 = t.find("static inline ushort kyty_f16_rtz(float x) {");
@@ -131,14 +136,29 @@ std::string PreludeText(bool fuse_mad, bool gfx = false) {
 }
 
 // mslinject: first source line read by KK (kk-mslinject) when it compiles this text in place of its
-// own MSL.
+// own MSL. mslfix: pixel shaders in KK's float model. KosmicKrisp prints Kyty's SPIR-V float ALU
+// (SignedZeroInfNanPreserve) under
+// `#pragma METAL fp math_mode(relaxed)` (comparisons safe) in a fast-math library, so Metal
+// contracts mul+add chains and uses relaxed reciprocals; B's safe + contract(off) text rounded
+// differently (mslcap7 pipe 13 ~1 % of 10-bit words +-1). B's comparisons are NaN-explicit
+// (isordered/isunordered) and its transcendental calls are precise::, so the whole pixel function
+// can be relaxed. KYTY_MSL_GFX_MATH=safe restores the old text.
+bool GfxPixelRelaxed() {
+	static const bool on = [] {
+		const char* e = std::getenv("KYTY_MSL_GFX_MATH");
+		return e == nullptr || std::strcmp(e, "safe") != 0;
+	}();
+	return on;
+}
+
 std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	if (!ctx.kk_bda) return {};
 	// mslgfx: graphics stages are swapped as a VS+PS pair inside KK's render pipeline descriptor.
 	if (ctx.program.stage == ShaderType::Vertex)
 		return "// kk-mslinject v1 stage vertex entry main0 math safe\n";
 	if (ctx.program.stage == ShaderType::Pixel)
-		return "// kk-mslinject v1 stage fragment entry main0 math safe\n";
+		return GfxPixelRelaxed() ? "// kk-mslinject v1 stage fragment entry main0 math relaxed\n"
+		                         : "// kk-mslinject v1 stage fragment entry main0 math safe\n";
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
 	                   r.threadgroup[0], r.threadgroup[1], r.threadgroup[2]);
 }
@@ -1062,7 +1082,10 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	}
 	result.threadgroup[0] = total;
 
-	const bool gfx_stage = GfxIsStage(program.stage);
+	const bool gfx_stage   = GfxIsStage(program.stage);
+	const bool gfx_relaxed = program.stage == ShaderType::Pixel && GfxPixelRelaxed() &&
+	                         (options.kk_bda || KkBdaRequested());
+	SetPreciseTranscendentals(gfx_relaxed);
 	ctx.kk_bda =
 	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
@@ -1146,7 +1169,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		real.Run();
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
-		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) +
+		result.source      = KkInjectHeader(ctx, result) +
+		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed) +
 		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
@@ -1179,8 +1203,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (gfx_stage) b.Line(ctx.ret);
 	b.Close(); // kernel
 
-	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) +
-	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+	result.source = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage, gfx_relaxed) +
+	                LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();
 	return result;
