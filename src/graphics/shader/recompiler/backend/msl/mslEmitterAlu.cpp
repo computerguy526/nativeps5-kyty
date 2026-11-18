@@ -50,6 +50,19 @@ static thread_local bool g_precise_tr = false;
 void                     SetPreciseTranscendentals(bool on) {
 	g_precise_tr = on;
 }
+// mslfix2: graphics text flushes f32 denormal inputs of V_RCP/RSQ/SQRT/EXP/LOG to zeros of the same
+// sign, as Kyty's SPIR-V (FlushTranscendentalInput, FLOAT_MODE 0xC0) that KK runs in game
+// (rcp(-denorm) = -inf). Compute text is unchanged.
+static thread_local bool g_ftz_tr = false;
+void                     SetFlushTranscendentalInputs(bool on) {
+	g_ftz_tr = on;
+}
+static std::string FtzIn(const std::string& x) {
+	if (!g_ftz_tr) return x;
+	return fmt::format("as_type<float>((as_type<uint>({0}) & 0x7fffffffu) < 8388608u ? "
+	                   "(as_type<uint>({0}) & 0x80000000u) : as_type<uint>({0}))",
+	                   x);
+}
 
 std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 	using O = ValueOpcode;
@@ -212,17 +225,21 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPMaxTri32: return fmt::format("fmax3({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPMedTri32: return fmt::format("fmedian3({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPRecip32:
+			return fmt::format("kyty_rcp({})",
+			                   FtzIn(a[0])); // relaxed 1/x = what KK's NIR->MSL emits (mslrest:
+			                                 // perms 18/211 bit-exact)
 		case O::FPRecipIFlag32:
 			return fmt::format(
 			    "kyty_rcp({})",
-			    a[0]); // relaxed 1/x = what KK's NIR->MSL emits (mslrest: perms 18/211 bit-exact)
+			    a[0]); // integer-converted input: never denormal (no flush, as SPIR-V)
 		case O::FPRecipSqrt32:
-			return fmt::format("kyty_rsqrt({})", a[0]); // precise::rsqrt as KK (mslrest2: perm 395)
-		case O::FPSqrt: return fmt::format("kyty_sqrt({})", a[0]);
+			return fmt::format("kyty_rsqrt({})",
+			                   FtzIn(a[0])); // precise::rsqrt as KK (mslrest2: perm 395)
+		case O::FPSqrt: return fmt::format("kyty_sqrt({})", FtzIn(a[0]));
 		case O::FPSin: return fmt::format("sin(fract({}) * 6.28318548f)", a[0]);
 		case O::FPCos: return fmt::format("cos(fract({}) * 6.28318548f)", a[0]);
-		case O::FPExp2: return (g_precise_tr ? "precise::exp2(" : "exp2(") + a[0] + ")";
-		case O::FPLog2: return (g_precise_tr ? "precise::log2(" : "log2(") + a[0] + ")";
+		case O::FPExp2: return (g_precise_tr ? "precise::exp2(" : "exp2(") + FtzIn(a[0]) + ")";
+		case O::FPLog2: return (g_precise_tr ? "precise::log2(" : "log2(") + FtzIn(a[0]) + ")";
 		case O::FPLdexp: return fmt::format("ldexp({}, {})", a[0], Si(a[1]));
 		case O::FPRoundEven32: return fmt::format("rint({})", a[0]);
 		case O::FPFloor32: return fmt::format("floor({})", a[0]);

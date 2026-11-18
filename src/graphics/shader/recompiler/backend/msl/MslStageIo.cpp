@@ -361,9 +361,81 @@ struct GfxIo {
 	uint32_t                     kk_guard_plane = UINT32_MAX;
 	std::set<uint32_t>
 	    kk_drop_mrt; // PS MRT exports to no colour attachment (KYTY_MSL_KK_COLOR_MASK)
+	// mslfix2: KK blends in the fragment shader (kk_shader.c kk_lower_fs_blend = nir_lower_blend on
+	// every FS; Metal blending and write masks stay off), so a replacement FS must do the same: per
+	// MRT index the pipeline's VkPipelineColorBlendAttachmentState + format class, from
+	// KYTY_MSL_KK_BLEND.
+	struct KkBlend {
+		uint32_t en = 0, sc = 1, dc = 0, co = 0, sa = 1, da = 0, ao = 0, wm = 15;
+		char     cls = 'f';
+		uint32_t nch = 4;
+	};
+	std::map<uint32_t, KkBlend>
+	    kk_blend; // only MRTs that need a dst read (blend or partial write mask)
 };
 
 namespace {
+
+// mslfix2: nir_lower_blend (nir_color_blend + nir_color_mask) for one colour store, in the same op
+// order: inputs clamped to the format, dst channels missing from the format read 0 (alpha 1), per
+// channel op(src*sf, dst*df), then the write mask picks blended or dst. KK prints these NIR ops
+// outside any math_mode pragma = its library's fast mode.
+std::string KkBlendStore(const GfxIo::KkBlend& k, uint32_t idx) {
+	const bool replace = k.co == 0 && k.sc == 1 && k.dc == 0 && k.ao == 0 && k.sa == 1 && k.da == 0;
+	const bool blend   = k.en != 0 && k.cls != 'i' && !replace;
+	std::string r      = "{\n#pragma METAL fp math_mode(fast)\n";
+	r += fmt::format("const float4 kd = fin.kk_d{};\n", idx);
+	if (blend) {
+		r += k.cls == 'u'   ? "const float4 ks = saturate(xv);\n"
+		     : k.cls == 's' ? "const float4 ks = clamp(xv, -1.0f, 1.0f);\n"
+		                    : "const float4 ks = xv;\n";
+		r += fmt::format("const float4 kq = float4({}, {}, {}, {});\n", k.nch > 0 ? "kd.x" : "0.0f",
+		                 k.nch > 1 ? "kd.y" : "0.0f", k.nch > 2 ? "kd.z" : "0.0f",
+		                 k.nch > 3 ? "kd.w" : "1.0f");
+		auto fv = [](uint32_t f, uint32_t ch) -> std::string { // Vk factor without the inversion
+			const char* cc = "xyzw";
+			switch (f) {
+				case 1: return "1.0f";
+				case 2: return fmt::format("ks.{}", cc[ch]);
+				case 4: return fmt::format("kq.{}", cc[ch]);
+				case 6: return "ks.w";
+				case 8: return "kq.w";
+				case 14: return ch < 3 ? "fmin(ks.w, (1.0f - kq.w))" : "1.0f";
+				default: return "0.0f";
+			}
+		};
+		auto factor = [&](uint32_t f, uint32_t ch, const std::string& x) -> std::string {
+			if (f == 0) return "0.0f";
+			if (f == 3 || f == 5 || f == 7 || f == 9)
+				return fmt::format("({} * (-{} + 1.0f))", x, fv(f - 1, ch));
+			return fmt::format("({} * {})", x, fv(f, ch));
+		};
+		const char* cc = "xyzw";
+		std::string ch[4];
+		for (uint32_t c = 0; c < 4; c++) {
+			const uint32_t    op = c < 3 ? k.co : k.ao, sf = c < 3 ? k.sc : k.sa,
+			                  df = c < 3 ? k.dc : k.da;
+			const std::string s = fmt::format("ks.{}", cc[c]), d = fmt::format("kq.{}", cc[c]);
+			if (op == 3)
+				ch[c] = fmt::format("fmin({}, {})", s, d);
+			else if (op == 4)
+				ch[c] = fmt::format("fmax({}, {})", s, d);
+			else {
+				const std::string ps = factor(sf, c, s), pd = factor(df, c, d);
+				ch[c] = op == 0   ? fmt::format("({} + {})", ps, pd)
+				        : op == 1 ? fmt::format("({} - {})", ps, pd)
+				                  : fmt::format("({} - {})", pd, ps);
+			}
+		}
+		r += fmt::format("const float4 kb = float4({}, {}, {}, {});\n", ch[0], ch[1], ch[2], ch[3]);
+	} else {
+		r += "const float4 kb = xv;\n";
+	}
+	r += fmt::format("out.c{} = float4({}, {}, {}, {});\n}}", idx, (k.wm & 1u) ? "kb.x" : "kd.x",
+	                 (k.wm & 2u) ? "kb.y" : "kd.y", (k.wm & 4u) ? "kb.z" : "kd.z",
+	                 (k.wm & 8u) ? "kb.w" : "kd.w");
+	return r;
+}
 
 IR::InterpolationMode ParamInterp(const MslCtx& c, const GfxIo& g, uint32_t loc_attr) {
 	if (!GetCodegenOptions().interp_modes) return IR::InterpolationMode::Unknown;
@@ -724,6 +796,65 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 			b.Line(fmt::format("float4 F{} [[user(locn{}){}]];", in.location, in.location, q));
 			any_param = true;
 		}
+		// mslfix2: KYTY_MSL_KK_BLEND="en:sc:dc:co:sa:da:ao:wm:cls:nch;..." per colour attachment
+		// (Vk enums; cls f|u|s|i = float/unorm(+srgb)/snorm/integer format, nch = format channels).
+		// Unset = old text (no in-shader blend).
+		if (const char* e = std::getenv("KYTY_MSL_KK_BLEND"); c.kk_bda && e != nullptr && *e != 0) {
+			uint32_t idx = 0;
+			for (const char* q = e; *q != 0; idx++) {
+				GfxIo::KkBlend kb;
+				uint32_t       v[8] = {0, 1, 0, 0, 1, 0, 0, 15};
+				const char*    t    = q;
+				for (int k = 0; k < 8; k++) {
+					char* end = nullptr;
+					v[k]      = static_cast<uint32_t>(std::strtoul(t, &end, 0));
+					t         = (*end == ':') ? end + 1 : end;
+				}
+				kb.en = v[0];
+				kb.sc = v[1];
+				kb.dc = v[2];
+				kb.co = v[3];
+				kb.sa = v[4];
+				kb.da = v[5];
+				kb.ao = v[6];
+				kb.wm = v[7] & 15u;
+				if (*t != 0 && *t != ';') {
+					kb.cls = *t;
+					t++;
+					if (*t == ':') {
+						char* end = nullptr;
+						kb.nch    = static_cast<uint32_t>(std::strtoul(t + 1, &end, 0));
+						t         = end;
+					}
+				}
+				while (*t != 0 && *t != ';')
+					t++;
+				q                  = (*t == ';') ? t + 1 : t;
+				const bool replace = kb.co == 0 && kb.sc == 1 && kb.dc == 0 && kb.ao == 0 &&
+				                     kb.sa == 1 && kb.da == 0;
+				const bool blend   = kb.en != 0 && kb.cls != 'i' && !replace;
+				if (!blend && kb.wm == 15u) continue;
+				g->kk_blend[idx] = kb;
+			}
+			for (const auto& o: info.outputs) {
+				if (o.kind != IR::StageOutputKind::Mrt) continue;
+				const auto kb = g->kk_blend.find(o.index);
+				if (kb == g->kk_blend.end()) continue;
+				const bool u = o.index < std::size(pi.target_output_mode) &&
+				               pi.target_output_mode[o.index] == 7u;
+				if (u || kb->second.cls == 'i') unsup("gfx:kk_blend_int");
+				if (pi.alpha_blend_source != ShaderAlphaBlendSource::None)
+					unsup("gfx:kk_blend_dual_source");
+				const auto& k = kb->second;
+				if (k.en != 0) {
+					for (uint32_t f: {k.sc, k.dc, k.sa, k.da})
+						if ((f >= 10u && f <= 13u) || f >= 15u)
+							unsup("gfx:kk_blend_factor_const_or_src1");
+					if (k.co > 4u || k.ao > 4u) unsup("gfx:kk_blend_advanced");
+				}
+				b.Line(fmt::format("float4 kk_d{} [[color({})]];", o.index, o.location));
+			}
+		}
 		if (!any_param) b.Line("float4 unused_ [[user(locn31)]];");
 		b.Close(";");
 		g->params.push_back("FIn fin [[stage_in]]");
@@ -956,6 +1087,12 @@ const std::vector<std::string>& GfxParams(const GfxIo& g) {
 }
 void GfxLocals(MslCtx& c, const GfxIo& g) {
 	c.b.Line(g.out_type + " out = {};");
+	if (g.ps)
+		for (const auto& [i, kb]: g.kk_blend)
+			if (!g.kk_drop_mrt.contains(i))
+				c.b.Line(fmt::format("out.c{} = fin.kk_d{}; // mslfix2: KK reads dst first "
+				                     "(nir_lower_blend fb fetch)",
+				                     i, i));
 	if (g.vs)
 		c.b.Line("const uint lid = 0u; // vertex stage has no simd lane index (the SPIR-V emitter "
 		         "answers lane 0 too)");
@@ -1193,7 +1330,10 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 							                   u ? "uint" : "float", m.Map(0), m.Map(1), m.Map(2),
 							                   m.Map(3)));
 					}
-					b.Line(fmt::format("out.c{} = xv;", exp.index));
+					if (const auto kb = g.kk_blend.find(exp.index); kb != g.kk_blend.end() && !u)
+						b.Line(KkBlendStore(kb->second, exp.index));
+					else
+						b.Line(fmt::format("out.c{} = xv;", exp.index));
 				}
 			}
 			b.Close();

@@ -1086,6 +1086,10 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	const bool gfx_relaxed = program.stage == ShaderType::Pixel && GfxPixelRelaxed() &&
 	                         (options.kk_bda || KkBdaRequested());
 	SetPreciseTranscendentals(gfx_relaxed);
+	SetFlushTranscendentalInputs(gfx_stage && (options.kk_bda || KkBdaRequested()) && [] {
+		const char* e = std::getenv("KYTY_MSL_GFX_FTZ");
+		return e == nullptr || std::strcmp(e, "0") != 0;
+	}());
 	ctx.kk_bda =
 	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
