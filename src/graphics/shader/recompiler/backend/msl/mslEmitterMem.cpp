@@ -293,6 +293,7 @@ bool ImageOpEmit(Em& e, ValueOpcode op, const IR::ImageOpcodeInfo& info) {
 	iop.has_mip            = mem.image_has_mip;
 	iop.dynamic_mip        = ir_img.mip_mode == IR::ImageMipMode::Dynamic;
 	iop.pixel_stage        = e.ctx.program.stage == ShaderType::Pixel;
+	iop.graphics_stage     = e.ctx.program.stage != ShaderType::Compute;
 	iop.converted          = ir_img.conversion_format != Prospero::BufferFormat::kInvalid;
 	const size_t addr_arg  = info.needs_sampler ? 2 : 1;
 	const auto*  addr_inst = e.inst.Arg(addr_arg).ResolveInstruction();

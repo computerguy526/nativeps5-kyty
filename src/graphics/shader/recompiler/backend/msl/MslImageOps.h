@@ -32,8 +32,10 @@ struct ImageOp {
 	bool     has_mip            = false;
 	bool     dynamic_mip        = false; // ImageResource::mip_mode == Dynamic
 	bool     pixel_stage        = true;  // implicit LOD only valid in pixel shaders
-	bool     lod_clamp_enabled  = true;
-	bool     converted          = false; // conversion_format != invalid (unsupported)
+	bool     graphics_stage =
+	    true; // VS/PS (mslfix3: graphics-only semantics fixes; compute text stays byte-identical)
+	bool lod_clamp_enabled = true;
+	bool converted         = false; // conversion_format != invalid (unsupported)
 	std::optional<uint32_t>
 	    const_offset; // packed 6-bit signed x|y<<8|z<<16 when the address dword is an immediate
 };

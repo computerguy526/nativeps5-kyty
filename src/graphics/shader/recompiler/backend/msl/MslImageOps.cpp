@@ -318,17 +318,21 @@ std::string ImageSample(MemOut& o, const ImageOp& op, const std::vector<std::str
 		clamp = AddrF(op, addr, static_cast<uint32_t>(L.clamp));
 	std::string       opt;
 	const std::string kb = g_kk_sbias ? "kk_sbias" + std::to_string(op.samp->id) : std::string();
-	if (!kb.empty() && Has(op, SampleFlag::Derivative)) {
-		o.Fail("kk-bda: gradient sample with descriptor LOD bias");
-		return "uint4(0u)";
-	}
 	if (Has(op, SampleFlag::Derivative)) {
-		const uint32_t           sp = ImageSpatialComponents(d);
+		const uint32_t sp = ImageSpatialComponents(d);
+		// mslfix3: kk-bda descriptor LOD bias on a gradient sample = gradients scaled by
+		// exp2(bias), as KK lowers it (KK FS: g * exp2(float(half bias)) before gradient2d); was
+		// unsupported (isatest img_sample_d).
+		const std::string gs = kb.empty() ? std::string() : o.Def("float", "exp2(" + kb + ")");
+		const auto        G  = [&](uint32_t idx) {
+			const std::string v = AddrF(op, addr, idx);
+			return gs.empty() ? v : o.Def("float", v + " * " + gs);
+		};
 		std::vector<std::string> gx, gy;
-		for (uint32_t i = 0; i < sp; i++) {
-			gx.push_back(AddrF(op, addr, static_cast<uint32_t>(L.gx) + i));
-			gy.push_back(AddrF(op, addr, static_cast<uint32_t>(L.gy) + i));
-		}
+		for (uint32_t i = 0; i < sp; i++)
+			gx.push_back(G(static_cast<uint32_t>(L.gx) + i));
+		for (uint32_t i = 0; i < sp; i++)
+			gy.push_back(G(static_cast<uint32_t>(L.gy) + i));
 		if (sp == 1) {
 			opt = "gradient2d(float2(" + gx[0] + ", 0.0f), float2(" + gy[0] + ", 0.0f))" +
 			      (clamp.empty() ? "" : ", min_lod_clamp(" + clamp + ")");
@@ -416,7 +420,10 @@ TexelAddr Texel(MemOut& o, const ImageOp& op, const std::vector<std::string>& a)
 		                                                 (sp == 3 ? ", " + c[2] : "") + ")");
 	if (Arrayed(d)) t.layer = cc - 1 < op.address_components ? AddrU(op, a, cc - 1) : "0u";
 	if (Ms(d)) t.sample = cc < op.address_components ? AddrU(op, a, cc) : "0u";
-	if (op.has_mip && op.dynamic_mip && !Ms(d))
+	// isatest img_load_mip: the mip operand counts whenever the opcode has one (IMAGE_LOAD_MIP /
+	// STORE_MIP), as the SPIR-V emitter (LodU32: image_has_mip only); ImageResource::mip_mode is
+	// not set for these and B read level 0.
+	if (op.has_mip && (op.dynamic_mip || op.graphics_stage) && !Ms(d))
 		t.lod = cc < op.address_components ? AddrU(op, a, cc) : "0u";
 	return t;
 }
@@ -432,7 +439,19 @@ std::string ImageLoad(MemOut& o, const ImageOp& op, const std::vector<std::strin
 	const std::string tv  = std::string(NumType(img.numeric)) + "4";
 	std::string       out = o.Tmp();
 	o.Line("uint4 " + out + " = uint4(0u);");
-	o.Line("if (" + active + ") {");
+	// robustImageAccess2 (Kyty's Vulkan device, KK): an out-of-range texel / level / layer reads 0;
+	// Metal read() is undefined there.
+	std::string inb = active;
+	if (!Ms(img.dim) && op.graphics_stage) { // mslfix3: graphics only (compute text byte-identical)
+		const uint32_t    sp = ImageSpatialComponents(img.dim);
+		const std::string lv = t.lod.empty() ? std::string("0u") : t.lod;
+		inb = "(" + active + ") && " + lv + " < " + T + ".get_num_mip_levels() && " + t.coord +
+		      ".x < " + T + ".get_width(" + lv + ")";
+		if (sp >= 2) inb += " && " + t.coord + ".y < " + T + ".get_height(" + lv + ")";
+		if (sp == 3) inb += " && " + t.coord + ".z < " + T + ".get_depth(" + lv + ")";
+		if (!t.layer.empty()) inb += " && " + t.layer + " < " + T + ".get_array_size()";
+	}
+	o.Line("if (" + inb + ") {");
 	// Metal read(): [coord, layer, lod] or [coord, layer, sample]
 	std::string args = t.coord + (t.layer.empty() ? "" : ", " + t.layer);
 	if (Ms(img.dim))
