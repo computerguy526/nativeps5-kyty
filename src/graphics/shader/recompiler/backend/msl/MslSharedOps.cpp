@@ -4,9 +4,14 @@ namespace Libs::Graphics::ShaderRecompiler::Msl::Mem {
 
 namespace {
 thread_local bool g_lds_device = false;
-thread_local uint32_t g_lds_thread_bytes = 0;  // mslrest4: graphics LDS = per-invocation array (Kyty function_lds)
-std::string Sp(const LdsInfo& l) { return l.space; }
-std::string Base(const LdsInfo& l, const std::string& addr) { return "((" + l.space + " uchar*)lds + " + addr + ")"; }
+thread_local uint32_t g_lds_thread_bytes =
+    0; // mslrest4: graphics LDS = per-invocation array (Kyty function_lds)
+std::string Sp(const LdsInfo& l) {
+	return l.space;
+}
+std::string Base(const LdsInfo& l, const std::string& addr) {
+	return "((" + l.space + " uchar*)lds + " + addr + ")";
+}
 std::string Fits(const LdsInfo& l, const std::string& addr, uint32_t n) {
 	return "(ulong(" + addr + ") + " + std::to_string(n) + "ul <= " +
 	       (l.bound.empty() ? std::to_string(l.bytes) + "ul" : "ulong(" + l.bound + ")") + ")";
@@ -17,15 +22,29 @@ std::string ASp(const LdsInfo& l) {
 }
 } // namespace
 
-void SetLdsDevice(bool on) { g_lds_device = on; }
-bool LdsIsDevice() { return g_lds_device; }
-void SetLdsThread(uint32_t bytes) { g_lds_thread_bytes = bytes; }
-uint32_t LdsThreadBytes() { return g_lds_thread_bytes; }
+void SetLdsDevice(bool on) {
+	g_lds_device = on;
+}
+bool LdsIsDevice() {
+	return g_lds_device;
+}
+void SetLdsThread(uint32_t bytes) {
+	g_lds_thread_bytes = bytes;
+}
+uint32_t LdsThreadBytes() {
+	return g_lds_thread_bytes;
+}
 LdsInfo MakeLdsInfo(uint32_t bytes) {
 	LdsInfo l;
 	l.bytes = bytes;
-	if (g_lds_device) { l.space = "KK_COHERENT device"; l.bound = "kk_lds_bytes"; }
-	if (g_lds_thread_bytes != 0u) { l.space = "thread"; l.bytes = g_lds_thread_bytes; }
+	if (g_lds_device) {
+		l.space = "KK_COHERENT device";
+		l.bound = "kk_lds_bytes";
+	}
+	if (g_lds_thread_bytes != 0u) {
+		l.space = "thread";
+		l.bytes = g_lds_thread_bytes;
+	}
 	return l;
 }
 

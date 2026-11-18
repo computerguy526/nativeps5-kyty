@@ -98,9 +98,10 @@ size_t BlockIndexById(const IR::Program& program, uint32_t id) {
 	return SIZE_MAX;
 }
 
-// mslrest4: integer f32->f16 round-toward-zero exactly as Kyty's SPIR-V (KK MSL: explicit half denormals, 0x7bff clamp,
-// quiet NaN payload) instead of half(x) + step back (Metal's half conversion may flush half denormals). Graphics stages
-// by default (pipe 3 capture: 1-ulp f16 alpha); compute kernels keep the verified text unless KYTY_MSL_F16_RTZ_INT=1.
+// mslrest4: integer f32->f16 round-toward-zero exactly as Kyty's SPIR-V (KK MSL: explicit half
+// denormals, 0x7bff clamp, quiet NaN payload) instead of half(x) + step back (Metal's half
+// conversion may flush half denormals). Graphics stages by default (pipe 3 capture: 1-ulp f16
+// alpha); compute kernels keep the verified text unless KYTY_MSL_F16_RTZ_INT=1.
 const char* const kF16RtzInt = R"(static inline ushort kyty_f16_rtz(float x) {
   uint u = as_type<uint>(x); uint a = u & 0x7fffffffu;
   uint e = min(31743u, (a >> 13) + 4294852608u);
@@ -118,9 +119,11 @@ std::string PreludeText(bool fuse_mad, bool gfx = false) {
 	if (fe != nullptr ? std::strcmp(fe, "1") == 0 : gfx) {
 		const auto b0 = t.find("static inline ushort kyty_f16_rtz(float x) {");
 		const auto b1 = t.find("\n}\n", b0);
-		if (b0 != std::string::npos && b1 != std::string::npos) t.replace(b0, b1 + 3 - b0, kF16RtzInt);
+		if (b0 != std::string::npos && b1 != std::string::npos)
+			t.replace(b0, b1 + 3 - b0, kF16RtzInt);
 	}
-	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x fewer ALU ops on mad-heavy kernels
+	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x
+		            // fewer ALU ops on mad-heavy kernels
 		const std::string off = "#pragma METAL fp contract(off)";
 		t.replace(t.find(off), off.size(), "#pragma METAL fp contract(fast)");
 	}
@@ -388,16 +391,24 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 					    "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
 				return;
 			}
-			if (op == O::StoreCompletion) ctx.b.Line("KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt vmcnt(0)");
-			else if (Mem::LdsThreadBytes() != 0u) ctx.b.Line("// s_waitcnt lgkmcnt(0): per-invocation LDS");
-			else ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt lgkmcnt(0)" : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // s_waitcnt lgkmcnt(0)");
+			if (op == O::StoreCompletion)
+				ctx.b.Line("KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt vmcnt(0)");
+			else if (Mem::LdsThreadBytes() != 0u)
+				ctx.b.Line("// s_waitcnt lgkmcnt(0): per-invocation LDS");
+			else
+				ctx.b.Line(
+				    Mem::LdsIsDevice()
+				        ? "KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt lgkmcnt(0)"
+				        : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // s_waitcnt lgkmcnt(0)");
 			return;
 		}
 		default: break;
 	}
 	if (!ctx.lds_fence.empty() && ctx.lds_fence.count(&inst) != 0 && Mem::LdsThreadBytes() == 0u)
-		ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // mslaudit: LDS store -> load without barrier"
-		                              : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // mslaudit: LDS store -> load without barrier");
+		ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // mslaudit: LDS "
+		                                "store -> load without barrier"
+		                              : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // mslaudit: "
+		                                "LDS store -> load without barrier");
 	for (uint32_t h = 0; h < ctx.lanes; h++) {
 		ctx.half = h;
 		switch (op) {
@@ -1055,9 +1066,9 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	ctx.kk_bda =
 	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
-	Mem::SetLdsDevice(false);     // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
-	Mem::SetLdsThread(0u);        // KkBdaLocals: graphics per-invocation LDS (mslrest4)
-	Mem::SetMipStats({});         // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
+	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
+	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
+	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
 	if (program.stage != ShaderType::Compute && !gfx_stage) {
 		ctx.unsupported[fmt::format("stage:{}", static_cast<int>(program.stage))]++;
 		result.source = PreludeText(fuse_mad) + "// stage not supported by the MSL backend yet\n";
@@ -1135,7 +1146,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		real.Run();
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
-		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) + LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) +
+		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
 		return result;
@@ -1167,7 +1179,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (gfx_stage) b.Line(ctx.ret);
 	b.Close(); // kernel
 
-	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) + LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) +
+	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();
 	return result;
