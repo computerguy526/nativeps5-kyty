@@ -316,14 +316,15 @@ int64_t ParseGcLazyCritical(const char* value) {
 }
 Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL",
                                             ParseGcLazyCritical);
-// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default OFF in v1.0.3 after helmet flicker under
-// VRAM pressure (selective settle can reuse a buffer with an in-flight readback); =1 enables): a
-// collection pass never settles all pending side readbacks (a wait for the GPU on the
+// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default ON since v1.1; =0 restores the full
+// settle): a collection pass never settles all pending side readbacks (a wait for the GPU on the
 // command-processor thread after nearly every completed submission in a level: 26-27 % of that
 // thread in Sky Garden). It skips the candidate buffers whose pages a pending side readback covers
 // instead; they are looked at again by a later pass. The other candidates' tracker state does not
-// depend on those readbacks.
-Live::Switch g_gc_settle_selective("KYTY_GC_SETTLE_SELECTIVE", Live::ParseDefaultOff);
+// depend on those readbacks. v1.0.3 kept it off after a helmet flicker under VRAM pressure; with
+// the v1.1 snapshot fix (KYTY_SNAPSHOT_CLEAN_READS) the crash-site flicker checks and the
+// player's eye check are clean. While it is on, KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL has no effect.
+Live::Switch g_gc_settle_selective("KYTY_GC_SETTLE_SELECTIVE", Live::ParseDefaultOn);
 // "BufferGc 10s" line (with KYTY_CP_GAP_STATS): what the collection passes did. GPU thread only.
 struct BufferGcStats {
 	uint64_t passes = 0, below = 0, empty = 0, deferred = 0, ran = 0, waited = 0, wait_ns = 0,
