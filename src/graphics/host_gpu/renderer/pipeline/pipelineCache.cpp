@@ -5561,7 +5561,13 @@ struct PipelineCache::JournalReplay {
 				// A driver fault on a rebuilt create info (another translator's modules) costs the
 				// record, not the session.
 				BuildContext context {&cache, &snapshot->Info(), &pipeline};
-				const auto   fault = Common::CallCatchingStructuredException(&BuildSafely, &context);
+				// compileqos: at most the fan-out of builds at once across the pools. The slot
+				// lives here, not in BuildSafely: a structured exception unwinds past that frame
+				// without running destructors (Windows), which would leak the slot.
+				const auto fault = [&] {
+					const LaunchPhase::CompileGate::Slot slot;
+					return Common::CallCatchingStructuredException(&BuildSafely, &context);
+				}();
 				const auto   ns    = CompileClockNs() - begin;
 				ok                 = fault == 0 && context.result == vk::Result::eSuccess && pipeline != nullptr;
 				if (ok) {
@@ -5594,8 +5600,6 @@ struct PipelineCache::JournalReplay {
 	};
 	static void BuildSafely(void* raw) {
 		auto& context  = *static_cast<BuildContext*>(raw);
-		const LaunchPhase::CompileGate::Slot
-		    slot; // compileqos: at most the fan-out of builds at once across the pools
 		context.result = context.cache->m_graphics.device.createGraphicsPipelines(context.cache->m_driver_cache, 1,
 		                                                                          context.info, nullptr,
 		                                                                          context.pipeline);
