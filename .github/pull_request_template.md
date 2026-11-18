@@ -27,3 +27,4 @@
 ## AI assistance
 
 <!-- REQUIRED, a PR without this line is not reviewed. yes / no; if yes, which agent, and confirm a person read the diff and the evidence -->
+- [ ] `scripts/ci/run-local.sh` passes (run before pushing)

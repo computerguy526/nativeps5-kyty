@@ -6,6 +6,8 @@ Build and unit tests: [README.md](README.md), "Build and test". The pre-commit h
 
 ## CI (this fork)
 
+Before pushing, run `scripts/ci/run-local.sh` (commit first): it runs every job of `.github/workflows/ci.yml` from a clean checkout of HEAD (same steps, fresh venv, no submodules); `--job <id>` runs one. See docs/ci.md.
+
 GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main`, with no secrets, game data or GPU.
 Each check is one command locally (from the repository root):
 
