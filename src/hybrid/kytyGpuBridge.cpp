@@ -1091,7 +1091,13 @@ int ApiStartGraphics() {
 	if (g_host.deliver_event != nullptr && !StartProxy()) {
 		return KYTY_GPU_E_STATE;
 	}
-	if (g_host.publish_pad != nullptr) {
+	// padmove: a host that plays a scripted pad (KYTY_GPU_HOST_SCRIPTED_PAD, NPS5_VPAD_SCRIPT) feeds the pad itself; the relay would publish
+	// Kyty's idle pad (centred sticks) over it every few ms, so scripted sticks never reached the game. KYTY_PAD_RELAY_WITH_SCRIPT=1 keeps the relay.
+	const bool scripted_pad = (g_host_info.flags & KYTY_GPU_HOST_SCRIPTED_PAD) != 0 && std::getenv("KYTY_PAD_RELAY_WITH_SCRIPT") == nullptr;
+	if (scripted_pad) {
+		Log(0, "input relay: off (the host plays a scripted pad)");
+	}
+	if (g_host.publish_pad != nullptr && !scripted_pad) {
 		g_relay = std::thread(Relay);
 	}
 	// A hosted-memory host owns the fault handler and calls handle_fault for Kyty's watched pages.
