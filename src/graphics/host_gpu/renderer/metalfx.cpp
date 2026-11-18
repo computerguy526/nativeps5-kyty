@@ -3,6 +3,7 @@
 
 #include "common/guestAddress.h"
 
+#include "graphics/host_gpu/renderer/astroTileGrid.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -320,7 +321,7 @@ bool ViewportJitter(uint32_t width, uint32_t height, bool has_depth, uint32_t ve
 	return true;
 }
 
-// KYTY_ASTRO_TILE_GRID=<tiles x>x<tiles y> (default off; ASTRO BOT 01.007 at a forced internal
+// KYTY_ASTRO_TILE_GRID=<tiles x>x<tiles y>|auto (default off; ASTRO BOT 01.007 at a forced internal
 // resolution below its DRS level 0): the game takes the 16-px light-tile grid of the scene constants
 // (words 0x29b0 / 0x29b4 of the 17904-byte scene buffer: the row pitch forward-lit transparents and
 // particles index the tile light lists with) from two per-DRS-level tables in its read-only data,
@@ -337,7 +338,20 @@ void AstroTileGridPatch() {
 	const char* value = std::getenv("KYTY_ASTRO_TILE_GRID");
 	unsigned    tx    = 0;
 	unsigned    ty    = 0;
-	if (value == nullptr || std::sscanf(value, "%ux%u", &tx, &ty) != 2 || tx == 0 || ty == 0) {
+	if (value == nullptr) {
+		state = 1;
+		return;
+	}
+	// "auto": ceil(MetalFX input size / 16) per axis (1280x720 -> 80x45, 1600x900 -> 100x57,
+	// 1920x1080 -> 120x68 = the game's own level 0, nothing to change), known after the first
+	// MetalFX evaluation; an invalid spec ends it.
+	if (!AstroTileGrid::Resolve(value, Get().in_w, Get().in_h, tx, ty)) {
+		if (std::strcmp(value, "auto") != 0) {
+			state = 1;
+		}
+		return;
+	}
+	if (tx == 120 && ty == 68) {
 		state = 1;
 		return;
 	}

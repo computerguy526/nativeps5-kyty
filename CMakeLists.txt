@@ -1004,6 +1004,9 @@ target_include_directories(audio_out2_port_tests PRIVATE ${inc_headers})
 add_executable(audio_diag_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AudioDiagTests.cpp")
 target_include_directories(audio_diag_tests PRIVATE ${inc_headers})
 
+add_executable(astro_tile_grid_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AstroTileGridTests.cpp")
+target_include_directories(astro_tile_grid_tests PRIVATE ${inc_headers})
+
 add_executable(audio_mix_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AudioMixTests.cpp")
 target_include_directories(audio_mix_tests PRIVATE ${inc_headers})
 
