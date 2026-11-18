@@ -1,6 +1,6 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include <algorithm>
 #include <array>
@@ -481,7 +481,7 @@ uint32_t FastMathLevel(const EmitterState& state) {
 	if (options.fast_math == 0) {
 		return 0;
 	}
-	const auto stage = state.program.stage;
+	const auto stage   = state.program.stage;
 	const bool covered = (stage == ShaderType::Pixel && (options.fast_math_stages & 1u) != 0) ||
 	                     (stage == ShaderType::Compute && (options.fast_math_stages & 2u) != 0);
 	return covered ? options.fast_math : 0u;
@@ -503,10 +503,10 @@ void DecoratePositionFloatResults(EmitterState& state, size_t word_offset) {
 	if (word_offset >= words.size()) {
 		return;
 	}
-	const uint32_t float_types[] = {TypeF32(state), TypeF32Vector(state, 2), TypeF32Vector(state, 3),
-	                                TypeF32Vector(state, 4)};
+	const uint32_t float_types[] = {TypeF32(state), TypeF32Vector(state, 2),
+	                                TypeF32Vector(state, 3), TypeF32Vector(state, 4)};
 	// FAdd/FSub/FMul already carry NoContraction on the slice unless MadMode::Fused.
-	const bool arith_decorated = GetCodegenOptions().mad_mode != MadMode::Fused;
+	const bool            arith_decorated = GetCodegenOptions().mad_mode != MadMode::Fused;
 	std::vector<uint32_t> results;
 	const auto            all = state.builder.FunctionWords();
 	for (size_t at = word_offset; at < all.size();) {

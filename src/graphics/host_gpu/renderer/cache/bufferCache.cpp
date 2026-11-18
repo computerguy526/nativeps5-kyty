@@ -296,29 +296,33 @@ Live::Switch g_readback_flush_side("KYTY_READBACK_FLUSH_SIDE", Live::ParseDefaul
 // KYTY_GC_SIDE_SETTLE_LAZY (live, default 0; nps5 slowlvl): see BufferCache::RunGarbageCollector.
 Live::Switch g_gc_side_settle_lazy("KYTY_GC_SIDE_SETTLE_LAZY", Live::ParseDefaultOff);
 std::atomic<uint64_t> g_gc_settle_deferred_passes {0};
-// nps5 cpcommit2, KYTY_GC_SETTLE_SKIP_EMPTY (live, default off in cpuframe; =1 on): a collection pass with no
-// buffer old enough to look at returns before it settles the pending side readbacks. Settling is
-// only the preparation of the pass's ownership checks and downloads (RetireUnusedBuffers does the
-// same: candidates first); without a candidate it was a wait for the GPU and nothing else.
+// nps5 cpcommit2, KYTY_GC_SETTLE_SKIP_EMPTY (live, default off in cpuframe; =1 on): a collection
+// pass with no buffer old enough to look at returns before it settles the pending side readbacks.
+// Settling is only the preparation of the pass's ownership checks and downloads
+// (RetireUnusedBuffers does the same: candidates first); without a candidate it was a wait for the
+// GPU and nothing else.
 Live::Switch g_gc_settle_skip_empty("KYTY_GC_SETTLE_SKIP_EMPTY", Live::ParseDefaultOff);
-// KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL=<passes> (live, default 0 = off in cpuframe; 16 = cpcommit2 default: every pass waits as
-// before; vramBudget.h PlanBufferPassLazyCritical): at or above the critical mark a pass that
-// would wait for the GPU is put off at most that many times in a row (16 = about two frames of
-// completed submissions in a level).
+// KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL=<passes> (live, default 0 = off in cpuframe; 16 = cpcommit2
+// default: every pass waits as before; vramBudget.h PlanBufferPassLazyCritical): at or above the
+// critical mark a pass that would wait for the GPU is put off at most that many times in a row (16
+// = about two frames of completed submissions in a level).
 int64_t ParseGcLazyCritical(const char* value) {
 	if (value == nullptr || value[0] == '\0') {
 		return 0;
 	}
 	const auto passes = std::strtoll(value, nullptr, 10);
-	return std::clamp<int64_t>(passes, 0,
-	                           static_cast<int64_t>(VramBudget::BufferSettleMaxDeferredCriticalLimit));
+	return std::clamp<int64_t>(
+	    passes, 0, static_cast<int64_t>(VramBudget::BufferSettleMaxDeferredCriticalLimit));
 }
-Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL", ParseGcLazyCritical);
-// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default OFF in v1.0.3 after helmet flicker under VRAM pressure (selective settle can reuse a buffer with an in-flight readback); =1 enables): a collection pass never
-// settles all pending side readbacks (a wait for the GPU on the command-processor thread after
-// nearly every completed submission in a level: 26-27 % of that thread in Sky Garden). It skips
-// the candidate buffers whose pages a pending side readback covers instead; they are looked at
-// again by a later pass. The other candidates' tracker state does not depend on those readbacks.
+Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL",
+                                            ParseGcLazyCritical);
+// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default OFF in v1.0.3 after helmet flicker under
+// VRAM pressure (selective settle can reuse a buffer with an in-flight readback); =1 enables): a
+// collection pass never settles all pending side readbacks (a wait for the GPU on the
+// command-processor thread after nearly every completed submission in a level: 26-27 % of that
+// thread in Sky Garden). It skips the candidate buffers whose pages a pending side readback covers
+// instead; they are looked at again by a later pass. The other candidates' tracker state does not
+// depend on those readbacks.
 Live::Switch g_gc_settle_selective("KYTY_GC_SETTLE_SELECTIVE", Live::ParseDefaultOff);
 // "BufferGc 10s" line (with KYTY_CP_GAP_STATS): what the collection passes did. GPU thread only.
 struct BufferGcStats {
@@ -327,7 +331,7 @@ struct BufferGcStats {
 	std::chrono::steady_clock::time_point last {};
 };
 BufferGcStats g_buffer_gc_stats;
-void PrintBufferGcStats() {
+void          PrintBufferGcStats() {
 	auto& st = g_buffer_gc_stats;
 	if (!CpGaps::Enabled() || (st.passes & 63u) != 0) {
 		return;
@@ -340,16 +344,16 @@ void PrintBufferGcStats() {
 	if (now - st.last < std::chrono::seconds(10)) {
 		return;
 	}
-	std::printf("BufferGc 10s: passes %llu (critical %llu) | below trigger %llu, no candidate %llu, put "
-	            "off %llu, ran %llu | settle waited %llu times, %.1f ms | retired %llu, downloads %llu, "
-	            "skipped (pending readback) %llu\n",
-	            static_cast<unsigned long long>(st.passes), static_cast<unsigned long long>(st.critical),
-	            static_cast<unsigned long long>(st.below), static_cast<unsigned long long>(st.empty),
-	            static_cast<unsigned long long>(st.deferred), static_cast<unsigned long long>(st.ran),
-	            static_cast<unsigned long long>(st.waited), static_cast<double>(st.wait_ns) * 1e-6,
-	            static_cast<unsigned long long>(st.retired),
-	            static_cast<unsigned long long>(st.downloads),
-	            static_cast<unsigned long long>(st.busy));
+	std::printf(
+	    "BufferGc 10s: passes %llu (critical %llu) | below trigger %llu, no candidate %llu, put "
+	    "off %llu, ran %llu | settle waited %llu times, %.1f ms | retired %llu, downloads %llu, "
+	    "skipped (pending readback) %llu\n",
+	    static_cast<unsigned long long>(st.passes), static_cast<unsigned long long>(st.critical),
+	    static_cast<unsigned long long>(st.below), static_cast<unsigned long long>(st.empty),
+	    static_cast<unsigned long long>(st.deferred), static_cast<unsigned long long>(st.ran),
+	    static_cast<unsigned long long>(st.waited), static_cast<double>(st.wait_ns) * 1e-6,
+	    static_cast<unsigned long long>(st.retired), static_cast<unsigned long long>(st.downloads),
+	    static_cast<unsigned long long>(st.busy));
 	std::fflush(stdout);
 	st      = {};
 	st.last = now;
@@ -424,15 +428,16 @@ ReadFaultFrameBurst::PageFrameCounter& ReadFaultFrameCounter() {
 // directly, without a fault, until the page's next GPU ownership change (a newer writer re-arms the
 // watch; the eager copy publishing it makes it readable anyway). Same bytes a served load returns
 // (what a CPU reading GPU memory without waiting sees), without the fault per load and without the
-// burst wait (KYTY_READ_FAULT_PUBLISHED_FRAME_BURST) for the publication. Only plain loads of buffer
-// pages (no image) published recently qualify, as for serving. Diagnostic counters in the
+// burst wait (KYTY_READ_FAULT_PUBLISHED_FRAME_BURST) for the publication. Only plain loads of
+// buffer pages (no image) published recently qualify, as for serving. Diagnostic counters in the
 // "Kyty read-fault published" line.
 // Live switch: turning it off leaves relaxed pages until their next GPU transition.
 Live::Switch g_read_relax("KYTY_READ_RELAX", [](const char* value) -> int64_t {
-	return value != nullptr ? static_cast<int64_t>(std::min<unsigned long>(std::strtoul(value, nullptr, 10), 65535))
+	return value != nullptr ? static_cast<int64_t>(
+	                              std::min<unsigned long>(std::strtoul(value, nullptr, 10), 65535))
 	                        : 0;
 });
-uint32_t ReadRelaxAfter() {
+uint32_t     ReadRelaxAfter() {
 	return static_cast<uint32_t>(g_read_relax.Get());
 }
 
@@ -496,10 +501,10 @@ struct ReadFaultPublishedState {
 	std::atomic<uint64_t>                  straddled {0};
 	// nps5 faultwin: time guest threads spent in ReadMemory after a burst decision (the wait for
 	// the page's publication), and pages KYTY_READ_RELAX made readable.
-	std::atomic<uint64_t>                  burst_ns {0};
-	std::atomic<uint64_t>                  burst_max_ns {0};
-	std::atomic<uint64_t>                  relaxed_pages {0};
-	std::atomic<uint64_t>                  relax_calls {0};
+	std::atomic<uint64_t> burst_ns {0};
+	std::atomic<uint64_t> burst_max_ns {0};
+	std::atomic<uint64_t> relaxed_pages {0};
+	std::atomic<uint64_t> relax_calls {0};
 	// nps5 faultwin: write readbacks served by a drain, by kind: 0 explicit invalidation (not a
 	// fault: host API, file reads, emulator), 1 fault not retried, 2 retried fault whose side copy
 	// could not be issued, 3 on the GPU thread; count and wall time of the caller.
@@ -556,23 +561,25 @@ void ReportReadFaultPublished(uint32_t frame) {
 	const auto frames = std::max<uint32_t>(1, frame - state.report_frame.exchange(frame));
 	const auto take   = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
 	const auto served = take(state.served);
-	std::printf("Kyty read-fault published 10s: %u frames, served %" PRIu64 " (%.2f/frame); waited: "
-	            "not a plain load %" PRIu64 ", image %" PRIu64 ", not published recently %" PRIu64
-	            ", other %" PRIu64 ", copy burst %" PRIu64 "; verify: equal %" PRIu64 ", different %" PRIu64
-	            "; served across two pages %" PRIu64 "; burst waits %.1f ms total (max %.2f ms); "
-	            "relaxed %" PRIu64 " pages (%" PRIu64 " calls)\n",
-	            frames, served, static_cast<double>(served) / frames, take(state.undecodable),
-	            take(state.image), take(state.stale), take(state.other), take(state.burst), take(state.verify_equal),
-	            take(state.verify_different), take(state.straddled),
-	            static_cast<double>(take(state.burst_ns)) / 1e6,
-	            static_cast<double>(take(state.burst_max_ns)) / 1e6, take(state.relaxed_pages),
-	            take(state.relax_calls));
-	std::printf("Kyty write drains 10s: invalidate %" PRIu64 " (%.1f ms), fault-noretry %" PRIu64
-	            " (%.1f ms), side-failed %" PRIu64 " (%.1f ms), gpu-thread %" PRIu64 " (%.1f ms)\n",
-	            take(state.write_drains[0]), static_cast<double>(take(state.write_drain_ns[0])) / 1e6,
-	            take(state.write_drains[1]), static_cast<double>(take(state.write_drain_ns[1])) / 1e6,
-	            take(state.write_drains[2]), static_cast<double>(take(state.write_drain_ns[2])) / 1e6,
-	            take(state.write_drains[3]), static_cast<double>(take(state.write_drain_ns[3])) / 1e6);
+	std::printf(
+	    "Kyty read-fault published 10s: %u frames, served %" PRIu64 " (%.2f/frame); waited: "
+	    "not a plain load %" PRIu64 ", image %" PRIu64 ", not published recently %" PRIu64
+	    ", other %" PRIu64 ", copy burst %" PRIu64 "; verify: equal %" PRIu64 ", different %" PRIu64
+	    "; served across two pages %" PRIu64 "; burst waits %.1f ms total (max %.2f ms); "
+	    "relaxed %" PRIu64 " pages (%" PRIu64 " calls)\n",
+	    frames, served, static_cast<double>(served) / frames, take(state.undecodable),
+	    take(state.image), take(state.stale), take(state.other), take(state.burst),
+	    take(state.verify_equal), take(state.verify_different), take(state.straddled),
+	    static_cast<double>(take(state.burst_ns)) / 1e6,
+	    static_cast<double>(take(state.burst_max_ns)) / 1e6, take(state.relaxed_pages),
+	    take(state.relax_calls));
+	std::printf(
+	    "Kyty write drains 10s: invalidate %" PRIu64 " (%.1f ms), fault-noretry %" PRIu64
+	    " (%.1f ms), side-failed %" PRIu64 " (%.1f ms), gpu-thread %" PRIu64 " (%.1f ms)\n",
+	    take(state.write_drains[0]), static_cast<double>(take(state.write_drain_ns[0])) / 1e6,
+	    take(state.write_drains[1]), static_cast<double>(take(state.write_drain_ns[1])) / 1e6,
+	    take(state.write_drains[2]), static_cast<double>(take(state.write_drain_ns[2])) / 1e6,
+	    take(state.write_drains[3]), static_cast<double>(take(state.write_drain_ns[3])) / 1e6);
 }
 
 struct WriteDrainTimer {
@@ -581,7 +588,8 @@ struct WriteDrainTimer {
 	~WriteDrainTimer() {
 		auto& state = ReadFaultPublished();
 		state.write_drains[kind].fetch_add(1, std::memory_order_relaxed);
-		state.write_drain_ns[kind].fetch_add(ReadFaultDiag::NowNs() - start, std::memory_order_relaxed);
+		state.write_drain_ns[kind].fetch_add(ReadFaultDiag::NowNs() - start,
+		                                     std::memory_order_relaxed);
 	}
 };
 
@@ -590,7 +598,8 @@ BurstWaitTimer::~BurstWaitTimer() {
 	auto&      state = ReadFaultPublished();
 	state.burst_ns.fetch_add(ns, std::memory_order_relaxed);
 	auto max = state.burst_max_ns.load(std::memory_order_relaxed);
-	while (ns > max && !state.burst_max_ns.compare_exchange_weak(max, ns, std::memory_order_relaxed)) {
+	while (ns > max &&
+	       !state.burst_max_ns.compare_exchange_weak(max, ns, std::memory_order_relaxed)) {
 	}
 }
 
@@ -2222,21 +2231,24 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			    relax_after != 0 && other_page == 0 &&
 			    ReadRelaxCounter().Bump(page, static_cast<uint32_t>(frame)) >= relax_after) {
 				state.relax_calls.fetch_add(1, std::memory_order_relaxed);
-				// The host protects 16 KiB pages (KYTY_READ_RELAX_SPAN_KB, default 16): relaxing one
-				// 4 KiB tracker page of a host page whose neighbours stay access-watched only turns
-				// its faults into alias emulations. Relax the span when every GPU-dirty page of it
-				// would be served too (buffer bytes only, published recently); else the page alone.
+				// The host protects 16 KiB pages (KYTY_READ_RELAX_SPAN_KB, default 16): relaxing
+				// one 4 KiB tracker page of a host page whose neighbours stay access-watched only
+				// turns its faults into alias emulations. Relax the span when every GPU-dirty page
+				// of it would be served too (buffer bytes only, published recently); else the page
+				// alone.
 				const uint64_t span       = ReadRelaxSpan();
 				const auto     span_begin = Common::AlignDown(page, span);
 				bool           whole      = span > TRACKER_PAGE_SIZE &&
-				                 !m_texture_cache.IsRegionGpuModified(span_begin, span);
-				for (uint64_t p = span_begin; whole && p < span_begin + span; p += TRACKER_PAGE_SIZE) {
+				                            !m_texture_cache.IsRegionGpuModified(span_begin, span);
+				for (uint64_t p = span_begin; whole && p < span_begin + span;
+				     p += TRACKER_PAGE_SIZE) {
 					whole = p == page || !IsRegionGpuModifiedRelaxed(p, TRACKER_PAGE_SIZE) ||
 					        ReadFaultPublishedRecently(p, frame);
 				}
-				state.relaxed_pages.fetch_add(whole ? m_memory_tracker.RelaxRead(span_begin, span)
-				                                    : m_memory_tracker.RelaxRead(page, TRACKER_PAGE_SIZE),
-				                              std::memory_order_relaxed);
+				state.relaxed_pages.fetch_add(
+				    whole ? m_memory_tracker.RelaxRead(span_begin, span)
+				          : m_memory_tracker.RelaxRead(page, TRACKER_PAGE_SIZE),
+				    std::memory_order_relaxed);
 			}
 			// Keep the page read-hot so its eager copy keeps publishing the GPU's new bytes.
 			(void)m_scheduler.Context().GetGpu().TrySendCommand(
@@ -2334,7 +2346,10 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 		std::optional<WriteDrainTimer> drain_timer;
 		if (is_write) {
 			drain_timer.emplace();
-			drain_timer->kind = gpu_thread ? 3 : t_write_drain_kind == 0 ? 0 : retried_write ? 2 : 1;
+			drain_timer->kind = gpu_thread                ? 3
+			                    : t_write_drain_kind == 0 ? 0
+			                    : retried_write           ? 2
+			                                              : 1;
 		}
 		gpu.SendCommandSync([&, this, vaddr, size, is_write, gpu_thread] {
 			if (!is_write) {
@@ -2414,7 +2429,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 	if (is_write && result != SideIssueResult::Issued && result != SideIssueResult::Pending) {
 		auto& state = ReadFaultPublished();
 		state.write_drains[2].fetch_add(1, std::memory_order_relaxed);
-		state.write_drain_ns[2].fetch_add(ReadFaultDiag::NowNs() - write_mark, std::memory_order_relaxed);
+		state.write_drain_ns[2].fetch_add(ReadFaultDiag::NowNs() - write_mark,
+		                                  std::memory_order_relaxed);
 	}
 	if (diag) {
 		diag->Fault().sendsync_ns = ReadFaultDiag::NowNs() - sync_mark;
@@ -5612,10 +5628,10 @@ void BufferCache::RunGarbageCollector() {
 			return;
 		}
 	}
-	const bool selective = g_gc_settle_selective.On();
-	const auto lazy_critical =
-	    aggressive && !selective ? static_cast<uint64_t>(g_gc_side_settle_lazy_critical.Get())
-	                             : uint64_t {0};
+	const bool selective     = g_gc_settle_selective.On();
+	const auto lazy_critical = aggressive && !selective
+	                               ? static_cast<uint64_t>(g_gc_side_settle_lazy_critical.Get())
+	                               : uint64_t {0};
 	if (!selective && ((lazy && !aggressive) || lazy_critical != 0) && m_side != nullptr &&
 	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
 		// CompleteAllSideReadbacks does not wait when every pending readback is published or is
@@ -5633,7 +5649,8 @@ void BufferCache::RunGarbageCollector() {
 	}
 	const auto pass =
 	    lazy_critical != 0
-	        ? VramBudget::PlanBufferPassLazyCritical(settle_waits, gc_settle_deferred, lazy_critical)
+	        ? VramBudget::PlanBufferPassLazyCritical(settle_waits, gc_settle_deferred,
+	                                                 lazy_critical)
 	        : VramBudget::PlanBufferPass(lazy, aggressive, settle_waits, gc_settle_deferred);
 	gc_settle_deferred = pass.deferred;
 	if (!pass.run) {
@@ -5647,7 +5664,7 @@ void BufferCache::RunGarbageCollector() {
 	if (selective) {
 		// KYTY_GC_SETTLE_SELECTIVE: no settle; the loop skips candidates under pending readbacks.
 	} else if (CpGaps::Enabled() && m_side != nullptr &&
-	    m_side->pending_count.load(std::memory_order_acquire) != 0) {
+	           m_side->pending_count.load(std::memory_order_acquire) != 0) {
 		const auto settle_start = std::chrono::steady_clock::now();
 		CompleteAllSideReadbacks();
 		const auto settle_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -5671,7 +5688,8 @@ void BufferCache::RunGarbageCollector() {
 		EXIT_IF(buffer.is_deleted);
 		if (selective) {
 			const auto first = Common::AlignDown(buffer.CpuAddress(), TRACKER_PAGE_SIZE);
-			const auto last  = Common::AlignUp(buffer.CpuAddress() + buffer.Size(), TRACKER_PAGE_SIZE);
+			const auto last =
+			    Common::AlignUp(buffer.CpuAddress() + buffer.Size(), TRACKER_PAGE_SIZE);
 			if (OverlapsPendingSideReadback(first, last)) {
 				gc_stats.busy++;
 				return ++scanned >= 4096;

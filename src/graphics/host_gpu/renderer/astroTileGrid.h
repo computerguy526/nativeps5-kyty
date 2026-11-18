@@ -16,10 +16,11 @@ constexpr uint32_t MAX_TILES_Y = 135;
 	return (pixels + TILE_PX - 1) / TILE_PX;
 }
 
-// spec: "<tx>x<ty>" (explicit) or "auto" (from the MetalFX input size in_w x in_h, 0 = not known yet).
-// Returns false when the spec is invalid, (auto) the size is not known yet, or the grid is larger than the
-// game's largest level (MAX_TILES_X x MAX_TILES_Y).
-[[nodiscard]] inline bool Resolve(const char* spec, uint32_t in_w, uint32_t in_h, unsigned& tx, unsigned& ty) {
+// spec: "<tx>x<ty>" (explicit) or "auto" (from the MetalFX input size in_w x in_h, 0 = not known
+// yet). Returns false when the spec is invalid, (auto) the size is not known yet, or the grid is
+// larger than the game's largest level (MAX_TILES_X x MAX_TILES_Y).
+[[nodiscard]] inline bool Resolve(const char* spec, uint32_t in_w, uint32_t in_h, unsigned& tx,
+                                  unsigned& ty) {
 	if (spec == nullptr) {
 		return false;
 	}

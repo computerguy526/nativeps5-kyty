@@ -165,15 +165,16 @@ CodegenOptions FromEnvironment() {
 		}
 	}
 	if (const auto* level = std::getenv("KYTY_FAST_MATH"); level != nullptr) {
-		const auto value  = std::strtoul(level, nullptr, 10);
-		options.fast_math = static_cast<uint8_t>(value >= 3 ? 1ul : value);
+		const auto value     = std::strtoul(level, nullptr, 10);
+		options.fast_math    = static_cast<uint8_t>(value >= 3 ? 1ul : value);
 		options.fast_math_vs = value >= 3;
 	}
 	options.fast_math_vs = EnvFlag("KYTY_FAST_MATH_VS", options.fast_math_vs);
 	if (const auto* stages = std::getenv("KYTY_FAST_MATH_STAGES"); stages != nullptr) {
 		const std::string text(stages);
-		options.fast_math_stages = static_cast<uint8_t>((text.find("fs") != std::string::npos ? 1u : 0u) |
-		                                                (text.find("cs") != std::string::npos ? 2u : 0u));
+		options.fast_math_stages =
+		    static_cast<uint8_t>((text.find("fs") != std::string::npos ? 1u : 0u) |
+		                         (text.find("cs") != std::string::npos ? 2u : 0u));
 	}
 	return options;
 }

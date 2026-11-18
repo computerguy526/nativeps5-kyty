@@ -49,8 +49,8 @@ namespace Libs::Graphics::CpGaps {
 enum class Cat : uint8_t {
 	Commit,
 	HeadSelf,
-	HeadWait,        // a wait that began right after a stop, with a shallow or a deep window:
-	HeadWaitStart,   // (DrawPrepCommitWaits{Barrier,Start,Shallow,Deep}); HeadWait = barrier
+	HeadWait,      // a wait that began right after a stop, with a shallow or a deep window:
+	HeadWaitStart, // (DrawPrepCommitWaits{Barrier,Start,Shallow,Deep}); HeadWait = barrier
 	HeadWaitShallow,
 	HeadWaitDeep,
 	DrawOp,

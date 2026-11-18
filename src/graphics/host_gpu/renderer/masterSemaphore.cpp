@@ -71,7 +71,7 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	}
 	// KYTY_CP_GAP_STATS (GPU thread only): readback drains, occlusion publication, the rest.
 	const auto      reason = Profiler::CurrentGpuWaitReason();
-	const auto gap_cat = [reason] {
+	const auto      gap_cat = [reason] {
 		switch (reason) {
 			case Profiler::FrameWait::GpuWaitDrain: return CpGaps::Cat::GpuWaitDrain;
 			case Profiler::FrameWait::GpuWaitOcclusion: return CpGaps::Cat::GpuWaitOcclusion;

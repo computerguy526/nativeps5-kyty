@@ -38,9 +38,10 @@ struct Counters {
 	// replay, compute prewarm): total only grows within a session, done counts completions (cache/archive hits at
 	// once, skipped/failed/dropped too). A new session starts (both reset) when work is added after all finished.
 	std::atomic<uint64_t> unit_total {0}, unit_done {0};
-	// zerocomp: the launch phase's hold of the game (pipelineCache.cpp, KYTY_PIPELINE_REPLAY_ALL): 0 = no hold this
-	// session, 1 = the game is held, 2 = the hold is over (with KYTY_SHADER_PREPARE=scene that is before the unit is
-	// done: the rest builds behind the game and the opening card must not wait for it).
+	// zerocomp: the launch phase's hold of the game (pipelineCache.cpp, KYTY_PIPELINE_REPLAY_ALL):
+	// 0 = no hold this session, 1 = the game is held, 2 = the hold is over (with
+	// KYTY_SHADER_PREPARE=scene that is before the unit is done: the rest builds behind the game
+	// and the opening card must not wait for it).
 	std::atomic<int> launch_hold {0};
 };
 

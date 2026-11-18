@@ -1,23 +1,23 @@
-#include "common/guestAddress.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
-#include "graphics/compileProgress.h"
-#include "common/ramStats.h"
 
 #include "common/assert.h"
 #include "common/cpuPlacement.h"
-#include "common/prepPhases.h"
 #include "common/crashContext.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/guestAddress.h"
 #include "common/hangTrace.h"
 #include "common/hangWatchdog.h"
 #include "common/liveSwitch.h"
 #include "common/logging/log.h"
+#include "common/prepPhases.h"
 #include "common/profiler.h"
+#include "common/ramStats.h"
 #include "common/rendererBatch.h"
 #include "common/sehGuard.h"
 #include "common/skipInvalid.h"
+#include "graphics/compileProgress.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/debug.h"
@@ -28,27 +28,27 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
-#include "graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.h"
-#include "graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h"
-#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
-#include "graphics/host_gpu/renderer/pipeline/pipelineLibrary.h"
-#include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
 #include "graphics/host_gpu/renderer/pipeline/launchPhase.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCompileQueue.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineLibrary.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
 #include "graphics/host_gpu/renderer/pipeline/programDiskCache.h"
 #include "graphics/host_gpu/renderer/pipeline/rtSession.h"
+#include "graphics/host_gpu/renderer/pipeline/shaderCodeSnapshot.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderPrecompile.h"
 #include "graphics/host_gpu/renderer/pipeline/stagePrepWorker.h"
-#include "graphics/host_gpu/renderer/pipeline/shaderCodeSnapshot.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/shader/shaderVertexAliases.h"
 #include "graphics/shader/recompiler/CodegenFingerprint.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "graphics/shader/shaderCompiler.h"
+#include "graphics/shader/shaderVertexAliases.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
 #include "kytyGitVersion.h"
@@ -5036,21 +5036,22 @@ struct PipelineCache::ComputePrewarm {
 	PipelineCompileQueue  queue; // last: joined before the rest goes
 };
 
-// KYTY_PIPELINE_LIST (default off): a KYPLST1 pipeline list (pipelineList.h) made from recorded runs,
-// for players who never ran the game: =1 reads PipelineLists/<title>.kyplst (next to the emulator, the
-// working directory), any other value is the file's path. The list must name this game's title and
-// version (else it is ignored); each shader's code is read from the player's own executable at the
-// recorded offset (or found elsewhere in it by its hashes) and used only when its hashes match. The
-// matching shaders' permutations join the shader precompile replay, and the pipelines whose stages all
-// matched join the pipeline replay (JournalReplay; boot level first, then the pipelines recorded in the
-// most levels). Compute pipelines follow from the compute prewarm, on by default with the list.
-// KYTY_PIPELINE_LIST_PREPARE=1 ("Prepare shaders"): builds everything at start-up with more threads
-// (KYTY_SHADER_PRECOMPILE_THREADS and KYTY_PIPELINE_JOURNAL_THREADS default 8), prints progress, saves
-// the caches and exits (exit code 0; 2 when there is no usable list) before the game starts.
-// Launch phase hold (KYTY_PIPELINE_REPLAY_ALL): while the replay of everything known runs, the game's
-// first draw or dispatch waits here, so nothing the game renders is presented before the phase is
-// over and the loading card ("PREPARING SHADERS X / T", fed by CompileProgress) stays up until
-// X == T. The game keeps loading its files meanwhile. Replay and prewarm threads never wait.
+// KYTY_PIPELINE_LIST (default off): a KYPLST1 pipeline list (pipelineList.h) made from recorded
+// runs, for players who never ran the game: =1 reads PipelineLists/<title>.kyplst (next to the
+// emulator, the working directory), any other value is the file's path. The list must name this
+// game's title and version (else it is ignored); each shader's code is read from the player's own
+// executable at the recorded offset (or found elsewhere in it by its hashes) and used only when its
+// hashes match. The matching shaders' permutations join the shader precompile replay, and the
+// pipelines whose stages all matched join the pipeline replay (JournalReplay; boot level first,
+// then the pipelines recorded in the most levels). Compute pipelines follow from the compute
+// prewarm, on by default with the list. KYTY_PIPELINE_LIST_PREPARE=1 ("Prepare shaders"): builds
+// everything at start-up with more threads (KYTY_SHADER_PRECOMPILE_THREADS and
+// KYTY_PIPELINE_JOURNAL_THREADS default 8), prints progress, saves the caches and exits (exit code
+// 0; 2 when there is no usable list) before the game starts. Launch phase hold
+// (KYTY_PIPELINE_REPLAY_ALL): while the replay of everything known runs, the game's first draw or
+// dispatch waits here, so nothing the game renders is presented before the phase is over and the
+// loading card ("PREPARING SHADERS X / T", fed by CompileProgress) stays up until X == T. The game
+// keeps loading its files meanwhile. Replay and prewarm threads never wait.
 // KYTY_PIPELINE_REPLAY_ALL_HOLD=0 runs the phase in the background instead; a hold longer than
 // KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S (default 900) is given up with a log line.
 static std::atomic<bool>       g_launch_hold {false};         // the pipeline replay part
@@ -5059,22 +5060,26 @@ static std::mutex              g_launch_mutex;
 static std::condition_variable g_launch_cv;
 
 // The card (loadCard.h, card3) follows the hold: launch_hold 1 while it holds, 2 once it is over.
-static void LaunchHoldPublish(int state) { CompileProgress::Get().launch_hold.store(state, std::memory_order_release); }
+static void LaunchHoldPublish(int state) {
+	CompileProgress::Get().launch_hold.store(state, std::memory_order_release);
+}
 
 static bool LaunchHoldDone() {
 	if (g_launch_hold.load(std::memory_order_acquire)) return false;
 	if (!g_launch_hold_prewarm.load(std::memory_order_acquire)) return true;
 	const auto& c = CompileProgress::Get();
-	return c.prewarm_done.load(std::memory_order_relaxed) >= c.prewarm_total.load(std::memory_order_relaxed);
+	return c.prewarm_done.load(std::memory_order_relaxed) >=
+	       c.prewarm_total.load(std::memory_order_relaxed);
 }
 
-// The replay part is over (all: the compute prewarm still counts; with_prewarm: everything is over, e.g. the
-// scene's records are built, the cache goes, the replay stopped).
+// The replay part is over (all: the compute prewarm still counts; with_prewarm: everything is over,
+// e.g. the scene's records are built, the cache goes, the replay stopped).
 static void LaunchHoldRelease(bool with_prewarm = true) {
 	{
 		std::scoped_lock lock(g_launch_mutex);
-		const bool was = g_launch_hold.exchange(false, std::memory_order_acq_rel);
-		const bool pw  = with_prewarm && g_launch_hold_prewarm.exchange(false, std::memory_order_acq_rel);
+		const bool       was = g_launch_hold.exchange(false, std::memory_order_acq_rel);
+		const bool       pw =
+		    with_prewarm && g_launch_hold_prewarm.exchange(false, std::memory_order_acq_rel);
 		if (!was && !pw) return;
 		if (with_prewarm) LaunchHoldPublish(2);
 	}
@@ -5083,9 +5088,9 @@ static void LaunchHoldRelease(bool with_prewarm = true) {
 
 static void LaunchHoldWaitSlow() {
 	if (CompileProgress::t_replay_thread) return;
-	const auto       begin = CompileClockNs();
-	const auto       limit = std::chrono::seconds(EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900));
-	const auto       until = std::chrono::steady_clock::now() + limit;
+	const auto begin = CompileClockNs();
+	const auto limit = std::chrono::seconds(EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900));
+	const auto until = std::chrono::steady_clock::now() + limit;
 	std::unique_lock lock(g_launch_mutex);
 	// The prewarm part has no notifier: poll it every 10 ms (only while the game is held).
 	while (!LaunchHoldDone() && std::chrono::steady_clock::now() < until) {
@@ -5093,7 +5098,8 @@ static void LaunchHoldWaitSlow() {
 	}
 	const bool released = LaunchHoldDone();
 	lock.unlock();
-	if (!released) PipelineCacheLog("Launch phase: still running after {} s; the game goes on", limit.count());
+	if (!released)
+		PipelineCacheLog("Launch phase: still running after {} s; the game goes on", limit.count());
 	LaunchHoldRelease();
 	static std::atomic<bool> logged {false};
 	if (!logged.exchange(true)) {
@@ -5103,14 +5109,14 @@ static void LaunchHoldWaitSlow() {
 }
 
 static inline void LaunchHoldWait() {
-	if (g_launch_hold.load(std::memory_order_relaxed) || g_launch_hold_prewarm.load(std::memory_order_relaxed))
-	    [[unlikely]]
+	if (g_launch_hold.load(std::memory_order_relaxed) ||
+	    g_launch_hold_prewarm.load(std::memory_order_relaxed)) [[unlikely]]
 		LaunchHoldWaitSlow();
 }
 
-// The scene the running game is in: the runtime's VFS names it (nps5_vfs_current_scene: the last folder under
-// the profile's scene key that a file was opened in, menus excluded by NPS5_SCENE_TAG_SKIP); empty without
-// that symbol or before any scene opened.
+// The scene the running game is in: the runtime's VFS names it (nps5_vfs_current_scene: the last
+// folder under the profile's scene key that a file was opened in, menus excluded by
+// NPS5_SCENE_TAG_SKIP); empty without that symbol or before any scene opened.
 static std::string CurrentSceneName() {
 #if defined(__APPLE__) || defined(__linux__)
 	using Fn       = const char* (*)();
@@ -5144,7 +5150,8 @@ static uint64_t CompileFanout() {
 #ifdef __APPLE__
 	int    n   = 0;
 	size_t len = sizeof(n);
-	if (sysctlbyname("hw.logicalcpu", &n, &len, nullptr, 0) == 0 && n > 0) cores = static_cast<uint64_t>(n);
+	if (sysctlbyname("hw.logicalcpu", &n, &len, nullptr, 0) == 0 && n > 0)
+		cores = static_cast<uint64_t>(n);
 #else
 	cores = std::thread::hardware_concurrency();
 #endif
@@ -5195,14 +5202,16 @@ struct PipelineCache::JournalReplay {
 	};
 
 	// The boot level, read once the game's file system is mounted (after the cache is created).
-	// The scene this start goes to: the boot level marker (-lvl), else the last scene of the previous session
+	// The scene this start goes to: the boot level marker (-lvl), else the last scene of the
+	// previous session
 	// (<cache>/<title>.last_scene, KYTY_PIPELINE_LAST_SCENE_PATH).
 	const std::string& Level() {
 		std::call_once(level_once, [this] {
 			level = BootLevelMarker();
 			if (level.empty() && !last_scene_path.empty()) {
 				std::ifstream in(last_scene_path);
-				std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+				std::string   text((std::istreambuf_iterator<char>(in)),
+				                   std::istreambuf_iterator<char>());
 				level      = LaunchPhase::ParseLastScene(text);
 				remembered = level;
 			}
@@ -5210,8 +5219,9 @@ struct PipelineCache::JournalReplay {
 		return level;
 	}
 
-	// The last-scene memory: the scene the game is in now, unless it is an "always" scene (world map, hub,
-	// menus); written when it changes (scene changes are rare) and at the end of the session.
+	// The last-scene memory: the scene the game is in now, unless it is an "always" scene (world
+	// map, hub, menus); written when it changes (scene changes are rare) and at the end of the
+	// session.
 	void NoteScene() {
 		if (last_scene_path.empty()) return;
 		(void)Level();
@@ -5229,7 +5239,8 @@ struct PipelineCache::JournalReplay {
 		std::filesystem::rename(tmp, last_scene_path, ec);
 	}
 
-	// KYTY_PIPELINE_DELTA_OUT: the keys this replay built that the driver cache did not know before.
+	// KYTY_PIPELINE_DELTA_OUT: the keys this replay built that the driver cache did not know
+	// before.
 	void WriteDelta() {
 		if (delta_out_path.empty()) return;
 		std::vector<uint64_t> keys;
@@ -5245,8 +5256,9 @@ struct PipelineCache::JournalReplay {
 			out << LaunchPhase::FormatKeyFile(keys);
 		}
 		std::filesystem::rename(tmp, delta_out_path, ec);
-		PipelineCacheLog("Pipeline replay: {} new pipelines written to {} (KYTY_PIPELINE_DELTA_OUT){}", keys.size(),
-		                 delta_out_path, ec ? " - rename failed" : "");
+		PipelineCacheLog(
+		    "Pipeline replay: {} new pipelines written to {} (KYTY_PIPELINE_DELTA_OUT){}",
+		    keys.size(), delta_out_path, ec ? " - rename failed" : "");
 	}
 
 	void Start(uint32_t thread_count, bool force_known) {
@@ -5258,9 +5270,10 @@ struct PipelineCache::JournalReplay {
 		for (uint32_t i = 0; i < running; i++) threads.emplace_back([this] { Worker(); });
 	}
 
-	// The boot level's records first, then the rest by rank (stable: first-needed order within one).
-	// KYTY_SHADER_PREPARE=scene: the hold set first (the target scene's records, untagged ones and the "always"
-	// scenes'); no record of the target scene at all = the whole replay holds ("all").
+	// The boot level's records first, then the rest by rank (stable: first-needed order within
+	// one). KYTY_SHADER_PREPARE=scene: the hold set first (the target scene's records, untagged
+	// ones and the "always" scenes'); no record of the target scene at all = the whole replay holds
+	// ("all").
 	void BuildOrder() {
 		const auto&           boot = Level();
 		std::vector<uint32_t> rest;
@@ -5279,7 +5292,8 @@ struct PipelineCache::JournalReplay {
 				std::vector<std::string_view> tags;
 				if (item.from_list) {
 					for (const auto level: item.list_levels) {
-						if (level < list_level_names.size()) tags.emplace_back(list_level_names[level]);
+						if (level < list_level_names.size())
+							tags.emplace_back(list_level_names[level]);
 					}
 				} else {
 					tags.emplace_back(payload.level);
@@ -5289,18 +5303,23 @@ struct PipelineCache::JournalReplay {
 			(current ? order : rest).push_back(i);
 		}
 		if (hold_scene && target_hits == 0) {
-			PipelineCacheLog("Launch phase (scene): no record of the scene '{}' (the list or journal carries no scene "
+			PipelineCacheLog("Launch phase (scene): no record of the scene '{}' (the list or "
+			                 "journal carries no scene "
 			                 "tags for it): the whole replay holds the game (all)",
 			                 boot);
 			hold_scene = false;
-			if (g_launch_hold.load(std::memory_order_acquire)) g_launch_hold_prewarm.store(true, std::memory_order_release);
+			if (g_launch_hold.load(std::memory_order_acquire))
+				g_launch_hold_prewarm.store(true, std::memory_order_release);
 		}
 		first_level = static_cast<uint32_t>(order.size());
 		if (hold_scene) {
-			PipelineCacheLog("Launch phase (scene): '{}': {} of {} pipelines hold the game ({} of the scene, the "
+			PipelineCacheLog("Launch phase (scene): '{}': {} of {} pipelines hold the game ({} of "
+			                 "the scene, the "
 			                 "rest untagged or always: {}), {} build behind it",
 			                 boot, first_level, items.size(), target_hits,
-			                 std::getenv("KYTY_SHADER_PREPARE_ALWAYS") != nullptr ? std::getenv("KYTY_SHADER_PREPARE_ALWAYS") : "",
+			                 std::getenv("KYTY_SHADER_PREPARE_ALWAYS") != nullptr
+			                     ? std::getenv("KYTY_SHADER_PREPARE_ALWAYS")
+			                     : "",
 			                 items.size() - first_level);
 			if (first_level == 0) LaunchHoldRelease();
 		}
@@ -5379,13 +5398,16 @@ struct PipelineCache::JournalReplay {
 			const auto index = next.fetch_add(1, std::memory_order_relaxed);
 			if (index >= order.size()) break;
 			Replay(items[order[index]]);
-			// KYTY_SHADER_PREPARE=scene: the hold ends with the last record of the scene being loaded;
-			// the rest of the replay goes on behind the game on these same utility-QoS workers.
+			// KYTY_SHADER_PREPARE=scene: the hold ends with the last record of the scene being
+			// loaded; the rest of the replay goes on behind the game on these same utility-QoS
+			// workers.
 			if (hold_scene && index < first_level &&
 			    scene_done.fetch_add(1, std::memory_order_acq_rel) + 1 == first_level) {
-				PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are built after {:.1f} s; {} more go "
+				PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are built after "
+				                 "{:.1f} s; {} more go "
 				                 "on in the background",
-				                 first_level, Level(), static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
+				                 first_level, Level(),
+				                 static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
 				                 order.size() - first_level);
 				LaunchHoldRelease(true);
 			}
@@ -5396,7 +5418,8 @@ struct PipelineCache::JournalReplay {
 		}
 		if (running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 			CompileProgress::ClearPipelineReplay();
-			LaunchHoldRelease(false); // "all": the compute prewarm part still holds until it is done
+			LaunchHoldRelease(
+			    false); // "all": the compute prewarm part still holds until it is done
 			WriteDelta();
 			size_t cache_bytes = 0;
 			if (cache.m_driver_cache != nullptr) {
@@ -5609,21 +5632,23 @@ struct PipelineCache::JournalReplay {
 	const bool                   strict;
 	bool                         force        = false;
 	bool                         low_priority = true;
-	// KYTY_PIPELINE_REPLAY_ALL: a content key is built once (the journal and the list both hold most).
-	bool                         once         = false;
+	// KYTY_PIPELINE_REPLAY_ALL: a content key is built once (the journal and the list both hold
+	// most).
+	bool                         once = false;
 	std::mutex                   once_mutex;
 	std::unordered_set<uint64_t> once_keys;
 	// KYTY_SHADER_PREPARE=scene: hold the game only for the records of the scene it starts in (the
 	// first first_level entries of the order). No such record (scene not known): the whole replay.
-	bool                         hold_scene   = false;
-	std::atomic<uint64_t>        scene_done {0};
-	std::vector<std::string>     always = SceneAlways();
-	// Last-scene memory (NoteScene) and the prepare's delta (KYTY_PIPELINE_DELTA_OUT / _REPLAY_KEYS).
-	std::string                  last_scene_path, remembered;
-	std::mutex                   scene_mutex;
-	std::string                  delta_out_path;
-	std::mutex                   delta_mutex;
-	std::vector<uint64_t>        delta_keys;
+	bool                     hold_scene = false;
+	std::atomic<uint64_t>    scene_done {0};
+	std::vector<std::string> always = SceneAlways();
+	// Last-scene memory (NoteScene) and the prepare's delta (KYTY_PIPELINE_DELTA_OUT /
+	// _REPLAY_KEYS).
+	std::string           last_scene_path, remembered;
+	std::mutex            scene_mutex;
+	std::string           delta_out_path;
+	std::mutex            delta_mutex;
+	std::vector<uint64_t> delta_keys;
 	// Coverage bookkeeping (KYTY_PIPELINE_LIST or _VERIFY): every key the replay computed and every key
 	// the game created.
 	bool                         track        = false;
@@ -5665,7 +5690,8 @@ void PipelineCache::NoteJournalPipeline(uint64_t key, std::span<const uint32_t> 
 		// The scene tag: the scene the game is in now (runtime VFS), else the boot level marker.
 		std::string level = CurrentSceneKnown() ? CurrentSceneName() : std::string();
 		if (!CurrentSceneKnown() && m_journal_replay != nullptr) level = m_journal_replay->Level();
-		(void)m_journal->Add(key, EncodePipelineJournalPayload(level, words, snapshot_words, identities));
+		(void)m_journal->Add(
+		    key, EncodePipelineJournalPayload(level, words, snapshot_words, identities));
 		if (m_journal_replay != nullptr) m_journal_replay->NoteScene();
 	}
 }
@@ -5781,15 +5807,15 @@ void PipelineCache::InitializePipelineJournal() {
 		PipelineCacheLog("Pipeline list: {} pipelines queued for the replay (driver cache limit {} MB)", usable,
 		                 limit_mb);
 	}
-	// Without a driver cache a rebuilt pipeline helps nobody; KYTY_PIPELINE_JOURNAL_FORCE=1 rebuilds
-	// anyway (tests).
-	// KYTY_PIPELINE_REPLAY_ALL=1 (nps5, default off): the launch phase "build everything known". Every
-	// journal and list pipeline is created again through the driver before the game starts, known to
-	// the driver cache or not, and the game's first draw waits for it (LaunchHoldWait; the loading
-	// card shows the count). On a prepared cache every one is a cache hit (2176 pipelines: about 1 s);
-	// a pipeline whose driver-side entry was lost or re-keyed since (an OS update, a library that
-	// moved from source to a prebuilt metallib, an archive segment that was never written) compiles
-	// here instead of at its first draw. A key built once in this replay is not built again.
+	// Without a driver cache a rebuilt pipeline helps nobody; KYTY_PIPELINE_JOURNAL_FORCE=1
+	// rebuilds anyway (tests). KYTY_PIPELINE_REPLAY_ALL=1 (nps5, default off): the launch phase
+	// "build everything known". Every journal and list pipeline is created again through the driver
+	// before the game starts, known to the driver cache or not, and the game's first draw waits for
+	// it (LaunchHoldWait; the loading card shows the count). On a prepared cache every one is a
+	// cache hit (2176 pipelines: about 1 s); a pipeline whose driver-side entry was lost or
+	// re-keyed since (an OS update, a library that moved from source to a prebuilt metallib, an
+	// archive segment that was never written) compiles here instead of at its first draw. A key
+	// built once in this replay is not built again.
 	const bool replay_all = EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0;
 	const bool force      = EnvU64("KYTY_PIPELINE_JOURNAL_FORCE", 0) != 0 || replay_all;
 	const bool prepare    = m_list != nullptr && m_list->prepare;
@@ -5804,43 +5830,55 @@ void PipelineCache::InitializePipelineJournal() {
 	// With a pipeline list (a first start builds hundreds at once) 8: a cold spring_punch_sky_aztec
 	// stalled 5.5 s on 8 threads, 10.3 s on 4 (the level needs ~290 pipelines in its first 20 s).
 	// Sized to the machine (CompileFanout: logical cores - 4, at least 2; NPS5_COMPILE_THREADS or
-	// KYTY_PIPELINE_JOURNAL_THREADS override) for a prepare, the launch phase and a list replay; the
-	// plain background journal replay stays at 4. Every worker runs at utility QoS.
-	const uint64_t sized = CompileFanout();
-	const auto threads  = std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? sized : 4), 1, 16);
-	PipelineCacheLog("Pipeline replay: {} worker thread(s){}", threads, replay_all ? "; launch phase, the start waits for it" : "");
-	// The launch phase holds the game's first draw (LaunchHoldWait), not this constructor: the window
-	// and the loading card come up meanwhile and show the count.
+	// KYTY_PIPELINE_JOURNAL_THREADS override) for a prepare, the launch phase and a list replay;
+	// the plain background journal replay stays at 4. Every worker runs at utility QoS.
+	const uint64_t sized   = CompileFanout();
+	const auto     threads = std::clamp<uint64_t>(
+	    EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? sized : 4), 1, 16);
+	PipelineCacheLog("Pipeline replay: {} worker thread(s){}", threads,
+	                 replay_all ? "; launch phase, the start waits for it" : "");
+	// The launch phase holds the game's first draw (LaunchHoldWait), not this constructor: the
+	// window and the loading card come up meanwhile and show the count.
 	// KYTY_SHADER_PREPARE=all|scene (default all): what the hold covers. scene = only the pipelines
 	// recorded for the scene this start loads (journal records carry the level they were recorded
 	// in, list records their levels); everything else is built behind the game. A start whose scene
 	// has no records falls back to all.
-	if (const auto* mode = std::getenv("KYTY_SHADER_PREPARE"); mode != nullptr && std::strcmp(mode, "scene") == 0) {
+	if (const auto* mode = std::getenv("KYTY_SHADER_PREPARE");
+	    mode != nullptr && std::strcmp(mode, "scene") == 0) {
 		replay.hold_scene = replay_all;
 	}
 	// Last-scene memory, next to the journal (KYTY_PIPELINE_LAST_SCENE_PATH names another file).
-	if (const auto* custom = std::getenv("KYTY_PIPELINE_LAST_SCENE_PATH"); custom != nullptr && *custom != '\0') {
+	if (const auto* custom = std::getenv("KYTY_PIPELINE_LAST_SCENE_PATH");
+	    custom != nullptr && *custom != '\0') {
 		replay.last_scene_path = custom;
 	} else if (m_journal != nullptr && !m_journal->Path().empty()) {
 		auto path = m_journal->Path();
-		path.replace_extension(".last_scene"); // <title>.pipelines.journal -> <title>.pipelines.last_scene
+		path.replace_extension(
+		    ".last_scene"); // <title>.pipelines.journal -> <title>.pipelines.last_scene
 		replay.last_scene_path = Common::PathToString(path);
 	}
-	// Prepare delta: KYTY_PIPELINE_DELTA_OUT=<file> gets the keys this replay built that the driver cache did
-	// not know; KYTY_PIPELINE_REPLAY_KEYS=<file> restricts the replay to the keys of such a file (the pass
-	// after the metallib build re-records only those). A missing or empty file = everything.
-	if (const auto* out = std::getenv("KYTY_PIPELINE_DELTA_OUT"); out != nullptr && *out != '\0') replay.delta_out_path = out;
-	if (const auto* only = std::getenv("KYTY_PIPELINE_REPLAY_KEYS"); only != nullptr && *only != '\0') {
+	// Prepare delta: KYTY_PIPELINE_DELTA_OUT=<file> gets the keys this replay built that the driver
+	// cache did not know; KYTY_PIPELINE_REPLAY_KEYS=<file> restricts the replay to the keys of such
+	// a file (the pass after the metallib build re-records only those). A missing or empty file =
+	// everything.
+	if (const auto* out = std::getenv("KYTY_PIPELINE_DELTA_OUT"); out != nullptr && *out != '\0')
+		replay.delta_out_path = out;
+	if (const auto* only = std::getenv("KYTY_PIPELINE_REPLAY_KEYS");
+	    only != nullptr && *only != '\0') {
 		std::ifstream in(only, std::ios::binary);
 		std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 		const auto    keys = LaunchPhase::ParseKeyFile(text);
 		if (!in || keys.empty()) {
-			PipelineCacheLog("Pipeline replay: {} (KYTY_PIPELINE_REPLAY_KEYS) holds no keys; the whole list is replayed", only);
+			PipelineCacheLog("Pipeline replay: {} (KYTY_PIPELINE_REPLAY_KEYS) holds no keys; the "
+			                 "whole list is replayed",
+			                 only);
 		} else {
 			const auto before = replay.items.size();
-			std::erase_if(replay.items, [&](const JournalReplay::Item& item) { return !keys.contains(item.record.key); });
-			PipelineCacheLog("Pipeline replay: delta pass, {} of {} records are in {} ({} keys)", replay.items.size(), before,
-			                 only, keys.size());
+			std::erase_if(replay.items, [&](const JournalReplay::Item& item) {
+				return !keys.contains(item.record.key);
+			});
+			PipelineCacheLog("Pipeline replay: delta pass, {} of {} records are in {} ({} keys)",
+			                 replay.items.size(), before, only, keys.size());
 		}
 	}
 	const bool hold = replay_all && !prepare && EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD", 1) != 0;
@@ -6066,16 +6104,20 @@ void PipelineCache::RunListPrepare() {
 	                 t.journal_built.load(), t.prewarm_built.load(), size,
 	                 size > MaxDriverCacheFileSize ? " (over the 512 MB file cap: the next start discards it)" : "");
 	// The driver's own pipeline archive (KosmicKrisp: KK_PIPELINE_ARCHIVE_DIR) is written by its
-	// flusher thread, after 32 new pipelines or KK_PIPELINE_ARCHIVE_FLUSH_S (10) seconds; _Exit below
-	// runs no exit handler, so the pipelines compiled last (up to 32, the slowest of the list among
-	// them) were never written and the first session compiled them again. Nothing compiles any more
-	// here: wait one flush period.
-	if (const auto* archive = std::getenv("KK_PIPELINE_ARCHIVE_DIR"); archive != nullptr && *archive != '\0') {
+	// flusher thread, after 32 new pipelines or KK_PIPELINE_ARCHIVE_FLUSH_S (10) seconds; _Exit
+	// below runs no exit handler, so the pipelines compiled last (up to 32, the slowest of the list
+	// among them) were never written and the first session compiled them again. Nothing compiles
+	// any more here: wait one flush period.
+	if (const auto* archive = std::getenv("KK_PIPELINE_ARCHIVE_DIR");
+	    archive != nullptr && *archive != '\0') {
 		double period = 10.0;
-		if (const auto* custom = std::getenv("KK_PIPELINE_ARCHIVE_FLUSH_S"); custom != nullptr && std::atof(custom) > 0.0) {
+		if (const auto* custom = std::getenv("KK_PIPELINE_ARCHIVE_FLUSH_S");
+		    custom != nullptr && std::atof(custom) > 0.0) {
 			period = std::atof(custom);
 		}
-		PipelineCacheLog("Prepare shaders: waiting {:.0f} s for the driver's pipeline archive to be written", period + 3.0);
+		PipelineCacheLog(
+		    "Prepare shaders: waiting {:.0f} s for the driver's pipeline archive to be written",
+		    period + 3.0);
 		std::fflush(nullptr);
 		std::this_thread::sleep_for(std::chrono::duration<double>(period + 3.0));
 	}
@@ -6215,14 +6257,16 @@ std::atomic<PipelineCache*> g_live_pipeline_cache {nullptr};
 // The window was closed and the host will end the process without the renderer teardown: saves the
 // driver pipeline cache now (the journals and the known set are written as they grow).
 void PipelineCacheSaveForClose() {
-	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr) cache->SaveForClose();
+	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr)
+		cache->SaveForClose();
 }
 
 // KYTY_PIPELINE_LIST_PREPARE: called by the render context once every cache and helper exists (the
 // internal helper pipelines are built before, so a prepare records them as well).
-// The prepare itself waits until the window can show the loading card (PipelineCacheRunListPrepare, called once the
-// presenter exists): a prepare takes minutes on a cold cache and its window must not stay blank.
-// KYTY_PIPELINE_LIST_PREPARE_CARD=0: the old order (the prepare ends the process before the presenter exists).
+// The prepare itself waits until the window can show the loading card (PipelineCacheRunListPrepare,
+// called once the presenter exists): a prepare takes minutes on a cold cache and its window must
+// not stay blank. KYTY_PIPELINE_LIST_PREPARE_CARD=0: the old order (the prepare ends the process
+// before the presenter exists).
 void PipelineCache::RunListPrepareIfRequested() {
 	g_live_pipeline_cache.store(this, std::memory_order_release);
 	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheFileTitleId().empty() &&
@@ -6231,16 +6275,19 @@ void PipelineCache::RunListPrepareIfRequested() {
 	}
 }
 
-// KYTY_PIPELINE_LIST_PREPARE with the card: called by the window once the presenter (and its loading-card thread)
-// exists. The caller is the thread that brings the renderer up, so the game does not start, exactly as before;
-// the card thread presents "PREPARING SHADERS X / T" from the replay's counters until the process ends.
+// KYTY_PIPELINE_LIST_PREPARE with the card: called by the window once the presenter (and its
+// loading-card thread) exists. The caller is the thread that brings the renderer up, so the game
+// does not start, exactly as before; the card thread presents "PREPARING SHADERS X / T" from the
+// replay's counters until the process ends.
 void PipelineCacheRunListPrepare() {
 	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) == 0 || PipelineCacheFileTitleId().empty()) return;
-	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr) cache->RunListPrepareNow();
+	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr)
+		cache->RunListPrepareNow();
 }
 
 void PipelineCache::RunListPrepareNow() {
-	// The card counts one unit to X == T; "held" keeps it up over the black window until the process ends.
+	// The card counts one unit to X == T; "held" keeps it up over the black window until the
+	// process ends.
 	LaunchHoldPublish(1);
 	RunListPrepare();
 }
@@ -6478,7 +6525,8 @@ struct PipelineCache::DriverCacheSaver {
 	// Asks the saver thread for a save now and waits for it (at most ~3 s).
 	void RequestCloseSave() {
 		close_requested.store(true, std::memory_order_release);
-		for (int i = 0; i < 150 && thread.joinable() && !close_done.load(std::memory_order_acquire); i++) {
+		for (int i = 0; i < 150 && thread.joinable() && !close_done.load(std::memory_order_acquire);
+		     i++) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		}
 	}
@@ -6514,20 +6562,24 @@ struct PipelineCache::DriverCacheSaver {
 		std::unique_lock            lock(mutex);
 		while (!stop.stop_requested()) {
 			wake.wait_for(lock, stop,
-			              term_hook || close_requested.load(std::memory_order_acquire) ? std::chrono::milliseconds(200)
-			                                                                         : std::chrono::milliseconds(1000),
+			              term_hook || close_requested.load(std::memory_order_acquire)
+			                  ? std::chrono::milliseconds(200)
+			                  : std::chrono::milliseconds(1000),
 			              [] { return false; });
-			// The window was closed (RequestCloseSave): write what is pending now; the host ends the
-			// process without the renderer teardown, so there is no later chance.
-			if (close_requested.load(std::memory_order_acquire) && !close_done.load(std::memory_order_acquire)) {
+			// The window was closed (RequestCloseSave): write what is pending now; the host ends
+			// the process without the renderer teardown, so there is no later chance.
+			if (close_requested.load(std::memory_order_acquire) &&
+			    !close_done.load(std::memory_order_acquire)) {
 				const auto pending = created.load(std::memory_order_acquire) - saved_created;
 				if (pending != 0 && !oversized && !stop.stop_requested()) {
 					const auto covered = created.load(std::memory_order_acquire);
-					if (const auto written = cache.WriteDriverCache(true); written != 0 && written != WriteOversized) {
+					if (const auto written = cache.WriteDriverCache(true);
+					    written != 0 && written != WriteOversized) {
 						saved_created = covered;
 					}
 				}
-				PipelineCacheLog("Vulkan pipeline cache: window closed, {} pipelines were pending", pending);
+				PipelineCacheLog("Vulkan pipeline cache: window closed, {} pipelines were pending",
+				                 pending);
 				close_done.store(true, std::memory_order_release);
 				continue;
 			}
@@ -6690,8 +6742,8 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 }
 
 void PipelineCache::SaveForClose() {
-	// The last-scene memory as Save() keeps it (the host ends the process without Save(); with a warm cache no new
-	// journal record would have written the scene this session ended in).
+	// The last-scene memory as Save() keeps it (the host ends the process without Save(); with a
+	// warm cache no new journal record would have written the scene this session ended in).
 	if (m_journal_replay != nullptr) m_journal_replay->NoteScene();
 	if (m_saver != nullptr) m_saver->RequestCloseSave();
 }
@@ -6812,9 +6864,10 @@ void PipelineCache::InitializeShaderPrecompile() {
 	}
 	const bool prepare = m_list != nullptr && m_list->prepare;
 	ShaderPrecompiler::Settings replay;
-	replay.threads     = static_cast<uint32_t>(
-	    std::clamp<uint64_t>(EnvU64("KYTY_SHADER_PRECOMPILE_THREADS", prepare ? CompileFanout() : 2), 1, 16));
-	replay.low_priority = true; // utility QoS in a prepare as well: the Mac stays usable while it builds
+	replay.threads = static_cast<uint32_t>(std::clamp<uint64_t>(
+	    EnvU64("KYTY_SHADER_PRECOMPILE_THREADS", prepare ? CompileFanout() : 2), 1, 16));
+	replay.low_priority =
+	    true; // utility QoS in a prepare as well: the Mac stays usable while it builds
 	replay.max_entries = EnvU64("KYTY_SHADER_PRECOMPILE_MAX", 30000);
 	replay.thread_init = [](uint32_t) {
 		Profiler::SetThreadName("ShaderPrecompile");
@@ -6827,10 +6880,12 @@ void PipelineCache::InitializeShaderPrecompile() {
 		return source.kind == ShaderJournal::Kind::Compute && MayContainBvhIntersect(source.code);
 	};
 	if (EnvU64("KYTY_PIPELINE_PREWARM_COMPUTE", m_list != nullptr ? 1 : 0) != 0) {
-		const auto threads = static_cast<size_t>(
-		    std::clamp<uint64_t>(EnvU64("KYTY_PIPELINE_PREWARM_THREADS",
-		                                 prepare ? 4 : EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0 ? std::min<uint64_t>(4, CompileFanout()) : 1),
-		                          1, 8));
+		const auto threads                   = static_cast<size_t>(std::clamp<uint64_t>(
+		    EnvU64("KYTY_PIPELINE_PREWARM_THREADS", prepare ? 4
+		                                            : EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0
+		                                                ? std::min<uint64_t>(4, CompileFanout())
+		                                                : 1),
+		    1, 8));
 		m_compute_prewarm  = std::make_unique<ComputePrewarm>(*this, threads);
 		m_program_cache->prewarm_all_compute = true;
 		PipelineCacheLog("Compute prewarm: the pipelines of replayed compute programs are built on {} background "

@@ -70,8 +70,9 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 // KYTY_RES_AUDIT_MAX=<n> (default 4000) caps the lines. Base size: KYTY_RES_AUDIT_BASE=WxH
 // (default 1920x1080), the internal one: KYTY_RES_AUDIT_INTERNAL=WxH (default 1280x720).
 [[nodiscard]] bool ResAuditEnabled();
-void ResAudit(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
-              uint32_t color_count, const uint32_t* groups, const uint32_t* threads, uint64_t code_address);
+void ResAudit(const char* kind, const PreparedBindings& bindings, TextureCache& cache,
+              ImageId output, uint32_t color_count, const uint32_t* groups, const uint32_t* threads,
+              uint64_t code_address);
 
 } // namespace Libs::Graphics::MetalFx
 

@@ -1,11 +1,10 @@
-#include <chrono>
-#include <cstdio>
 #include "graphics/host_gpu/renderer/image/tiler.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "gpu_tiler_shaders/gpu_tiler_color_transform_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_demote_d16_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_depth_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_image_load_depth_spv.h"
@@ -29,20 +28,20 @@
 #include "gpu_tiler_shaders/gpu_tiler_standard4_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_standard64_3d_spv.h"
 #include "gpu_tiler_shaders/gpu_tiler_standard64_spv.h"
-#include "gpu_tiler_shaders/gpu_tiler_color_transform_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/vramStats.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -529,13 +528,14 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 void TileManager::PrewarmPipelines() {
 	const auto begin = std::chrono::steady_clock::now();
 	uint32_t   built = 0, failed = 0;
-	g_tiler_prewarming     = true;
+	g_tiler_prewarming = true;
 	for (uint32_t slot = 0; slot < m_pipelines.size(); slot++) {
 		(GetPipeline(slot) != nullptr ? built : failed)++;
 	}
 	static constexpr TileBlockFamily image_families[] {
-	    TileBlockFamily::Standard256B, TileBlockFamily::Standard4KB,      TileBlockFamily::Standard64KB,
-	    TileBlockFamily::Prt64KB,      TileBlockFamily::RenderTarget64KB, TileBlockFamily::Depth64KB};
+	    TileBlockFamily::Standard256B,     TileBlockFamily::Standard4KB,
+	    TileBlockFamily::Standard64KB,     TileBlockFamily::Prt64KB,
+	    TileBlockFamily::RenderTarget64KB, TileBlockFamily::Depth64KB};
 	for (const bool load: {false, true}) {
 		for (const auto family: image_families) {
 			for (uint32_t element = 0; element < BytesPerElementCount; element++) {
@@ -545,8 +545,8 @@ void TileManager::PrewarmPipelines() {
 	}
 	// The D16 conversions and the colour transform (same layout; built lazily by ConvertD16 and
 	// TransformColor otherwise, which use these when they exist).
-	const auto build = [&](std::span<const uint32_t> code, const vk::SpecializationInfo* specialization,
-	                       vk::Pipeline& pipeline) {
+	const auto build = [&](std::span<const uint32_t>     code,
+	                       const vk::SpecializationInfo* specialization, vk::Pipeline& pipeline) {
 		if (pipeline != nullptr) return;
 		const auto                        module = CompileSPV(code, m_graphics.device);
 		vk::PipelineShaderStageCreateInfo stage {};
@@ -557,7 +557,8 @@ void TileManager::PrewarmPipelines() {
 		vk::ComputePipelineCreateInfo create {};
 		create.stage  = stage;
 		create.layout = m_pipeline_layout;
-		const auto result = m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
+		const auto result =
+		    m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
 		m_graphics.device.destroyShaderModule(module, nullptr);
 		if (result != vk::Result::eSuccess) pipeline = nullptr;
 		(pipeline != nullptr ? built : failed)++;
@@ -574,8 +575,8 @@ void TileManager::PrewarmPipelines() {
 	g_tiler_prewarming = false;
 	const auto ms =
 	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-	std::fprintf(stderr, "Helper prewarm: %u tile pipelines built in %.0f ms, %u skipped\n", built, ms,
-	             failed);
+	std::fprintf(stderr, "Helper prewarm: %u tile pipelines built in %.0f ms, %u skipped\n", built,
+	             ms, failed);
 }
 
 void TileManager::Record(vk::Buffer source, uint64_t source_offset,

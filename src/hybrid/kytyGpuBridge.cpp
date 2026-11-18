@@ -11,28 +11,26 @@
 // bridge functions below, which forward to the host callbacks.
 
 #define KYTY_GPU_BUILDING_DLL
-#include <optional>
-#include "graphics/host_gpu/renderer/dlss.h"
-#include "hybrid/kytyGpuApi.h"
-#include "hybrid/mainLoopGate.h"
-#include "hybrid/padMotion.h"
-#include "hybrid/pendingMemory.h"
-
 #include "common/abi.h"
-#include "common/latTrace.h"
 #include "common/emulatorConfig.h"
 #include "common/guestAddress.h"
 #include "common/guestLoad.h"
 #include "common/hostException.h"
-#include "graphics/guest_gpu/graphicsRun.h"
-#include "graphics/host_gpu/faultCost.h"
-#include "graphics/host_gpu/pageManager.h"
+#include "common/latTrace.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/subsystems.h"
 #include "common/threads.h"
-#include "graphics/presentation/window.h"
+#include "graphics/guest_gpu/graphicsRun.h"
+#include "graphics/host_gpu/faultCost.h"
+#include "graphics/host_gpu/pageManager.h"
+#include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window.h"
+#include "hybrid/kytyGpuApi.h"
+#include "hybrid/mainLoopGate.h"
+#include "hybrid/padMotion.h"
+#include "hybrid/pendingMemory.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
@@ -46,7 +44,6 @@
 #include "loader/x64InstructionEmulator.h"
 
 #include <SDL3/SDL.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -56,8 +53,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
-#include <string>
+#include <optional>
 #include <set>
+#include <string>
 #include <thread>
 
 #if defined(_WIN32)
@@ -1080,21 +1078,34 @@ int ApiStartGraphics() {
 	}
 	std::unique_lock lock(g_renderer_mutex);
 	const auto started = std::chrono::steady_clock::now();
-	// A prepare-only start (KYTY_PIPELINE_LIST_PREPARE=1) builds the whole pipeline list before the renderer reports
-	// ready and then ends the process itself: minutes on a cold cache or a slow Mac, so the 120 s limit (which ended
-	// such a prepare with an abort, its work unsaved) does not apply to it.
-	const bool prepare = [] { const char* v = std::getenv("KYTY_PIPELINE_LIST_PREPARE"); return v != nullptr && v[0] == '1'; }();
-	if (!g_renderer_ready.wait_for(lock, prepare ? std::chrono::hours(6) : std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
-		Log(2, "start_graphics: Kyty's renderer did not come up within %s", prepare ? "6 h (prepare)" : "120 s");
+	// A prepare-only start (KYTY_PIPELINE_LIST_PREPARE=1) builds the whole pipeline list before the
+	// renderer reports ready and then ends the process itself: minutes on a cold cache or a slow
+	// Mac, so the 120 s limit (which ended such a prepare with an abort, its work unsaved) does not
+	// apply to it.
+	const bool prepare = [] {
+		const char* v = std::getenv("KYTY_PIPELINE_LIST_PREPARE");
+		return v != nullptr && v[0] == '1';
+	}();
+	if (!g_renderer_ready.wait_for(lock,
+	                               prepare ? std::chrono::hours(6) : std::chrono::seconds(120),
+	                               [] { return g_renderer_result == 0; })) {
+		Log(2, "start_graphics: Kyty's renderer did not come up within %s",
+		    prepare ? "6 h (prepare)" : "120 s");
 		return KYTY_GPU_E_STATE;
 	}
 	if (g_host.deliver_event != nullptr && !StartProxy()) {
 		return KYTY_GPU_E_STATE;
 	}
-	// padmove: a host that plays a scripted pad (KYTY_GPU_HOST_SCRIPTED_PAD, NPS5_VPAD_SCRIPT) feeds the pad itself; the relay would publish
-	// Kyty's idle pad (centred sticks) over it every few ms, so scripted sticks never reached the game. KYTY_PAD_RELAY_WITH_SCRIPT=1 keeps the relay.
-	const bool relay_with_script = [] { const char* v = std::getenv("KYTY_PAD_RELAY_WITH_SCRIPT"); return v != nullptr && v[0] == '1'; }();
-	const bool scripted_pad      = (g_host_info.flags & KYTY_GPU_HOST_SCRIPTED_PAD) != 0 && !relay_with_script;
+	// padmove: a host that plays a scripted pad (KYTY_GPU_HOST_SCRIPTED_PAD, NPS5_VPAD_SCRIPT)
+	// feeds the pad itself; the relay would publish Kyty's idle pad (centred sticks) over it every
+	// few ms, so scripted sticks never reached the game. KYTY_PAD_RELAY_WITH_SCRIPT=1 keeps the
+	// relay.
+	const bool relay_with_script = [] {
+		const char* v = std::getenv("KYTY_PAD_RELAY_WITH_SCRIPT");
+		return v != nullptr && v[0] == '1';
+	}();
+	const bool scripted_pad =
+	    (g_host_info.flags & KYTY_GPU_HOST_SCRIPTED_PAD) != 0 && !relay_with_script;
 	if (scripted_pad) {
 		Log(0, "input relay: off (the host plays a scripted pad)");
 	}
@@ -1244,10 +1255,10 @@ int ApiHandleFault(uint64_t address, int is_write) {
 	const GuestLoad::FaultScope guest_load(is_write == 0 && g_host_serves_loads ? static_cast<void*>(&g_host) : nullptr);
 	// nps5 faultwin: KYTY_HOSTED_RETRIED_WRITES=1 (default off). The seam retries every store whose
 	// tracker page it offered (nps5_kyty_watch.c returns 1: the instruction runs again, or traps
-	// again while the page stays armed), so a write fault on a GPU-owned page may take the side path
-	// (KYTY_READBACK_SIDE_WRITES: side copy, wait on this thread, second fault makes it CPU-dirty)
-	// instead of draining the GPU on the command processor. Without it every such write drains
-	// (RetriedFaultScope was only set by the x86 exception handler).
+	// again while the page stays armed), so a write fault on a GPU-owned page may take the side
+	// path (KYTY_READBACK_SIDE_WRITES: side copy, wait on this thread, second fault makes it
+	// CPU-dirty) instead of draining the GPU on the command processor. Without it every such write
+	// drains (RetriedFaultScope was only set by the x86 exception handler).
 	static const bool retried_writes = [] {
 		const char* value = std::getenv("KYTY_HOSTED_RETRIED_WRITES");
 		return value != nullptr && value[0] == '1';

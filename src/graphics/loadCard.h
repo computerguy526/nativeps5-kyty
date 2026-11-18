@@ -102,7 +102,8 @@ inline bool PhaseWaitEnabled() {
 inline bool PhasePending(uint64_t unit_total, uint64_t unit_done) { return unit_total != 0 && unit_done < unit_total; }
 inline bool LaunchPhasePending() {
 	if (!PhaseWaitEnabled()) return false;
-	// zerocomp: a hold that is over ends the phase for the card even when the unit is not done (scene mode).
+	// zerocomp: a hold that is over ends the phase for the card even when the unit is not done
+	// (scene mode).
 	if (CompileProgress::Get().launch_hold.load(std::memory_order_acquire) == 2) return false;
 	const auto& c = CompileProgress::Get();
 	return PhasePending(c.unit_total.load(std::memory_order_relaxed), c.unit_done.load(std::memory_order_relaxed));

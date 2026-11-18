@@ -137,7 +137,8 @@ RenderContext::RenderContext(GraphicContext& graphics)
 	});
 	FaultCost::RunStartupBenchmark();
 	// The internal helper pipelines before the first frame (and before a prepare ends the process).
-	if (const auto* prewarm = std::getenv("KYTY_HELPER_PREWARM"); prewarm != nullptr && prewarm[0] == '1') {
+	if (const auto* prewarm = std::getenv("KYTY_HELPER_PREWARM");
+	    prewarm != nullptr && prewarm[0] == '1') {
 		m_texture_cache.PrewarmHelperPipelines();
 	}
 	m_pipeline_cache.RunListPrepareIfRequested();

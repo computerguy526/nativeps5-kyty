@@ -541,10 +541,10 @@ using GraphicsPipelineCreateHook =
 // SetGraphicsDynamicParams, instead of pipeline-key fields (=0: baked into each pipeline).
 [[nodiscard]] bool PipelineDynamicRasterStateEnabled();
 // Saves the live pipeline cache when the window is closed (no-op without one).
-void               PipelineCacheSaveForClose();
-// KYTY_PIPELINE_LIST_PREPARE=1: runs the prepare (and ends the process) once the presenter exists, so its window
-// shows the loading card; a no-op otherwise.
-void               PipelineCacheRunListPrepare();
+void PipelineCacheSaveForClose();
+// KYTY_PIPELINE_LIST_PREPARE=1: runs the prepare (and ends the process) once the presenter exists,
+// so its window shows the loading card; a no-op otherwise.
+void PipelineCacheRunListPrepare();
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
 // Stops the emulator at a mesh (NGG) draw on a device without mesh shaders, naming the missing

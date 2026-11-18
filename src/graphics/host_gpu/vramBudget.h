@@ -97,8 +97,8 @@ inline constexpr uint64_t BufferSettleMaxDeferredCriticalLimit = 64;
 	if (settle_waits && deferred < max_deferred) {
 		return {false, 0, deferred + 1};
 	}
-	return {true, BufferPassLimitCritical * std::min<uint64_t>(deferred + 1, BufferPassLimitMaxScale),
-	        0};
+	return {true,
+	        BufferPassLimitCritical * std::min<uint64_t>(deferred + 1, BufferPassLimitMaxScale), 0};
 }
 
 struct ImagePlan {
