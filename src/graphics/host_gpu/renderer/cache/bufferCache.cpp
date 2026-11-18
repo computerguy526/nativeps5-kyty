@@ -466,6 +466,97 @@ ReadFaultFrameBurst::PageFrameCounter& ReadRelaxCounter() {
 	return counter;
 }
 
+// nps5 zerocopy4: KYTY_ZEROCOPY_READ_OPEN (live, default off; needs KYTY_READ_FAULT_PUBLISHED). A buffer
+// page whose load a guest thread was just served from its published bytes becomes READ-OPEN: its read
+// watch stays off across new GPU writers (MemoryTracker::OpenRead), so later guest loads read the
+// page's backing directly and take no fault at all, as long as readbacks keep publishing the page.
+// What a load of an open page returns is what a served load returns: the GPU-written bytes as last
+// published (now by the GPU copying them straight into the guest pages, ZeroCopy::DirectReadback, or
+// by a staged publication), the other bytes as they are. The page stays GPU-dirty and write-watched:
+// guest writes, the command processor and every other library reader synchronize as before (they ask
+// the tracker; they never relied on the read watch). Once per guest frame (GPU thread,
+// BufferCache::IssueEagerReadbacks) every open page is checked:
+//  - not published within KYTY_READ_FAULT_PUBLISHED_FRAMES frames, an image took the page, the switch
+//    went off, or it has been open for KYTY_ZEROCOPY_READ_OPEN_FRAMES (default 600) frames: closed
+//    (GPU-dirty pages are access-watched again; a page still read re-opens at its next served load);
+//  - else it is kept read-hot (its eager copy keeps publishing the GPU's new bytes), and the other
+//    tracker pages of its host page (KYTY_READ_RELAX_SPAN_KB, default 16 KiB) are opened too once
+//    they are published recently, or made read-hot when the GPU owns them unpublished: a host page
+//    faults for all of its tracker pages while one of them is access-watched.
+// So no load of an open page sees bytes older than a served load could (publication at most
+// KYTY_READ_FAULT_PUBLISHED_FRAMES + 1 frames old: the check runs once per frame).
+Live::Switch g_read_open("KYTY_ZEROCOPY_READ_OPEN", [](const char* value) -> int64_t {
+	return value != nullptr && value[0] != '0' && value[0] != 0 ? 1 : 0;
+});
+
+uint32_t ReadOpenMaxFrames() {
+	static const uint32_t frames = [] {
+		const auto* value = std::getenv("KYTY_ZEROCOPY_READ_OPEN_FRAMES");
+		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 600u;
+	}();
+	return frames;
+}
+
+struct ReadOpenState {
+	std::mutex                             mutex;
+	std::unordered_map<uint64_t, uint32_t> pages; // open tracker page -> guest frame it was opened in
+	std::atomic<uint64_t>                  opened {0};
+	std::atomic<uint64_t>                  neighbours {0};
+	std::atomic<uint64_t>                  promoted {0};
+	std::atomic<uint64_t>                  closed_stale {0};
+	std::atomic<uint64_t>                  closed_image {0};
+	std::atomic<uint64_t>                  closed_expired {0};
+	std::atomic<uint64_t>                  closed_off {0};
+	std::atomic<uint32_t>                  sweep_frame {0}; // written by the GPU thread
+	std::atomic<uint64_t>                  closed_unchecked {0};
+	uint64_t                               report_ns = 0; // GPU thread
+};
+ReadOpenState& ReadOpen() {
+	static ReadOpenState state;
+	return state;
+}
+
+// nps5 zerocopy4: KYTY_ZC_UPLOAD_CLASSIFY=<n> (diagnostic, default off; read once): classifies the
+// CPU->GPU upload traffic by what an in-place (zero-copy) upload would need. Every n-th tracker page
+// (by address) that an upload copies is hashed and compared with its previous upload:
+//  first      no previous upload of the page seen;
+//  unchanged  same bytes as the previous upload (fault-ahead, false sharing, rewritten equal);
+//  settled    changed, and the recording of the previous upload had completed on the GPU;
+//  in flight  changed while the recording that took the previous snapshot had not completed: GPU work
+//             recorded against the old bytes would read the new ones in place.
+// One "Kyty upload classes" line every 10 s (pages and MiB, scaled by n).
+struct UploadClassState {
+	struct Seen {
+		uint64_t hash = 0;
+		uint64_t tick = 0;
+	};
+	std::unordered_map<uint64_t, Seen> pages; // GPU thread
+	uint64_t                           count[4] {};
+	uint64_t                           hot_pages = 0;
+	uint64_t                           report_ns = 0;
+};
+UploadClassState& UploadClass() {
+	static UploadClassState state;
+	return state;
+}
+uint32_t UploadClassifyEvery() {
+	static const uint32_t every = [] {
+		const auto* value = std::getenv("KYTY_ZC_UPLOAD_CLASSIFY");
+		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
+	}();
+	return every;
+}
+uint64_t HashPage(const uint8_t* bytes) noexcept {
+	uint64_t hash = 0x9e3779b97f4a7c15ull;
+	for (uint32_t i = 0; i < TRACKER_PAGE_SIZE; i += 8) {
+		uint64_t word;
+		std::memcpy(&word, bytes + i, 8);
+		hash = (hash ^ word) * 0xff51afd7ed558ccdull;
+		hash ^= hash >> 29;
+	}
+	return hash;
+}
+
 thread_local int t_write_drain_kind = 1; // nps5 faultwin: see ReadFaultPublishedState::write_drains
 
 struct BurstWaitTimer {
@@ -1944,6 +2035,17 @@ BufferCache::UploadBatch::~UploadBatch() {
 
 void BufferCache::AdvanceFrame() noexcept {
 	m_memory_tracker.AdvanceFrame();
+	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the per-frame check runs on the GPU thread before a
+	// submission. If it did not run for 3 guest frames, nothing vouches for the open pages: close all.
+	if (auto& open = ReadOpen();
+	    m_memory_tracker.Frame() - open.sweep_frame.load(std::memory_order_relaxed) > 3) {
+		std::lock_guard lock(open.mutex);
+		for (const auto& [page, frame]: open.pages) {
+			(void)m_memory_tracker.CloseRead(page, TRACKER_PAGE_SIZE);
+			open.closed_unchecked.fetch_add(1, std::memory_order_relaxed);
+		}
+		open.pages.clear();
+	}
 	FaultCost::AdvanceFrame();
 	// KYTY_FAULT_AHEAD_ADAPT, applied once per guest flip (the cost model moves slowly).
 	MemoryTracker::SetFaultAheadOverride(FaultAheadOverridePages());
@@ -2327,6 +2429,17 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 				    whole ? m_memory_tracker.RelaxRead(span_begin, span)
 				          : m_memory_tracker.RelaxRead(page, TRACKER_PAGE_SIZE),
 				    std::memory_order_relaxed);
+			}
+			// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the served page (a buffer page, no image,
+			// published recently) stays readable from now on; the per-frame check keeps or closes it.
+			if (g_read_open.On() && m_eager_enabled) {
+				auto&           open = ReadOpen();
+				std::lock_guard lock(open.mutex);
+				if (open.pages.emplace(page, static_cast<uint32_t>(frame)).second) {
+					(void)m_memory_tracker.OpenRead(page, TRACKER_PAGE_SIZE);
+					open.opened.fetch_add(1, std::memory_order_relaxed);
+					FlightRec::ZcSkip(page, TRACKER_PAGE_SIZE, 5); // reason 5 = read-open
+				}
 			}
 			// Keep the page read-hot so its eager copy keeps publishing the GPU's new bytes.
 			(void)m_scheduler.Context().GetGpu().TrySendCommand(
@@ -3275,10 +3388,98 @@ void BufferCache::IssueEagerReadbacks() {
 	}
 	// This submission is the early flush a recorded writer may have asked for.
 	m_eager_flush = false;
+	const auto frame = m_memory_tracker.Frame();
+	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the per-frame check of the read-open pages.
+	if (auto& open = ReadOpen(); open.sweep_frame.load(std::memory_order_relaxed) != frame) {
+		open.sweep_frame.store(frame, std::memory_order_relaxed);
+		const auto now   = ReadFaultDiag::NowNs();
+		size_t     live  = 0;
+		{
+			const bool            on   = g_read_open.On();
+			const uint64_t        span = ReadRelaxSpan();
+			std::vector<uint64_t> add;
+			std::lock_guard       lock(open.mutex);
+			for (auto it = open.pages.begin(); it != open.pages.end();) {
+				const auto page  = it->first;
+				const bool image = m_texture_cache.IsRegionGpuModified(page, TRACKER_PAGE_SIZE);
+				const bool stale = !ReadFaultPublishedRecently(page, frame);
+				const bool old   = frame - it->second > ReadOpenMaxFrames();
+				if (!on || image || stale || old) {
+					(void)m_memory_tracker.CloseRead(page, TRACKER_PAGE_SIZE);
+					(!on ? open.closed_off : image ? open.closed_image : stale ? open.closed_stale
+					                                                         : open.closed_expired)
+					    .fetch_add(1, std::memory_order_relaxed);
+					FlightRec::ZcSkip(page, TRACKER_PAGE_SIZE, !on ? 9 : image ? 8 : stale ? 6 : 7);
+					it = open.pages.erase(it);
+					continue;
+				}
+				// No fault tells the eager set that the page is still read: keep it hot here.
+				NoteEagerRead(page, TRACKER_PAGE_SIZE, false);
+				const auto begin = Common::AlignDown(page, span);
+				for (auto other = begin; other < begin + span; other += TRACKER_PAGE_SIZE) {
+					if (other == page || open.pages.contains(other) ||
+					    !IsRegionGpuModifiedRelaxed(other, TRACKER_PAGE_SIZE) ||
+					    m_texture_cache.IsRegionGpuModified(other, TRACKER_PAGE_SIZE)) {
+						continue;
+					}
+					if (ReadFaultPublishedRecently(other, frame)) {
+						add.push_back(other);
+					} else if (!m_eager.IsHot(other)) {
+						NoteEagerRead(other, TRACKER_PAGE_SIZE, false);
+						open.promoted.fetch_add(1, std::memory_order_relaxed);
+					} else {
+						NoteEagerRead(other, TRACKER_PAGE_SIZE, false);
+					}
+				}
+				++it;
+			}
+			for (const auto page: add) {
+				if (open.pages.emplace(page, static_cast<uint32_t>(frame)).second) {
+					(void)m_memory_tracker.OpenRead(page, TRACKER_PAGE_SIZE);
+					open.neighbours.fetch_add(1, std::memory_order_relaxed);
+					FlightRec::ZcSkip(page, TRACKER_PAGE_SIZE, 5);
+				}
+			}
+			live = open.pages.size();
+		}
+		if (open.report_ns == 0) {
+			open.report_ns = now;
+		} else if (now - open.report_ns >= 10'000'000'000ull) {
+			open.report_ns  = now;
+			const auto take = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
+			const auto opened = take(open.opened);
+			const auto closed = take(open.closed_stale);
+			if (g_read_open.On() || live != 0 || opened != 0 || closed != 0) {
+				std::printf("Kyty read-open 10s: %zu pages open; opened %" PRIu64 " (+%" PRIu64
+				            " neighbours, %" PRIu64 " neighbours made read-hot); closed: not published "
+				            "recently %" PRIu64 ", image %" PRIu64 ", expired %" PRIu64 ", switched off %" PRIu64
+				            ", check missing %" PRIu64 "\n",
+				            live, opened, take(open.neighbours), take(open.promoted), closed,
+				            take(open.closed_image), take(open.closed_expired), take(open.closed_off),
+				            take(open.closed_unchecked));
+			}
+			if (UploadClassifyEvery() != 0) {
+				auto&        cls   = UploadClass();
+				const double scale = static_cast<double>(UploadClassifyEvery());
+				const auto   mib   = [scale](uint64_t pages) {
+					return static_cast<double>(pages) * scale * TRACKER_PAGE_SIZE / (1024.0 * 1024.0);
+				};
+				std::printf("Kyty upload classes 10s (every %u. page, scaled): first %.1f MiB, unchanged %.1f "
+				            "MiB, changed after its last upload completed %.1f MiB, changed in flight %.1f "
+				            "MiB; hot pages (rewritten every frame, compared by shadow) %.1f MiB\n",
+				            UploadClassifyEvery(), mib(cls.count[0]), mib(cls.count[1]), mib(cls.count[2]),
+				            mib(cls.count[3]), static_cast<double>(cls.hot_pages) * TRACKER_PAGE_SIZE / (1024.0 * 1024.0));
+				cls.count[0] = cls.count[1] = cls.count[2] = cls.count[3] = 0;
+				cls.hot_pages                                              = 0;
+				if (cls.pages.size() > 400000) {
+					cls.pages.clear();
+				}
+			}
+		}
+	}
 	if (m_eager.Empty()) {
 		return;
 	}
-	const auto frame = m_memory_tracker.Frame();
 	m_eager.Sweep(frame);
 	if (m_eager.Candidates() == 0) {
 		return;
@@ -3693,6 +3894,35 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		// A normal upload replaces whatever a hot page shadow described.
 		for (const auto& copy: copies) {
 			EraseHotShadows(buffer.CpuAddress() + copy.dstOffset, copy.size);
+		}
+		if (const auto every = UploadClassifyEvery(); every != 0 && GuestGpu::IsGpuThread()) [[unlikely]] {
+			// nps5 zerocopy4 (KYTY_ZC_UPLOAD_CLASSIFY): see UploadClassState.
+			auto&      cls  = UploadClass();
+			const auto tick = m_scheduler.CurrentTick();
+			for (const auto& copy: copies) {
+				const auto begin = buffer.CpuAddress() + copy.dstOffset;
+				for (auto page = Common::AlignUp(begin, TRACKER_PAGE_SIZE);
+				     page + TRACKER_PAGE_SIZE <= begin + copy.size; page += TRACKER_PAGE_SIZE) {
+					if ((page / TRACKER_PAGE_SIZE) % every != 0) {
+						continue;
+					}
+					uint8_t bytes[TRACKER_PAGE_SIZE];
+					if (!LibKernel::Memory::TryReadBacking(page, bytes, TRACKER_PAGE_SIZE)) {
+						continue;
+					}
+					const auto hash = HashPage(bytes);
+					auto&      seen = cls.pages[page];
+					const int  kind = seen.tick == 0 ? 0
+					                 : seen.hash == hash ? 1
+					                 : m_scheduler.IsFree(seen.tick) ? 2 : 3;
+					cls.count[kind]++;
+					seen.hash = hash;
+					seen.tick = tick;
+				}
+			}
+			for (const auto& range: hot_ranges) {
+				cls.hot_pages += range.size / TRACKER_PAGE_SIZE;
+			}
 		}
 		guest_copies = copies.size();
 		host_base    = total_size;

@@ -427,6 +427,37 @@ uint64_t MemoryTracker::RelaxRead(uint64_t vaddr, uint64_t size) {
 	return pages;
 }
 
+uint64_t MemoryTracker::OpenRead(uint64_t vaddr, uint64_t size) {
+	CheckNotInUploadCallback();
+	uint64_t pages = 0;
+	Iterate<false>(vaddr, size, [&pages](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+		std::scoped_lock lock(manager->lock);
+		pages += manager->OpenRead(manager->GetCpuAddr() + offset, bytes);
+	});
+	return pages;
+}
+
+uint64_t MemoryTracker::CloseRead(uint64_t vaddr, uint64_t size) {
+	CheckNotInUploadCallback();
+	uint64_t pages = 0;
+	Iterate<false>(vaddr, size, [&pages](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+		std::scoped_lock lock(manager->lock);
+		pages += manager->CloseRead(manager->GetCpuAddr() + offset, bytes);
+	});
+	return pages;
+}
+
+bool MemoryTracker::IsReadOpen(uint64_t vaddr, uint64_t size) {
+	bool open = true;
+	bool any  = false;
+	Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+		std::scoped_lock lock(manager->lock);
+		any  = true;
+		open = open && manager->IsReadOpen(manager->GetCpuAddr() + offset, bytes);
+	});
+	return any && open;
+}
+
 MemoryTracker::ReadbackUnmarkResult MemoryTracker::UnmarkReadbackPending(uint64_t vaddr,
                                                                          uint64_t size) {
 	CheckNotInUploadCallback();
@@ -464,6 +495,8 @@ void MemoryTracker::UntrackMemory(uint64_t vaddr, uint64_t size) {
 	uint32_t demoted = 0;
 	Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		NotifyCpuMutation(manager->GetCpuAddr() + offset, bytes);
+		// nps5 zerocopy4: an untracked range keeps no open read (nothing here is GPU-dirty).
+		(void)manager->CloseRead(manager->GetCpuAddr() + offset, bytes);
 		manager->ChangeState<DirtySource::Cpu, true>(manager->GetCpuAddr() + offset, bytes);
 		demoted += manager->DemoteHot(manager->GetCpuAddr() + offset, bytes, m_hot_count);
 	});

@@ -492,6 +492,39 @@ public:
 		return pages;
 	}
 
+	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the pages of a range stay readable across GPU
+	// ownership changes (they stay write-watched while not CPU-dirty) until CloseRead. Unlike a
+	// relaxed read, a new GPU writer does not re-arm the read watch: the caller (BufferCache)
+	// keeps a page open only while readbacks keep publishing it. Returns the pages opened now.
+	uint64_t OpenRead(uint64_t vaddr, uint64_t size) {
+		const auto [start, end] = GetPageRange(vaddr, size);
+		const RegionBits open(m_open_read, start, end);
+		const uint64_t   pages = (end - start) - open.Count();
+		if (pages != 0) {
+			m_open_read.SetRange(start, end);
+			UpdateProtection<false, true>();
+		}
+		return pages;
+	}
+
+	// Ends OpenRead: GPU-dirty pages of the range that are not relaxed become access-watched again.
+	// Returns the pages closed now.
+	uint64_t CloseRead(uint64_t vaddr, uint64_t size) {
+		const auto [start, end] = GetPageRange(vaddr, size);
+		const RegionBits open(m_open_read, start, end);
+		const uint64_t   pages = open.Count();
+		if (pages != 0) {
+			m_open_read.UnsetRange(start, end);
+			UpdateProtection<true, true>();
+		}
+		return pages;
+	}
+
+	[[nodiscard]] bool IsReadOpen(uint64_t vaddr, uint64_t size) const {
+		const auto [start, end] = GetPageRange(vaddr, size);
+		return RegionBits(m_open_read, start, end).Count() == end - start;
+	}
+
 	void MarkReadbackPending(uint64_t vaddr, uint64_t size) {
 		const auto [start, end] = GetPageRange(vaddr, size);
 		const RegionBits dirty(m_gpu_dirty, start, end);
@@ -562,7 +595,8 @@ private:
 			// nps5 faultwin: relaxed reads only ever cover GPU-dirty pages.
 			m_relaxed_read = m_relaxed_read & m_gpu_dirty;
 		}
-		const auto protection = is_read ? (~m_gpu_dirty | m_relaxed_read) : m_cpu_dirty;
+		const auto protection =
+		    is_read ? (~m_gpu_dirty | m_relaxed_read | m_open_read) : m_cpu_dirty;
 		auto&      previous   = is_read ? m_readable : m_writable;
 		auto       mask       = protection ^ previous;
 		if (mask.None()) {
@@ -615,6 +649,9 @@ private:
 	// nps5 faultwin (KYTY_READ_RELAX): GPU-dirty pages whose read watch was dropped (they stay
 	// write-watched) until their next GPU ownership change.
 	RegionBits   m_relaxed_read;
+	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): pages kept readable whatever their GPU-dirty bit
+	// (OpenRead / CloseRead). Only the read watch looks at it; no dirty state depends on it.
+	RegionBits   m_open_read;
 	RegionBits   m_writable;
 	RegionBits   m_readable;
 	// Hot pages: always a subset of m_cpu_dirty (never GPU-dirty).

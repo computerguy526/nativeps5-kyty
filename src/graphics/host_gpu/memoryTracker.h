@@ -88,6 +88,12 @@ public:
 	// nps5 faultwin (KYTY_READ_RELAX, RegionManager::RelaxRead): GPU-dirty pages of the range
 	// become readable (still write-watched) until their next GPU transition. Returns pages relaxed.
 	uint64_t                           RelaxRead(uint64_t vaddr, uint64_t size);
+	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN, RegionManager::OpenRead / CloseRead): the pages of
+	// the range stay readable for guest threads across GPU ownership changes, until closed. Dirty
+	// bits, serials and the write watch are untouched. Any thread. Return the pages changed.
+	uint64_t                           OpenRead(uint64_t vaddr, uint64_t size);
+	uint64_t                           CloseRead(uint64_t vaddr, uint64_t size);
+	[[nodiscard]] bool                 IsReadOpen(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] ReadbackUnmarkResult UnmarkReadbackPending(uint64_t vaddr, uint64_t size);
 	// A dirty-state mutation token, not a backing/GPU cleanliness proof. UINT64_MAX means
 	// saturated: callers must conservatively stop reusing any previously observed token. While
