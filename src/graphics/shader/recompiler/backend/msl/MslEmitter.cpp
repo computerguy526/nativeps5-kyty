@@ -98,10 +98,29 @@ size_t BlockIndexById(const IR::Program& program, uint32_t id) {
 	return SIZE_MAX;
 }
 
-std::string PreludeText(bool fuse_mad) {
+// mslrest4: integer f32->f16 round-toward-zero exactly as Kyty's SPIR-V (KK MSL: explicit half denormals, 0x7bff clamp,
+// quiet NaN payload) instead of half(x) + step back (Metal's half conversion may flush half denormals). Graphics stages
+// by default (pipe 3 capture: 1-ulp f16 alpha); compute kernels keep the verified text unless KYTY_MSL_F16_RTZ_INT=1.
+const char* const kF16RtzInt = R"(static inline ushort kyty_f16_rtz(float x) {
+  uint u = as_type<uint>(x); uint a = u & 0x7fffffffu;
+  uint e = min(31743u, (a >> 13) + 4294852608u);
+  uint s = min(31u, as_type<uint>(126 - int(a >> 23)));
+  uint d = ((u & 8388607u) | 8388608u) >> s;
+  uint r = a < 947912704u ? d : e;
+  if (a >= 2139095040u) r = ((a >> 13) & 32767u) | (a > 2139095040u ? 512u : 0u);
+  return ushort(r | ((u >> 16) & 32768u));
+}
+)";
+
+std::string PreludeText(bool fuse_mad, bool gfx = false) {
 	std::string t(Prelude);
-	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x
-		            // fewer ALU ops on mad-heavy kernels
+	const char* fe = std::getenv("KYTY_MSL_F16_RTZ_INT");
+	if (fe != nullptr ? std::strcmp(fe, "1") == 0 : gfx) {
+		const auto b0 = t.find("static inline ushort kyty_f16_rtz(float x) {");
+		const auto b1 = t.find("\n}\n", b0);
+		if (b0 != std::string::npos && b1 != std::string::npos) t.replace(b0, b1 + 3 - b0, kF16RtzInt);
+	}
+	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x fewer ALU ops on mad-heavy kernels
 		const std::string off = "#pragma METAL fp contract(off)";
 		t.replace(t.find(off), off.size(), "#pragma METAL fp contract(fast)");
 	}
@@ -1116,8 +1135,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		real.Run();
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
-		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad) +
-		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) + LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
 		return result;
@@ -1149,8 +1167,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (gfx_stage) b.Line(ctx.ret);
 	b.Close(); // kernel
 
-	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad) +
-	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage) + LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();
 	return result;
