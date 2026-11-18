@@ -1,0 +1,88 @@
+#pragma once
+
+#include <unordered_set>
+// Internal interface of the MSL emitter. T1 (core: ALU, flow, entry) owns MslEmitter.cpp /
+// mslEmitterAlu.cpp; T2 (memory, images, LDS, atomics, wave ops, binding model) owns
+// mslEmitterMem*.cpp and implements the three hooks below (T1 ships weak defaults in
+// mslEmitterMemStub.cpp; a strong definition in T2's file replaces them at link time).
+#include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
+#include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
+
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace Libs::Graphics::ShaderRecompiler::Msl {
+
+struct GfxIo; // vertex/pixel stage IO (MslStageIo.cpp)
+
+struct MslCtx {
+	const IR::Program&   program;
+	ShaderStageInputInfo input_info;
+	MslBuilder           b;           // the kernel body is written here
+	uint32_t             lanes = 1;   // guest lanes per Metal thread (1 or 2); lane h = half h
+	bool                 wave64_single = false; // wave64 program emitted one guest lane per Metal thread (no cross-lane ops)
+	uint32_t             half  = 0;   // the half being emitted (set per instruction by the core)
+	std::unordered_map<const IR::Inst*, uint32_t> ids;  // SSA numbering (v<id>[_<half>])
+	std::map<std::string, uint32_t>              unsupported;
+	bool                                         options_comments = true;
+	std::string                                  ret = "return;"; // statement that leaves the entry point
+	std::shared_ptr<GfxIo>                       gfx;             // set for vertex/pixel programs
+	uint32_t                                     loop_cap = 0;    // MslOptions::loop_cap (0 = no loop guard)
+	bool                                         loop_private = false; // per-loop counters (program has barriers)
+	uint32_t                                     loop_guards = 0; // private counters handed out
+	// nps5 gpuguard: guard statement for the loop body just opened (empty when off); declares a private counter
+	// before the loop via `decl` when needed (emit decl BEFORE opening the loop).
+	[[nodiscard]] std::string LoopGuard(std::string* decl);
+	bool                                         kk_bda = false;  // mslinject: KK binding convention (MslKkBda.cpp)
+	// mslaudit: LDS loads that a path reaches from an LDS store/atomic with no barrier/fence in between (lockstep code:
+	// GCN omits S_BARRIER for one-wave groups) get KYTY_LDS_FENCE() (simdgroup-scope memory fence) before them.
+	std::unordered_set<const IR::Inst*>          lds_fence;
+
+	explicit MslCtx(const IR::Program& p, ShaderStageInputInfo i): program(p), input_info(i) {}
+
+	// MSL expression of an IR value for `half` (immediates as literals, instructions as v<id>).
+	[[nodiscard]] std::string Val(const IR::Value& value, uint32_t h) const;
+	[[nodiscard]] std::string Val(const IR::Value& value) const { return Val(value, half); }
+	// Name of the variable an instruction's result lives in for `half`.
+	[[nodiscard]] std::string Name(const IR::Inst& inst, uint32_t h) const;
+	[[nodiscard]] std::string Name(const IR::Inst& inst) const { return Name(inst, half); }
+	// Guest lane index (0..lanes*32-1 within the wave) of this thread for the current half.
+	[[nodiscard]] std::string LaneExpr(uint32_t h) const;
+	// Records an unsupported opcode (coverage) and returns false.
+	bool Unsupported(const IR::Inst& inst);
+};
+
+// --- T2 hooks (weak defaults: "unsupported") ---
+// Emits one memory/image/LDS/atomic/wave instruction for ctx.half. Return false if not handled; if
+// handled and the instruction has a result, assign it to ctx.Name(inst).
+bool EmitMemoryInst(MslCtx& ctx, const IR::Inst& inst);
+// Extra kernel parameters ("constant Resources& r [[buffer(0)]]", "threadgroup uint* lds
+// [[threadgroup(0)]]", ...), appended after the core's thread/group id and push parameters.
+void EmitResourceParams(MslCtx& ctx, std::vector<std::string>& params);
+// Declarations placed before the kernel (structs, helpers).
+void EmitResourcePrelude(MslCtx& ctx);
+// Statements at the start of the kernel body (kk-bda: builds r/push/tgpig/lds from KK's root table).
+void EmitResourceLocals(MslCtx& ctx);
+
+} // namespace Libs::Graphics::ShaderRecompiler::Msl
+
+namespace Libs::Graphics::ShaderRecompiler::Msl {
+// --- mslinject kk-bda convention (MslKkBda.cpp) ---
+namespace Mem { struct BindingModel; }
+bool        KkBdaRequested();                 // env KYTY_MSL_CONVENTION=kk-bda
+bool        MipStatsPlainRequested();         // env KYTY_MSL_MIPSTATS_PLAIN=1: feedback-free twin of a MipStats PS
+std::string KkBdaPrelude();
+std::string KkBdaLayoutComment(const IR::Program& program);
+void        KkBdaParams(MslCtx& ctx, const Mem::BindingModel& m, std::vector<std::string>& params);
+void        KkBdaLocals(MslCtx& ctx, const Mem::BindingModel& m);
+// --- M3 graphics stage IO (MslStageIo.cpp) ---
+bool GfxIsStage(ShaderType stage);
+std::shared_ptr<GfxIo> GfxSetup(MslCtx& ctx); // writes the VIn/VOut/FIn/FOut structs into ctx.b, sets ctx.ret
+std::string GfxEntryPrefix(const GfxIo& g);   // "[[early_fragment_tests]] fragment FOut "
+const std::vector<std::string>& GfxParams(const GfxIo& g);
+void GfxLocals(MslCtx& ctx, const GfxIo& g);  // "VOut out = {};" ...
+std::string GfxBuiltin(MslCtx& ctx, const GfxIo& g, uint32_t kind, uint32_t comp);
+bool GfxEmitInst(MslCtx& ctx, GfxIo& g, const IR::Inst& inst);
+} // namespace Libs::Graphics::ShaderRecompiler::Msl

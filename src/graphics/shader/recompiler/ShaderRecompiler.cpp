@@ -7,6 +7,8 @@
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/backend/msl/MslBindingFromIr.h"
+#include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/frontend/translate/Translate.h"
@@ -1098,7 +1100,22 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 
 	LOGF("%s phase begin: stage=%s hash=0x%016" PRIx64 " SPIR-V EmitProgram\n",
 	     GetDumpLabel(options), StageName(ir.stage), ir.shader_hash);
-	auto spirv = Spirv::EmitProgram(ir, options.input_info);
+	std::vector<uint32_t> spirv;
+	if (options.emit_spirv) spirv = Spirv::EmitProgram(ir, options.input_info);
+	CompileResult msl_result;
+	if (options.emit_msl) {
+		Msl::MslOptions msl_options;
+		msl_options.force_dispatcher = options.msl_force_dispatcher;
+		msl_options.loop_cap         = options.msl_loop_cap;
+		const auto msl = Msl::EmitProgram(ir, options.input_info, msl_options);
+		msl_result.msl_structured = msl.structured;
+		msl_result.msl          = msl.source;
+		msl_result.msl_manifest = Msl::BuildManifestJson(ir, options.input_info);
+		msl_result.msl_complete = msl.complete;
+		for (const auto& [name, count]: msl.unsupported) {
+			msl_result.msl_unsupported.push_back(name + " x" + std::to_string(count));
+		}
+	}
 	LOGF("%s phase end: stage=%s hash=0x%016" PRIx64 " SPIR-V EmitProgram words=%" PRIu64
 	     " elapsed_ms=%" PRIu64 "\n",
 	     GetDumpLabel(options), StageName(ir.stage), ir.shader_hash,
@@ -1106,14 +1123,19 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	     static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
 	                               std::chrono::steady_clock::now() - emit_begin)
 	                               .count()));
-	if (ir.info.uses_bvh) {
+	CompileResult result;
+	if (options.emit_spirv && ir.info.uses_bvh) {
 		NoteBvhKernelModule(ir, spirv, options.input_info);
 	}
-	CompileResult result;
-	if (options.plain_mip_stats_variant && IR::UsesMipStats(ir)) {
+	if (options.emit_spirv && options.plain_mip_stats_variant && IR::UsesMipStats(ir)) {
 		result.spirv_plain = Spirv::EmitProgram(ir, options.input_info, false);
 	}
 	result.spirv   = std::move(spirv);
+	result.msl     = std::move(msl_result.msl);
+	result.msl_manifest    = std::move(msl_result.msl_manifest);
+	result.msl_complete    = msl_result.msl_complete;
+	result.msl_structured  = msl_result.msl_structured;
+	result.msl_unsupported = std::move(msl_result.msl_unsupported);
 	result.program = std::move(ir);
 	if (options.dump_ir) {
 		result.decoded_dump = std::move(translated.decoded_dump);

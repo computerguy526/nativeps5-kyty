@@ -328,6 +328,8 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/translate/*.h"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/spirv/*.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/spirv/*.h"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/msl/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/msl/*.h"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/*.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/*.h"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/opcodes/*.cpp"
@@ -919,6 +921,33 @@ add_executable(kyty_pipeline_list EXCLUDE_FROM_ALL
 )
 target_link_libraries(kyty_pipeline_list xxhash libzstd_static nlohmann_json::nlohmann_json)
 target_include_directories(kyty_pipeline_list PRIVATE ${inc_headers})
+
+# kyty_msl_dump: Kyty's direct MSL back end (recompiler/backend/msl) for one shader of a program cache
+# (tools/msl-dump/kytyMslDump.cpp). nativeps5's `nps5 cache prepare` runs it to generate the verified Metal kernels on the
+# player's Mac (keys list games/<id>/metal-shaders.tsv). Standalone: recompiler + MSL back end, SPIR-V back end stubbed.
+file(GLOB kyty_msl_dump_src CONFIGURE_DEPENDS
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/*/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/opcodes/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/*.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/backend/msl/*.cpp"
+)
+add_executable(kyty_msl_dump EXCLUDE_FROM_ALL
+	"${CMAKE_CURRENT_SOURCE_DIR}/tools/msl-dump/kytyMslDump.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/tools/msl-dump/spirvStubs.cpp"
+	${kyty_msl_dump_src}
+	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
+)
+target_compile_definitions(kyty_msl_dump PRIVATE KYTY_MSL_STANDALONE=1)
+target_link_libraries(kyty_msl_dump common fmt::fmt Zydis::Zydis xbyak::xbyak)
+target_include_directories(kyty_msl_dump PRIVATE ${inc_headers})
+if (APPLE)
+	target_link_libraries(kyty_msl_dump "-framework CoreFoundation" "-framework IOKit")
+endif()
 
 add_executable(shader_code_snapshot_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ShaderCodeSnapshotTests.cpp")
 target_link_libraries(shader_code_snapshot_tests xxhash)
