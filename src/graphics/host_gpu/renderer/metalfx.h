@@ -57,6 +57,22 @@ void NoteFlip();
 void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
              uint32_t color_count);
 
+// KYTY_RES_AUDIT=1|2 (diagnostic, default off; independent of KYTY_METALFX): resolution audit for
+// a forced internal resolution (720p patch of a title that only ever renders >= 1080p). Once per
+// (shader, image extents, grid) signature, every draw or compute dispatch where a bound image or
+// colour target has a 1080p-derived extent (1920x1080 / 2^k, k = 0..6, height rounded either way),
+// or a direct dispatch whose thread grid (groups x threads per group) covers such an extent, is
+// logged as "ResAudit:" with the shader hash, its guest code address, the grid, the target and
+// every bound image (extent, format, guest address), plus flags: img1080/k (1080p-derived image),
+// grid1080/k (grid covers 1920x1080/2^k), mixed (a 720p-derived image in the same call), grid>img
+// (grid more than one group beyond every bound image). =2 logs every signature (census).
+// KYTY_RES_AUDIT_FROM_S=<s>: start that many seconds after the first call (skip loading screens);
+// KYTY_RES_AUDIT_MAX=<n> (default 4000) caps the lines. Base size: KYTY_RES_AUDIT_BASE=WxH
+// (default 1920x1080), the internal one: KYTY_RES_AUDIT_INTERNAL=WxH (default 1280x720).
+[[nodiscard]] bool ResAuditEnabled();
+void ResAudit(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
+              uint32_t color_count, const uint32_t* groups, const uint32_t* threads, uint64_t code_address);
+
 } // namespace Libs::Graphics::MetalFx
 
 #endif // EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_METALFX_H_

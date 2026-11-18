@@ -4263,6 +4263,12 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 
+	// nps5 KYTY_RES_AUDIT (metalfx.h): draws touching 1080p-derived images at a forced internal size.
+	if (MetalFx::ResAuditEnabled() && state.ps_active && bindings.pixel.has_value()) [[unlikely]] {
+		MetalFx::ResAudit("draw", *bindings.pixel, m_context.GetTextureCache(),
+		                  state.color_count != 0 ? state.color_info[0].image_id : ImageId {}, state.color_count,
+		                  nullptr, nullptr, buffer.GetShaders().GetPs().ps_regs.data_addr);
+	}
 	// nps5 KYTY_METALFX (metalfx.h): the same replacement with Apple MetalFX.
 	if (MetalFx::Requested()) [[unlikely]] {
 		NoteMetalFxTargets(std::span<const RenderColorInfo> {state.color_info, state.color_count},

@@ -23,7 +23,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 
 namespace Libs::Graphics {
 
@@ -426,6 +428,180 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 		std::printf("MetalFX find3:   buffer %llx+%u:%s\n", static_cast<unsigned long long>(source.address),
 		            static_cast<unsigned>(source.size), words.c_str());
 	}
+	std::fflush(stdout);
+}
+
+namespace {
+
+struct ResAuditConfig {
+	int      level      = 0;
+	int64_t  from_ns    = 0;
+	uint32_t max_lines  = 4000;
+	uint32_t base_w     = 1920;
+	uint32_t base_h     = 1080;
+	uint32_t internal_w = 1280;
+	uint32_t internal_h = 720;
+};
+
+const ResAuditConfig& ResAuditGet() {
+	static const ResAuditConfig config = [] {
+		ResAuditConfig c;
+		const auto size = [](const char* name, uint32_t& w, uint32_t& h) {
+			if (const char* value = std::getenv(name); value != nullptr) {
+				unsigned a = 0;
+				unsigned b = 0;
+				if (std::sscanf(value, "%ux%u", &a, &b) == 2 && a != 0 && b != 0) {
+					w = a;
+					h = b;
+				}
+			}
+		};
+		if (const char* value = std::getenv("KYTY_RES_AUDIT"); value != nullptr) {
+			c.level = std::atoi(value);
+		}
+		if (const char* value = std::getenv("KYTY_RES_AUDIT_FROM_S"); value != nullptr) {
+			c.from_ns = static_cast<int64_t>(std::atoi(value)) * 1'000'000'000LL;
+		}
+		if (const char* value = std::getenv("KYTY_RES_AUDIT_MAX"); value != nullptr) {
+			c.max_lines = static_cast<uint32_t>(std::max(std::atoi(value), 1));
+		}
+		size("KYTY_RES_AUDIT_BASE", c.base_w, c.base_h);
+		size("KYTY_RES_AUDIT_INTERNAL", c.internal_w, c.internal_h);
+		if (c.level > 0) {
+			std::printf("ResAudit: on (level %d, base %ux%u, internal %ux%u, from %lld s, max %u lines)\n", c.level,
+			            c.base_w, c.base_h, c.internal_w, c.internal_h,
+			            static_cast<long long>(c.from_ns / 1'000'000'000LL), c.max_lines);
+			std::fflush(stdout);
+		}
+		return c;
+	}();
+	return config;
+}
+
+// k when (w, h) is (base_w, base_h) / 2^k with the division rounded either way (k = 0..6), else -1.
+int DerivedLevel(uint32_t w, uint32_t h, uint32_t base_w, uint32_t base_h) {
+	for (int k = 0; k <= 6; k++) {
+		const uint32_t d  = 1u << static_cast<uint32_t>(k);
+		const uint32_t wf = base_w / d;
+		const uint32_t wc = (base_w + d - 1) / d;
+		const uint32_t hf = base_h / d;
+		const uint32_t hc = (base_h + d - 1) / d;
+		if ((w == wf || w == wc) && (h == hf || h == hc)) {
+			return k;
+		}
+	}
+	return -1;
+}
+
+// k when a grid of `groups` x `threads` covers (base / 2^k) with less than one group to spare.
+int GridLevel(const uint32_t* groups, const uint32_t* threads, uint32_t base_w, uint32_t base_h) {
+	const uint32_t tx = std::max(threads[0], 1u);
+	const uint32_t ty = std::max(threads[1], 1u);
+	for (int k = 0; k <= 6; k++) {
+		const uint32_t d = 1u << static_cast<uint32_t>(k);
+		const uint32_t w = (base_w + d - 1) / d;
+		const uint32_t h = (base_h + d - 1) / d;
+		if (groups[0] == (w + tx - 1) / tx && groups[1] == (h + ty - 1) / ty && (groups[0] > 1 || groups[1] > 1)) {
+			return k;
+		}
+	}
+	return -1;
+}
+
+} // namespace
+
+bool ResAuditEnabled() {
+	static const bool enabled = ResAuditGet().level > 0;
+	return enabled;
+}
+
+void ResAudit(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
+              uint32_t color_count, const uint32_t* groups, const uint32_t* threads, uint64_t code_address) {
+	const auto& c = ResAuditGet();
+	if (c.level <= 0 || bindings.runtime == nullptr || !*bindings.runtime) {
+		return;
+	}
+	static std::mutex                    mutex;
+	static std::unordered_set<uint64_t>  seen;
+	static uint32_t                      lines    = 0;
+	static int64_t                       first_ns = 0;
+	std::lock_guard                      lock(mutex);
+	const auto                           now = NowNs();
+	if (first_ns == 0) {
+		first_ns = now;
+	}
+	if (now - first_ns < c.from_ns || lines >= c.max_lines) {
+		return;
+	}
+	const uint64_t hash  = bindings.runtime->program->shader_hash;
+	uint64_t       sig   = hash * 0x9e3779b97f4a7c15ull ^ (std::strcmp(kind, "draw") == 0 ? 1u : 2u);
+	const auto     mix   = [&sig](uint64_t v) { sig = (sig ^ v) * 0x100000001b3ull; };
+	std::string    flags;
+	std::string    text;
+	int            img_k    = -1;
+	bool           has_720  = false;
+	uint32_t       max_w    = 0;
+	uint32_t       max_h    = 0;
+	const auto     note     = [&](const Image* image, std::string& out) {
+        const uint32_t w = image->info.extent.width;
+        const uint32_t h = image->info.extent.height;
+        mix((static_cast<uint64_t>(w) << 32u) | h);
+        const int k = DerivedLevel(w, h, c.base_w, c.base_h);
+        if (k >= 0 && (img_k < 0 || k < img_k)) {
+            img_k = k;
+        }
+        has_720 = has_720 || DerivedLevel(w, h, c.internal_w, c.internal_h) >= 0;
+        max_w   = std::max(max_w, w);
+        max_h   = std::max(max_h, h);
+        out += fmt::format(" {}x{}{}:{}@{:x}", w, h, k >= 0 ? fmt::format("[1080/{}]", 1u << static_cast<uint32_t>(k)) : "",
+                           vk::to_string(image->backing.format), image->info.data.address);
+	};
+	const Image* out = output ? cache.TryGetImage(output) : nullptr;
+	std::string  out_text = "-";
+	if (out != nullptr) {
+		out_text.clear();
+		note(out, out_text);
+	}
+	for (const auto& binding: bindings.images) {
+		if (const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr; image != nullptr) {
+			note(image, text);
+		} else {
+			text += " -";
+		}
+	}
+	int grid_k = -1;
+	std::string grid_text = "-";
+	if (groups != nullptr && threads != nullptr) {
+		mix((static_cast<uint64_t>(groups[0]) << 40u) ^ (static_cast<uint64_t>(groups[1]) << 20u) ^ groups[2]);
+		grid_k    = GridLevel(groups, threads, c.base_w, c.base_h);
+		grid_text = fmt::format("{}x{}x{} groups of {}x{}x{} = {}x{}", groups[0], groups[1], groups[2], threads[0],
+		                        threads[1], threads[2], groups[0] * std::max(threads[0], 1u),
+		                        groups[1] * std::max(threads[1], 1u));
+		const uint32_t cover_w = groups[0] * std::max(threads[0], 1u);
+		const uint32_t cover_h = groups[1] * std::max(threads[1], 1u);
+		if (max_w != 0 && (cover_w >= max_w + std::max(threads[0], 1u) || cover_h >= max_h + std::max(threads[1], 1u))) {
+			flags += " grid>img";
+		}
+	}
+	if (img_k >= 0) {
+		flags += fmt::format(" img1080/{}", 1u << static_cast<uint32_t>(img_k));
+	}
+	if (grid_k >= 0) {
+		flags += fmt::format(" grid1080/{}", 1u << static_cast<uint32_t>(grid_k));
+	}
+	if ((img_k >= 0 || grid_k >= 0) && has_720) {
+		flags += " mixed";
+	}
+	if (c.level < 2 && img_k < 0 && grid_k < 0) {
+		return;
+	}
+	if (!seen.insert(sig).second) {
+		return;
+	}
+	lines++;
+	std::printf("ResAudit: %s shader %016llx code %llx targets %u grid %s flags%s output %s images:%s\n", kind,
+	            static_cast<unsigned long long>(hash), static_cast<unsigned long long>(code_address), color_count,
+	            grid_text.c_str(), flags.empty() ? " -" : flags.c_str(), out_text.c_str(), text.c_str());
 	std::fflush(stdout);
 }
 

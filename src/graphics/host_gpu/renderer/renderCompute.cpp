@@ -525,6 +525,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (MetalFx::FindWide()) [[unlikely]] {
 		MetalFx::FindLog("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0);
 	}
+	if (MetalFx::ResAuditEnabled()) [[unlikely]] {
+		const uint32_t groups[3]  = {thread_group_x, thread_group_y, thread_group_z};
+		const uint32_t threads[3] = {cs_regs.cs_regs.num_thread_x, cs_regs.cs_regs.num_thread_y,
+		                             cs_regs.cs_regs.num_thread_z};
+		MetalFx::ResAudit("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0, groups, threads,
+		                  cs_regs.cs_regs.data_addr);
+	}
 	CpGaps::Phase(CpGaps::Cat::DispatchBda);
 	if (program.info.uses_dma) {
 		m_context.PrepareBda();
@@ -816,6 +823,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	FindBuffers(bindings);
 	if (MetalFx::FindWide()) [[unlikely]] {
 		MetalFx::FindLog("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0);
+	}
+	if (MetalFx::ResAuditEnabled()) [[unlikely]] {
+		MetalFx::ResAudit("dispatch-indirect", bindings, m_context.GetTextureCache(), ImageId {}, 0, nullptr,
+		                  nullptr, cs_regs.cs_regs.data_addr);
 	}
 	CpGaps::Phase(CpGaps::Cat::DispatchBda);
 	const auto& program = *input_info.stage.program;
