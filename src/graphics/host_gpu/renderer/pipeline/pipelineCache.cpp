@@ -11,6 +11,7 @@
 #include "common/hangWatchdog.h"
 #include "common/liveSwitch.h"
 #include "common/logging/log.h"
+#include "common/nps5Frame.h"
 #include "common/prepPhases.h"
 #include "common/profiler.h"
 #include "common/ramStats.h"
@@ -61,6 +62,11 @@
 #include <dlfcn.h>
 #endif
 #include <unistd.h>
+#endif
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#include <sys/resource.h>
+#include <sys/types.h>
 #endif
 #include <array>
 #include <atomic>
@@ -6556,6 +6562,17 @@ struct PipelineCache::DriverCacheSaver {
 		if (pending == 0 || oversized || now < retry_after_ns) {
 			return false;
 		}
+		if (!LegacySave()) {
+			// cachesave: defer while the game is stalled/loading (frame >100 ms in the last 5 s; the
+			// serialize + 285 MB write competes with it), and back off after saves that found no change.
+			const auto slow = Nps5Frame::g_slow_frame_ns.load(std::memory_order_relaxed);
+			if (slow != 0 && now >= slow && now - slow < 5'000'000'000ull && now - last_save_ns < 10 * settings.interval_ns) {
+				return false;
+			}
+			if (identical_saves != 0 && now - last_save_ns < settings.interval_ns << std::min<uint32_t>(identical_saves, 4)) {
+				return false;
+			}
+		}
 		const auto since_save   = now - last_save_ns;
 		const auto last_created = last_created_ns.load(std::memory_order_relaxed);
 		const auto since_create = now > last_created ? now - last_created : 0;
@@ -6567,9 +6584,23 @@ struct PipelineCache::DriverCacheSaver {
 		       since_save >= 3 * settings.interval_ns;
 	}
 
+	// KYTY_PIPELINE_CACHE_SAVE_LEGACY=1: the old behaviour (always rewrite, normal I/O priority).
+	static bool LegacySave() {
+		static const bool v = EnvU64("KYTY_PIPELINE_CACHE_SAVE_LEGACY", 0) != 0;
+		return v;
+	}
+
 	void Run(const std::stop_token& stop) {
 		Profiler::SetThreadName("PipelineCacheSaver");
 		Common::PlaceCurrentThreadCold();
+#ifdef __APPLE__
+		if (!LegacySave()) {
+			// cachesave: background QoS and throttled disk I/O for this thread (the page-cache
+			// writes of the 285 MB file otherwise compete with a swapping game).
+			pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
+			setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE);
+		}
+#endif
 		std::mutex                  mutex;
 		std::condition_variable_any wake;
 		std::unique_lock            lock(mutex);
@@ -6642,6 +6673,8 @@ struct PipelineCache::DriverCacheSaver {
 	uint64_t saved_created  = 0;
 	uint64_t last_save_ns   = 0;
 	uint64_t retry_after_ns = 0;
+	uint32_t identical_saves = 0;  // consecutive periodic saves whose bytes equalled the previous file
+	uint64_t last_payload_hash = 0;
 	bool     oversized      = false;
 	bool     term_hook      = false;
 	// While a save runs vkGetPipelineCacheData; pipelines created meanwhile are counted as overlaps.
@@ -6713,6 +6746,17 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 		                 payload.size(), MaxDriverCacheFileSize);
 		return DriverCacheSaver::WriteOversized;
 	}
+	if (m_saver != nullptr && !DriverCacheSaver::LegacySave()) {
+		// cachesave: identical bytes to the last file written by this process (hash of the serialized payload):
+		// skip the 285 MB rewrite (the serialize itself already ran), and back the next periodic save off.
+		if (periodic && m_saver->last_payload_hash == payload_hash) {
+			m_saver->identical_saves++;
+			PipelineCacheLog("Vulkan pipeline cache: periodic save skipped, payload unchanged ({} bytes, serialize {:.1f} ms, {} in a row)",
+			                 payload.size(), static_cast<double>(serialized - begin) / 1.0e6, m_saver->identical_saves);
+			return payload.size();
+		}
+		if (periodic) m_saver->identical_saves = 0;
+	}
 	if (!Common::File::CreateDirectories(m_driver_cache_path.parent_path())) {
 		PipelineCacheLog("Vulkan pipeline cache: failed to create cache directory");
 		return 0;
@@ -6743,6 +6787,7 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 		                 error ? " (" + error.message() + ")" : std::string());
 		return 0;
 	}
+	if (m_saver != nullptr) m_saver->last_payload_hash = payload_hash;
 	if (m_known != nullptr) m_known->Flush();
 	const auto written = CompileClockNs();
 	HangTrace::RecordPipelineCacheSave(payload.size(), serialized - begin, written - serialized);

@@ -1,4 +1,10 @@
 #include "common/assert.h"
+#include "common/nps5Frame.h"
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
+#endif
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/latTrace.h"
@@ -24,6 +30,7 @@
 #include <chrono>
 #include <dlfcn.h>
 #include <thread>
+#include <mutex>
 #include "graphics/progressOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
@@ -43,6 +50,77 @@
 #include <vulkan/vk_platform.h>
 
 // IWYU pragma: no_include <intrin.h>
+
+
+// nps5 cachesave: KYTY_MEMLOG=1 -> a 1 Hz '[mem]' line (footprint / resident / compressed / swap / guest direct memory)
+// and a '[slowframe]' line for every frame over 500 ms with the page-fault deltas. Default off.
+namespace Nps5MemLog {
+static bool Enabled() {
+	static const bool v = [] { const char* e = std::getenv("KYTY_MEMLOG"); return e != nullptr && e[0] != '\0' && e[0] != '0'; }();
+	return v;
+}
+static double Mb(uint64_t b) { return static_cast<double>(b) / 1048576.0; }
+static void Line() {
+#ifdef __APPLE__
+	task_vm_info_data_t vi {};
+	mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+	uint64_t foot = 0, res = 0, comp = 0;
+	if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vi), &cnt) == KERN_SUCCESS) {
+		foot = vi.phys_footprint; res = vi.resident_size; comp = vi.compressed;
+	}
+	xsw_usage sw {};
+	size_t    swl = sizeof(sw);
+	sysctlbyname("vm.swapusage", &sw, &swl, nullptr, 0);
+	rusage ru {};
+	getrusage(RUSAGE_SELF, &ru);
+	const auto ds = Libs::LibKernel::Memory::GetDebugStats();
+	std::fprintf(stderr,
+	             "[mem] footprint %.0f MB resident %.0f MB compressed %.0f MB swap_used %.0f MB direct_total %.0f MB direct_alloc %.0f MB "
+	             "direct_mapped %.0f MB flex_used %.0f MB majflt %ld minflt %ld frame_ms %u\n",
+	             Mb(foot), Mb(res), Mb(comp), Mb(sw.xsu_used), Mb(ds.direct_total), Mb(ds.direct_allocated), Mb(ds.direct_mapped),
+	             Mb(ds.flexible_used), ru.ru_majflt, ru.ru_minflt, Nps5Frame::g_last_frame_ms.load(std::memory_order_relaxed));
+	std::fflush(stderr);
+#endif
+}
+static void Start() {
+	static std::once_flag once;
+	std::call_once(once, [] {
+		if (!Enabled()) return;
+		std::thread([] {
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+				Line();
+			}
+		}).detach();
+	});
+}
+// Called once per Present().
+static void NoteFrame() {
+	using clock = std::chrono::steady_clock;
+	const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count());
+	const auto prev = Nps5Frame::g_last_present_ns.exchange(now, std::memory_order_relaxed);
+#ifdef __APPLE__
+	static long last_maj = 0, last_min = 0;
+	long dmaj = 0, dmin = 0;
+	if (Enabled()) {
+		rusage ru {};
+		getrusage(RUSAGE_SELF, &ru);
+		dmaj = ru.ru_majflt - last_maj; dmin = ru.ru_minflt - last_min;
+		last_maj = ru.ru_majflt; last_min = ru.ru_minflt;
+	}
+#endif
+	if (prev == 0) return;
+	const auto ms = static_cast<uint32_t>((now - prev) / 1'000'000ull);
+	Nps5Frame::g_last_frame_ms.store(ms, std::memory_order_relaxed);
+	if (ms > 100) Nps5Frame::g_slow_frame_ns.store(now, std::memory_order_relaxed);
+#ifdef __APPLE__
+	if (ms > 500 && Enabled()) {
+		std::fprintf(stderr, "[slowframe] %u ms majflt +%ld minflt +%ld\n", ms, dmaj, dmin);
+		std::fflush(stderr);
+	}
+#endif
+}
+} // namespace Nps5MemLog
 
 namespace Libs::Graphics {
 
@@ -2150,6 +2228,8 @@ void Presenter::ClearLayer(int bus) {
 
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
+	Nps5MemLog::Start();
+	Nps5MemLog::NoteFrame();
 
 	if (layers[0].frame != nullptr && !layers[0].frame->blank) {
 		ProgressOverlay::GameFrameSeen().store(true, std::memory_order_relaxed);
