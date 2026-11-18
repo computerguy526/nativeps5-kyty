@@ -2335,6 +2335,9 @@ void WindowContext::CreateVulkan() {
 		});
 	}
 	presenter = std::make_unique<Presenter>(*this);
+	// A prepare-only start (KYTY_PIPELINE_LIST_PREPARE) builds the list here, behind the loading card, and ends
+	// the process: the presenter's card thread shows the count meanwhile.
+	PipelineCacheRunListPrepare();
 	Vr::OpenXrStartSession(graphic_ctx);
 }
 

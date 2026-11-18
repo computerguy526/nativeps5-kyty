@@ -496,6 +496,8 @@ private:
 public:
 	// Runs the prepare (and ends the process) when KYTY_PIPELINE_LIST_PREPARE asks for it.
 	void RunListPrepareIfRequested();
+	// The prepare, once the window can show the loading card (PipelineCacheRunListPrepare).
+	void RunListPrepareNow();
 	// The window was closed: writes the pending driver cache data now.
 	void SaveForClose();
 
@@ -540,6 +542,9 @@ using GraphicsPipelineCreateHook =
 [[nodiscard]] bool PipelineDynamicRasterStateEnabled();
 // Saves the live pipeline cache when the window is closed (no-op without one).
 void               PipelineCacheSaveForClose();
+// KYTY_PIPELINE_LIST_PREPARE=1: runs the prepare (and ends the process) once the presenter exists, so its window
+// shows the loading card; a no-op otherwise.
+void               PipelineCacheRunListPrepare();
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
 // Stops the emulator at a mesh (NGG) draw on a device without mesh shaders, naming the missing

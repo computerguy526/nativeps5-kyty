@@ -6220,9 +6220,29 @@ void PipelineCacheSaveForClose() {
 
 // KYTY_PIPELINE_LIST_PREPARE: called by the render context once every cache and helper exists (the
 // internal helper pipelines are built before, so a prepare records them as well).
+// The prepare itself waits until the window can show the loading card (PipelineCacheRunListPrepare, called once the
+// presenter exists): a prepare takes minutes on a cold cache and its window must not stay blank.
+// KYTY_PIPELINE_LIST_PREPARE_CARD=0: the old order (the prepare ends the process before the presenter exists).
 void PipelineCache::RunListPrepareIfRequested() {
 	g_live_pipeline_cache.store(this, std::memory_order_release);
-	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheFileTitleId().empty()) RunListPrepare();
+	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheFileTitleId().empty() &&
+	    EnvU64("KYTY_PIPELINE_LIST_PREPARE_CARD", 1) == 0) {
+		RunListPrepare();
+	}
+}
+
+// KYTY_PIPELINE_LIST_PREPARE with the card: called by the window once the presenter (and its loading-card thread)
+// exists. The caller is the thread that brings the renderer up, so the game does not start, exactly as before;
+// the card thread presents "PREPARING SHADERS X / T" from the replay's counters until the process ends.
+void PipelineCacheRunListPrepare() {
+	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) == 0 || PipelineCacheFileTitleId().empty()) return;
+	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr) cache->RunListPrepareNow();
+}
+
+void PipelineCache::RunListPrepareNow() {
+	// The card counts one unit to X == T; "held" keeps it up over the black window until the process ends.
+	LaunchHoldPublish(1);
+	RunListPrepare();
 }
 
 PipelineCache::~PipelineCache() {

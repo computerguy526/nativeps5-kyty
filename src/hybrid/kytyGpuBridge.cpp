@@ -1079,7 +1079,11 @@ int ApiStartGraphics() {
 	}
 	std::unique_lock lock(g_renderer_mutex);
 	const auto started = std::chrono::steady_clock::now();
-	if (!g_renderer_ready.wait_for(lock, std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
+	// A prepare-only start (KYTY_PIPELINE_LIST_PREPARE=1) builds the whole pipeline list before the renderer reports
+	// ready and then ends the process itself: minutes on a cold cache or a slow Mac, so the 120 s limit (which ended
+	// such a prepare with an abort, its work unsaved) does not apply to it.
+	const bool prepare = [] { const char* v = std::getenv("KYTY_PIPELINE_LIST_PREPARE"); return v != nullptr && v[0] == '1'; }();
+	if (!g_renderer_ready.wait_for(lock, prepare ? std::chrono::hours(6) : std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
 		Log(2, "start_graphics: Kyty's renderer did not come up within 120 s");
 		return KYTY_GPU_E_STATE;
 	}
