@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -1397,10 +1398,10 @@ static uint64_t BdaTableEntries() {
 }
 static std::atomic<uint64_t> g_bda_pages_uncovered {0};
 static void                  NoteBdaUncovered(uint64_t first, uint64_t last_exclusive) {
-	if (last_exclusive <= BdaTableEntries()) {
+	const auto pages = memtrim::BdaUncovered(first, last_exclusive, BdaTableEntries());
+	if (pages == 0) {
 		return;
 	}
-	const auto pages = last_exclusive - std::max(first, BdaTableEntries());
 	if (g_bda_pages_uncovered.fetch_add(pages, std::memory_order_relaxed) == 0) {
 		std::fprintf(stderr,
 		             "[memtrim] WARNING: guest buffer at 0x%llx is above the BDA page table "
@@ -1457,8 +1458,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 		}
 		EnsureBdaTableResident(pages.first, size_pages);
 		NoteBdaUncovered(pages.first, pages.last_exclusive);
-		if (pages.first < BdaTableEntries()) {
-			const auto covered = std::min<uint64_t>(size_pages, BdaTableEntries() - pages.first);
+		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries()); covered != 0) {
 			WriteDataBuffer(m_bda_pagetable_buffer, pages.first * sizeof(vk::DeviceAddress),
 			                addresses.data(), covered * sizeof(vk::DeviceAddress));
 		}
@@ -1473,8 +1473,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 		EXIT_IF(buffer.Size() > m_total_used_memory && !m_graphics.CanReportMemoryUsage());
 		m_total_used_memory -= std::min(m_total_used_memory, buffer.Size());
 		m_lru_cache.Free(buffer.lru_id);
-		if (pages.first < BdaTableEntries()) {
-			const auto covered = std::min<uint64_t>(size_pages, BdaTableEntries() - pages.first);
+		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries()); covered != 0) {
 			m_bda_pagetable_buffer.Fill(pages.first * sizeof(vk::DeviceAddress),
 			                            covered * sizeof(vk::DeviceAddress), 0);
 		}
