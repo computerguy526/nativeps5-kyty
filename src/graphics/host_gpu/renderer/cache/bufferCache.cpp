@@ -1366,6 +1366,43 @@ void BufferCache::Unregister(BufferId id) {
 	ChangeRegister<false>(id);
 }
 
+// KYTY_BDA_PAGETABLE_MB=<n> (memtrim, default 0 = the whole 512 MiB table): the dense BDA page table
+// holds only the entries of guest addresses below n MiB / 8 * 16 KiB (64 MiB: below 128 GiB; Astro's
+// GPU mappings end at 0x10_c800_0000 = 67 GiB). A Metal heap is committed whole as soon as the GPU
+// touches it (work/kyty/mem/mtltest/zero.m), so the zero fill of the 512 MiB table costs 512 MiB of
+// footprint although the entries past the guest's GPU span are never written. Shaders keep indexing
+// up to 2^26 entries: the table is bound with its real size and robustBufferAccess2 (required on
+// KosmicKrisp) reads 0 past it, i.e. "no buffer" (a fault-bitmap bit, as for any unmapped page).
+// No shader or pipeline-cache change. A buffer registered above the covered range would be invisible
+// to BDA reads: counted and reported (stderr, once) - raise n if that line ever appears.
+static uint64_t BdaTableEntries() {
+	static const uint64_t entries = [] {
+		uint64_t all = BufferCache::CACHING_NUMPAGES;
+		if (const auto* value = std::getenv("KYTY_BDA_PAGETABLE_MB"); value != nullptr) {
+			const uint64_t mib = std::strtoull(value, nullptr, 10);
+			if (mib != 0) {
+				all = std::min<uint64_t>(all, (mib << 20u) / sizeof(vk::DeviceAddress));
+				std::fprintf(stderr, "[memtrim] BDA page table %llu MiB: covers guest addresses below 0x%llx (KYTY_BDA_PAGETABLE_MB)\n",
+				             static_cast<unsigned long long>((all * sizeof(vk::DeviceAddress)) >> 20u),
+				             static_cast<unsigned long long>(all << BufferCache::CACHING_PAGEBITS));
+			}
+		}
+		return all;
+	}();
+	return entries;
+}
+static std::atomic<uint64_t> g_bda_pages_uncovered {0};
+static void NoteBdaUncovered(uint64_t first, uint64_t last_exclusive) {
+	if (last_exclusive <= BdaTableEntries()) {
+		return;
+	}
+	const auto pages = last_exclusive - std::max(first, BdaTableEntries());
+	if (g_bda_pages_uncovered.fetch_add(pages, std::memory_order_relaxed) == 0) {
+		std::fprintf(stderr, "[memtrim] WARNING: guest buffer at 0x%llx is above the BDA page table (KYTY_BDA_PAGETABLE_MB): BDA reads of it fault\n",
+		             static_cast<unsigned long long>(first << BufferCache::CACHING_PAGEBITS));
+	}
+}
+
 void BufferCache::EnsureBdaPageTableInitialized() {
 	if (m_bda_pagetable_initialized) {
 		return;
@@ -1413,8 +1450,12 @@ void BufferCache::ChangeRegister(BufferId id) {
 			addresses.push_back(buffer.BufferDeviceAddress() + (i << CACHING_PAGEBITS));
 		}
 		EnsureBdaTableResident(pages.first, size_pages);
-		WriteDataBuffer(m_bda_pagetable_buffer, pages.first * sizeof(vk::DeviceAddress),
-		                addresses.data(), addresses.size() * sizeof(vk::DeviceAddress));
+		NoteBdaUncovered(pages.first, pages.last_exclusive);
+		if (pages.first < BdaTableEntries()) {
+			const auto covered = std::min<uint64_t>(size_pages, BdaTableEntries() - pages.first);
+			WriteDataBuffer(m_bda_pagetable_buffer, pages.first * sizeof(vk::DeviceAddress),
+			                addresses.data(), covered * sizeof(vk::DeviceAddress));
+		}
 	} else {
 		const auto found = m_buffers.find(buffer.CpuAddress());
 		EXIT_IF(found == m_buffers.end() || found->second != id);
@@ -1426,8 +1467,11 @@ void BufferCache::ChangeRegister(BufferId id) {
 		EXIT_IF(buffer.Size() > m_total_used_memory && !m_graphics.CanReportMemoryUsage());
 		m_total_used_memory -= std::min(m_total_used_memory, buffer.Size());
 		m_lru_cache.Free(buffer.lru_id);
-		m_bda_pagetable_buffer.Fill(pages.first * sizeof(vk::DeviceAddress),
-		                            size_pages * sizeof(vk::DeviceAddress), 0);
+		if (pages.first < BdaTableEntries()) {
+			const auto covered = std::min<uint64_t>(size_pages, BdaTableEntries() - pages.first);
+			m_bda_pagetable_buffer.Fill(pages.first * sizeof(vk::DeviceAddress),
+			                            covered * sizeof(vk::DeviceAddress), 0);
+		}
 		buffer.is_deleted = true;
 	}
 }
@@ -1704,8 +1748,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
     : m_graphics(graphics), m_scheduler(scheduler), m_fault_manager(graphics, scheduler, *this),
       m_gds_buffer(graphics, scheduler, MemoryUsage::Stream, 0, AllFlags, GdsBufferSize),
       m_bda_pagetable_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
-                             BDA_PAGETABLE_SIZE, false, false,
-                             graphics.sparse_residency_buffer_enabled),
+                             graphics.sparse_residency_buffer_enabled
+                                 ? BDA_PAGETABLE_SIZE
+                                 : BdaTableEntries() * sizeof(vk::DeviceAddress),
+                             false, false, graphics.sparse_residency_buffer_enabled),
       m_bda_incremental_sync(IncrementalBdaSyncEnabled()),
       m_bda_hot_sync(m_bda_incremental_sync && BdaHotSyncEnabled()),
       m_memory_tracker(page_manager, m_bda_incremental_sync, BufferFaultPolicy()),
@@ -5936,7 +5982,9 @@ void BufferCache::ReportVram() {
 		                ToMiB(m_bda_sparse->bound_blocks * m_bda_sparse->block_size),
 		                ToMiB(BDA_PAGETABLE_SIZE), m_bda_sparse->chunks.size());
 	} else {
-		VramStats::Line("BDA page table: dense, %.1f MiB", ToMiB(BDA_PAGETABLE_SIZE));
+		VramStats::Line("BDA page table: dense, %.1f MiB (KYTY_BDA_PAGETABLE_MB; pages above it %llu)",
+		                ToMiB(m_bda_pagetable_buffer.Size()),
+		                static_cast<unsigned long long>(g_bda_pages_uncovered.load(std::memory_order_relaxed)));
 	}
 	VramStats::Line("buffer GC: usage %.1f MiB, trigger %.1f critical %.1f MiB, GC tick %llu | idle "
 	                "retirement (KYTY_VRAM_IDLE_BUFFER_FRAMES=%llu) deleted %.1f MiB (%llu) in total",
