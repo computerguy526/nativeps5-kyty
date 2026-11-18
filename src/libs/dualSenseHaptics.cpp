@@ -10,6 +10,9 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
 #include <map>
 #include <vector>
 
@@ -67,6 +70,65 @@ void ReportRoute(const Stream* stream, Route route, const char* detail) {
 	                         stream->freq, text, detail != nullptr ? ": " : "",
 	                         detail != nullptr ? detail : "");
 }
+
+
+// Non-DualSense pads: audio-haptics -> rumble motors. The raw envelope (peak of the grain, as before) is shaped:
+//   NPS5_RUMBLE_SCALE  overall intensity (default 0.5; 0 = off, 1 = old strength after the curve)
+//   NPS5_RUMBLE_FLOOR  deadband on 2*peak (default 0.08): quieter texture is dropped
+//   NPS5_RUMBLE_GAMMA  curve exponent on the rescaled value (default 1.6): faint stays faint, strong stays strong
+//   NPS5_RUMBLE_DECAY  peak-follow release per grain (default 0.80): instant attack, smooth release
+//   NPS5_RUMBLE_LOG=1  one line per second: histogram of raw L/R peak (10 buckets), motor values, calls
+float EnvF(const char* name, float def) {
+	const char* v = std::getenv(name);
+	return (v != nullptr && v[0] != 0) ? static_cast<float>(std::atof(v)) : def;
+}
+struct RumbleShape {
+	float scale = EnvF("NPS5_RUMBLE_SCALE", 0.5f);
+	float floor = EnvF("NPS5_RUMBLE_FLOOR", 0.08f);
+	float gamma = EnvF("NPS5_RUMBLE_GAMMA", 1.6f);
+	float decay = EnvF("NPS5_RUMBLE_DECAY", 0.80f);
+	bool  log   = EnvF("NPS5_RUMBLE_LOG", 0.0f) != 0.0f;
+	float follow[2] = {0.0f, 0.0f};
+	uint32_t hist[2][11] {};
+	uint32_t calls = 0, frames_sum = 0, motor_max[2] = {0, 0};
+	uint64_t motor_sum[2] = {0, 0};
+	uint32_t last_ms = 0;
+	uint16_t Motor(int ch, float raw) {
+		float e = raw * 2.0f; // the old gain: peak 0.5 = full
+		const float f = std::clamp(floor, 0.0f, 0.95f);
+		e = e <= f ? 0.0f : (e - f) / (1.0f - f);
+		e = std::pow(std::clamp(e, 0.0f, 1.0f), gamma);
+		follow[ch] = std::max(e, follow[ch] * decay);
+		if (follow[ch] < 0.01f) follow[ch] = 0.0f;
+		const float m = std::clamp(follow[ch] * scale, 0.0f, 1.0f);
+		return static_cast<uint16_t>(m * 65535.0f);
+	}
+	void Log(const float peak[2], const uint16_t motor[2], uint32_t frames, uint32_t freq) {
+		if (!log) return;
+		for (int c = 0; c < 2; c++) {
+			hist[c][std::min(10, static_cast<int>(peak[c] * 10.0f))]++;
+			motor_max[c] = std::max<uint32_t>(motor_max[c], motor[c]);
+			motor_sum[c] += motor[c];
+		}
+		calls++;
+		frames_sum += frames;
+		const auto now = static_cast<uint32_t>(SDL_GetTicks());
+		if (now - last_ms < 1000) return;
+		last_ms = now;
+		for (int c = 0; c < 2; c++) {
+			char b[160]; int n = 0;
+			for (int i = 0; i < 11; i++) n += std::snprintf(b + n, sizeof b - n, "%u%s", hist[c][i], i < 10 ? "," : "");
+			std::fprintf(stderr, "[rumble] %c raw_peak_hist[0.0..1.0+]=%s motor_mean=%llu/65535 motor_max=%u scale=%.2f floor=%.2f gamma=%.2f\n",
+			             c == 0 ? 'L' : 'R', b, static_cast<unsigned long long>(calls ? motor_sum[c] / calls : 0),
+			             motor_max[c], scale, floor, gamma);
+			std::memset(hist[c], 0, sizeof hist[c]); motor_max[c] = 0; motor_sum[c] = 0;
+		}
+		std::fprintf(stderr, "[rumble] calls/s=%u avg_grain_ms=%.1f (SDL duration 100 ms)\n", calls,
+		             calls ? 1000.0f * frames_sum / calls / freq : 0.0f);
+		calls = 0; frames_sum = 0;
+	}
+};
+RumbleShape g_rumble_shape;
 
 void ApplyRumble(bool force = false) { // Caller holds g_mutex; no calls into Audio or Controller.
 	SDL_LockJoysticks();
@@ -393,13 +455,12 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 				peak[ch] = std::max(peak[ch], std::fabs(value));
 			}
 		}
-		const auto to_motor = [](float v) {
-			return static_cast<uint16_t>(std::clamp(v * 2.0f, 0.0f, 1.0f) * 65535.0f);
-		};
+		const uint16_t motor[2] = {g_rumble_shape.Motor(0, peak[0]), g_rumble_shape.Motor(1, peak[1])};
+		g_rumble_shape.Log(peak, motor, frames, stream->freq);
 		SDL_LockJoysticks();
 		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
 		    pad != nullptr) {
-			(void) SDL_RumbleGamepad(pad, to_motor(peak[0]), to_motor(peak[1]), 100);
+			(void) SDL_RumbleGamepad(pad, motor[0], motor[1], 100);
 		}
 		SDL_UnlockJoysticks();
 		return static_cast<uint64_t>(frames) * 1000000 / stream->freq;
