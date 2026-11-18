@@ -420,7 +420,22 @@ std::string KkBlendStore(const GfxIo::KkBlend& k, uint32_t idx) {
 				ch[c] = fmt::format("fmin({}, {})", s, d);
 			else if (op == 4)
 				ch[c] = fmt::format("fmax({}, {})", s, d);
-			else {
+			else if (op == 0 && (sf == 2 || sf == 4 || sf == 6 || sf == 8) && df == sf + 1) {
+				// mslfix3: nir_opt_algebraic '~' rule (a*b) + (c*(1-b)) -> flrp(c, a, b), printed
+				// by KK as mix(c, a, b) (isatest blend_alpha_f16: 1-ulp f16 words vs the unfused
+				// form).
+				ch[c] = fmt::format("mix({}, {}, {})", d, s, fv(sf, c));
+			} else if (op == 0 && (df == 2 || df == 4 || df == 6 || df == 8) && sf == df + 1) {
+				ch[c] = fmt::format("mix({}, {}, {})", s, d, fv(df, c));
+			} else if (op == 0 && sf == 1 && (df == 3 || df == 5 || df == 7 || df == 9) &&
+			           fv(df - 1, c) == s) {
+				// a + c*(1-a) -> flrp(c, 1.0, a) (KK alpha of SRC_ALPHA/ONE_MINUS_SRC_ALPHA with
+				// srcA ONE: mix(d.w, 1.0, s.w))
+				ch[c] = fmt::format("mix({}, 1.0f, {})", d, s);
+			} else if (op == 0 && df == 1 && (sf == 3 || sf == 5 || sf == 7 || sf == 9) &&
+			           fv(sf - 1, c) == d) {
+				ch[c] = fmt::format("mix({}, 1.0f, {})", s, d);
+			} else {
 				const std::string ps = factor(sf, c, s), pd = factor(df, c, d);
 				ch[c] = op == 0   ? fmt::format("({} + {})", ps, pd)
 				        : op == 1 ? fmt::format("({} - {})", ps, pd)
