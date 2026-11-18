@@ -113,8 +113,35 @@ const char* const kF16RtzInt = R"(static inline ushort kyty_f16_rtz(float x) {
 }
 )";
 
-std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false) {
+// mslfix4: vertex stage = ONE lane. KosmicKrisp has no vertex-stage subgroups, so Kyty's SPIR-V
+// (EnableSingleLane) turns every subgroup op of a VS into its one-lane result and KK's VS MSL has
+// no simd_* at all. B used real simdgroup votes/shuffles with lid = 0: a waterfall loop
+// (ReadFirstLane + IEqual on a per-vertex key) kept reading HARDWARE lane 0's key, lanes holding
+// another key never matched and the loop ran to the gpuguard cap (262144 iterations of a big body =
+// GPU hang, gfxfuzz pipes 30/35 mipstats).
+const char* const kVsSingleLane =
+    R"(// mslfix4: vertex stage = one lane (KosmicKrisp has no vertex subgroups; Kyty SPIR-V EnableSingleLane)
+static inline uint kyty_ballot(bool p, uint l) { return p ? 1u : 0u; }
+static inline bool kyty_any(bool p, uint l) { return p; }
+static inline bool kyty_all(bool p, uint l) { return p; }
+#define simd_shuffle(v, l) (v)
+#define simd_broadcast_first(v) (v)
+#define simd_or(v) (v)
+#define simd_min(v) (v)
+#define simd_max(v) (v)
+#define simd_is_first() true
+)";
+
+std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
+                        bool single_lane = false) {
 	std::string t(Prelude);
+	if (single_lane) {
+		const auto b0 = t.find("static inline uint kyty_ballot(bool p, uint l)");
+		const auto b1 = t.find("static inline bool kyty_all(bool p, uint l)", b0);
+		const auto e1 = b1 == std::string::npos ? b1 : t.find('\n', b1);
+		if (b0 != std::string::npos && e1 != std::string::npos)
+			t.replace(b0, e1 + 1 - b0, kVsSingleLane);
+	}
 	if (contract) { // mslfix: KK-like pixel math (GfxPixelRelaxed): the host contracts like KK's
 	                // relaxed ops
 		const std::string off = "#pragma METAL fp contract(off)\n";
@@ -1085,6 +1112,13 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	const bool gfx_stage   = GfxIsStage(program.stage);
 	const bool gfx_relaxed = program.stage == ShaderType::Pixel && GfxPixelRelaxed() &&
 	                         (options.kk_bda || KkBdaRequested());
+	// mslfix4: KYTY_MSL_VS_SINGLE_LANE=0 = old (real simdgroup ops in the VS with lid 0)
+	const bool vs_single_lane = program.stage == ShaderType::Vertex &&
+	                            (options.kk_bda || KkBdaRequested() || !GetHostVertexSubgroups()) &&
+	                            [] {
+		                            const char* e = std::getenv("KYTY_MSL_VS_SINGLE_LANE");
+		                            return e == nullptr || std::strcmp(e, "0") != 0;
+	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
 	SetFlushTranscendentalInputs(gfx_stage && (options.kk_bda || KkBdaRequested()) && [] {
 		const char* e = std::getenv("KYTY_MSL_GFX_FTZ");
@@ -1174,7 +1208,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
 		result.source      = KkInjectHeader(ctx, result) +
-		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed) +
+		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane) +
 		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
@@ -1207,8 +1241,9 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (gfx_stage) b.Line(ctx.ret);
 	b.Close(); // kernel
 
-	result.source = KkInjectHeader(ctx, result) + PreludeText(fuse_mad, gfx_stage, gfx_relaxed) +
-	                LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+	result.source      = KkInjectHeader(ctx, result) +
+	                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane) +
+	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();
 	return result;
