@@ -18,6 +18,7 @@
 
 ## Safety
 
+- [ ] CI is green (CONTRIBUTING.md, "CI")
 - [ ] No game files, shaders, journals, frame dumps, caches or anything extracted from a game in the diff
 - [ ] No secrets, personal paths or machine names
 - [ ] New behaviour is off by default behind an environment switch, or the evidence shows it is neutral or better
@@ -26,3 +27,4 @@
 ## AI assistance
 
 <!-- REQUIRED, a PR without this line is not reviewed. yes / no; if yes, which agent, and confirm a person read the diff and the evidence -->
+- [ ] `scripts/ci/run-local.sh` passes (run before pushing)
