@@ -146,6 +146,9 @@ std::vector<uint8_t> CodegenFingerprint() {
 		b.U8(options.fast_math);
 		b.U8(options.fast_math_stages);
 	}
+	if (options.fast_math_vs) {
+		b.Text("fast_math_vs");
+	}
 	if (options.lane_local) {
 		b.Text("lane_local");
 		b.U8(GetHostComputeSubgroups32() ? 1u : 0u);

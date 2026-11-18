@@ -1023,7 +1023,7 @@ void DefineModule(EmitterState& state) {
 	// GCN/RDNA arithmetic preserves 32-bit signed zero, infinity, and NaN. Declaring that
 	// contract prevents host compilers from treating synthesized IEEE values as finite.
 	// KYTY_FAST_MATH: pixel/compute programs leave it out (KosmicKrisp then emits fast math).
-	if (FastMathLevel(state) == 0) {
+	if (FastMathLevel(state) == 0 && !FastMathVertex(state)) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeSignedZeroInfNanPreserve,
 		                               32u);
 	}

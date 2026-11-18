@@ -95,6 +95,7 @@ public:
 	}
 
 	void        AddFunction(std::span<const uint32_t> words);
+	[[nodiscard]] std::span<const uint32_t> FunctionWords() const { return m_functions; }
 	DeferredPhi AddDeferredPhi(uint32_t type, uint32_t result, size_t incoming_count);
 	void        PatchDeferredPhi(DeferredPhi phi, size_t incoming, uint32_t value, uint32_t parent);
 

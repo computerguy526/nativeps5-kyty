@@ -784,7 +784,13 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 			                  inst.GetOpcode() != IR::ValueOpcode::StoreCompletion &&
 			                  inst.GetOpcode() != IR::ValueOpcode::DataCacheInvalidate &&
 			                  inst.GetOpcode() != IR::ValueOpcode::MeshAllocate)) {
-				emit_instruction(lane, inst);
+				if (FastMathVertex(ctx.state) && InPositionSlice(ctx.state, inst)) [[unlikely]] {
+					const auto offset = ctx.state.builder.FunctionWords().size();
+					emit_instruction(lane, inst);
+					DecoratePositionFloatResults(ctx.state, offset);
+				} else {
+					emit_instruction(lane, inst);
+				}
 			}
 		}
 		ctx.state.lane_half = 0;

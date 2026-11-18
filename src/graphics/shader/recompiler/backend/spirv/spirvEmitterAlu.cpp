@@ -2,6 +2,7 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <optional>
@@ -484,6 +485,63 @@ uint32_t FastMathLevel(const EmitterState& state) {
 	const bool covered = (stage == ShaderType::Pixel && (options.fast_math_stages & 1u) != 0) ||
 	                     (stage == ShaderType::Compute && (options.fast_math_stages & 2u) != 0);
 	return covered ? options.fast_math : 0u;
+}
+
+bool FastMathVertex(const EmitterState& state) {
+	return GetCodegenOptions().fast_math_vs && state.program.stage == ShaderType::Vertex;
+}
+
+bool InPositionSlice(EmitterState& state, const IR::Inst& inst) {
+	if (!state.position_slice_ready) {
+		CollectPositionSlice(state);
+	}
+	return state.position_slice.contains(&inst);
+}
+
+void DecoratePositionFloatResults(EmitterState& state, size_t word_offset) {
+	const auto words = state.builder.FunctionWords();
+	if (word_offset >= words.size()) {
+		return;
+	}
+	const uint32_t float_types[] = {TypeF32(state), TypeF32Vector(state, 2), TypeF32Vector(state, 3),
+	                                TypeF32Vector(state, 4)};
+	// FAdd/FSub/FMul already carry NoContraction on the slice unless MadMode::Fused.
+	const bool arith_decorated = GetCodegenOptions().mad_mode != MadMode::Fused;
+	std::vector<uint32_t> results;
+	const auto            all = state.builder.FunctionWords();
+	for (size_t at = word_offset; at < all.size();) {
+		const uint32_t count  = all[at] >> 16u;
+		const auto     opcode = static_cast<spv::Op>(all[at] & 0xffffu);
+		if (count == 0) {
+			break;
+		}
+		bool candidate = false;
+		switch (opcode) {
+			case spv::OpFAdd:
+			case spv::OpFSub:
+			case spv::OpFMul: candidate = !arith_decorated; break;
+			case spv::OpFNegate:
+			case spv::OpFDiv:
+			case spv::OpFRem:
+			case spv::OpFMod:
+			case spv::OpExtInst:
+			case spv::OpVectorTimesScalar:
+			case spv::OpDot:
+			case spv::OpFConvert:
+			case spv::OpConvertSToF:
+			case spv::OpConvertUToF: candidate = true; break;
+			default: break;
+		}
+		if (candidate && count >= 3 && at + 2 < all.size() &&
+		    std::find(std::begin(float_types), std::end(float_types), all[at + 1]) !=
+		        std::end(float_types)) {
+			results.push_back(all[at + 2]);
+		}
+		at += count;
+	}
+	for (const auto id: results) {
+		state.builder.AddAnnotation(spv::OpDecorate, id, spv::DecorationNoContraction);
+	}
 }
 
 bool NoContraction(EmitterState& state, const IR::Inst& inst) {

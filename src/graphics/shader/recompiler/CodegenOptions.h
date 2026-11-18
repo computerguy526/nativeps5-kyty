@@ -182,6 +182,11 @@ struct CodegenOptions {
 	// KYTY_FAST_MATH_STAGES=fs|cs|fscs (default fscs) narrows the stages for bisecting.
 	uint8_t fast_math        = 0;
 	uint8_t fast_math_stages = 3; // bit 0: pixel, bit 1: compute
+	// KYTY_FAST_MATH_VS=1 (KYTY_FAST_MATH=3 = 1 plus this): vertex programs also drop
+	// SignedZeroInfNanPreserve 32, and every f32 instruction emitted for the position data-flow
+	// slice (CollectPositionSlice) is decorated NoContraction, so KosmicKrisp keeps all position
+	// math in math_mode(safe) while the other outputs (normals, UVs, colours) become fast math.
+	bool fast_math_vs = false;
 	// KYTY_INTERP_MODES=0: interpolate every pixel input at the pixel center with the shader-wide
 	// perspective (NoPerspective on all inputs when LINEAR_CENTER is enabled) instead of per input
 	// from the I/J pair its V_INTERP_P2 reads use (centroid, sample, linear).

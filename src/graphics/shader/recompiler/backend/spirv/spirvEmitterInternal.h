@@ -631,6 +631,12 @@ inline constexpr auto EmitLogicalNotBool = EmitNative<spv::OpLogicalNot, IR::Typ
 bool NoContraction(EmitterState& state, const IR::Inst& inst);
 // KYTY_FAST_MATH level for this program: 0 outside the stages it covers (pixel/compute only).
 uint32_t FastMathLevel(const EmitterState& state);
+// KYTY_FAST_MATH_VS for this program (vertex stage only).
+bool FastMathVertex(const EmitterState& state);
+// The instruction feeds a position export (MadMode::Position's slice; collected on first use).
+bool InPositionSlice(EmitterState& state, const IR::Inst& inst);
+// KYTY_FAST_MATH_VS: decorates the f32 results among the function words from word_offset on.
+void DecoratePositionFloatResults(EmitterState& state, size_t word_offset);
 
 F32Class EmitClassifyF32Bits(EmitterState& state, uint32_t bits);
 
