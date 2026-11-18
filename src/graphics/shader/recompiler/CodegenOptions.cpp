@@ -1,9 +1,15 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 
+#include "common/logging/log.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <mutex>
+#include <set>
+#include <cinttypes>
 #include <string>
 #include <string_view>
 
@@ -17,6 +23,27 @@ bool EnvFlag(const char* name, bool default_value) {
 		return default_value;
 	}
 	return std::strcmp(value, "0") != 0;
+}
+
+// File of hex hashes (first token of each line, '#' starts a comment). Missing file -> *ok=false.
+std::vector<uint64_t> ReadHashFile(const char* path, bool* ok) {
+	std::vector<uint64_t> out;
+	std::ifstream         in(path);
+	*ok = in.is_open();
+	std::string line;
+	while (std::getline(in, line)) {
+		if (const auto hash = line.find('#'); hash != std::string::npos) {
+			line.resize(hash);
+		}
+		const auto begin = line.find_first_not_of(" \t\r");
+		if (begin == std::string::npos) {
+			continue;
+		}
+		out.push_back(std::strtoull(line.c_str() + begin, nullptr, 16));
+	}
+	std::sort(out.begin(), out.end());
+	out.erase(std::unique(out.begin(), out.end()), out.end());
+	return out;
 }
 
 } // namespace
@@ -170,6 +197,13 @@ CodegenOptions FromEnvironment() {
 		options.fast_math_vs = value >= 3;
 	}
 	options.fast_math_vs = EnvFlag("KYTY_FAST_MATH_VS", options.fast_math_vs);
+	if (const auto* path = std::getenv("KYTY_FAST_MATH_DENY"); path != nullptr && path[0] != '\0') {
+		bool ok              = false;
+		options.fast_math_deny = ReadHashFile(path, &ok);
+	}
+	if (const auto* path = std::getenv("KYTY_FAST_MATH_ALLOW"); path != nullptr && path[0] != '\0') {
+		options.fast_math_allow     = ReadHashFile(path, &options.fast_math_allow_set);
+	}
 	if (const auto* stages = std::getenv("KYTY_FAST_MATH_STAGES"); stages != nullptr) {
 		const std::string text(stages);
 		options.fast_math_stages =
@@ -296,6 +330,25 @@ bool LoopGuardApplies(uint64_t shader_hash) {
 	return options.loop_guard_budget != 0 &&
 	       (options.loop_guard_all || std::ranges::find(options.loop_guard_shaders, shader_hash) !=
 	                                      options.loop_guard_shaders.end());
+}
+
+bool FastMathShaderAllowed(uint64_t shader_hash) {
+	const auto& options = Storage();
+	const bool  allowed =
+	    (!options.fast_math_allow_set ||
+	     std::binary_search(options.fast_math_allow.begin(), options.fast_math_allow.end(), shader_hash)) &&
+	    !std::binary_search(options.fast_math_deny.begin(), options.fast_math_deny.end(), shader_hash);
+	// KYTY_FAST_MATH_LOG=1: one line per guest hash the first time a decision is made (checks that the lists hit real hashes).
+	static const bool        log_on = EnvFlag("KYTY_FAST_MATH_LOG", false);
+	static std::mutex        mutex;
+	static std::set<uint64_t> seen;
+	if (log_on && (options.fast_math_allow_set || !options.fast_math_deny.empty())) {
+		std::lock_guard lock(mutex);
+		if (seen.insert(shader_hash).second) {
+			LOGF("[fastmath] shader 0x%016" PRIx64 " %s\n", shader_hash, allowed ? "FAST" : "EXACT (listed)");
+		}
+	}
+	return allowed;
 }
 
 void SetCodegenOptions(const CodegenOptions& options) {

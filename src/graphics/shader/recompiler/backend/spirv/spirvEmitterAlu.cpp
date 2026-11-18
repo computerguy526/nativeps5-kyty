@@ -484,11 +484,12 @@ uint32_t FastMathLevel(const EmitterState& state) {
 	const auto stage   = state.program.stage;
 	const bool covered = (stage == ShaderType::Pixel && (options.fast_math_stages & 1u) != 0) ||
 	                     (stage == ShaderType::Compute && (options.fast_math_stages & 2u) != 0);
-	return covered ? options.fast_math : 0u;
+	return covered && FastMathShaderAllowed(state.program.shader_hash) ? options.fast_math : 0u;
 }
 
 bool FastMathVertex(const EmitterState& state) {
-	return GetCodegenOptions().fast_math_vs && state.program.stage == ShaderType::Vertex;
+	return GetCodegenOptions().fast_math_vs && state.program.stage == ShaderType::Vertex &&
+	       FastMathShaderAllowed(state.program.shader_hash);
 }
 
 bool InPositionSlice(EmitterState& state, const IR::Inst& inst) {
