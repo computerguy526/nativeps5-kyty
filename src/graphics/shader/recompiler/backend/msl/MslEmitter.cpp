@@ -1030,9 +1030,9 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (const char* e = std::getenv("KYTY_MSL_VOTE_MERGE");
 	    e == nullptr || std::strcmp(e, "0") != 0)
 		ctx.vote_merge = true;
-	ctx.lanes         = lanes;
-	result.lanes      = lanes;
-	uint32_t total    = shape.threads[0] * shape.threads[1] * shape.threads[2];
+	ctx.lanes      = lanes;
+	result.lanes   = lanes;
+	uint32_t total = shape.threads[0] * shape.threads[1] * shape.threads[2];
 	if (lanes == 2) {
 		total = ((total + 63u) / 64u) * 32u;
 	}

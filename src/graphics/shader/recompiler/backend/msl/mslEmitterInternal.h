@@ -20,11 +20,11 @@ struct GfxIo; // vertex/pixel stage IO (MslStageIo.cpp)
 struct MslCtx {
 	const IR::Program&   program;
 	ShaderStageInputInfo input_info;
-	MslBuilder           b;         // the kernel body is written here
-	uint32_t             lanes = 1; // guest lanes per Metal thread (1 or 2); lane h = half h
+	MslBuilder           b;             // the kernel body is written here
+	uint32_t             lanes = 1;     // guest lanes per Metal thread (1 or 2); lane h = half h
 	bool vote_merge            = false; // mslbadopt KYTY_MSL_VOTE_MERGE: wave64 halves vote once
 	                                    // (any(a)||any(b) = any(a||b))
-	bool                 wave64_single =
+	bool wave64_single =
 	    false;         // wave64 program emitted one guest lane per Metal thread (no cross-lane ops)
 	uint32_t half = 0; // the half being emitted (set per instruction by the core)
 	std::unordered_map<const IR::Inst*, uint32_t> ids; // SSA numbering (v<id>[_<half>])

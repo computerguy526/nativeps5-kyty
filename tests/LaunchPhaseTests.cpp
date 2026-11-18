@@ -96,12 +96,15 @@ int main() {
               !LoadCard::LaunchPhasePending()); // hold over, 150 still building
                                                 // behind the game: no full card
           c.launch_hold.store(0);
-          CHECK(LoadCard::LaunchPhasePending()); // no hold this session
-                                                 // (KYTY_PIPELINE_REPLAY_ALL=0):
-                                                 // card3's rule
+          CHECK(
+              LoadCard::LaunchPhasePending()); // no hold this session
+                                               // (KYTY_PIPELINE_REPLAY_ALL=0):
+                                               // card3's rule
           c.unit_done.store(200);
           CHECK(!LoadCard::LaunchPhasePending());
         }
-        std::printf(g_failed ? "LaunchPhaseTests: %d FAILED\n" : "LaunchPhaseTests: ok\n", g_failed);
-	return g_failed != 0;
+        std::printf(g_failed ? "LaunchPhaseTests: %d FAILED\n"
+                             : "LaunchPhaseTests: ok\n",
+                    g_failed);
+        return g_failed != 0;
 }
