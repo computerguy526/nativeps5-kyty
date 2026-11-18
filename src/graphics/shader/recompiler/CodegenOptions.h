@@ -173,7 +173,7 @@ struct CodegenOptions {
 	bool readonly_buffers = true;
 	// KYTY_MAD_MODE=exact|position|fused, see MadMode.
 	MadMode mad_mode = MadMode::Position;
-	// KYTY_FAST_MATH=0|1|2 (default 1 since v1.1; 0 = v1 behaviour, shadPS4 #5455 "fast_shader_math"): 1 = pixel and compute
+	// KYTY_FAST_MATH=0|1|2 (default 1 since v1.0.3; 0 = v1 behaviour, shadPS4 #5455 "fast_shader_math"): 1 = pixel and compute
 	// programs drop NoContraction (whatever MadMode says) and the SignedZeroInfNanPreserve 32
 	// execution mode, so KosmicKrisp emits them as Metal fast math (no per-op math_mode(relaxed)
 	// pragmas, no precise:: functions); vertex/geometry/mesh/tessellation stay exact, so depth

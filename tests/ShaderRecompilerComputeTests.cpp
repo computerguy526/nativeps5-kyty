@@ -39179,7 +39179,7 @@ TestCase VectorMadF32RoundsProduct() {
   // (1+2^-23)*(1-2^-23)-1 rounds to zero for MAD, but -2^-46 for FMA. Our MAD emission follows
   // KYTY_MAD_MODE: only exact unfuses it in a compute shader (position mode, the default, unfuses
   // the position slice, and compute shaders have none; fused never), so the default expects FMA.
-  // KYTY_FAST_MATH (default 1 since v1.1) drops NoContraction in compute programs whatever the mode.
+  // KYTY_FAST_MATH (default 1 since v1.0.3) drops NoContraction in compute programs whatever the mode.
   const bool unfused_mad =
       ShaderRecompiler::GetCodegenOptions().mad_mode == ShaderRecompiler::MadMode::Exact &&
       ShaderRecompiler::GetCodegenOptions().fast_math == 0;
@@ -39226,7 +39226,7 @@ TestCase VectorMadF32FlushesDenorms() {
   // Our modules declare f32 DenormFlushToZero whatever FLOAT_MODE asks for (where the device
   // supports it). The unfused MAD (KYTY_MAD_MODE=exact) then flushes the denormal product; the
   // default fused FMA in a compute shader keeps the exact 1.5 * 2^-126 of the fourth sample.
-  // KYTY_FAST_MATH (default 1 since v1.1) drops NoContraction in compute programs whatever the mode.
+  // KYTY_FAST_MATH (default 1 since v1.0.3) drops NoContraction in compute programs whatever the mode.
   const bool unfused_mad =
       ShaderRecompiler::GetCodegenOptions().mad_mode == ShaderRecompiler::MadMode::Exact &&
       ShaderRecompiler::GetCodegenOptions().fast_math == 0;
@@ -39586,7 +39586,7 @@ TestCase VectorFloatControlContractPreservesInfNan() {
   test.opcodes = {O::S_BFM_B32,       O::V_MOV_B32,     O::V_MUL_F32,
                   O::V_CMP_CLASS_F32, O::V_CNDMASK_B32, O::BUFFER_STORE_DWORD,
                   O::S_ENDPGM};
-  // KYTY_FAST_MATH (default 1 since v1.1) leaves the 32-bit preserve mode out of compute programs.
+  // KYTY_FAST_MATH (default 1 since v1.0.3) leaves the 32-bit preserve mode out of compute programs.
   if (ShaderRecompiler::GetCodegenOptions().fast_math == 0) {
     test.required_spirv = {"SPV_KHR_float_controls", "SignedZeroInfNanPreserve 32"};
   }

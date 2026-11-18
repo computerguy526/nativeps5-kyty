@@ -314,7 +314,7 @@ int64_t ParseGcLazyCritical(const char* value) {
 	                           static_cast<int64_t>(VramBudget::BufferSettleMaxDeferredCriticalLimit));
 }
 Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL", ParseGcLazyCritical);
-// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default OFF in v1.1 after helmet flicker under VRAM pressure (selective settle can reuse a buffer with an in-flight readback); =1 enables): a collection pass never
+// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default OFF in v1.0.3 after helmet flicker under VRAM pressure (selective settle can reuse a buffer with an in-flight readback); =1 enables): a collection pass never
 // settles all pending side readbacks (a wait for the GPU on the command-processor thread after
 // nearly every completed submission in a level: 26-27 % of that thread in Sky Garden). It skips
 // the candidate buffers whose pages a pending side readback covers instead; they are looked at
