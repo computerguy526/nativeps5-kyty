@@ -109,6 +109,7 @@ static uint64_t Count(const Parsed &p, uint16_t ev) {
 
 // Child modes (re-exec'd so each gets a fresh recorder with its own env).
 static int ChildMain(const std::string &mode, const std::string &dir) {
+  setenv("KYTY_FLIGHTREC", "1", 1); // off unless asked
   setenv("KYTY_FLIGHTREC_DIR", dir.c_str(), 1);
   setenv("KYTY_FLIGHTREC_TAG", mode.c_str(), 1);
   setenv("KYTY_FLIGHTREC_EXIT", "0", 1);
@@ -175,6 +176,7 @@ int main(int argc, char **argv) {
   std::string cmd = "rm -rf '" + dir + "' && mkdir -p '" + dir + "'";
   (void)!std::system(cmd.c_str());
   setenv("KYTY_FLIGHTREC_DIR", dir.c_str(), 1);
+  setenv("KYTY_FLIGHTREC", "1", 1);
   setenv("KYTY_FLIGHTREC_N", "4096", 1);
   setenv("KYTY_FLIGHTREC_TRIGGER", "5,p3", 1);
   const std::string ctl = dir + "/ctl";

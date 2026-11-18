@@ -27,8 +27,7 @@ namespace FlightRec {
 
 namespace {
 
-// Recording is on by default only when it costs < 0.2 ms a frame (measured: see docs/playbook.md §3
-// flightrec); KYTY_FLIGHTREC=1/0 overrides.
+// Compiled in, OFF by default in the public builds (v1.1): KYTY_FLIGHTREC=1 turns the light recorder on, =2 the verbose one.
 // Memory bound (light mode): ring 0 (shared) + 16 thread rings of 16384 x 48 B = 768 KiB = 13 MB;
 // threads past the cap record into the shared ring. Verbose mode (KYTY_FLIGHTREC=2) uses
 // 65536-record rings.
@@ -466,7 +465,7 @@ void StartMonitor() noexcept {
 
 bool InitImpl() noexcept {
 	const char* env = std::getenv("KYTY_FLIGHTREC");
-	if (env != nullptr && std::strcmp(env, "0") == 0) {
+	if (env == nullptr || (std::strcmp(env, "1") != 0 && std::strcmp(env, "2") != 0)) {
 		return false;
 	}
 	const bool verbose = env != nullptr && std::strcmp(env, "2") == 0;

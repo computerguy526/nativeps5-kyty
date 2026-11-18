@@ -16,7 +16,7 @@
 //   FlightRec::Trigger() from code.
 // Decoder: work/tools/flightrec/decode.py (text / TSV, --flips, --ev filters).
 //
-//   KYTY_FLIGHTREC=0|1|2        0 off; unset or 1 = LIGHT (always-on release mode: low-rate events
+//   KYTY_FLIGHTREC=0|1|2        unset or 0 = off (public default); 1 = LIGHT (always-on release mode: low-rate events
 //   + counters,
 //                               16384 records/thread, <= 16 rings, ~13 MB total, dumps only on
 //                               triggers); 2 = VERBOSE (+ every draw/dispatch/upload/bind event,
