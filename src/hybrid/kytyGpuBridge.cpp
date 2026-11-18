@@ -1085,7 +1085,7 @@ int ApiStartGraphics() {
 	// such a prepare with an abort, its work unsaved) does not apply to it.
 	const bool prepare = [] { const char* v = std::getenv("KYTY_PIPELINE_LIST_PREPARE"); return v != nullptr && v[0] == '1'; }();
 	if (!g_renderer_ready.wait_for(lock, prepare ? std::chrono::hours(6) : std::chrono::seconds(120), [] { return g_renderer_result == 0; })) {
-		Log(2, "start_graphics: Kyty's renderer did not come up within 120 s");
+		Log(2, "start_graphics: Kyty's renderer did not come up within %s", prepare ? "6 h (prepare)" : "120 s");
 		return KYTY_GPU_E_STATE;
 	}
 	if (g_host.deliver_event != nullptr && !StartProxy()) {
@@ -1093,7 +1093,8 @@ int ApiStartGraphics() {
 	}
 	// padmove: a host that plays a scripted pad (KYTY_GPU_HOST_SCRIPTED_PAD, NPS5_VPAD_SCRIPT) feeds the pad itself; the relay would publish
 	// Kyty's idle pad (centred sticks) over it every few ms, so scripted sticks never reached the game. KYTY_PAD_RELAY_WITH_SCRIPT=1 keeps the relay.
-	const bool scripted_pad = (g_host_info.flags & KYTY_GPU_HOST_SCRIPTED_PAD) != 0 && std::getenv("KYTY_PAD_RELAY_WITH_SCRIPT") == nullptr;
+	const bool relay_with_script = [] { const char* v = std::getenv("KYTY_PAD_RELAY_WITH_SCRIPT"); return v != nullptr && v[0] == '1'; }();
+	const bool scripted_pad      = (g_host_info.flags & KYTY_GPU_HOST_SCRIPTED_PAD) != 0 && !relay_with_script;
 	if (scripted_pad) {
 		Log(0, "input relay: off (the host plays a scripted pad)");
 	}
