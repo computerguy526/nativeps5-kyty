@@ -436,6 +436,15 @@ uint32_t ReadRelaxAfter() {
 	return static_cast<uint32_t>(g_read_relax.Get());
 }
 
+uint64_t ReadRelaxSpan() {
+	static const uint64_t span = [] {
+		const auto* value = std::getenv("KYTY_READ_RELAX_SPAN_KB");
+		const auto  kib   = value != nullptr ? std::strtoull(value, nullptr, 10) : 16ull;
+		return kib >= 4 && kib <= 1024 && (kib & (kib - 1)) == 0 ? kib * 1024 : 16 * 1024ull;
+	}();
+	return span;
+}
+
 ReadFaultFrameBurst::PageFrameCounter& ReadRelaxCounter() {
 	static ReadFaultFrameBurst::PageFrameCounter counter;
 	return counter;
@@ -2213,7 +2222,20 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			    relax_after != 0 && other_page == 0 &&
 			    ReadRelaxCounter().Bump(page, static_cast<uint32_t>(frame)) >= relax_after) {
 				state.relax_calls.fetch_add(1, std::memory_order_relaxed);
-				state.relaxed_pages.fetch_add(m_memory_tracker.RelaxRead(page, TRACKER_PAGE_SIZE),
+				// The host protects 16 KiB pages (KYTY_READ_RELAX_SPAN_KB, default 16): relaxing one
+				// 4 KiB tracker page of a host page whose neighbours stay access-watched only turns
+				// its faults into alias emulations. Relax the span when every GPU-dirty page of it
+				// would be served too (buffer bytes only, published recently); else the page alone.
+				const uint64_t span       = ReadRelaxSpan();
+				const auto     span_begin = Common::AlignDown(page, span);
+				bool           whole      = span > TRACKER_PAGE_SIZE &&
+				                 !m_texture_cache.IsRegionGpuModified(span_begin, span);
+				for (uint64_t p = span_begin; whole && p < span_begin + span; p += TRACKER_PAGE_SIZE) {
+					whole = p == page || !IsRegionGpuModifiedRelaxed(p, TRACKER_PAGE_SIZE) ||
+					        ReadFaultPublishedRecently(p, frame);
+				}
+				state.relaxed_pages.fetch_add(whole ? m_memory_tracker.RelaxRead(span_begin, span)
+				                                    : m_memory_tracker.RelaxRead(page, TRACKER_PAGE_SIZE),
 				                              std::memory_order_relaxed);
 			}
 			// Keep the page read-hot so its eager copy keeps publishing the GPU's new bytes.

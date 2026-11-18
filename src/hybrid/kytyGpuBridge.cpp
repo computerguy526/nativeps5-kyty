@@ -11,6 +11,7 @@
 // bridge functions below, which forward to the host callbacks.
 
 #define KYTY_GPU_BUILDING_DLL
+#include <optional>
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "hybrid/kytyGpuApi.h"
 #include "hybrid/mainLoopGate.h"
@@ -1234,6 +1235,20 @@ int ApiHandleFault(uint64_t address, int is_write) {
 	// A load the host can complete: publish a (token) native context for the fault, as the x86 handlers
 	// publish theirs, so BufferCache::ReadMemory may serve it (KYTY_READ_FAULT_PUBLISHED).
 	const GuestLoad::FaultScope guest_load(is_write == 0 && g_host_serves_loads ? static_cast<void*>(&g_host) : nullptr);
+	// nps5 faultwin: KYTY_HOSTED_RETRIED_WRITES=1 (default off). The seam retries every store whose
+	// tracker page it offered (nps5_kyty_watch.c returns 1: the instruction runs again, or traps
+	// again while the page stays armed), so a write fault on a GPU-owned page may take the side path
+	// (KYTY_READBACK_SIDE_WRITES: side copy, wait on this thread, second fault makes it CPU-dirty)
+	// instead of draining the GPU on the command processor. Without it every such write drains
+	// (RetriedFaultScope was only set by the x86 exception handler).
+	static const bool retried_writes = [] {
+		const char* value = std::getenv("KYTY_HOSTED_RETRIED_WRITES");
+		return value != nullptr && value[0] == '1';
+	}();
+	std::optional<Libs::Graphics::FaultCost::RetriedFaultScope> retried;
+	if (retried_writes && is_write != 0 && !Libs::Graphics::GuestGpu::IsGpuThread()) {
+		retried.emplace();
+	}
 	return Libs::LibKernel::Memory::HandleGpuFault(is_write != 0 ? GpuAccess::Write : GpuAccess::Read, address) ? 1 : 0;
 }
 
