@@ -1,21 +1,24 @@
-// mslinject: binding convention "kk-bda" = exactly what KosmicKrisp's own (NIR->MSL) compute kernels
-// expect, so a B kernel can replace KK's MSL for a pipeline without touching KK's runtime binding code
-// (KK patch kk-mslinject, env KK_MSL_OVERRIDE_DIR):
-//   buffer(0) = KK root table (kk_cmd_buffer.h kk_root_descriptor_table): cs.base_group@8, push@672,
+// mslinject: binding convention "kk-bda" = exactly what KosmicKrisp's own (NIR->MSL) compute
+// kernels expect, so a B kernel can replace KK's MSL for a pipeline without touching KK's runtime
+// binding code (KK patch kk-mslinject, env KK_MSL_OVERRIDE_DIR):
+//   buffer(0) = KK root table (kk_cmd_buffer.h kk_root_descriptor_table): cs.base_group@8,
+//   push@672,
 //               sets[0] (u64 address of the set-0 descriptor buffer)@928
 //   buffer(1) = KK sampler table (sampler handles[MSL_MAX_SAMPLERS])
 //   set 0     = Kyty's one descriptor set (NativeBinding = kind for compute), laid out as KK does
-//               (kk_descriptor_set_layout.c: bindings sorted by number, offset = align(running, stride);
-//               storage/uniform buffer 16B {u64 addr,u32 size,u32 0}, storage image 8B {u64 resource id},
-//               sampled image / sampler 64B kk_sampled_image_descriptor {u64 id, u16 sampler_index, ...})
-// The kernel body is unchanged: the prelude builds the same `Resources r`, `push`, `tgpig`, `lds` locals
-// the msl-native-v1 body reads. Buffer base adjustments (Kyty memory offsets, SPIR-V ByteAddress prefix)
-// are folded into r.b<i> (address + prefix, size - prefix). The first source line tells KK the threadgroup
-// size, entry point and math mode: "// kk-mslinject v1 local_size X Y Z entry main_entrypoint math safe".
+//               (kk_descriptor_set_layout.c: bindings sorted by number, offset = align(running,
+//               stride); storage/uniform buffer 16B {u64 addr,u32 size,u32 0}, storage image 8B
+//               {u64 resource id}, sampled image / sampler 64B kk_sampled_image_descriptor {u64 id,
+//               u16 sampler_index, ...})
+// The kernel body is unchanged: the prelude builds the same `Resources r`, `push`, `tgpig`, `lds`
+// locals the msl-native-v1 body reads. Buffer base adjustments (Kyty memory offsets, SPIR-V
+// ByteAddress prefix) are folded into r.b<i> (address + prefix, size - prefix). The first source
+// line tells KK the threadgroup size, entry point and math mode: "// kk-mslinject v1 local_size X Y
+// Z entry main_entrypoint math safe".
+#include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/msl/MslBinding.h"
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
-#include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 
 #include <algorithm>
@@ -77,16 +80,17 @@ std::vector<KkBinding> KkSetLayout(const IR::Program& program) {
 		k.offset = size;
 		size += k.stride * static_cast<uint32_t>(std::max<size_t>(k.resources.size(), 1u));
 	}
-	// mslgfx: a graphics pipeline's set 0 holds the bindings of BOTH stages (VS and PS numbers differ), so one
-	// stage cannot compute the offsets alone: KYTY_MSL_KK_SET0="binding:offset,..." (the pipeline's KK set-0
-	// layout, R1b manifest seed kk.set0) overrides them.
+	// mslgfx: a graphics pipeline's set 0 holds the bindings of BOTH stages (VS and PS numbers
+	// differ), so one stage cannot compute the offsets alone: KYTY_MSL_KK_SET0="binding:offset,..."
+	// (the pipeline's KK set-0 layout, R1b manifest seed kk.set0) overrides them.
 	if (const char* e = std::getenv("KYTY_MSL_KK_SET0"); e != nullptr && *e != 0) {
 		for (const char* q = e; *q != 0;) {
-			char* end = nullptr;
+			char*      end = nullptr;
 			const auto bnd = static_cast<uint32_t>(std::strtoul(q, &end, 10));
 			if (end == q || *end != ':') break;
 			const auto off = static_cast<uint32_t>(std::strtoul(end + 1, &end, 10));
-			for (auto& k: v) if (k.binding == bnd) k.offset = off;
+			for (auto& k: v)
+				if (k.binding == bnd) k.offset = off;
 			q = *end == ',' ? end + 1 : end;
 		}
 	}
@@ -99,37 +103,47 @@ uint32_t DescOffset(const std::vector<KkBinding>& layout, Pred pred, uint32_t in
 	for (const auto& k: layout) {
 		if (!pred(k.kind)) continue;
 		const auto at = std::ranges::find(k.resources, index);
-		if (at != k.resources.end()) return k.offset + k.stride * static_cast<uint32_t>(at - k.resources.begin());
+		if (at != k.resources.end())
+			return k.offset + k.stride * static_cast<uint32_t>(at - k.resources.begin());
 	}
 	return UINT32_MAX;
 }
 
 uint32_t FirstOf(const std::vector<KkBinding>& layout, Kind kind) {
-	for (const auto& k: layout) if (k.kind == kind) return k.offset;
+	for (const auto& k: layout)
+		if (k.kind == kind) return k.offset;
 	return UINT32_MAX;
 }
 
-std::string KU(uint32_t v) { return std::to_string(v) + "u"; }
+std::string KU(uint32_t v) {
+	return std::to_string(v) + "u";
+}
 
 } // namespace
 
 std::string KkBdaPrelude() {
-	return "#if __METAL_VERSION__ >= 320\n#define KK_COHERENT coherent\n#else\n#define KK_COHERENT\n#endif\nstruct KkRoot {\n    uint64_t contents[1];\n};\nstruct KkSamplerTable {\n    sampler handles[4096];\n};\n";
+	return "#if __METAL_VERSION__ >= 320\n#define KK_COHERENT coherent\n#else\n#define "
+	       "KK_COHERENT\n#endif\nstruct KkRoot {\n    uint64_t contents[1];\n};\nstruct "
+	       "KkSamplerTable {\n    sampler handles[4096];\n};\n";
 }
 
 void KkBdaParams(MslCtx& /*ctx*/, const BindingModel& m, std::vector<std::string>& params) {
 	params.push_back("constant KkRoot& kkroot [[buffer(0)]]");
-	if (!m.samplers.empty()) params.push_back("constant KkSamplerTable& sampler_table [[buffer(1)]]");
+	if (!m.samplers.empty())
+		params.push_back("constant KkSamplerTable& sampler_table [[buffer(1)]]");
 }
 
 std::string KkBdaLayoutComment(const IR::Program& program) {
 	std::string s = "// kk-bda set0:";
 	for (const auto& k: KkSetLayout(program)) {
-		s += " " + std::to_string(k.binding) + "@" + std::to_string(k.offset) + "x" + std::to_string(std::max<size_t>(k.resources.size(), 1u));
+		s += " " + std::to_string(k.binding) + "@" + std::to_string(k.offset) + "x" +
+		     std::to_string(std::max<size_t>(k.resources.size(), 1u));
 	}
 	const auto& b = program.bindings;
-	s += " push_start=" + (b.UsesPushData() ? std::to_string(b.push_data_start_dword) : std::string("none"));
-	s += " mem_off=" + std::to_string(b.memory_offset_dword) + "x" + std::to_string(b.memory_offset_count);
+	s += " push_start=" +
+	     (b.UsesPushData() ? std::to_string(b.push_data_start_dword) : std::string("none"));
+	s += " mem_off=" + std::to_string(b.memory_offset_dword) + "x" +
+	     std::to_string(b.memory_offset_count);
 	s += " ud=" + std::to_string(b.user_data_registers.size());
 	return s + "\n";
 }
@@ -145,47 +159,60 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	b.Line("constant uchar* kk_root = (constant uchar*)&kkroot;");
 	b.Line("const ulong kk_set0 = *(constant ulong*)(kk_root + " + KU(KkRootSets) + ");");
 	const bool gfx = program.stage != ShaderType::Compute;
-	if (!gfx) b.Line("const uint3 tgpig = kk_tgpig + uint3(*(constant packed_uint3*)(kk_root + " + KU(KkRootBaseGroup) + "));");
+	if (!gfx)
+		b.Line("const uint3 tgpig = kk_tgpig + uint3(*(constant packed_uint3*)(kk_root + " +
+		       KU(KkRootBaseGroup) + "));");
 	if (gfx && m.lds_bytes != 0u) bad("graphics LDS");
-	// Kyty's GPU LOD feedback (KYTY_LOD_STATS_MODE=gpu, default): sampling pixel shaders record the finest wanted mip
-	// per image in the MipStats buffer (spirvEmitterImage.cpp EmitGatedMipStatsRecord; B: MslImageOps MipStatsRecord).
-	// KYTY_MSL_MIPSTATS_PLAIN=1 emits the feedback-free twin (Spirv::EmitProgram mip_stats_records=false, same layout).
+	// Kyty's GPU LOD feedback (KYTY_LOD_STATS_MODE=gpu, default): sampling pixel shaders record the
+	// finest wanted mip per image in the MipStats buffer (spirvEmitterImage.cpp
+	// EmitGatedMipStatsRecord; B: MslImageOps MipStatsRecord). KYTY_MSL_MIPSTATS_PLAIN=1 emits the
+	// feedback-free twin (Spirv::EmitProgram mip_stats_records=false, same layout).
 	SetMipStats({});
 	if (const uint32_t ms = FirstOf(layout, Kind::MipStats); ms != UINT32_MAX) {
 		const auto& opt = GetCodegenOptions();
-		if (!opt.lod_stats_gate) bad("MipStats record mode other than gate (KYTY_LOD_STATS_GATE=1)");
+		if (!opt.lod_stats_gate)
+			bad("MipStats record mode other than gate (KYTY_LOD_STATS_GATE=1)");
 		if (!MipStatsPlainRequested()) {
-			b.Line("const ulong kk_ms_a = *(constant ulong*)(kk_set0 + " + KU(ms) + "); const uint kk_ms_n = *(constant uint*)(kk_set0 + " + KU(ms + 8u) + ");");
+			b.Line("const ulong kk_ms_a = *(constant ulong*)(kk_set0 + " + KU(ms) +
+			       "); const uint kk_ms_n = *(constant uint*)(kk_set0 + " + KU(ms + 8u) + ");");
 			SetMipStats({true, bl.MipStatsOffsetDword(), bl.mip_stats_count});
 		}
 	}
-	// Shader data (user data, dispatch extent, memory offsets): push constants or the ShaderData buffer.
+	// Shader data (user data, dispatch extent, memory offsets): push constants or the ShaderData
+	// buffer.
 	if (bl.UsesPushData()) {
-		b.Line("constant uint* push = (constant uint*)(kk_root + " + KU(KkRootPush + 4u * bl.push_data_start_dword) + ");");
+		b.Line("constant uint* push = (constant uint*)(kk_root + " +
+		       KU(KkRootPush + 4u * bl.push_data_start_dword) + ");");
 	} else {
 		const uint32_t sd = FirstOf(layout, Kind::ShaderData);
 		if (sd == UINT32_MAX) {
 			b.Line("constant uint* push = (constant uint*)(kk_root + " + KU(KkRootPush) + ");");
-			if (bl.ShaderDataDwords() != 0u) bad("shader data without push data or ShaderData binding");
+			if (bl.ShaderDataDwords() != 0u)
+				bad("shader data without push data or ShaderData binding");
 		} else {
-			b.Line("const device uint* push = (const device uint*)(*(constant ulong*)(kk_set0 + " + KU(sd) + "));");
+			b.Line("const device uint* push = (const device uint*)(*(constant ulong*)(kk_set0 + " +
+			       KU(sd) + "));");
 		}
 	}
 	const uint32_t lds_dev = FirstOf(layout, Kind::SharedMemory);
 	if (gfx) {
 	} else if (m.lds_bytes != 0u && lds_dev != UINT32_MAX) {
-		// Kyty lds_storage (LDS larger than the host's threadgroup memory, e.g. 48 KB > Metal's 32 KB): the
-		// workgroup's LDS is region x + nx * (y + ny * z) of the SharedMemory device buffer, regions
-		// LdsStorageRegionDwords apart; a workgroup the bound range holds no region for sees length 0 (reads 0,
-		// writes dropped) -- exactly spirvEmitterProgram.cpp's lds_base_dwords / lds_length.
+		// Kyty lds_storage (LDS larger than the host's threadgroup memory, e.g. 48 KB > Metal's 32
+		// KB): the workgroup's LDS is region x + nx * (y + ny * z) of the SharedMemory device
+		// buffer, regions LdsStorageRegionDwords apart; a workgroup the bound range holds no region
+		// for sees length 0 (reads 0, writes dropped) -- exactly spirvEmitterProgram.cpp's
+		// lds_base_dwords / lds_length.
 		const uint32_t dw     = (m.lds_bytes + 3u) / 4u;
 		const uint32_t region = LdsStorageRegionDwords(dw);
 		SetLdsDevice(true);
-		b.Line("const ulong kk_lds_a = *(constant ulong*)(kk_set0 + " + KU(lds_dev) + "); const uint kk_lds_n = *(constant uint*)(kk_set0 + " + KU(lds_dev + 8u) + ");");
+		b.Line("const ulong kk_lds_a = *(constant ulong*)(kk_set0 + " + KU(lds_dev) +
+		       "); const uint kk_lds_n = *(constant uint*)(kk_set0 + " + KU(lds_dev + 8u) + ");");
 		b.Line("const uint kk_lds_wg = tgpig.x + nwg.x * (tgpig.y + nwg.y * tgpig.z);");
 		b.Line("const bool kk_lds_in = kk_lds_wg < (kk_lds_n >> 2u) / " + KU(region) + ";");
 		b.Line("const uint kk_lds_bytes = kk_lds_in ? " + KU(dw * 4u) + " : 0u;");
-		b.Line("KK_COHERENT device uint* lds = (KK_COHERENT device uint*)(kk_lds_a) + (kk_lds_in ? kk_lds_wg * " + KU(region) + " : 0u);");
+		b.Line("KK_COHERENT device uint* lds = (KK_COHERENT device uint*)(kk_lds_a) + (kk_lds_in ? "
+		       "kk_lds_wg * " +
+		       KU(region) + " : 0u);");
 	} else if (m.lds_bytes != 0u) {
 		b.Line("threadgroup uint kk_lds[" + std::to_string((m.lds_bytes + 3u) / 4u) + "];");
 		b.Line("threadgroup uint* lds = kk_lds;");
@@ -193,47 +220,72 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	b.Line("Resources r;");
 	for (const auto& buf: m.buffers) {
 		const auto i   = buf.id;
-		const auto off = DescOffset(layout, [](Kind k) { return k == Kind::Buffers || k == Kind::UniformBuffers; }, i);
-		if (off == UINT32_MAX) { bad("buffer without descriptor"); continue; }
-		const std::string d = "(kk_set0 + " + KU(off) + ")";
-		std::string prefix = "0u";
-		if (i < bl.memory_offset_count) {
-			prefix = "((push[" + KU(bl.memory_offset_dword + i / 4u) + "] >> " + KU(8u * (i % 4u)) + ") & 255u)";
+		const auto off = DescOffset(
+		    layout, [](Kind k) { return k == Kind::Buffers || k == Kind::UniformBuffers; }, i);
+		if (off == UINT32_MAX) {
+			bad("buffer without descriptor");
+			continue;
 		}
-		b.Line("{ const ulong a = *(constant ulong*)" + d + "; const uint n = *(constant uint*)(" + d + " + 8u); const uint p = " + prefix + ";");
-		b.Line("  r.b" + std::to_string(i) + " = (" + std::string(buf.written || buf.atomic ? "device" : "const device") +
+		const std::string d      = "(kk_set0 + " + KU(off) + ")";
+		std::string       prefix = "0u";
+		if (i < bl.memory_offset_count) {
+			prefix = "((push[" + KU(bl.memory_offset_dword + i / 4u) + "] >> " + KU(8u * (i % 4u)) +
+			         ") & 255u)";
+		}
+		b.Line("{ const ulong a = *(constant ulong*)" + d + "; const uint n = *(constant uint*)(" +
+		       d + " + 8u); const uint p = " + prefix + ";");
+		b.Line("  r.b" + std::to_string(i) + " = (" +
+		       std::string(buf.written || buf.atomic ? "device" : "const device") +
 		       " uchar*)(a + ulong(p)); r.b" + std::to_string(i) + "_size = n > p ? n - p : 0u; }");
 	}
 	if (m.srt_bytes != 0u) {
 		const uint32_t off = FirstOf(layout, Kind::FlattenedSrt);
-		if (off == UINT32_MAX) bad("ReadConst without FlattenedSrt binding");
-		else b.Line("r.srt = (const device uint*)(*(constant ulong*)(kk_set0 + " + KU(off) + "));");
+		if (off == UINT32_MAX)
+			bad("ReadConst without FlattenedSrt binding");
+		else
+			b.Line("r.srt = (const device uint*)(*(constant ulong*)(kk_set0 + " + KU(off) + "));");
 	}
 	if (m.gds_bytes != 0u) {
 		const uint32_t off = FirstOf(layout, Kind::Gds);
-		if (off == UINT32_MAX) bad("GDS without Gds binding");
-		else b.Line("r.gds = (device uchar*)(*(constant ulong*)(kk_set0 + " + KU(off) + "));");
+		if (off == UINT32_MAX)
+			bad("GDS without Gds binding");
+		else
+			b.Line("r.gds = (device uchar*)(*(constant ulong*)(kk_set0 + " + KU(off) + "));");
 	}
 	std::string null_check;
 	for (const auto& img: m.images) {
-		// 1D/1D-array: KK views them as 2D/2D-array (kk_image_view.c remove_1d_view_types, NIR lower_1d: sample y 0.5,
-		// load/store y 0) = B's emulated_2d. Cube: Kyty's SPIR-V declares cube images as 2D arrays (face = layer,
-		// st - 1, CubeLayer padding), so KK's MSL reads them as texture2d_array, as B does. Depth: KK declares the
-		// same depth2d / depth2d_array types from the SPIR-V depth flag. (mslrest: verified by injdiff vs KK.)
-		const auto off = DescOffset(layout, [](Kind k) { return IR::ImageBindingResourceClass(k) != IR::ImageResourceClass::None; }, img.id);
-		if (off == UINT32_MAX) { bad("image without descriptor"); continue; }
+		// 1D/1D-array: KK views them as 2D/2D-array (kk_image_view.c remove_1d_view_types, NIR
+		// lower_1d: sample y 0.5, load/store y 0) = B's emulated_2d. Cube: Kyty's SPIR-V declares
+		// cube images as 2D arrays (face = layer, st - 1, CubeLayer padding), so KK's MSL reads
+		// them as texture2d_array, as B does. Depth: KK declares the same depth2d / depth2d_array
+		// types from the SPIR-V depth flag. (mslrest: verified by injdiff vs KK.)
+		const auto off = DescOffset(
+		    layout,
+		    [](Kind k) { return IR::ImageBindingResourceClass(k) != IR::ImageResourceClass::None; },
+		    img.id);
+		if (off == UINT32_MAX) {
+			bad("image without descriptor");
+			continue;
+		}
 		const std::string id = "*(constant ulong*)(kk_set0 + " + KU(off) + ")";
 		null_check += (null_check.empty() ? "" : " || ") + std::string("(") + id + ") == 0ul";
-		b.Line("r.t" + std::to_string(img.id) + " = *(constant " + TextureDecl(img) + "*)(kk_set0 + " + KU(off) + ");");
+		b.Line("r.t" + std::to_string(img.id) + " = *(constant " + TextureDecl(img) +
+		       "*)(kk_set0 + " + KU(off) + ");");
 	}
 	for (const auto& s: m.samplers) {
 		const auto off = DescOffset(layout, [](Kind k) { return k == Kind::Samplers; }, s.id);
-		if (off == UINT32_MAX) { bad("sampler without descriptor"); continue; }
-		b.Line("r.s" + std::to_string(s.id) + " = sampler_table.handles[*(constant ushort*)(kk_set0 + " + KU(off + 8u) + ")];");
-		b.Line("const float kk_sbias" + std::to_string(s.id) + " = float(*(constant half*)(kk_set0 + " + KU(off + 12u) + "));");
+		if (off == UINT32_MAX) {
+			bad("sampler without descriptor");
+			continue;
+		}
+		b.Line("r.s" + std::to_string(s.id) +
+		       " = sampler_table.handles[*(constant ushort*)(kk_set0 + " + KU(off + 8u) + ")];");
+		b.Line("const float kk_sbias" + std::to_string(s.id) +
+		       " = float(*(constant half*)(kk_set0 + " + KU(off + 12u) + "));");
 	}
-	// Null image descriptors (robustness2 nullDescriptor): Metal cannot bind resource id 0; KK guards each
-	// access, B skips the dispatch for this thread group instead (no fault; output stays as it was).
+	// Null image descriptors (robustness2 nullDescriptor): Metal cannot bind resource id 0; KK
+	// guards each access, B skips the dispatch for this thread group instead (no fault; output
+	// stays as it was).
 	if (!null_check.empty()) b.Line("if (" + null_check + ") { " + ctx.ret + " }");
 }
 

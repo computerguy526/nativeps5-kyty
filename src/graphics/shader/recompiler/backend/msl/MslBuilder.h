@@ -29,6 +29,7 @@ private:
 // Literal formatting shared by the emitter and its tests.
 [[nodiscard]] std::string MslU32(uint32_t value);
 [[nodiscard]] std::string MslU64(uint64_t value);
-[[nodiscard]] std::string MslF32Bits(uint32_t bits); // exact: finite values as hex-free decimal, else as_type
+[[nodiscard]] std::string
+MslF32Bits(uint32_t bits); // exact: finite values as hex-free decimal, else as_type
 
 } // namespace Libs::Graphics::ShaderRecompiler::Msl

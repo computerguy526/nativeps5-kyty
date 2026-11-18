@@ -48,7 +48,10 @@ std::string MslU32(uint32_t value) {
 
 std::string MslU64(uint64_t value) {
 	char buffer[32];
-	std::snprintf(buffer, sizeof(buffer), "%llu" "ul", static_cast<unsigned long long>(value));
+	std::snprintf(buffer, sizeof(buffer),
+	              "%llu"
+	              "ul",
+	              static_cast<unsigned long long>(value));
 	return buffer;
 }
 

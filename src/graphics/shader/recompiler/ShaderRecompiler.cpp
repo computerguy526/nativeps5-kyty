@@ -1,14 +1,12 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
-#include "graphics/shader/recompiler/ir/passes/RawVertexUnpack.h"
-#include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/Tessellation.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/Tessellation.h"
 #include "graphics/shader/recompiler/backend/msl/MslBindingFromIr.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
+#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/frontend/translate/Translate.h"
@@ -17,6 +15,7 @@
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ExecSelectElimination.h"
+#include "graphics/shader/recompiler/ir/passes/RawVertexUnpack.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
@@ -1107,11 +1106,11 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		Msl::MslOptions msl_options;
 		msl_options.force_dispatcher = options.msl_force_dispatcher;
 		msl_options.loop_cap         = options.msl_loop_cap;
-		const auto msl = Msl::EmitProgram(ir, options.input_info, msl_options);
-		msl_result.msl_structured = msl.structured;
-		msl_result.msl          = msl.source;
-		msl_result.msl_manifest = Msl::BuildManifestJson(ir, options.input_info);
-		msl_result.msl_complete = msl.complete;
+		const auto msl               = Msl::EmitProgram(ir, options.input_info, msl_options);
+		msl_result.msl_structured    = msl.structured;
+		msl_result.msl               = msl.source;
+		msl_result.msl_manifest      = Msl::BuildManifestJson(ir, options.input_info);
+		msl_result.msl_complete      = msl.complete;
 		for (const auto& [name, count]: msl.unsupported) {
 			msl_result.msl_unsupported.push_back(name + " x" + std::to_string(count));
 		}
@@ -1131,7 +1130,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		result.spirv_plain = Spirv::EmitProgram(ir, options.input_info, false);
 	}
 	result.spirv   = std::move(spirv);
-	result.msl     = std::move(msl_result.msl);
+	result.msl             = std::move(msl_result.msl);
 	result.msl_manifest    = std::move(msl_result.msl_manifest);
 	result.msl_complete    = msl_result.msl_complete;
 	result.msl_structured  = msl_result.msl_structured;

@@ -11,10 +11,10 @@
 namespace Libs::Graphics::ShaderRecompiler::Msl::Mem {
 
 struct MemOut {
-	std::string code;      // statements, '\n' terminated
+	std::string code; // statements, '\n' terminated
 	uint32_t    next_tmp = 0;
 	std::string prefix   = "m";
-	std::string error;     // non-empty: unsupported construct (caller should fail the shader)
+	std::string error; // non-empty: unsupported construct (caller should fail the shader)
 
 	std::string Tmp() { return prefix + std::to_string(next_tmp++); }
 	void        Line(const std::string& s) { code += "    " + s + "\n"; }
@@ -30,8 +30,8 @@ struct MemOut {
 	}
 };
 
-std::string U(uint32_t v);          // "123u"
-std::string Hex(uint32_t v);        // "0x7bu"
-std::string F32Lit(float v);        // exact float literal
+std::string U(uint32_t v);   // "123u"
+std::string Hex(uint32_t v); // "0x7bu"
+std::string F32Lit(float v); // exact float literal
 
 } // namespace Libs::Graphics::ShaderRecompiler::Msl::Mem

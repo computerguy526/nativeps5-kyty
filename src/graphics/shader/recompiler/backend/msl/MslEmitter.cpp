@@ -1,18 +1,19 @@
 // MSL emitter core: SSA values -> typed locals, CFG -> dispatcher loop, EXEC/VCC mask emulation,
 // compute entry. Memory/image/LDS/atomics are T2's (EmitMemoryInst hook).
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
+
+#include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
-#include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 
 #include <algorithm>
 #include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <set>
 #include <fmt/format.h>
-#include "graphics/shader/recompiler/CodegenOptions.h"
+#include <set>
 
 namespace Libs::Graphics::ShaderRecompiler::Msl {
 
@@ -99,27 +100,32 @@ size_t BlockIndexById(const IR::Program& program, uint32_t id) {
 
 std::string PreludeText(bool fuse_mad) {
 	std::string t(Prelude);
-	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x fewer ALU ops on mad-heavy kernels
+	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x
+		            // fewer ALU ops on mad-heavy kernels
 		const std::string off = "#pragma METAL fp contract(off)";
 		t.replace(t.find(off), off.size(), "#pragma METAL fp contract(fast)");
 	}
 	return t;
 }
 
-// mslinject: first source line read by KK (kk-mslinject) when it compiles this text in place of its own MSL.
+// mslinject: first source line read by KK (kk-mslinject) when it compiles this text in place of its
+// own MSL.
 std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	if (!ctx.kk_bda) return {};
 	// mslgfx: graphics stages are swapped as a VS+PS pair inside KK's render pipeline descriptor.
-	if (ctx.program.stage == ShaderType::Vertex) return "// kk-mslinject v1 stage vertex entry main0 math safe\n";
-	if (ctx.program.stage == ShaderType::Pixel) return "// kk-mslinject v1 stage fragment entry main0 math safe\n";
-	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n", r.threadgroup[0], r.threadgroup[1], r.threadgroup[2]);
+	if (ctx.program.stage == ShaderType::Vertex)
+		return "// kk-mslinject v1 stage vertex entry main0 math safe\n";
+	if (ctx.program.stage == ShaderType::Pixel)
+		return "// kk-mslinject v1 stage fragment entry main0 math safe\n";
+	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
+	                   r.threadgroup[0], r.threadgroup[1], r.threadgroup[2]);
 }
 
 } // namespace
 
 std::string MslCtx::Name(const IR::Inst& inst, uint32_t h) const {
-	const auto found = ids.find(&inst);
-	const uint32_t id = found == ids.end() ? 0xffffffffu : found->second;
+	const auto     found = ids.find(&inst);
+	const uint32_t id    = found == ids.end() ? 0xffffffffu : found->second;
 	return lanes == 1 ? fmt::format("v{}", id) : fmt::format("v{}_{}", id, h);
 }
 
@@ -173,14 +179,16 @@ ComputeShape ShapeOf(const IR::Program& program, ShaderStageInputInfo input) {
 }
 
 std::string BuiltinExpr(MslCtx& ctx, const ComputeShape& shape, uint32_t kind, uint32_t c) {
-	using K = IR::StageInputKind;
-	c = std::min(c, 2u);
+	using K       = IR::StageInputKind;
+	c             = std::min(c, 2u);
 	const auto li = [&](uint32_t h) -> std::string {
-		return ctx.lanes == 2 ? fmt::format("(tid + (tid & 4294967264u) + {}u)", h * 32u) : std::string("tid");
+		return ctx.lanes == 2 ? fmt::format("(tid + (tid & 4294967264u) + {}u)", h * 32u)
+		                      : std::string("tid");
 	};
 	const auto local = [&](uint32_t h) {
 		uint32_t divisor = 1;
-		for (uint32_t a = 0; a < c; a++) divisor *= shape.threads[a];
+		for (uint32_t a = 0; a < c; a++)
+			divisor *= shape.threads[a];
 		return fmt::format("(({} / {}u) % {}u)", li(h), divisor, shape.threads[c]);
 	};
 	switch (static_cast<K>(kind)) {
@@ -188,7 +196,8 @@ std::string BuiltinExpr(MslCtx& ctx, const ComputeShape& shape, uint32_t kind, u
 		case K::NumWorkgroups: return fmt::format("nwg[{}]", c);
 		case K::LocalInvocationIndex: return li(ctx.half);
 		case K::LocalInvocationId: return local(ctx.half);
-		case K::GlobalInvocationId: return fmt::format("({} + tgpig[{}] * {}u)", local(ctx.half), c, shape.threads[c]);
+		case K::GlobalInvocationId:
+			return fmt::format("({} + tgpig[{}] * {}u)", local(ctx.half), c, shape.threads[c]);
 		default: return {};
 	}
 }
@@ -235,25 +244,27 @@ void EmitEdge(MslCtx& ctx, const IR::Block* from, const IR::Block* to) {
 // conditions are already wave-uniform scalars.
 std::string BranchExpr(MslCtx& ctx, const IR::BlockInfo& info) {
 	const auto kind = info.terminator.condition;
-	if (kind == CFG::BranchCondition::ScalarInstruction || kind == CFG::BranchCondition::GotoVariable ||
-	    kind == CFG::BranchCondition::Always || kind == CFG::BranchCondition::Unknown ||
-	    kind == CFG::BranchCondition::SccZero || kind == CFG::BranchCondition::SccNonZero) {
+	if (kind == CFG::BranchCondition::ScalarInstruction ||
+	    kind == CFG::BranchCondition::GotoVariable || kind == CFG::BranchCondition::Always ||
+	    kind == CFG::BranchCondition::Unknown || kind == CFG::BranchCondition::SccZero ||
+	    kind == CFG::BranchCondition::SccNonZero) {
 		return ctx.Val(info.condition, 0);
 	}
-	const bool zero = kind == CFG::BranchCondition::ExecZero || kind == CFG::BranchCondition::VccZero;
-	const char* op  = zero ? "kyty_all" : "kyty_any";
+	const bool zero =
+	    kind == CFG::BranchCondition::ExecZero || kind == CFG::BranchCondition::VccZero;
+	const char* op = zero ? "kyty_all" : "kyty_any";
 	if (ctx.lanes == 1) {
 		return fmt::format("{}({}, lid)", op, ctx.Val(info.condition, 0));
 	}
-	return fmt::format("({}({}, lid) {} {}({}, lid))", op, ctx.Val(info.condition, 0), zero ? "&&" : "||", op,
-	                   ctx.Val(info.condition, 1));
+	return fmt::format("({}({}, lid) {} {}({}, lid))", op, ctx.Val(info.condition, 0),
+	                   zero ? "&&" : "||", op, ctx.Val(info.condition, 1));
 }
 
 void EmitTerminator(MslCtx& ctx, size_t index) {
-	const auto& program = ctx.program;
-	const auto& info    = program.block_info[index];
-	const auto* block   = program.blocks[index];
-	const auto& term    = info.terminator;
+	const auto& program    = ctx.program;
+	const auto& info       = program.block_info[index];
+	const auto* block      = program.blocks[index];
+	const auto& term       = info.terminator;
 	const auto  goto_block = [&](uint32_t id) {
 		const auto target = BlockIndexById(program, id);
 		if (target == SIZE_MAX) {
@@ -287,7 +298,7 @@ void EmitTerminator(MslCtx& ctx, size_t index) {
 				return;
 			}
 			const bool  by_code = term.indirect_selector_code != UINT32_MAX;
-			const auto& values  = by_code ? term.indirect_selector_values : term.indirect_target_pcs;
+			const auto& values = by_code ? term.indirect_selector_values : term.indirect_target_pcs;
 			const auto& targets = by_code ? term.indirect_selector_targets : term.indirect_targets;
 			const auto  sel     = ctx.Val(info.indirect_target, 0);
 			for (size_t i = 0; i < std::min(values.size(), targets.size()); i++) {
@@ -303,10 +314,10 @@ void EmitTerminator(MslCtx& ctx, size_t index) {
 }
 
 void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
-	using O = ValueOpcode;
-	const auto op = inst.GetOpcode();
+	using O              = ValueOpcode;
+	const auto op        = inst.GetOpcode();
 	const auto type_name = MslTypeName(inst.GetType());
-	const auto assign = [&](uint32_t h, const std::string& expr) {
+	const auto assign    = [&](uint32_t h, const std::string& expr) {
 		ctx.b.Line(fmt::format("{} = {};", ctx.Name(inst, h), expr));
 	};
 	// Opcodes that are not per-half.
@@ -321,36 +332,54 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 		case O::TtraceData:
 		case O::InstPrefetch: return;
 		case O::Barrier: {
-			// mslrest2 perf: S_BARRIER in a workgroup that is ONE Metal simdgroup (<= 32 threads; wave64 at 2 lanes/thread)
-			// orders nothing beyond the simdgroup: simdgroup_barrier with a threadgroup memory fence (KK: Kyty SPIR-V's
-			// barrier on a one-wave workgroup -> simdgroup-scope fence) instead of threadgroup_barrier + device flush.
+			// mslrest2 perf: S_BARRIER in a workgroup that is ONE Metal simdgroup (<= 32 threads;
+			// wave64 at 2 lanes/thread) orders nothing beyond the simdgroup: simdgroup_barrier with
+			// a threadgroup memory fence (KK: Kyty SPIR-V's barrier on a one-wave workgroup ->
+			// simdgroup-scope fence) instead of threadgroup_barrier + device flush.
 			const uint32_t n     = shape.threads[0] * shape.threads[1] * shape.threads[2];
 			const uint32_t metal = ctx.lanes == 2 ? (n + 63u) / 64u * 32u : n;
-			if (ctx.program.stage == ShaderType::Compute && metal <= 32u) ctx.b.Line("simdgroup_barrier(mem_flags::mem_threadgroup);");
-			else ctx.b.Line("threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
+			if (ctx.program.stage == ShaderType::Compute && metal <= 32u)
+				ctx.b.Line("simdgroup_barrier(mem_flags::mem_threadgroup);");
+			else
+				ctx.b.Line(
+				    "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
 			return;
 		}
-		// mslaudit: S_WAITCNT lgkmcnt(0) / vmcnt(0) order only the wave's OWN memory ops (other lanes of the wave read the data
-		// next). = SPIR-V EmitSharedMemoryBarrier / EmitStoreCompletion (subgroup scope; KK: simdgroup atomic_thread_fence).
-		// It was a threadgroup_barrier (execution barrier for ALL waves of the group) = undefined behaviour when the waitcnt sits in
-		// a wave-uniform branch other waves skip (hang / wrong data). KYTY_MSL_WAITCNT_FENCE=0 restores the old form.
+		// mslaudit: S_WAITCNT lgkmcnt(0) / vmcnt(0) order only the wave's OWN memory ops (other
+		// lanes of the wave read the data next). = SPIR-V EmitSharedMemoryBarrier /
+		// EmitStoreCompletion (subgroup scope; KK: simdgroup atomic_thread_fence). It was a
+		// threadgroup_barrier (execution barrier for ALL waves of the group) = undefined behaviour
+		// when the waitcnt sits in a wave-uniform branch other waves skip (hang / wrong data).
+		// KYTY_MSL_WAITCNT_FENCE=0 restores the old form.
 		case O::SharedMemoryBarrier:
 		case O::StoreCompletion: {
 			if (ctx.gfx) return; // graphics: no workgroup memory (as the SPIR-V emitter)
-			static const bool old_form = [] { const char* e = std::getenv("KYTY_MSL_WAITCNT_FENCE"); return e != nullptr && std::strcmp(e, "0") == 0; }();
+			static const bool old_form = [] {
+				const char* e = std::getenv("KYTY_MSL_WAITCNT_FENCE");
+				return e != nullptr && std::strcmp(e, "0") == 0;
+			}();
 			if (old_form) {
-				if (op == O::SharedMemoryBarrier) ctx.b.Line("threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
+				if (op == O::SharedMemoryBarrier)
+					ctx.b.Line(
+					    "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
 				return;
 			}
-			if (op == O::StoreCompletion) ctx.b.Line("KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt vmcnt(0)");
-			else ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt lgkmcnt(0)" : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // s_waitcnt lgkmcnt(0)");
+			if (op == O::StoreCompletion)
+				ctx.b.Line("KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt vmcnt(0)");
+			else
+				ctx.b.Line(
+				    Mem::LdsIsDevice()
+				        ? "KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt lgkmcnt(0)"
+				        : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // s_waitcnt lgkmcnt(0)");
 			return;
 		}
 		default: break;
 	}
 	if (!ctx.lds_fence.empty() && ctx.lds_fence.count(&inst) != 0)
-		ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // mslaudit: LDS store -> load without barrier"
-		                              : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // mslaudit: LDS store -> load without barrier");
+		ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // mslaudit: LDS "
+		                                "store -> load without barrier"
+		                              : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // mslaudit: "
+		                                "LDS store -> load without barrier");
 	for (uint32_t h = 0; h < ctx.lanes; h++) {
 		ctx.half = h;
 		switch (op) {
@@ -360,12 +389,17 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			case O::UndefU16:
 			case O::UndefU32:
 			case O::UndefU64: assign(h, type_name + "(0)"); continue;
-			case O::IsHelperInvocation: if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue; assign(h, "false"); continue;
+			case O::IsHelperInvocation:
+				if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue;
+				assign(h, "false");
+				continue;
 			case O::GetUserData: {
 				const auto& regs = ctx.program.bindings.user_data_registers;
 				const auto  reg  = IR::RegIndex(inst.Arg(0).ScalarRegister());
 				const auto  at   = std::lower_bound(regs.begin(), regs.end(), reg);
-				assign(h, at == regs.end() || *at != reg ? "0u" : fmt::format("push[{}]", at - regs.begin()));
+				assign(h, at == regs.end() || *at != reg
+				              ? "0u"
+				              : fmt::format("push[{}]", at - regs.begin()));
 				continue;
 			}
 			case O::GetDispatchThreadExtent: {
@@ -378,7 +412,8 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			case O::GetBuiltin: {
 				if (!inst.Arg(0).IsImmediate() || !inst.Arg(1).IsImmediate()) break;
 				if (ctx.gfx) {
-					const auto gexpr = GfxBuiltin(ctx, *ctx.gfx, inst.Arg(0).U32(), inst.Arg(1).U32());
+					const auto gexpr =
+					    GfxBuiltin(ctx, *ctx.gfx, inst.Arg(0).U32(), inst.Arg(1).U32());
 					if (gexpr.empty()) break;
 					assign(h, gexpr);
 					continue;
@@ -389,17 +424,21 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 				continue;
 			}
 			case O::LaneId: assign(h, ctx.LaneExpr(h)); continue;
-			// S_GETPC: guest PCs stay shader-relative, exactly as the SPIR-V backend (EmitGetShaderBase = 0).
+			// S_GETPC: guest PCs stay shader-relative, exactly as the SPIR-V backend
+			// (EmitGetShaderBase = 0).
 			case O::GetShaderBase: assign(h, "0ul"); continue;
 			case O::Ballot: {
 				const auto lo = fmt::format("kyty_ballot({}, lid)", ctx.Val(inst.Arg(0), 0));
-				const auto hi = ctx.lanes == 2 ? fmt::format("kyty_ballot({}, lid)", ctx.Val(inst.Arg(0), 1)) : std::string("0u");
+				const auto hi = ctx.lanes == 2
+				                    ? fmt::format("kyty_ballot({}, lid)", ctx.Val(inst.Arg(0), 1))
+				                    : std::string("0u");
 				assign(h, fmt::format("uint4({}, {}, 0u, 0u)", lo, hi));
 				continue;
 			}
 			case O::AnyLane: {
 				auto e = fmt::format("kyty_any({}, lid)", ctx.Val(inst.Arg(0), 0));
-				if (ctx.lanes == 2) e = fmt::format("({} || kyty_any({}, lid))", e, ctx.Val(inst.Arg(0), 1));
+				if (ctx.lanes == 2)
+					e = fmt::format("({} || kyty_any({}, lid))", e, ctx.Val(inst.Arg(0), 1));
 				assign(h, e);
 				continue;
 			}
@@ -410,17 +449,23 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 					assign(h, fmt::format("simd_shuffle({}, ctz(kyty_ballot({}, lid)))", v0, e0));
 				} else {
 					const auto v1 = ctx.Val(inst.Arg(0), 1), e1 = ctx.Val(inst.Arg(1), 1);
-					assign(h, fmt::format("(kyty_any({0}, lid) ? simd_shuffle({1}, ctz(kyty_ballot({0}, lid))) : simd_shuffle({2}, ctz(kyty_ballot({3}, lid))))", e0, v0, v1, e1));
+					assign(h, fmt::format(
+					              "(kyty_any({0}, lid) ? simd_shuffle({1}, ctz(kyty_ballot({0}, "
+					              "lid))) : simd_shuffle({2}, ctz(kyty_ballot({3}, lid))))",
+					              e0, v0, v1, e1));
 				}
 				continue;
 			}
 			case O::ReadLane: {
 				const auto lane = ctx.Val(inst.Arg(1), 0);
 				if (ctx.lanes == 1) {
-					assign(h, fmt::format("simd_shuffle({}, {} & 31u)", ctx.Val(inst.Arg(0), 0), lane));
+					assign(h, fmt::format("simd_shuffle({}, {} & 31u)", ctx.Val(inst.Arg(0), 0),
+					                      lane));
 				} else {
-					assign(h, fmt::format("((({} & 63u) < 32u) ? simd_shuffle({}, {} & 31u) : simd_shuffle({}, {} & 31u))", lane,
-					                      ctx.Val(inst.Arg(0), 0), lane, ctx.Val(inst.Arg(0), 1), lane));
+					assign(h, fmt::format("((({} & 63u) < 32u) ? simd_shuffle({}, {} & 31u) : "
+					                      "simd_shuffle({}, {} & 31u))",
+					                      lane, ctx.Val(inst.Arg(0), 0), lane,
+					                      ctx.Val(inst.Arg(0), 1), lane));
 				}
 				continue;
 			}
@@ -428,7 +473,8 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 		}
 		if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue;
 		std::vector<std::string> args;
-		for (size_t i = 0; i < inst.NumArgs(); i++) args.push_back(ctx.Val(inst.Arg(i)));
+		for (size_t i = 0; i < inst.NumArgs(); i++)
+			args.push_back(ctx.Val(inst.Arg(i)));
 		if (!type_name.empty() && inst.NumArgs() == IR::NumArgsOf(op)) {
 			if (const auto expr = AluExpression(op, args); !expr.empty()) {
 				assign(h, expr);
@@ -444,26 +490,33 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 
 } // namespace
 
-const char* MslPrelude() { return Prelude; }
+const char* MslPrelude() {
+	return Prelude;
+}
 
-// nps5 gpuguard loop budget (MslOptions::loop_cap): nps5_lg_step returns true while the budget lasts; it saturates, so once
-// spent every later check of the invocation fails at once (nested and consecutive loops all unwind).
+// nps5 gpuguard loop budget (MslOptions::loop_cap): nps5_lg_step returns true while the budget
+// lasts; it saturates, so once spent every later check of the invocation fails at once (nested and
+// consecutive loops all unwind).
 static std::string LoopGuardHelper(uint32_t cap) {
 	if (cap == 0u) return {};
-	return fmt::format("// nps5 gpuguard: {} loop iterations per invocation, then the loop breaks (wrong result instead of a GPU lockup)\n"
-	                   "static inline __attribute__((always_inline)) bool nps5_lg_step(thread uint& n) {{ if (n >= {}u) return false; ++n; return true; }}\n",
+	return fmt::format("// nps5 gpuguard: {} loop iterations per invocation, then the loop breaks "
+	                   "(wrong result instead of a GPU lockup)\n"
+	                   "static inline __attribute__((always_inline)) bool nps5_lg_step(thread "
+	                   "uint& n) {{ if (n >= {}u) return false; ++n; return true; }}\n",
 	                   cap, cap);
 }
 
-// mslaudit (NXNative "Threadgroup stores in warp-synchronous code"): GCN compilers drop S_BARRIER in one-wave groups, so a lane
-// stores its LDS word and loads its neighbour's with only s_waitcnt between. In MSL the load does not alias the thread's own
-// store and Metal may hoist it above the store. Forward dataflow to a fixed point: state = "an LDS store/atomic may precede
-// with no barrier/fence since". An LDS load reached in that state gets a fence (which clears the state; one fence orders all
-// prior stores). Not a fence after every store (25,108 fences crashed the M2's compiler in NX).
+// mslaudit (NXNative "Threadgroup stores in warp-synchronous code"): GCN compilers drop S_BARRIER
+// in one-wave groups, so a lane stores its LDS word and loads its neighbour's with only s_waitcnt
+// between. In MSL the load does not alias the thread's own store and Metal may hoist it above the
+// store. Forward dataflow to a fixed point: state = "an LDS store/atomic may precede with no
+// barrier/fence since". An LDS load reached in that state gets a fence (which clears the state; one
+// fence orders all prior stores). Not a fence after every store (25,108 fences crashed the M2's
+// compiler in NX).
 static std::unordered_set<const IR::Inst*> LdsFenceSites(const IR::Program& program) {
 	std::unordered_set<const IR::Inst*> sites;
-	const size_t n = std::min(program.blocks.size(), program.block_info.size());
-	bool any_store = false, any_load = false;
+	const size_t n         = std::min(program.blocks.size(), program.block_info.size());
+	bool         any_store = false, any_load = false;
 	for (size_t i = 0; i < n; i++)
 		for (const auto& inst: *program.blocks[i]) {
 			const auto a = IR::SharedAccessOf(inst.GetOpcode());
@@ -472,17 +525,25 @@ static std::unordered_set<const IR::Inst*> LdsFenceSites(const IR::Program& prog
 		}
 	if (!any_store || !any_load) return sites;
 	std::unordered_map<uint32_t, size_t> index;
-	for (size_t i = 0; i < n; i++) index[program.block_info[i].id] = i;
+	for (size_t i = 0; i < n; i++)
+		index[program.block_info[i].id] = i;
 	const auto succs = [&](size_t i) {
 		std::vector<size_t> out;
-		const auto& t   = program.block_info[i].terminator;
-		const auto  add = [&](uint32_t id) { if (const auto f = index.find(id); f != index.end()) out.push_back(f->second); };
+		const auto&         t   = program.block_info[i].terminator;
+		const auto          add = [&](uint32_t id) {
+			if (const auto f = index.find(id); f != index.end()) out.push_back(f->second);
+		};
 		switch (t.kind) {
 			case CFG::TerminatorKind::Branch: add(t.true_block); break;
-			case CFG::TerminatorKind::ConditionalBranch: add(t.true_block); add(t.false_block); break;
+			case CFG::TerminatorKind::ConditionalBranch:
+				add(t.true_block);
+				add(t.false_block);
+				break;
 			case CFG::TerminatorKind::IndirectBranch:
-				for (auto id: t.indirect_targets) add(id);
-				for (auto id: t.indirect_selector_targets) add(id);
+				for (auto id: t.indirect_targets)
+					add(id);
+				for (auto id: t.indirect_selector_targets)
+					add(id);
 				break;
 			default: break;
 		}
@@ -491,7 +552,10 @@ static std::unordered_set<const IR::Inst*> LdsFenceSites(const IR::Program& prog
 	const auto transfer = [&](size_t i, bool dirty, bool mark) {
 		for (const auto& inst: *program.blocks[i]) {
 			const auto op = inst.GetOpcode();
-			if (op == ValueOpcode::Barrier || op == ValueOpcode::SharedMemoryBarrier) { dirty = false; continue; }
+			if (op == ValueOpcode::Barrier || op == ValueOpcode::SharedMemoryBarrier) {
+				dirty = false;
+				continue;
+			}
 			const auto a = IR::SharedAccessOf(op);
 			if (a == IR::SharedAccess::None) continue;
 			if (a == IR::SharedAccess::Read) {
@@ -503,8 +567,8 @@ static std::unordered_set<const IR::Inst*> LdsFenceSites(const IR::Program& prog
 		}
 		return dirty;
 	};
-	std::vector<char> in(n, 0), seen(n, 0);
-	std::vector<size_t> work{0};
+	std::vector<char>   in(n, 0), seen(n, 0);
+	std::vector<size_t> work {0};
 	seen[0] = 1;
 	while (!work.empty()) {
 		const size_t i = work.back();
@@ -526,7 +590,9 @@ static std::unordered_set<const IR::Inst*> LdsFenceSites(const IR::Program& prog
 static bool ProgramHasBarrier(const IR::Program& program) {
 	for (const auto* block: program.blocks)
 		for (const auto& inst: *block)
-			if (inst.GetOpcode() == ValueOpcode::Barrier || inst.GetOpcode() == ValueOpcode::SharedMemoryBarrier) return true;
+			if (inst.GetOpcode() == ValueOpcode::Barrier ||
+			    inst.GetOpcode() == ValueOpcode::SharedMemoryBarrier)
+				return true;
 	return false;
 }
 
@@ -535,26 +601,34 @@ std::string MslCtx::LoopGuard(std::string* decl) {
 	if (!loop_private) return "if (!nps5_lg_step(nps5_lg_n)) break; // nps5 gpuguard";
 	const std::string n = fmt::format("nps5_lg_b{}", loop_guards++);
 	*decl               = fmt::format("uint {} = 0u;", n);
-	return fmt::format("if (!nps5_lg_step({})) break; // nps5 gpuguard (private: barrier program)", n);
+	return fmt::format("if (!nps5_lg_step({})) break; // nps5 gpuguard (private: barrier program)",
+	                   n);
 }
-
 
 // ---------------------------------------------------------------------------------------------
 // Structured emission: the frontend CFG already carries SPIR-V-style merge/continue info
 // (terminator.merge_block / continue_block / loop_header), so if/else and loops are rebuilt as
-// nested MSL statements instead of the dispatcher `switch (blk)` loop (which Apple GPUs run poorly).
-// Anything not expressible (indirect branches, jumps across several constructs, a block reached
-// twice) makes Plan fail and the caller falls back to the dispatcher. A dry run (no output) plans
-// first so no half-emitted text or double-counted unsupported opcodes can result.
+// nested MSL statements instead of the dispatcher `switch (blk)` loop (which Apple GPUs run
+// poorly). Anything not expressible (indirect branches, jumps across several constructs, a block
+// reached twice) makes Plan fail and the caller falls back to the dispatcher. A dry run (no output)
+// plans first so no half-emitted text or double-counted unsupported opcodes can result.
 // ---------------------------------------------------------------------------------------------
 class Structurer {
 public:
-	Structurer(MslCtx& ctx, const ComputeShape& shape, bool comments, bool dry, std::set<uint32_t>& need_do)
-	    : ctx_(ctx), shape_(shape), comments_(comments), dry_(dry), need_do_(need_do), emitted_(ctx.program.blocks.size(), false) {}
+	Structurer(MslCtx& ctx, const ComputeShape& shape, bool comments, bool dry,
+	           std::set<uint32_t>& need_do)
+	    : ctx_(ctx), shape_(shape), comments_(comments), dry_(dry), need_do_(need_do),
+	      emitted_(ctx.program.blocks.size(), false) {}
 
 	bool Run() {
 		const auto& program = ctx_.program;
-		if (std::getenv("KYTY_MSL_DEBUG") && dry_) for (size_t i = 0; i < program.blocks.size(); i++) { const auto& t = program.block_info[i].terminator; std::fprintf(stderr, "blk %u kind %d t=%u f=%u merge=%u cont=%u loop=%d\n", program.block_info[i].id, (int)t.kind, t.true_block, t.false_block, t.merge_block, t.continue_block, (int)t.loop_header); }
+		if (std::getenv("KYTY_MSL_DEBUG") && dry_)
+			for (size_t i = 0; i < program.blocks.size(); i++) {
+				const auto& t = program.block_info[i].terminator;
+				std::fprintf(stderr, "blk %u kind %d t=%u f=%u merge=%u cont=%u loop=%d\n",
+				             program.block_info[i].id, (int)t.kind, t.true_block, t.false_block,
+				             t.merge_block, t.continue_block, (int)t.loop_header);
+			}
 		if (program.blocks.empty()) return true;
 		Region(program.block_info[0].id, UINT32_MAX);
 		return !failed_;
@@ -564,31 +638,50 @@ private:
 	struct Loop {
 		uint32_t    header, merge, cont;
 		bool        trivial_cont; // continue target needs no code: `continue` directly
-		bool        in_do = false;
+		bool        in_do     = false;
 		bool        flag_used = false;
 		std::string flag;
 	};
 
-	MslCtx&              ctx_;
-	const ComputeShape&  shape_;
-	bool                 comments_, dry_, failed_ = false;
-	std::set<uint32_t>&  need_do_; // loop headers whose body jumps to a non-trivial continue block (dry run -> real run)
-	std::vector<bool>    emitted_;
-	std::vector<Loop>    loops_;
+	MslCtx&             ctx_;
+	const ComputeShape& shape_;
+	bool                comments_, dry_, failed_ = false;
+	std::set<uint32_t>& need_do_; // loop headers whose body jumps to a non-trivial continue block
+	                              // (dry run -> real run)
+	std::vector<bool>     emitted_;
+	std::vector<Loop>     loops_;
 	std::vector<uint32_t> stops_;
-	uint32_t             loop_counter_ = 0;
+	uint32_t              loop_counter_ = 0;
 
-	void FailAt(int line) { failed_ = true; if (std::getenv("KYTY_MSL_DEBUG")) std::fprintf(stderr, "msl structurer failed at MslEmitter.cpp:%d\n", line); }
-	void Line(const std::string& t) { if (!dry_) ctx_.b.Line(t); }
-	void Open(const std::string& t) { if (!dry_) ctx_.b.Open(t); }
-	void Close(const std::string& t = {}) { if (!dry_) ctx_.b.Close(t); }
-	void Edge(const IR::Block* from, const IR::Block* to) { if (!dry_) EmitEdge(ctx_, from, to); }
-	size_t Index(uint32_t id) const { return BlockIndexById(ctx_.program, id); }
-	const IR::Block* BlockOf(uint32_t id) const { auto i = Index(id); return i == SIZE_MAX ? nullptr : ctx_.program.blocks[i]; }
+	void FailAt(int line) {
+		failed_ = true;
+		if (std::getenv("KYTY_MSL_DEBUG"))
+			std::fprintf(stderr, "msl structurer failed at MslEmitter.cpp:%d\n", line);
+	}
+	void Line(const std::string& t) {
+		if (!dry_) ctx_.b.Line(t);
+	}
+	void Open(const std::string& t) {
+		if (!dry_) ctx_.b.Open(t);
+	}
+	void Close(const std::string& t = {}) {
+		if (!dry_) ctx_.b.Close(t);
+	}
+	void Edge(const IR::Block* from, const IR::Block* to) {
+		if (!dry_) EmitEdge(ctx_, from, to);
+	}
+	size_t           Index(uint32_t id) const { return BlockIndexById(ctx_.program, id); }
+	const IR::Block* BlockOf(uint32_t id) const {
+		auto i = Index(id);
+		return i == SIZE_MAX ? nullptr : ctx_.program.blocks[i];
+	}
 
 	bool OnlyEmptyAndPhi(size_t idx, bool allow_phi) const {
 		for (const auto& inst: *ctx_.program.blocks[idx]) {
-			if (inst.GetOpcode() == ValueOpcode::Phi) { if (!allow_phi) return false; continue; }
+			if (inst.GetOpcode() == ValueOpcode::Phi) {
+				if (!allow_phi) return false;
+				continue;
+			}
 			return false;
 		}
 		return true;
@@ -602,28 +695,44 @@ private:
 		if (dry_) return;
 		if (comments_) ctx_.b.Comment(fmt::format("block {}", ctx_.program.block_info[idx].id));
 		for (const auto& inst: *ctx_.program.blocks[idx]) {
-			if (comments_ && inst.GetOpcode() != ValueOpcode::Phi) ctx_.b.Comment(std::string(IR::ValueOpcodeName(inst.GetOpcode())));
+			if (comments_ && inst.GetOpcode() != ValueOpcode::Phi)
+				ctx_.b.Comment(std::string(IR::ValueOpcodeName(inst.GetOpcode())));
 			EmitInst(ctx_, inst, shape_);
 		}
 	}
 
 	// Control transfer from block `from` to `target`; `stop` = where the current region ends.
 	void Jump(size_t from, uint32_t target, uint32_t stop) {
-		const auto* fb = ctx_.program.blocks[from];
+		const auto*  fb = ctx_.program.blocks[from];
 		const size_t ti = Index(target);
-		if (ti == SIZE_MAX) { Line(ctx_.ret); return; }
+		if (ti == SIZE_MAX) {
+			Line(ctx_.ret);
+			return;
+		}
 		const auto* tb = ctx_.program.blocks[ti];
-		if (target == stop) { Edge(fb, tb); return; }
+		if (target == stop) {
+			Edge(fb, tb);
+			return;
+		}
 		if (!loops_.empty()) {
 			auto& L = loops_.back();
 			if (target == L.cont) {
 				if (L.trivial_cont) {
-					// trivial continue block (or the header itself): its only job is the back-edge phi copy
-					if (L.cont == L.header) Edge(fb, tb); else { Edge(fb, tb); Edge(tb, BlockOf(L.header)); }
+					// trivial continue block (or the header itself): its only job is the back-edge
+					// phi copy
+					if (L.cont == L.header)
+						Edge(fb, tb);
+					else {
+						Edge(fb, tb);
+						Edge(tb, BlockOf(L.header));
+					}
 					Line("continue;");
 				} else {
 					Edge(fb, tb);
-					if (!L.in_do) { FailAt(__LINE__); return; }
+					if (!L.in_do) {
+						FailAt(__LINE__);
+						return;
+					}
 					need_do_.insert(L.header);
 					Line("break;");
 				}
@@ -631,15 +740,25 @@ private:
 			}
 			if (target == L.merge) {
 				Edge(fb, tb);
-				if (L.in_do) { L.flag_used = true; Line(L.flag + " = true;"); }
+				if (L.in_do) {
+					L.flag_used = true;
+					Line(L.flag + " = true;");
+				}
 				Line("break;");
 				return;
 			}
 			for (size_t i = 0; i + 1 < loops_.size(); i++) {
-				if (target == loops_[i].cont || target == loops_[i].merge) { FailAt(__LINE__); return; }
+				if (target == loops_[i].cont || target == loops_[i].merge) {
+					FailAt(__LINE__);
+					return;
+				}
 			}
 		}
-		for (auto s: stops_) if (s == target) { FailAt(__LINE__); return; } // would jump over a construct
+		for (auto s: stops_)
+			if (s == target) {
+				FailAt(__LINE__);
+				return;
+			} // would jump over a construct
 		Edge(fb, tb);
 		Region(target, stop);
 	}
@@ -650,16 +769,20 @@ private:
 		const auto* hb   = ctx_.program.blocks[idx];
 		(void)hb;
 		const size_t ci = Index(term.continue_block);
-		if (ci == SIZE_MAX) { FailAt(__LINE__); return; }
-		Loop L{info.id, term.merge_block, term.continue_block, false};
+		if (ci == SIZE_MAX) {
+			FailAt(__LINE__);
+			return;
+		}
+		Loop       L {info.id, term.merge_block, term.continue_block, false};
 		const bool single = term.continue_block == info.id;
-		L.trivial_cont = single || (OnlyEmptyAndPhi(ci, false) &&
-		                           ctx_.program.block_info[ci].terminator.kind == CFG::TerminatorKind::Branch &&
-		                           ctx_.program.block_info[ci].terminator.true_block == info.id);
-		L.flag = fmt::format("lf{}", loop_counter_++);
+		L.trivial_cont =
+		    single || (OnlyEmptyAndPhi(ci, false) &&
+		               ctx_.program.block_info[ci].terminator.kind == CFG::TerminatorKind::Branch &&
+		               ctx_.program.block_info[ci].terminator.true_block == info.id);
+		L.flag            = fmt::format("lf{}", loop_counter_++);
 		const bool use_do = !L.trivial_cont && (dry_ || need_do_.count(info.id) != 0);
 		if (use_do) Line(fmt::format("bool {} = false;", L.flag));
-		std::string lg_decl;
+		std::string       lg_decl;
 		const std::string lg = dry_ ? std::string() : ctx_.LoopGuard(&lg_decl);
 		if (!lg_decl.empty()) Line(lg_decl);
 		Open("for (;;)");
@@ -667,7 +790,10 @@ private:
 		Insts(idx);
 		loops_.push_back(L);
 		stops_.push_back(L.trivial_cont ? UINT32_MAX : L.cont);
-		if (use_do) { loops_.back().in_do = true; Open("do"); }
+		if (use_do) {
+			loops_.back().in_do = true;
+			Open("do");
+		}
 		Terminator(idx, L.trivial_cont ? UINT32_MAX : L.cont, true);
 		if (!L.trivial_cont) {
 			if (use_do) {
@@ -675,7 +801,9 @@ private:
 				loops_.back().in_do = false;
 				if (loops_.back().flag_used) Line(fmt::format("if ({}) break;", L.flag));
 			}
-			if (emitted_[ci]) { FailAt(__LINE__); }
+			if (emitted_[ci]) {
+				FailAt(__LINE__);
+			}
 			emitted_[ci] = true;
 			Insts(ci);
 			ContinueTerminator(ci, info.id, term.merge_block);
@@ -685,21 +813,31 @@ private:
 		Close();
 	}
 
-	// Terminator of the continue block: back edge to the header (fall off / continue) and, for do-while
-	// style loops, a conditional exit to the loop merge.
+	// Terminator of the continue block: back edge to the header (fall off / continue) and, for
+	// do-while style loops, a conditional exit to the loop merge.
 	void ContinueTerminator(size_t ci, uint32_t header, uint32_t merge) {
 		const auto& cterm = ctx_.program.block_info[ci].terminator;
 		const auto* cb    = ctx_.program.blocks[ci];
 		const auto  arm   = [&](uint32_t t, bool last_fall) {
-			if (t == header) { Edge(cb, BlockOf(header)); if (!last_fall) Line("continue;"); return true; }
-			if (t == merge && t != UINT32_MAX) { Edge(cb, BlockOf(merge)); Line("break;"); return true; }
+			if (t == header) {
+				Edge(cb, BlockOf(header));
+				if (!last_fall) Line("continue;");
+				return true;
+			}
+			if (t == merge && t != UINT32_MAX) {
+				Edge(cb, BlockOf(merge));
+				Line("break;");
+				return true;
+			}
 			return false;
 		};
 		if (cterm.kind == CFG::TerminatorKind::Branch) {
 			if (!arm(cterm.true_block, true)) FailAt(__LINE__);
-		} else if (cterm.kind == CFG::TerminatorKind::ConditionalBranch && !ctx_.program.block_info[ci].condition.IsEmpty() &&
+		} else if (cterm.kind == CFG::TerminatorKind::ConditionalBranch &&
+		           !ctx_.program.block_info[ci].condition.IsEmpty() &&
 		           cterm.true_block != cterm.false_block) {
-			Open(fmt::format("if ({})", dry_ ? std::string("c") : BranchExpr(ctx_, ctx_.program.block_info[ci])));
+			Open(fmt::format("if ({})", dry_ ? std::string("c")
+			                                 : BranchExpr(ctx_, ctx_.program.block_info[ci])));
 			if (!arm(cterm.true_block, false)) FailAt(__LINE__);
 			Close();
 			if (!arm(cterm.false_block, true)) FailAt(__LINE__);
@@ -716,24 +854,39 @@ private:
 		switch (term.kind) {
 			case CFG::TerminatorKind::Branch: Jump(idx, term.true_block, stop); return UINT32_MAX;
 			case CFG::TerminatorKind::ConditionalBranch: {
-				if (info.condition.IsEmpty() || Index(term.true_block) == SIZE_MAX || Index(term.false_block) == SIZE_MAX) { Line(ctx_.ret); return UINT32_MAX; }
-				if (term.true_block == term.false_block) { Jump(idx, term.true_block, stop); return UINT32_MAX; }
-				uint32_t merge = loop ? UINT32_MAX : term.merge_block;
+				if (info.condition.IsEmpty() || Index(term.true_block) == SIZE_MAX ||
+				    Index(term.false_block) == SIZE_MAX) {
+					Line(ctx_.ret);
+					return UINT32_MAX;
+				}
+				if (term.true_block == term.false_block) {
+					Jump(idx, term.true_block, stop);
+					return UINT32_MAX;
+				}
+				uint32_t merge    = loop ? UINT32_MAX : term.merge_block;
 				uint32_t arm_stop = loop ? stop : (merge != UINT32_MAX ? merge : stop);
 				if (!loop && merge == UINT32_MAX) {
-					// both arms must leave (break/continue/return); falling out of an arm is unstructured
+					// both arms must leave (break/continue/return); falling out of an arm is
+					// unstructured
 					arm_stop = UINT32_MAX;
 				}
 				if (!loop && merge != UINT32_MAX) stops_.push_back(merge);
 				Open(fmt::format("if ({})", dry_ ? std::string("c") : BranchExpr(ctx_, info)));
 				Jump(idx, term.true_block, arm_stop);
 				Close();
-				const bool skip_else = term.false_block == arm_stop && arm_stop != UINT32_MAX && !HasPhi(term.false_block);
-				if (!skip_else) { Open("else"); Jump(idx, term.false_block, arm_stop); Close(); }
+				const bool skip_else = term.false_block == arm_stop && arm_stop != UINT32_MAX &&
+				                       !HasPhi(term.false_block);
+				if (!skip_else) {
+					Open("else");
+					Jump(idx, term.false_block, arm_stop);
+					Close();
+				}
 				if (!loop && merge != UINT32_MAX) stops_.pop_back();
 				return merge;
 			}
-			default: Line(ctx_.ret); return UINT32_MAX; // Return / Unsupported (indirect: see below)
+			default:
+				Line(ctx_.ret);
+				return UINT32_MAX; // Return / Unsupported (indirect: see below)
 		}
 	}
 
@@ -743,25 +896,42 @@ private:
 			if (!loops_.empty()) {
 				auto& L = loops_.back();
 				if (id == L.cont && L.trivial_cont) {
-					if (L.cont != L.header) Edge(ctx_.program.blocks[Index(L.cont)], BlockOf(L.header));
+					if (L.cont != L.header)
+						Edge(ctx_.program.blocks[Index(L.cont)], BlockOf(L.header));
 					Line("continue;");
 					return;
 				}
 				if (id == L.merge) {
-					if (L.in_do) { L.flag_used = true; Line(L.flag + " = true;"); }
+					if (L.in_do) {
+						L.flag_used = true;
+						Line(L.flag + " = true;");
+					}
 					Line("break;");
 					return;
 				}
 			}
 			const size_t idx = Index(id);
-			if (idx == SIZE_MAX) { Line(ctx_.ret); return; }
-			if (emitted_[idx]) { FailAt(__LINE__); return; }
-			emitted_[idx] = true;
+			if (idx == SIZE_MAX) {
+				Line(ctx_.ret);
+				return;
+			}
+			if (emitted_[idx]) {
+				FailAt(__LINE__);
+				return;
+			}
+			emitted_[idx]    = true;
 			const auto& info = ctx_.program.block_info[idx];
 			const auto& term = info.terminator;
-			if (term.kind == CFG::TerminatorKind::IndirectBranch) { FailAt(__LINE__); return; }
+			if (term.kind == CFG::TerminatorKind::IndirectBranch) {
+				FailAt(__LINE__);
+				return;
+			}
 			if (term.loop_header) {
-				if (term.kind != CFG::TerminatorKind::Branch && term.kind != CFG::TerminatorKind::ConditionalBranch) { FailAt(__LINE__); return; }
+				if (term.kind != CFG::TerminatorKind::Branch &&
+				    term.kind != CFG::TerminatorKind::ConditionalBranch) {
+					FailAt(__LINE__);
+					return;
+				}
 				EmitLoop(idx, stop);
 				// after the loop: its merge block (edge copies into it were done at each break)
 				if (term.merge_block == UINT32_MAX) return;
@@ -776,19 +946,23 @@ private:
 	}
 };
 
-// True when a wave64 compute program uses nothing that crosses guest lanes (wave ops, DPP/permutes, LDS, barriers, GDS
-// counters, exec/vcc masks as integers; AnyLane only feeds wave-uniform branches whose bodies are exec-masked, so a
-// per-simdgroup answer is equivalent): then each guest lane can be its own Metal thread (threadgroup = the guest
-// threadgroup, two simdgroups per wave64, half the registers per thread) instead of two halves per thread.
+// True when a wave64 compute program uses nothing that crosses guest lanes (wave ops, DPP/permutes,
+// LDS, barriers, GDS counters, exec/vcc masks as integers; AnyLane only feeds wave-uniform branches
+// whose bodies are exec-masked, so a per-simdgroup answer is equivalent): then each guest lane can
+// be its own Metal thread (threadgroup = the guest threadgroup, two simdgroups per wave64, half the
+// registers per thread) instead of two halves per thread.
 bool CanRunOneLanePerThread(const IR::Program& program, uint32_t guest_threads) {
-	if (guest_threads == 0u || guest_threads % 64u != 0u) return false; // partial waves keep the full-wave (halves) model
+	if (guest_threads == 0u || guest_threads % 64u != 0u)
+		return false; // partial waves keep the full-wave (halves) model
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {
-			const std::string_view n = IR::ValueOpcodeName(inst.GetOpcode());
-			static const char* const bad[] = {"Ballot", "ReadFirstLane", "ReadLane", "WriteLane", "Permlane", "Permute",
-			                                  "Swizzle", "Dpp", "Wqm", "Shared", "Barrier", "DataAppend", "DataConsume", "ExecLo",
-			                                  "ExecHi", "VccLo", "VccHi", "ThreadBit", "ScalarMask", "Bvh", "Scratch", "Sendmsg", "GetM0", "SetM0",
-			                                  "ReadClock", "IsHelper"};
+			const std::string_view   n     = IR::ValueOpcodeName(inst.GetOpcode());
+			static const char* const bad[] = {
+			    "Ballot",      "ReadFirstLane", "ReadLane", "WriteLane", "Permlane", "Permute",
+			    "Swizzle",     "Dpp",           "Wqm",      "Shared",    "Barrier",  "DataAppend",
+			    "DataConsume", "ExecLo",        "ExecHi",   "VccLo",     "VccHi",    "ThreadBit",
+			    "ScalarMask",  "Bvh",           "Scratch",  "Sendmsg",   "GetM0",    "SetM0",
+			    "ReadClock",   "IsHelper"};
 			for (const char* b: bad) {
 				if (n.find(b) != std::string_view::npos) return false;
 			}
@@ -797,62 +971,75 @@ bool CanRunOneLanePerThread(const IR::Program& program, uint32_t guest_threads) 
 	return true;
 }
 
-uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info, uint32_t lanes_override) {
+uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info,
+                     uint32_t lanes_override) {
 	if (lanes_override != 0) return lanes_override;
 	uint32_t lanes = program.wave_size == 64u ? 2u : 1u;
-	// KYTY_MSL_WAVE64=halves|lane overrides; default (auto): one lane per thread when no cross-lane op is used.
-	const char* mode = std::getenv("KYTY_MSL_WAVE64");
+	// KYTY_MSL_WAVE64=halves|lane overrides; default (auto): one lane per thread when no cross-lane
+	// op is used.
+	const char* mode        = std::getenv("KYTY_MSL_WAVE64");
 	const bool  want_single = mode != nullptr ? std::strcmp(mode, "lane") == 0 : true;
-	if (lanes == 2 && program.stage == ShaderType::Compute && want_single && CanRunOneLanePerThread(program, [&] { const auto sh = ShapeOf(program, input_info); return sh.threads[0] * sh.threads[1] * sh.threads[2]; }())) lanes = 1;
+	if (lanes == 2 && program.stage == ShaderType::Compute && want_single &&
+	    CanRunOneLanePerThread(program, [&] {
+		    const auto sh = ShapeOf(program, input_info);
+		    return sh.threads[0] * sh.threads[1] * sh.threads[2];
+	    }()))
+		lanes = 1;
 	return lanes;
 }
 
-MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info, const MslOptions& options) {
+MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,
+                      const MslOptions& options) {
 	MslResult result;
 	MslCtx    ctx(program, input_info);
 	ctx.options_comments = options.comments;
 	ctx.loop_cap         = options.loop_cap;
-	if (const char* e = std::getenv("KYTY_MSL_LOOP_CAP")) ctx.loop_cap = static_cast<uint32_t>(std::strtoul(e, nullptr, 0));
+	if (const char* e = std::getenv("KYTY_MSL_LOOP_CAP"))
+		ctx.loop_cap = static_cast<uint32_t>(std::strtoul(e, nullptr, 0));
 	ctx.loop_private = ctx.loop_cap != 0u && ProgramHasBarrier(program);
-	if (const char* e = std::getenv("KYTY_MSL_LDS_FENCE"); e == nullptr || std::strcmp(e, "0") != 0) ctx.lds_fence = LdsFenceSites(program);
-	// MadMode (CodegenOptions): Exact = unfused everywhere; Position = unfused only on the position data flow (graphics: kept
-	// unfused for the whole VS/PS here); Fused = fma everywhere. Compute shaders have no position export => fused unless Exact.
+	if (const char* e = std::getenv("KYTY_MSL_LDS_FENCE"); e == nullptr || std::strcmp(e, "0") != 0)
+		ctx.lds_fence = LdsFenceSites(program);
+	// MadMode (CodegenOptions): Exact = unfused everywhere; Position = unfused only on the position
+	// data flow (graphics: kept unfused for the whole VS/PS here); Fused = fma everywhere. Compute
+	// shaders have no position export => fused unless Exact.
 	const auto mad_mode = GetCodegenOptions().mad_mode;
-	const bool fuse_mad = mad_mode == MadMode::Fused || (mad_mode == MadMode::Position && program.stage == ShaderType::Compute);
+	const bool fuse_mad = mad_mode == MadMode::Fused ||
+	                      (mad_mode == MadMode::Position && program.stage == ShaderType::Compute);
 	SetFuseMad(fuse_mad);
 	const auto shape = ShapeOf(program, input_info);
 
 	// Lane model (see STATUS.md): wave64 on Apple's simdgroup(32) = two guest halves per thread.
-	uint32_t lanes = ChooseLanes(program, input_info, options.lanes_override);
+	uint32_t lanes    = ChooseLanes(program, input_info, options.lanes_override);
 	ctx.wave64_single = program.wave_size == 64u && lanes == 1;
-	ctx.lanes    = lanes;
-	result.lanes = lanes;
-	uint32_t total = shape.threads[0] * shape.threads[1] * shape.threads[2];
+	ctx.lanes         = lanes;
+	result.lanes      = lanes;
+	uint32_t total    = shape.threads[0] * shape.threads[1] * shape.threads[2];
 	if (lanes == 2) {
 		total = ((total + 63u) / 64u) * 32u;
 	}
 	result.threadgroup[0] = total;
 
 	const bool gfx_stage = GfxIsStage(program.stage);
-	ctx.kk_bda = (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
+	ctx.kk_bda =
+	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
-	Mem::SetLdsDevice(false);     // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
-	Mem::SetMipStats({});         // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
+	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
+	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
 	if (program.stage != ShaderType::Compute && !gfx_stage) {
 		ctx.unsupported[fmt::format("stage:{}", static_cast<int>(program.stage))]++;
-		result.source   = PreludeText(fuse_mad) + "// stage not supported by the MSL backend yet\n";
+		result.source = PreludeText(fuse_mad) + "// stage not supported by the MSL backend yet\n";
 		result.unsupported = ctx.unsupported;
 		return result;
 	}
 	if (gfx_stage) { // graphics: one guest lane per Metal thread (see MslStageIo.cpp)
-		ctx.lanes = lanes = 1;
-		result.lanes      = 1;
-		total             = 1;
+		ctx.lanes = lanes     = 1;
+		result.lanes          = 1;
+		total                 = 1;
 		result.threadgroup[0] = 1;
 	}
 
 	// SSA numbering + declarations.
-	uint32_t next = 0;
+	uint32_t                     next = 0;
 	std::vector<const IR::Inst*> declared;
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {
@@ -868,32 +1055,43 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (!ctx.kk_bda) params.push_back("constant uint* push [[buffer(1)]]");
 	if (gfx_stage) {
 		ctx.gfx = GfxSetup(ctx);
-		for (const auto& gp: GfxParams(*ctx.gfx)) params.push_back(gp);
-		if (program.stage == ShaderType::Pixel) params.push_back("uint lid [[thread_index_in_simdgroup]]");
+		for (const auto& gp: GfxParams(*ctx.gfx))
+			params.push_back(gp);
+		if (program.stage == ShaderType::Pixel)
+			params.push_back("uint lid [[thread_index_in_simdgroup]]");
 	} else {
-		params.push_back(ctx.kk_bda ? "uint3 kk_tgpig [[threadgroup_position_in_grid]]" : "uint3 tgpig [[threadgroup_position_in_grid]]");
+		params.push_back(ctx.kk_bda ? "uint3 kk_tgpig [[threadgroup_position_in_grid]]"
+		                            : "uint3 tgpig [[threadgroup_position_in_grid]]");
 		params.push_back("uint3 nwg [[threadgroups_per_grid]]");
 		params.push_back("uint tid [[thread_index_in_threadgroup]]");
 		params.push_back("uint lid [[thread_index_in_simdgroup]]");
 	}
 	EmitResourceParams(ctx, params);
-	std::string header = gfx_stage ? GfxEntryPrefix(*ctx.gfx) + "main0(" : fmt::format("[[max_total_threads_per_threadgroup({})]]\nkernel void {}(", std::max(total, 1u), ctx.kk_bda ? "main_entrypoint" : "main0");
-	for (size_t i = 0; i < params.size(); i++) header += (i ? ",\n    " : "") + params[i];
+	std::string header =
+	    gfx_stage ? GfxEntryPrefix(*ctx.gfx) + "main0("
+	              : fmt::format("[[max_total_threads_per_threadgroup({})]]\nkernel void {}(",
+	                            std::max(total, 1u), ctx.kk_bda ? "main_entrypoint" : "main0");
+	for (size_t i = 0; i < params.size(); i++)
+		header += (i ? ",\n    " : "") + params[i];
 	header += ")";
-	b.Comment(fmt::format("hash {:016x}  wave{}  lanes/thread {}  threads {}x{}x{} -> tg {}", program.shader_hash, program.wave_size, lanes,
-	                      shape.threads[0], shape.threads[1], shape.threads[2], total));
+	b.Comment(fmt::format("hash {:016x}  wave{}  lanes/thread {}  threads {}x{}x{} -> tg {}",
+	                      program.shader_hash, program.wave_size, lanes, shape.threads[0],
+	                      shape.threads[1], shape.threads[2], total));
 	if (ctx.kk_bda) b.Raw(KkBdaLayoutComment(program));
 	b.Open(header);
-	if (ctx.loop_cap != 0u) b.Line("uint nps5_lg_n = 0u; // nps5 gpuguard loop budget (MslOptions::loop_cap)");
+	if (ctx.loop_cap != 0u)
+		b.Line("uint nps5_lg_n = 0u; // nps5 gpuguard loop budget (MslOptions::loop_cap)");
 	if (gfx_stage) GfxLocals(ctx, *ctx.gfx);
 	EmitResourceLocals(ctx);
 	for (const auto* inst: declared) {
 		const auto type = MslTypeName(inst->GetType());
-		for (uint32_t h = 0; h < lanes; h++) b.Line(fmt::format("{} {};", type, ctx.Name(*inst, h)));
+		for (uint32_t h = 0; h < lanes; h++)
+			b.Line(fmt::format("{} {};", type, ctx.Name(*inst, h)));
 	}
-	const uint32_t entry = program.block_info.empty() ? 0u : program.block_info[0].id;
+	const uint32_t     entry = program.block_info.empty() ? 0u : program.block_info[0].id;
 	std::set<uint32_t> need_do;
-	bool structured = !program.dispatcher_fallback && !options.force_dispatcher && std::getenv("KYTY_MSL_FORCE_DISPATCHER") == nullptr;
+	bool               structured = !program.dispatcher_fallback && !options.force_dispatcher &&
+	                                std::getenv("KYTY_MSL_FORCE_DISPATCHER") == nullptr;
 	if (structured) {
 		Structurer dry(ctx, shape, options.comments, true, need_do);
 		structured = dry.Run();
@@ -904,7 +1102,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		real.Run();
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
-		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad) + LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+		result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad) +
+		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
 		return result;
@@ -912,7 +1111,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	b.Line(fmt::format("uint blk = {}u;", entry));
 	{
 		std::string lg_decl;
-		ctx.loop_private = false; // the dispatcher is one loop: the shared budget counts block transitions
+		ctx.loop_private =
+		    false; // the dispatcher is one loop: the shared budget counts block transitions
 		const std::string lg = ctx.LoopGuard(&lg_decl);
 		b.Open("while (true)");
 		if (!lg.empty()) b.Line(lg);
@@ -935,7 +1135,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (gfx_stage) b.Line(ctx.ret);
 	b.Close(); // kernel
 
-	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad) + LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+	result.source      = KkInjectHeader(ctx, result) + PreludeText(fuse_mad) +
+	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();
 	return result;

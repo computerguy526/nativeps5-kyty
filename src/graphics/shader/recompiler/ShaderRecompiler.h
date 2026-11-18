@@ -30,10 +30,11 @@ struct CompileOptions {
 	bool                        plain_mip_stats_variant = false;
 	// nps5 mslnative: also run the MSL backend (backend/msl) on the planned program into
 	// CompileResult::msl, and skip SPIR-V emission when emit_spirv is false (kyty_msl_dump).
-	bool                        emit_msl                = false;
-	bool                        msl_force_dispatcher    = false; // MSL: skip structured control flow
-	uint32_t                    msl_loop_cap            = 0;     // MSL: per-invocation loop budget (Msl::MslOptions::loop_cap), 0 = off
-	bool                        emit_spirv              = true;
+	bool     emit_msl             = false;
+	bool     msl_force_dispatcher = false; // MSL: skip structured control flow
+	uint32_t msl_loop_cap =
+	    0; // MSL: per-invocation loop budget (Msl::MslOptions::loop_cap), 0 = off
+	bool emit_spirv = true;
 };
 
 // A function an S_SWAPPC_B64 call jumps to, as the dispatch's user data gives it: `address` is the
@@ -61,10 +62,10 @@ struct CompileResult {
 	std::vector<uint32_t>  spirv_plain;
 	std::string            decoded_dump;
 	std::string            ir_dump;
-	std::string            msl;            // CompileOptions::emit_msl
-	bool                   msl_structured = false; // MSL used if/loop statements (not the dispatcher loop)
-	std::string            msl_manifest;   // T2 binding manifest JSON (schema 1) for the emitted MSL
-	bool                   msl_complete = false;
+	std::string            msl;         // CompileOptions::emit_msl
+	bool        msl_structured = false; // MSL used if/loop statements (not the dispatcher loop)
+	std::string msl_manifest;           // T2 binding manifest JSON (schema 1) for the emitted MSL
+	bool        msl_complete = false;
 	std::vector<std::string> msl_unsupported; // "Opcode xN" per untranslated opcode
 	IR::Program            program;
 };

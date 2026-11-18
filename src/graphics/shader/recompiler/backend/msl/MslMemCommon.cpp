@@ -4,7 +4,9 @@
 
 namespace Libs::Graphics::ShaderRecompiler::Msl::Mem {
 
-std::string U(uint32_t v) { return std::to_string(v) + "u"; }
+std::string U(uint32_t v) {
+	return std::to_string(v) + "u";
+}
 std::string Hex(uint32_t v) {
 	char b[32];
 	std::snprintf(b, sizeof b, "0x%xu", v);

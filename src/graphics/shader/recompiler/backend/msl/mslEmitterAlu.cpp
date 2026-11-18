@@ -26,8 +26,12 @@ std::string MslTypeName(IR::Type type) {
 
 namespace {
 
-std::string Si(const std::string& a) { return fmt::format("as_type<int>({})", a); }
-std::string Sl(const std::string& a) { return fmt::format("as_type<long>({})", a); }
+std::string Si(const std::string& a) {
+	return fmt::format("as_type<int>({})", a);
+}
+std::string Sl(const std::string& a) {
+	return fmt::format("as_type<long>({})", a);
+}
 
 } // namespace
 
@@ -37,7 +41,9 @@ std::string Sl(const std::string& a) { return fmt::format("as_type<long>({})", a
 //  - FPMad32 relies on `#pragma METAL fp contract(off)` in the prelude (not fused);
 //  - FP compares use isordered/isunordered so NaN handling does not depend on the fast-math mode.
 static thread_local bool g_fuse_mad = false;
-void SetFuseMad(bool fuse) { g_fuse_mad = fuse; }
+void                     SetFuseMad(bool fuse) {
+	g_fuse_mad = fuse;
+}
 
 std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 	using O = ValueOpcode;
@@ -60,12 +66,15 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::ConvertF32S32: return fmt::format("float({})", Si(a[0]));
 		case O::ConvertF32U32: return fmt::format("float({})", a[0]);
 		// --- composites
-		case O::CompositeConstructU64: return fmt::format("(ulong({}) | (ulong({}) << 32))", a[0], a[1]);
+		case O::CompositeConstructU64:
+			return fmt::format("(ulong({}) | (ulong({}) << 32))", a[0], a[1]);
 		case O::CompositeConstructU32x2: return fmt::format("uint2({}, {})", a[0], a[1]);
 		case O::CompositeConstructU32x3: return fmt::format("uint3({}, {}, {})", a[0], a[1], a[2]);
-		case O::CompositeConstructU32x4: return fmt::format("uint4({}, {}, {}, {})", a[0], a[1], a[2], a[3]);
+		case O::CompositeConstructU32x4:
+			return fmt::format("uint4({}, {}, {}, {})", a[0], a[1], a[2], a[3]);
 		case O::CompositeConstructF32x2: return fmt::format("float2({}, {})", a[0], a[1]);
-		case O::CompositeExtractU64: return fmt::format("uint(({} >> (({} & 1u) * 32u)))", a[0], a[1]);
+		case O::CompositeExtractU64:
+			return fmt::format("uint(({} >> (({} & 1u) * 32u)))", a[0], a[1]);
 		case O::CompositeExtractU32x2:
 		case O::CompositeExtractU32x3:
 		case O::CompositeExtractU32x4: return fmt::format("{}[{}]", a[0], a[1]);
@@ -77,7 +86,8 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPAbs32: return fmt::format("fabs({})", a[0]);
 		case O::FPNeg32: return fmt::format("(-{})", a[0]);
 		case O::FPSaturate32: return fmt::format("saturate({})", a[0]);
-		case O::BitFieldInsert: return fmt::format("insert_bits({}, {}, {}, {})", a[0], a[1], a[2], a[3]);
+		case O::BitFieldInsert:
+			return fmt::format("insert_bits({}, {}, {}, {})", a[0], a[1], a[2], a[3]);
 		case O::BitFieldUExtract: return fmt::format("extract_bits({}, {}, {})", a[0], a[1], a[2]);
 		case O::BitFieldSExtract:
 			return fmt::format("as_type<uint>(extract_bits({}, {}, {}))", Si(a[0]), a[1], a[2]);
@@ -101,7 +111,10 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::ShiftLeftLogical64: return fmt::format("({} << ({} & 63u))", a[0], a[1]);
 		case O::ShiftRightLogical32: return fmt::format("({} >> ({} & 31u))", a[0], a[1]);
 		case O::ShiftRightLogical64: return fmt::format("({} >> ({} & 63u))", a[0], a[1]);
-		case O::WqmU64: return fmt::format("(((({0}) | (({0}) >> 1ul) | (({0}) >> 2ul) | (({0}) >> 3ul)) & 0x1111111111111111ul) * 15ul)", a[0]);
+		case O::WqmU64:
+			return fmt::format("(((({0}) | (({0}) >> 1ul) | (({0}) >> 2ul) | (({0}) >> 3ul)) & "
+			                   "0x1111111111111111ul) * 15ul)",
+			                   a[0]);
 		case O::ShiftRightArithmetic32:
 			return fmt::format("as_type<uint>({} >> ({} & 31u))", Si(a[0]), a[1]);
 		case O::ShiftRightArithmetic64:
@@ -115,17 +128,21 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::BitCount32: return fmt::format("popcount({})", a[0]);
 		case O::BitCount64: return fmt::format("uint(popcount({}))", a[0]);
 		case O::FindUMsb32: return fmt::format("({0} == 0u ? 0xffffffffu : 31u - clz({0}))", a[0]);
-		case O::FindUMsb64: return fmt::format("({0} == 0ul ? 0xffffffffu : 63u - uint(clz({0})))", a[0]);
+		case O::FindUMsb64:
+			return fmt::format("({0} == 0ul ? 0xffffffffu : 63u - uint(clz({0})))", a[0]);
 		case O::FindILsb32: return fmt::format("({0} == 0u ? 0xffffffffu : ctz({0}))", a[0]);
 		case O::SMin32: return fmt::format("as_type<uint>(min({}, {}))", Si(a[0]), Si(a[1]));
 		case O::UMin32: return fmt::format("min({}, {})", a[0], a[1]);
 		case O::SMax32: return fmt::format("as_type<uint>(max({}, {}))", Si(a[0]), Si(a[1]));
 		case O::UMax32: return fmt::format("max({}, {})", a[0], a[1]);
-		case O::SMinTri32: return fmt::format("as_type<uint>(min3({}, {}, {}))", Si(a[0]), Si(a[1]), Si(a[2]));
+		case O::SMinTri32:
+			return fmt::format("as_type<uint>(min3({}, {}, {}))", Si(a[0]), Si(a[1]), Si(a[2]));
 		case O::UMinTri32: return fmt::format("min3({}, {}, {})", a[0], a[1], a[2]);
-		case O::SMaxTri32: return fmt::format("as_type<uint>(max3({}, {}, {}))", Si(a[0]), Si(a[1]), Si(a[2]));
+		case O::SMaxTri32:
+			return fmt::format("as_type<uint>(max3({}, {}, {}))", Si(a[0]), Si(a[1]), Si(a[2]));
 		case O::UMaxTri32: return fmt::format("max3({}, {}, {})", a[0], a[1], a[2]);
-		case O::SMedTri32: return fmt::format("as_type<uint>(median3({}, {}, {}))", Si(a[0]), Si(a[1]), Si(a[2]));
+		case O::SMedTri32:
+			return fmt::format("as_type<uint>(median3({}, {}, {}))", Si(a[0]), Si(a[1]), Si(a[2]));
 		case O::UMedTri32: return fmt::format("median3({}, {}, {})", a[0], a[1], a[2]);
 		// --- integer compares
 		case O::SLessThan32: return fmt::format("({} < {})", Si(a[0]), Si(a[1]));
@@ -152,17 +169,23 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::LogicalNot: return fmt::format("(!{})", a[0]);
 		// --- float compares (ordered: false on NaN; unordered: true on NaN)
 		case O::FPOrdEqual32: return fmt::format("({} == {})", a[0], a[1]);
-		case O::FPOrdNotEqual32: return fmt::format("(isordered({0}, {1}) && {0} != {1})", a[0], a[1]);
+		case O::FPOrdNotEqual32:
+			return fmt::format("(isordered({0}, {1}) && {0} != {1})", a[0], a[1]);
 		case O::FPOrdLessThan32: return fmt::format("({} < {})", a[0], a[1]);
 		case O::FPOrdGreaterThan32: return fmt::format("({} > {})", a[0], a[1]);
 		case O::FPOrdLessThanEqual32: return fmt::format("({} <= {})", a[0], a[1]);
 		case O::FPOrdGreaterThanEqual32: return fmt::format("({} >= {})", a[0], a[1]);
-		case O::FPUnordEqual32: return fmt::format("(isunordered({0}, {1}) || {0} == {1})", a[0], a[1]);
+		case O::FPUnordEqual32:
+			return fmt::format("(isunordered({0}, {1}) || {0} == {1})", a[0], a[1]);
 		case O::FPUnordNotEqual32: return fmt::format("({} != {})", a[0], a[1]);
-		case O::FPUnordLessThan32: return fmt::format("(isunordered({0}, {1}) || {0} < {1})", a[0], a[1]);
-		case O::FPUnordGreaterThan32: return fmt::format("(isunordered({0}, {1}) || {0} > {1})", a[0], a[1]);
-		case O::FPUnordLessThanEqual32: return fmt::format("(isunordered({0}, {1}) || {0} <= {1})", a[0], a[1]);
-		case O::FPUnordGreaterThanEqual32: return fmt::format("(isunordered({0}, {1}) || {0} >= {1})", a[0], a[1]);
+		case O::FPUnordLessThan32:
+			return fmt::format("(isunordered({0}, {1}) || {0} < {1})", a[0], a[1]);
+		case O::FPUnordGreaterThan32:
+			return fmt::format("(isunordered({0}, {1}) || {0} > {1})", a[0], a[1]);
+		case O::FPUnordLessThanEqual32:
+			return fmt::format("(isunordered({0}, {1}) || {0} <= {1})", a[0], a[1]);
+		case O::FPUnordGreaterThanEqual32:
+			return fmt::format("(isunordered({0}, {1}) || {0} >= {1})", a[0], a[1]);
 		case O::FPIsNan32: return fmt::format("isnan({})", a[0]);
 		case O::FPCmpClass32: return fmt::format("kyty_class_f32({}, {})", a[0], a[1]);
 		case O::FPCmpClass16: return fmt::format("kyty_class_f16({}, {})", a[0], a[1]);
@@ -172,7 +195,10 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPMul32: return fmt::format("({} * {})", a[0], a[1]);
 		case O::FPFma32: return fmt::format("fma({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPMad32:
-			if (g_fuse_mad) return fmt::format("fma({}, {}, {})", a[0], a[1], a[2]); // MadMode Position/Fused outside position data: same as the SPIR-V path
+			if (g_fuse_mad)
+				return fmt::format(
+				    "fma({}, {}, {})", a[0], a[1],
+				    a[2]); // MadMode Position/Fused outside position data: same as the SPIR-V path
 			return fmt::format("(({} * {}) + {})", a[0], a[1], a[2]);
 		case O::FPMin32: return fmt::format("fmin({}, {})", a[0], a[1]);
 		case O::FPMax32: return fmt::format("fmax({}, {})", a[0], a[1]);
@@ -180,8 +206,12 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPMaxTri32: return fmt::format("fmax3({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPMedTri32: return fmt::format("fmedian3({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPRecip32:
-		case O::FPRecipIFlag32: return fmt::format("kyty_rcp({})", a[0]); // relaxed 1/x = what KK's NIR->MSL emits (mslrest: perms 18/211 bit-exact)
-		case O::FPRecipSqrt32: return fmt::format("kyty_rsqrt({})", a[0]); // precise::rsqrt as KK (mslrest2: perm 395)
+		case O::FPRecipIFlag32:
+			return fmt::format(
+			    "kyty_rcp({})",
+			    a[0]); // relaxed 1/x = what KK's NIR->MSL emits (mslrest: perms 18/211 bit-exact)
+		case O::FPRecipSqrt32:
+			return fmt::format("kyty_rsqrt({})", a[0]); // precise::rsqrt as KK (mslrest2: perm 395)
 		case O::FPSqrt: return fmt::format("kyty_sqrt({})", a[0]);
 		case O::FPSin: return fmt::format("sin(fract({}) * 6.28318548f)", a[0]);
 		case O::FPCos: return fmt::format("cos(fract({}) * 6.28318548f)", a[0]);
