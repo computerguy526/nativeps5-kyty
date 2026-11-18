@@ -17,10 +17,13 @@ struct LdsInfo {
 	std::string space = "threadgroup";
 	std::string bound;
 };
-// Per-emission switch (kk-bda + SharedMemory binding): LDS ops read the device region `lds` bounded
-// by `kk_lds_bytes`.
-void    SetLdsDevice(bool on);
-bool    LdsIsDevice();
+// Per-emission switch (kk-bda + SharedMemory binding): LDS ops read the device region `lds` bounded by `kk_lds_bytes`.
+void SetLdsDevice(bool on);
+bool LdsIsDevice();
+// mslrest4: graphics stages (no workgroup): LDS = per-invocation `thread` array of `bytes` (Kyty spirv LdsDwordCount
+// Function variable: pixel max(EXTRA_LDS dwords,1), vertex max(lds dwords,1)); 0 = off.
+void     SetLdsThread(uint32_t bytes);
+uint32_t LdsThreadBytes();
 LdsInfo MakeLdsInfo(uint32_t bytes);
 
 std::string LdsLoad(MemOut& o, const LdsInfo& l, const std::string& addr, uint32_t bits,

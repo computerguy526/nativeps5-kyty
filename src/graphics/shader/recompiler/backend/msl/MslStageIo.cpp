@@ -201,6 +201,97 @@ std::string KkVertexFetch(const std::string& name, const KkVtxFmt& f, uint32_t s
 
 } // namespace
 
+namespace {
+// mslrest4: aggressive (control-dependence aware) dead code for the kk-bda PS read set. Mesa/NIR (KK) removes a branch
+// whose region does no live work (no live side effect, no live value leaving it through a phi), and with it the values
+// that only fed its condition -- e.g. a varying read only by such conditions; KK's linked VS then drops that varying and
+// the attribute loads that fed it, renumbering the attribute slots. Live roots: side effects / void instructions except
+// Reference (pins a branch condition; emits nothing) and except the given dead operands (exports to no attachment).
+// Returns the live instruction set. Opt-in KYTY_MSL_KK_PS_ADCE=1 (default: the old use-only liveness).
+std::set<const IR::Inst*> PsLiveAdce(const IR::Program& p, const std::set<std::pair<const IR::Inst*, size_t>>& dead_use) {
+	const size_t n = p.blocks.size();
+	std::map<const IR::Block*, size_t> bi;
+	for (size_t i = 0; i < n; i++) bi[p.blocks[i]] = i;
+	std::vector<std::vector<size_t>> succ(n);
+	for (size_t i = 0; i < n; i++)
+		for (auto* s: p.blocks[i]->ImmSuccessors())
+			if (auto it = bi.find(s); it != bi.end() && std::find(succ[i].begin(), succ[i].end(), it->second) == succ[i].end()) succ[i].push_back(it->second);
+	// post-dominator sets (bitsets); exits = blocks without successors
+	const size_t w = (n + 63) / 64;
+	std::vector<std::vector<uint64_t>> pd(n, std::vector<uint64_t>(w, ~0ull));
+	for (size_t i = 0; i < n; i++)
+		if (succ[i].empty()) { std::fill(pd[i].begin(), pd[i].end(), 0ull); pd[i][i / 64] |= 1ull << (i % 64); }
+	for (bool ch = true; ch;) {
+		ch = false;
+		for (size_t k = n; k-- > 0;) {
+			if (succ[k].empty()) continue;
+			std::vector<uint64_t> t(w, ~0ull);
+			for (auto s: succ[k]) for (size_t j = 0; j < w; j++) t[j] &= pd[s][j];
+			t[k / 64] |= 1ull << (k % 64);
+			if (t != pd[k]) { pd[k] = t; ch = true; }
+		}
+	}
+	const auto cnt = [&](const std::vector<uint64_t>& v) { size_t c = 0; for (auto x: v) c += static_cast<size_t>(__builtin_popcountll(x)); return c; };
+	std::vector<size_t> ipdom(n, SIZE_MAX);
+	for (size_t i = 0; i < n; i++) {
+		const size_t c = cnt(pd[i]);
+		for (size_t d = 0; d < n && c > 1; d++)
+			if (d != i && ((pd[i][d / 64] >> (d % 64)) & 1u) != 0u && cnt(pd[d]) == c - 1) { ipdom[i] = d; break; }
+	}
+	// region(b): blocks reachable from b's successors before ipdom(b)
+	std::vector<std::vector<size_t>> region(n);
+	for (size_t b = 0; b < n; b++) {
+		if (succ[b].size() < 2) continue;
+		std::vector<char> seen(n, 0);
+		std::vector<size_t> st(succ[b].begin(), succ[b].end());
+		while (!st.empty()) {
+			const size_t c = st.back(); st.pop_back();
+			if (c == ipdom[b] || seen[c]) continue;
+			seen[c] = 1; region[b].push_back(c);
+			for (auto s: succ[c]) st.push_back(s);
+		}
+	}
+	std::set<const IR::Inst*> live;
+	std::vector<const IR::Inst*> work;
+	std::vector<char> blive(n, 0), brlive(n, 0); // block holds live work; block's branch is live
+	const auto mark = [&](const IR::Inst* i) { if (i != nullptr && live.insert(i).second) work.push_back(i); };
+	for (size_t b = 0; b < n; b++) {
+		if (b < p.block_info.size() && !p.block_info[b].indirect_target.IsEmpty()) { brlive[b] = 1; mark(p.block_info[b].indirect_target.TryInstruction()); }
+		for (const auto& inst: *p.blocks[b])
+			if ((inst.MayHaveSideEffects() || inst.GetType() == IR::Type::Void) && inst.GetOpcode() != IR::ValueOpcode::Reference) mark(&inst);
+	}
+	for (bool grew = true; grew;) {
+		grew = false;
+		while (!work.empty()) {
+			const auto* i = work.back(); work.pop_back();
+			if (auto* par = i->Parent(); par != nullptr) if (auto it = bi.find(par); it != bi.end()) blive[it->second] = 1;
+			for (size_t a = 0; a < i->NumArgs(); a++) {
+				if (dead_use.contains({i, a})) continue;
+				if (!i->Arg(a).IsImmediate()) mark(i->Arg(a).TryInstruction());
+			}
+		}
+		for (size_t b = 0; b < n; b++) {
+			if (brlive[b] || succ[b].size() < 2) continue;
+			bool need = false;
+			for (auto c: region[b]) need = need || blive[c] || brlive[c];
+			if (!need) { // a live phi taking a value from this branch's region (or the branch block itself)
+				std::set<const IR::Block*> rb {p.blocks[b]};
+				for (auto c: region[b]) rb.insert(p.blocks[c]);
+				for (const auto* li: live)
+					if (li->GetOpcode() == IR::ValueOpcode::Phi)
+						for (size_t k = 0; k < li->NumPhiBlocks() && !need; k++) need = rb.contains(li->PhiBlock(k));
+			}
+			if (need) {
+				brlive[b] = 1; blive[b] = 1; grew = true;
+				if (b < p.block_info.size()) mark(p.block_info[b].condition.IsEmpty() || p.block_info[b].condition.IsImmediate() ? nullptr : p.block_info[b].condition.TryInstruction());
+			}
+		}
+		grew = grew || !work.empty();
+	}
+	return live;
+}
+} // namespace
+
 struct GfxIo {
 	bool                            vs = false, ps = false, kk = false;
 	const ShaderVertexInputInfo*    vinfo = nullptr;
@@ -595,7 +686,60 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 					pdead_use.insert(
 					    {&inst, 0}); // the value; the exec operand still feeds the valid mask
 				}
-			for (bool grew = true; grew;) {
+			// mslrest4: KYTY_MSL_KK_WRITE_MASK="m0,m1,.." = the pipeline's colour write mask per attachment (VkPipeline
+			// colorWriteMask, bit c = component c): KK drops the masked-off output components, and with them the values
+			// (and varyings) that only fed them. Composite operand c (packed: operand c/2, half c%2 of a PackFloat2x16Rtz).
+			// (opt-in: set KYTY_MSL_KK_WRITE_MASK; did not explain the 28 slot-mismatch pipes, see handoff-mslrest4.md)
+			if (const char* e = std::getenv("KYTY_MSL_KK_WRITE_MASK"); e != nullptr && *e != 0) {
+				std::vector<uint32_t> wm;
+				for (const char* q = e; *q != 0;) {
+					char* end = nullptr;
+					wm.push_back(static_cast<uint32_t>(std::strtoul(q, &end, 0)) & 0xfu);
+					if (end == q) break;
+					q = *end == ',' ? end + 1 : end;
+				}
+				for (const auto* blk: p.blocks)
+					for (const auto& inst: *blk) {
+						if (inst.GetOpcode() != IR::ValueOpcode::SetAttribute) continue;
+						const auto& exp = p.export_info.at(inst.Flags<IR::ExportFlags>().index);
+						if (exp.kind != IR::ExportTargetKind::Mrt || g->kk_drop_mrt.contains(exp.index)) continue;
+						if (pi.alpha_blend_source != ShaderAlphaBlendSource::None) continue; // dual source: keep it simple
+						// export components that reach the attachment: enabled (exp.en; SPIR-V writes constants for the
+						// others) and selected by a written attachment component through the export mapping
+						const uint32_t a = exp.index < wm.size() ? wm[exp.index] : 0xfu;
+						uint32_t m = 0u;
+						for (uint32_t c = 0; c < 4; c++) {
+							if (((a >> c) & 1u) == 0u) continue;
+							const uint32_t k = exp.index < pi.target_export_mapping.size() ? pi.target_export_mapping[exp.index].Map(c) : c;
+							m |= k < 4u ? 1u << k : 0u;
+						}
+						m &= exp.en & 0xfu;
+						if (m == 0xfu) continue;
+						if (inst.Arg(0).IsImmediate()) continue;
+						const IR::Inst* v = inst.Arg(0).TryInstruction();
+						if (v == nullptr || v->GetOpcode() != IR::ValueOpcode::CompositeConstructU32x4) continue;
+						if (!exp.compr) {
+							for (size_t c = 0; c < 4 && c < v->NumArgs(); c++) if (((m >> c) & 1u) == 0u) pdead_use.insert({v, c});
+							continue;
+						}
+						for (size_t w = 0; w < 2 && w < v->NumArgs(); w++) {
+							const uint32_t hm = (m >> (2u * w)) & 3u;
+							if (hm == 0u) { pdead_use.insert({v, w}); continue; }
+							if (hm == 3u || v->Arg(w).IsImmediate()) continue;
+							const IR::Inst* pk = v->Arg(w).TryInstruction();
+							if (pk == nullptr || pk->GetOpcode() != IR::ValueOpcode::PackFloat2x16Rtz || pk->UseCount() != 1u) continue;
+							pdead_use.insert({pk, hm == 1u ? 1u : 0u});
+						}
+					}
+			}
+			static const bool adce = [] { const char* e = std::getenv("KYTY_MSL_KK_PS_ADCE"); return e != nullptr && std::strcmp(e, "1") == 0; }(); // opt-in (mslrest4)
+			if (adce) {
+				const auto live = PsLiveAdce(p, pdead_use);
+				for (const auto* blk: p.blocks)
+					for (const auto& inst: *blk)
+						if (!live.contains(&inst)) pdead.insert(&inst);
+			}
+			for (bool grew = !adce; grew;) {
 				grew = false;
 				for (const auto* blk: p.blocks)
 					for (const auto& inst: *blk) {

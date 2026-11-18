@@ -369,22 +369,16 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 					    "threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
 				return;
 			}
-			if (op == O::StoreCompletion)
-				ctx.b.Line("KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt vmcnt(0)");
-			else
-				ctx.b.Line(
-				    Mem::LdsIsDevice()
-				        ? "KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt lgkmcnt(0)"
-				        : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // s_waitcnt lgkmcnt(0)");
+			if (op == O::StoreCompletion) ctx.b.Line("KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt vmcnt(0)");
+			else if (Mem::LdsThreadBytes() != 0u) ctx.b.Line("// s_waitcnt lgkmcnt(0): per-invocation LDS");
+			else ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // s_waitcnt lgkmcnt(0)" : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // s_waitcnt lgkmcnt(0)");
 			return;
 		}
 		default: break;
 	}
-	if (!ctx.lds_fence.empty() && ctx.lds_fence.count(&inst) != 0)
-		ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // mslaudit: LDS "
-		                                "store -> load without barrier"
-		                              : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // mslaudit: "
-		                                "LDS store -> load without barrier");
+	if (!ctx.lds_fence.empty() && ctx.lds_fence.count(&inst) != 0 && Mem::LdsThreadBytes() == 0u)
+		ctx.b.Line(Mem::LdsIsDevice() ? "KYTY_LDS_FENCE(mem_flags::mem_device); // mslaudit: LDS store -> load without barrier"
+		                              : "KYTY_LDS_FENCE(mem_flags::mem_threadgroup); // mslaudit: LDS store -> load without barrier");
 	for (uint32_t h = 0; h < ctx.lanes; h++) {
 		ctx.half = h;
 		switch (op) {
@@ -1042,8 +1036,9 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	ctx.kk_bda =
 	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
-	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
-	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
+	Mem::SetLdsDevice(false);     // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
+	Mem::SetLdsThread(0u);        // KkBdaLocals: graphics per-invocation LDS (mslrest4)
+	Mem::SetMipStats({});         // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
 	if (program.stage != ShaderType::Compute && !gfx_stage) {
 		ctx.unsupported[fmt::format("stage:{}", static_cast<int>(program.stage))]++;
 		result.source = PreludeText(fuse_mad) + "// stage not supported by the MSL backend yet\n";

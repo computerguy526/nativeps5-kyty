@@ -159,14 +159,36 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	b.Line("constant uchar* kk_root = (constant uchar*)&kkroot;");
 	b.Line("const ulong kk_set0 = *(constant ulong*)(kk_root + " + KU(KkRootSets) + ");");
 	const bool gfx = program.stage != ShaderType::Compute;
-	if (!gfx)
-		b.Line("const uint3 tgpig = kk_tgpig + uint3(*(constant packed_uint3*)(kk_root + " +
-		       KU(KkRootBaseGroup) + "));");
-	if (gfx && m.lds_bytes != 0u) bad("graphics LDS");
-	// Kyty's GPU LOD feedback (KYTY_LOD_STATS_MODE=gpu, default): sampling pixel shaders record the
-	// finest wanted mip per image in the MipStats buffer (spirvEmitterImage.cpp
-	// EmitGatedMipStatsRecord; B: MslImageOps MipStatsRecord). KYTY_MSL_MIPSTATS_PLAIN=1 emits the
-	// feedback-free twin (Spirv::EmitProgram mip_stats_records=false, same layout).
+	if (!gfx) b.Line("const uint3 tgpig = kk_tgpig + uint3(*(constant packed_uint3*)(kk_root + " + KU(KkRootBaseGroup) + "));");
+	SetLdsThread(0u);
+	if (gfx) {
+		// mslrest4: Kyty gives stages without a workgroup a per-invocation Function LDS array (spirvEmitterMemoryHelpers.cpp
+		// LdsDwordCount: pixel max(lds_size_dwords,1), vertex max(lds_size_dwords,1)), bounds-checked like workgroup LDS.
+		bool lds = false, lds_atomic = false;
+		for (const auto* blk: program.blocks) {
+			for (const auto& inst: *blk) {
+				const auto sa = IR::SharedAccessOf(inst.GetOpcode());
+				if (sa == IR::SharedAccess::None) continue;
+				const auto index = inst.Flags<IR::MemoryFlags>().index;
+				if (index >= program.memory_info.size() || program.memory_info[index].kind != IR::ResourceKind::Lds) continue;
+				lds = true;
+				if (sa != IR::SharedAccess::Read && sa != IR::SharedAccess::Write) lds_atomic = true;
+			}
+		}
+		if (lds) {
+			uint32_t dw = 1u;
+			if (program.stage == ShaderType::Pixel && ctx.input_info.pixel != nullptr) dw = std::max(ctx.input_info.pixel->lds_size_dwords, 1u);
+			else if (program.stage == ShaderType::Vertex && ctx.input_info.vertex != nullptr) dw = std::max(ctx.input_info.vertex->lds_size_dwords, 1u);
+			else bad("graphics LDS outside VS/PS");
+			if (lds_atomic) bad("graphics LDS atomic");
+			if (dw > 1024u) bad("graphics LDS > 4 KB per invocation");
+			b.Line("uint kk_lds[" + std::to_string(dw) + "] = {}; thread uint* lds = kk_lds; // Kyty function_lds (per invocation)");
+			SetLdsThread(dw * 4u);
+		}
+	}
+	// Kyty's GPU LOD feedback (KYTY_LOD_STATS_MODE=gpu, default): sampling pixel shaders record the finest wanted mip
+	// per image in the MipStats buffer (spirvEmitterImage.cpp EmitGatedMipStatsRecord; B: MslImageOps MipStatsRecord).
+	// KYTY_MSL_MIPSTATS_PLAIN=1 emits the feedback-free twin (Spirv::EmitProgram mip_stats_records=false, same layout).
 	SetMipStats({});
 	if (const uint32_t ms = FirstOf(layout, Kind::MipStats); ms != UINT32_MAX) {
 		const auto& opt = GetCodegenOptions();
