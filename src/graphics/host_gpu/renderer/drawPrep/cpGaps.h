@@ -81,6 +81,11 @@ enum class Cat : uint8_t {
 	GpuWaitDrain,
 	GpuWaitOcclusion,
 	GpuWaitOther,
+	// nps5 faultwin: tagged waits that used to count as gpuwait.other (Profiler::FrameWait).
+	GpuWaitSideCopy,
+	GpuWaitStreamWrap,
+	GpuWaitLodStats,
+	GpuWaitMisc, // unmap, predication, GDS
 	RecorderWait,
 	SubmitWait,
 	TextureUpload,

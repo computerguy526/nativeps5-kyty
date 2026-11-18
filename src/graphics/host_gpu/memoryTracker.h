@@ -78,6 +78,9 @@ public:
 		uint64_t retained_pages = 0;
 	};
 	void                               MarkReadbackPending(uint64_t vaddr, uint64_t size);
+	// nps5 faultwin (KYTY_READ_RELAX, RegionManager::RelaxRead): GPU-dirty pages of the range
+	// become readable (still write-watched) until their next GPU transition. Returns pages relaxed.
+	uint64_t                           RelaxRead(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] ReadbackUnmarkResult UnmarkReadbackPending(uint64_t vaddr, uint64_t size);
 	// A dirty-state mutation token, not a backing/GPU cleanliness proof. UINT64_MAX means
 	// saturated: callers must conservatively stop reusing any previously observed token. While

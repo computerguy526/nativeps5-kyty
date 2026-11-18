@@ -418,6 +418,36 @@ ReadFaultFrameBurst::PageFrameCounter& ReadFaultFrameCounter() {
 	return counter;
 }
 
+// nps5 faultwin: KYTY_READ_RELAX=<n> (default 0 = off; read once). A tracker page whose n-th load
+// in one guest frame was served from its published bytes (KYTY_READ_FAULT_PUBLISHED) drops its read
+// watch: it stays GPU-dirty and write-watched, and guest loads then read the published bytes
+// directly, without a fault, until the page's next GPU ownership change (a newer writer re-arms the
+// watch; the eager copy publishing it makes it readable anyway). Same bytes a served load returns
+// (what a CPU reading GPU memory without waiting sees), without the fault per load and without the
+// burst wait (KYTY_READ_FAULT_PUBLISHED_FRAME_BURST) for the publication. Only plain loads of buffer
+// pages (no image) published recently qualify, as for serving. Diagnostic counters in the
+// "Kyty read-fault published" line.
+// Live switch: turning it off leaves relaxed pages until their next GPU transition.
+Live::Switch g_read_relax("KYTY_READ_RELAX", [](const char* value) -> int64_t {
+	return value != nullptr ? static_cast<int64_t>(std::min<unsigned long>(std::strtoul(value, nullptr, 10), 65535))
+	                        : 0;
+});
+uint32_t ReadRelaxAfter() {
+	return static_cast<uint32_t>(g_read_relax.Get());
+}
+
+ReadFaultFrameBurst::PageFrameCounter& ReadRelaxCounter() {
+	static ReadFaultFrameBurst::PageFrameCounter counter;
+	return counter;
+}
+
+thread_local int t_write_drain_kind = 1; // nps5 faultwin: see ReadFaultPublishedState::write_drains
+
+struct BurstWaitTimer {
+	uint64_t start = 0;
+	~BurstWaitTimer();
+};
+
 uint32_t ReadFaultPublishedBurst() {
 	static const uint32_t burst = [] {
 		const auto* value = std::getenv("KYTY_READ_FAULT_PUBLISHED_BURST");
@@ -455,6 +485,17 @@ struct ReadFaultPublishedState {
 	std::atomic<uint64_t>                  other {0};
 	std::atomic<uint64_t>                  burst {0};
 	std::atomic<uint64_t>                  straddled {0};
+	// nps5 faultwin: time guest threads spent in ReadMemory after a burst decision (the wait for
+	// the page's publication), and pages KYTY_READ_RELAX made readable.
+	std::atomic<uint64_t>                  burst_ns {0};
+	std::atomic<uint64_t>                  burst_max_ns {0};
+	std::atomic<uint64_t>                  relaxed_pages {0};
+	std::atomic<uint64_t>                  relax_calls {0};
+	// nps5 faultwin: write readbacks served by a drain, by kind: 0 explicit invalidation (not a
+	// fault: host API, file reads, emulator), 1 fault not retried, 2 retried fault whose side copy
+	// could not be issued, 3 on the GPU thread; count and wall time of the caller.
+	std::atomic<uint64_t>                  write_drains[4] {};
+	std::atomic<uint64_t>                  write_drain_ns[4] {};
 	std::atomic<uint64_t>                  verify_equal {0};
 	std::atomic<uint64_t>                  verify_different {0};
 	std::atomic<uint64_t>                  report_ns {0};
@@ -509,10 +550,39 @@ void ReportReadFaultPublished(uint32_t frame) {
 	std::printf("Kyty read-fault published 10s: %u frames, served %" PRIu64 " (%.2f/frame); waited: "
 	            "not a plain load %" PRIu64 ", image %" PRIu64 ", not published recently %" PRIu64
 	            ", other %" PRIu64 ", copy burst %" PRIu64 "; verify: equal %" PRIu64 ", different %" PRIu64
-	            "; served across two pages %" PRIu64 "\n",
+	            "; served across two pages %" PRIu64 "; burst waits %.1f ms total (max %.2f ms); "
+	            "relaxed %" PRIu64 " pages (%" PRIu64 " calls)\n",
 	            frames, served, static_cast<double>(served) / frames, take(state.undecodable),
 	            take(state.image), take(state.stale), take(state.other), take(state.burst), take(state.verify_equal),
-	            take(state.verify_different), take(state.straddled));
+	            take(state.verify_different), take(state.straddled),
+	            static_cast<double>(take(state.burst_ns)) / 1e6,
+	            static_cast<double>(take(state.burst_max_ns)) / 1e6, take(state.relaxed_pages),
+	            take(state.relax_calls));
+	std::printf("Kyty write drains 10s: invalidate %" PRIu64 " (%.1f ms), fault-noretry %" PRIu64
+	            " (%.1f ms), side-failed %" PRIu64 " (%.1f ms), gpu-thread %" PRIu64 " (%.1f ms)\n",
+	            take(state.write_drains[0]), static_cast<double>(take(state.write_drain_ns[0])) / 1e6,
+	            take(state.write_drains[1]), static_cast<double>(take(state.write_drain_ns[1])) / 1e6,
+	            take(state.write_drains[2]), static_cast<double>(take(state.write_drain_ns[2])) / 1e6,
+	            take(state.write_drains[3]), static_cast<double>(take(state.write_drain_ns[3])) / 1e6);
+}
+
+struct WriteDrainTimer {
+	int      kind  = 0;
+	uint64_t start = ReadFaultDiag::NowNs();
+	~WriteDrainTimer() {
+		auto& state = ReadFaultPublished();
+		state.write_drains[kind].fetch_add(1, std::memory_order_relaxed);
+		state.write_drain_ns[kind].fetch_add(ReadFaultDiag::NowNs() - start, std::memory_order_relaxed);
+	}
+};
+
+BurstWaitTimer::~BurstWaitTimer() {
+	const auto ns    = ReadFaultDiag::NowNs() - start;
+	auto&      state = ReadFaultPublished();
+	state.burst_ns.fetch_add(ns, std::memory_order_relaxed);
+	auto max = state.burst_max_ns.load(std::memory_order_relaxed);
+	while (ns > max && !state.burst_max_ns.compare_exchange_weak(max, ns, std::memory_order_relaxed)) {
+	}
 }
 
 // The number of regions copies (source ascending) give when a copy starting at most `gap` bytes
@@ -1731,7 +1801,11 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size, bool write_fau
 		EXIT("BufferCache: invalid memory-invalidation range\n");
 	}
 	ForgetKnownFills(vaddr, size);
-	const auto flush = [this, vaddr, size] { ReadMemory(vaddr, size, true); };
+	const auto flush = [this, vaddr, size] {
+		t_write_drain_kind = 0;
+		ReadMemory(vaddr, size, true);
+		t_write_drain_kind = 1;
+	};
 	if (!write_fault) {
 		m_memory_tracker.InvalidateRegion(vaddr, size, flush);
 		return;
@@ -2061,6 +2135,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 		}
 	};
 	std::optional<PublishedVerify> published_verify;
+	std::optional<BurstWaitTimer>  burst_timer;
 	if (const auto published_mode = g_read_fault_published.Get();
 	    published_mode != 0 && !is_write && GuestLoad::t_native_context != nullptr &&
 	    !GuestGpu::IsGpuThread()) {
@@ -2113,6 +2188,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 		    ReadFaultFrameBurst::ShouldWait(ReadFaultFrameCounter(), ReadFaultPublishedFrameBurst(), page,
 		                                    static_cast<uint32_t>(frame))) {
 			state.burst.fetch_add(1, std::memory_order_relaxed);
+			burst_timer.emplace();
+			burst_timer->start = now_ns;
 		} else if (!decoded()) {
 			state.undecodable.fetch_add(1, std::memory_order_relaxed);
 		} else if (!IsRegionGpuModifiedRelaxed(page, TRACKER_PAGE_SIZE) ||
@@ -2132,6 +2209,13 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			std::memcpy(published_verify->before, bytes, load.size);
 		} else if (GuestLoad::Apply(load, bytes)) {
 			state.served.fetch_add(1, std::memory_order_relaxed);
+			if (const auto relax_after = ReadRelaxAfter();
+			    relax_after != 0 && other_page == 0 &&
+			    ReadRelaxCounter().Bump(page, static_cast<uint32_t>(frame)) >= relax_after) {
+				state.relax_calls.fetch_add(1, std::memory_order_relaxed);
+				state.relaxed_pages.fetch_add(m_memory_tracker.RelaxRead(page, TRACKER_PAGE_SIZE),
+				                              std::memory_order_relaxed);
+			}
 			// Keep the page read-hot so its eager copy keeps publishing the GPU's new bytes.
 			(void)m_scheduler.Context().GetGpu().TrySendCommand(
 			    [this, page] { NoteEagerRead(page, TRACKER_PAGE_SIZE, false); });
@@ -2225,6 +2309,11 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 	}
 	if (!side_path) {
 		diag_path("drain-nonside");
+		std::optional<WriteDrainTimer> drain_timer;
+		if (is_write) {
+			drain_timer.emplace();
+			drain_timer->kind = gpu_thread ? 3 : t_write_drain_kind == 0 ? 0 : retried_write ? 2 : 1;
+		}
 		gpu.SendCommandSync([&, this, vaddr, size, is_write, gpu_thread] {
 			if (!is_write) {
 				NoteEagerRead(vaddr, size, gpu_thread);
@@ -2271,6 +2360,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 	std::shared_ptr<SideReadback> issued;
 	auto                          result    = SideIssueResult::Other;
 	const auto                    sync_mark = diag ? ReadFaultDiag::NowNs() : 0;
+	const auto                    write_mark = is_write ? ReadFaultDiag::NowNs() : 0;
 	gpu.SendCommandSync([&, this, vaddr, size, is_write] {
 		if (!is_write) {
 			NoteEagerRead(vaddr, size, false);
@@ -2299,6 +2389,11 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			ReadMemoryDrain(vaddr, size, is_write, trace);
 		}
 	});
+	if (is_write && result != SideIssueResult::Issued && result != SideIssueResult::Pending) {
+		auto& state = ReadFaultPublished();
+		state.write_drains[2].fetch_add(1, std::memory_order_relaxed);
+		state.write_drain_ns[2].fetch_add(ReadFaultDiag::NowNs() - write_mark, std::memory_order_relaxed);
+	}
 	if (diag) {
 		diag->Fault().sendsync_ns = ReadFaultDiag::NowNs() - sync_mark;
 		switch (result) {

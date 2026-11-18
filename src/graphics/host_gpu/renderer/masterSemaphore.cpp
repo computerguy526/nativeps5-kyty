@@ -71,10 +71,20 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	}
 	// KYTY_CP_GAP_STATS (GPU thread only): readback drains, occlusion publication, the rest.
 	const auto      reason = Profiler::CurrentGpuWaitReason();
-	const CpGaps::Scope gap(reason == Profiler::FrameWait::GpuWaitDrain ? CpGaps::Cat::GpuWaitDrain
-	                        : reason == Profiler::FrameWait::GpuWaitOcclusion
-	                            ? CpGaps::Cat::GpuWaitOcclusion
-	                            : CpGaps::Cat::GpuWaitOther);
+	const auto gap_cat = [reason] {
+		switch (reason) {
+			case Profiler::FrameWait::GpuWaitDrain: return CpGaps::Cat::GpuWaitDrain;
+			case Profiler::FrameWait::GpuWaitOcclusion: return CpGaps::Cat::GpuWaitOcclusion;
+			case Profiler::FrameWait::GpuWaitSideCopy: return CpGaps::Cat::GpuWaitSideCopy;
+			case Profiler::FrameWait::GpuWaitStreamWrap: return CpGaps::Cat::GpuWaitStreamWrap;
+			case Profiler::FrameWait::GpuWaitLodStats: return CpGaps::Cat::GpuWaitLodStats;
+			case Profiler::FrameWait::GpuWaitUnmap:
+			case Profiler::FrameWait::GpuWaitPredication:
+			case Profiler::FrameWait::GpuWaitGds: return CpGaps::Cat::GpuWaitMisc;
+			default: return CpGaps::Cat::GpuWaitOther;
+		}
+	}();
+	const CpGaps::Scope gap(gap_cat);
 	// Attribute CP-thread blocking to its caller (Profiler::ScopedGpuWaitReason). Other threads
 	// (the completion runner, guest threads) wait here by design and are not counted.
 	std::optional<Profiler::ScopedFrameWait> frame_wait;

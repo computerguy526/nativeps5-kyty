@@ -58,7 +58,7 @@ const char* CatName(Cat cat) noexcept {
 	    "disp.bind",   "disp.bda",    "disp.rebind", "disp.emit", "disp.other",   "eop",
 	    "eventwrite",  "writedata",   "dma",       "wait",       "flip",         "otherop",
 	    "resolver",    "starved",     "service",   "slice",      "flush",        "gc",
-	    "gpuwait.drain", "gpuwait.occlusion", "gpuwait.other", "recorder", "submitwait",
+	    "gpuwait.drain", "gpuwait.occlusion", "gpuwait.other", "gpuwait.side", "gpuwait.stream", "gpuwait.lod", "gpuwait.misc", "recorder", "submitwait",
 	    "texupload",   "protect",     "fault",     "idle",       "blocked"};
 	static_assert(sizeof(names) / sizeof(names[0]) == CatCount, "one name per category");
 	const auto index = static_cast<size_t>(cat);
