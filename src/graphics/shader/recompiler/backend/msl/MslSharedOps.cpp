@@ -3,7 +3,7 @@
 namespace Libs::Graphics::ShaderRecompiler::Msl::Mem {
 
 namespace {
-thread_local bool g_lds_device = false;
+thread_local bool     g_lds_device = false;
 thread_local uint32_t g_lds_thread_bytes =
     0; // mslrest4: graphics LDS = per-invocation array (Kyty function_lds)
 std::string Sp(const LdsInfo& l) {

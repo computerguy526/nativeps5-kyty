@@ -26,7 +26,7 @@ bool LdsIsDevice();
 // 0 = off.
 void     SetLdsThread(uint32_t bytes);
 uint32_t LdsThreadBytes();
-LdsInfo MakeLdsInfo(uint32_t bytes);
+LdsInfo  MakeLdsInfo(uint32_t bytes);
 
 std::string LdsLoad(MemOut& o, const LdsInfo& l, const std::string& addr, uint32_t bits,
                     uint32_t comps);
