@@ -343,13 +343,16 @@ struct GfxIo {
 	std::map<uint32_t, VKind>       vkind;     // vertex attribute location -> scalar class
 	std::map<uint32_t, uint32_t>    ps_loc;    // pixel parameter attr -> interface location
 	std::map<uint32_t, std::string> ps_member; // attr -> stage_in member
-	uint32_t                        clip_count     = 0;
-	bool                            has_valid_mask = false;
-	bool                            has_instance = false, has_base_instance = false;
-	std::vector<std::string>        params;
-	std::string                     ret = "return out;";
-	std::string                     out_type, entry_attr, entry_kw;
-	std::string                     bary_name[3]; // 0 smooth, 1 noperspective
+	// mslfix: KYTY_PS_PER_VERTEX=unpack field slots: (pixel input, field code) -> (interface
+	// location, component)
+	std::map<std::pair<uint32_t, uint32_t>, std::pair<uint32_t, uint32_t>> ps_field;
+	uint32_t                                                               clip_count     = 0;
+	bool                                                                   has_valid_mask = false;
+	bool                     has_instance = false, has_base_instance = false;
+	std::vector<std::string> params;
+	std::string              ret = "return out;";
+	std::string              out_type, entry_attr, entry_kw;
+	std::string              bary_name[3]; // 0 smooth, 1 noperspective
 	// mslgfx kk-bda VS: KK vertex pulling (location -> fetch statements), zero-position guard
 	// plane, clip_z
 	std::map<uint32_t, std::string> kk_fetch;
@@ -705,6 +708,22 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 			b.Line(fmt::format("float4 L{} [[user(locn{}){}]];", loc, loc, q));
 			any_param = true;
 		}
+		// mslfix: unpacked raw-vertex fields (KYTY_PS_PER_VERTEX=unpack, RawVertexUnpack.h) at the
+		// spare locations the linked vertex shader exports them to; interpolated like the shader's
+		// own I/J (center), Raw fields flat. Mirrors the SPIR-V emitter (spirvEmitterModule.cpp
+		// ParameterField inputs).
+		for (const auto& in: info.inputs) {
+			if (in.kind != IR::StageInputKind::ParameterField) continue;
+			const auto slot = ShaderParameterFieldSlot::Unpack(in.location, in.component_count);
+			for (uint32_t comp = 0; comp < 4u; comp++)
+				if (slot.codes[comp] != 0u)
+					g->ps_field[{slot.input, slot.codes[comp]}] = {in.location, comp};
+			const char* q = slot.Flat()            ? ", flat"
+			                : pi.ps_no_perspective ? ", center_no_perspective"
+			                                       : "";
+			b.Line(fmt::format("float4 F{} [[user(locn{}){}]];", in.location, in.location, q));
+			any_param = true;
+		}
 		if (!any_param) b.Line("float4 unused_ [[user(locn31)]];");
 		b.Close(";");
 		g->params.push_back("FIn fin [[stage_in]]");
@@ -824,6 +843,13 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 			for (const auto* blk: p.blocks)
 				for (const auto& inst: *blk) {
 					const auto op = inst.GetOpcode();
+					if (op == IR::ValueOpcode::GetParameterField && !inst.Uses().empty() &&
+					    !pdead.contains(&inst)) {
+						const auto f = g->ps_field.find({inst.Arg(0).U32(), inst.Arg(1).U32()});
+						if (f != g->ps_field.end())
+							reads[f->second.first] |= 1u << f->second.second;
+						continue;
+					}
 					if (op != IR::ValueOpcode::GetAttribute &&
 					    op != IR::ValueOpcode::GetInterpolationParameter)
 						continue;
@@ -841,6 +867,7 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 		for (const auto& in: info.inputs) {
 			switch (in.kind) {
 				case IR::StageInputKind::Parameter: break;
+				case IR::StageInputKind::ParameterField: break; // mslfix: FIn F<loc> members
 				case IR::StageInputKind::FragCoord:
 					g->params.push_back("float4 frag_coord [[position]]");
 					break;
@@ -1026,6 +1053,18 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 	using O = IR::ValueOpcode;
 	auto& b = c.b;
 	switch (inst.GetOpcode()) {
+		case O::GetParameterField: {
+			// mslfix: KYTY_PS_PER_VERTEX=unpack field read (spirvEmitterFlow.cpp
+			// EmitGetParameterField); a field that found no location reads zero.
+			const auto f = g.ps_field.find({inst.Arg(0).U32(), inst.Arg(1).U32()});
+			if (f == g.ps_field.end()) {
+				b.Line(fmt::format("{} = 0.0f;", c.Name(inst)));
+				return true;
+			}
+			b.Line(
+			    fmt::format("{} = fin.F{}[{}u];", c.Name(inst), f->second.first, f->second.second));
+			return true;
+		}
 		case O::GetInterpolationParameter:
 		case O::GetAttribute: {
 			const uint32_t attr = inst.Arg(0).U32();

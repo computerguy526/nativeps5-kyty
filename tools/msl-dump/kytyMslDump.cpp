@@ -7,6 +7,7 @@
 // programs.bin is Kyty's persistent program cache (source records carry the
 // guest code). The translation runs in a forked child (the frontend EXITs on
 // unsupported encodings). Game-derived output stays local; never commit it.
+#include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -282,6 +283,7 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   ShaderVertexInputInfo vinfo;
   ShaderPixelInputInfo pinfo;
   ShaderPixelInputInfo link_pinfo;
+  SR::IR::CompiledShaderInfo link_program;
   if (s.stage == static_cast<uint32_t>(ShaderType::Compute)) {
     ComputeInfoFromKey(s.statics, info);
   } else if (s.stage == static_cast<uint32_t>(ShaderType::Vertex)) {
@@ -294,6 +296,56 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
         std::fprintf(stderr, "cannot decode linked pixel key\n");
         return 5;
       }
+      // mslfix: link against the compiled pixel program as the runtime does
+      // (pixel.stage.program): its inputs give the flat/smooth aliases and the
+      // KYTY_PS_PER_VERTEX=unpack field slots the vertex shader must export.
+      ShaderPixelInputInfo ps_info;
+      if (!PixelInfoFromKey(link_ps->statics, ps_info)) {
+        std::fprintf(stderr, "cannot decode linked pixel key\n");
+        return 5;
+      }
+      SR::CompileOptions po;
+      po.stage = ShaderType::Pixel;
+      po.wave_size = link_ps->wave;
+      po.user_data_base = link_ps->user_data_base;
+      po.shader_hash = link_ps->hash;
+      po.emit_msl = false;
+      po.emit_spirv = false;
+      std::vector<uint32_t> ps_ud(std::max(link_ps->user_data_count, 16u), 0u);
+      po.user_data = ps_ud;
+      po.input_info.pixel = &ps_info;
+      auto pt = SR::TranslateProgram(link_ps->code, po);
+      if (pt.skip_dispatch) {
+        std::fprintf(stderr, "linked pixel shader: skip_dispatch\n");
+        return 4;
+      }
+      SR::IR::ResourceSpecialization
+          pspec; // as Translate below: from the program's own resource list
+      for (const auto &b : pt.program.info.buffers) {
+        SR::IR::ResourceSpecialization::Buffer sb;
+        sb.packed_stride = b.packed_stride;
+        sb.descriptor_format = b.descriptor_format;
+        sb.descriptor_swizzle = b.descriptor_swizzle;
+        pspec.buffers.push_back(sb);
+      }
+      for (const auto &i : pt.program.info.images) {
+        SR::IR::ResourceSpecialization::Image si;
+        si.numeric_class = i.numeric_class;
+        si.dimension = i.dimension;
+        si.mip_count = i.mip_count;
+        si.conversion_format = i.conversion_format;
+        si.shader_swizzle = i.shader_swizzle;
+        si.cube = i.cube;
+        if (si.numeric_class == Prospero::TextureNumericClass::Unsupported)
+          si.numeric_class = Prospero::TextureNumericClass::Float;
+        if (si.dimension == SR::Decoder::ImageDimension::Unknown)
+          si.dimension = SR::Decoder::ImageDimension::Dim2D;
+        pspec.images.push_back(si);
+      }
+      auto pr = SR::CompileProgram(std::move(pt), po, pspec, 0);
+      link_program.stage = ShaderType::Pixel;
+      link_program.info = pr.program.info;
+      link_pinfo.stage.program = &link_program;
       ShaderLinkVertexPixelParameters(vinfo, link_pinfo);
     }
   } else if (s.stage == static_cast<uint32_t>(ShaderType::Pixel)) {
@@ -438,6 +490,11 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
+  // mslfix: raw-vertex pixel reads as on the KosmicKrisp (Metal) host:
+  // KYTY_PS_PER_VERTEX=unpack (vulkanWindow.cpp sets
+  // SetHostPsPerVertex(barycentric_supported); KK runs the unpack path).
+  // Graphics only; compute text unchanged.
+  SR::SetHostPsPerVertex(false);
   std::vector<Src> srcs;
   std::vector<Perm> perms;
   const Perm *use_perm = nullptr;
