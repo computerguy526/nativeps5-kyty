@@ -5003,6 +5003,7 @@ struct PipelineCache::ComputePrewarm {
 		uint64_t                  key      = 0;
 		ComputePipelineCreateHook hook     = [&](const vk::ComputePipelineCreateInfo& create, vk::Pipeline* out) {
             key = cache.m_known != nullptr ? ComputePipelineKey(create) : 0;
+            const LaunchPhase::CompileGate::Slot slot; // compileqos: shares the fan-out with the pipeline replay
             return cache.m_graphics.device.createComputePipelines(cache.m_driver_cache, 1, &create, nullptr, out);
 		};
 		vk::Result          result = vk::Result::eSuccess;
@@ -5591,6 +5592,7 @@ struct PipelineCache::JournalReplay {
 	};
 	static void BuildSafely(void* raw) {
 		auto& context  = *static_cast<BuildContext*>(raw);
+		const LaunchPhase::CompileGate::Slot slot; // compileqos: at most the fan-out of builds at once across the pools
 		context.result = context.cache->m_graphics.device.createGraphicsPipelines(context.cache->m_driver_cache, 1,
 		                                                                          context.info, nullptr,
 		                                                                          context.pipeline);
@@ -5832,7 +5834,11 @@ void PipelineCache::InitializePipelineJournal() {
 	// Sized to the machine (CompileFanout: logical cores - 4, at least 2; NPS5_COMPILE_THREADS or
 	// KYTY_PIPELINE_JOURNAL_THREADS override) for a prepare, the launch phase and a list replay;
 	// the plain background journal replay stays at 4. Every worker runs at utility QoS.
-	const uint64_t sized   = CompileFanout();
+	const uint64_t sized = CompileFanout();
+	// compileqos: the replay workers, the compute prewarm threads and any other pool of this phase together build
+	// at most `sized` pipelines at once (NPS5_COMPILE_GATE=0 lifts the limit).
+	if (prepare || list || replay_all)
+		LaunchPhase::CompileGate::Get().Configure(EnvU64("NPS5_COMPILE_GATE", 1) != 0 ? sized : 0);
 	const auto     threads = std::clamp<uint64_t>(
 	    EnvU64("KYTY_PIPELINE_JOURNAL_THREADS", prepare || list || replay_all ? sized : 4), 1, 16);
 	PipelineCacheLog("Pipeline replay: {} worker thread(s){}", threads,

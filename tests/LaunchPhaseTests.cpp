@@ -1,7 +1,10 @@
 #include "graphics/host_gpu/renderer/pipeline/launchPhase.h"
 #include "graphics/loadCard.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 using namespace Libs::Graphics::LaunchPhase;
 
@@ -56,6 +59,28 @@ int main() {
 		CHECK(CompileFanoutFor(14, 0) == 10 && CompileFanoutFor(8, 0) == 4 && CompileFanoutFor(6, 0) == 2);
 		CHECK(CompileFanoutFor(4, 0) == 2 && CompileFanoutFor(1, 0) == 2 && CompileFanoutFor(0, 0) == 8);
 		CHECK(CompileFanoutFor(64, 0) == 16 && CompileFanoutFor(14, 3) == 3 && CompileFanoutFor(14, 99) == 16);
+	}
+	// Compile gate: capacity limits concurrent slots, 0 = unlimited, the slot count returns to 0.
+	{
+		auto& gate = CompileGate::Get();
+		gate.Configure(2);
+		{
+			CompileGate::Slot a;
+			CompileGate::Slot b;
+			CHECK(gate.Running() == 2);
+			std::atomic<bool> got {false};
+			std::thread       t([&] {
+                CompileGate::Slot c; // blocks until a slot frees
+                got = true;
+			});
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			CHECK(!got.load() && gate.Running() == 2);
+			// a and b leave at the end of the scope; c then runs
+			gate.Configure(0); // unlimited: c passes at once
+			t.join();
+			CHECK(got.load());
+		}
+		CHECK(gate.Running() == 0);
 	}
 	// Background continuation: the card follows the hold, not the unit (scene mode ends the hold before the unit is done).
 	{

@@ -17,8 +17,10 @@
 // scene; the next
 //   start's target when it names no level (-lvl) of its own.
 
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -141,5 +143,53 @@ inline uint64_t CompileFanoutFor(uint64_t logical_cores, uint64_t override_threa
 	const uint64_t n = logical_cores > 6 ? logical_cores - 4 : 2;
 	return n > 16 ? 16 : n;
 }
+
+// Compile gate (compileqos): the pools of a prepare / launch phase (the pipeline replay workers and the compute
+// prewarm threads, plus whatever else joins) are each sized to the fan-out, so together they ran up to 14 Metal
+// compiles at once on a 14-core Mac and starved WindowServer. Every driver pipeline build of those pools passes
+// through this gate; at most `capacity` run at once (the fan-out), the rest wait. Capacity 0 (the default until a
+// prepare / launch phase configures it) = no limit: live draw compiles are never gated.
+class CompileGate {
+public:
+	static CompileGate& Get() {
+		static CompileGate gate;
+		return gate;
+	}
+	void Configure(uint64_t capacity) {
+		{
+			std::lock_guard lock(m_mutex);
+			m_capacity = capacity;
+		}
+		m_wake.notify_all();
+	}
+	void Acquire() {
+		std::unique_lock lock(m_mutex);
+		m_wake.wait(lock, [this] { return m_capacity == 0 || m_running < m_capacity; });
+		++m_running;
+	}
+	void Release() {
+		{
+			std::lock_guard lock(m_mutex);
+			if (m_running != 0) --m_running;
+		}
+		m_wake.notify_one();
+	}
+	uint64_t Running() {
+		std::lock_guard lock(m_mutex);
+		return m_running;
+	}
+	struct Slot {
+		Slot() { Get().Acquire(); }
+		~Slot() { Get().Release(); }
+		Slot(const Slot&)            = delete;
+		Slot& operator=(const Slot&) = delete;
+	};
+
+private:
+	std::mutex              m_mutex;
+	std::condition_variable m_wake;
+	uint64_t                m_capacity = 0;
+	uint64_t                m_running  = 0;
+};
 
 } // namespace Libs::Graphics::LaunchPhase
