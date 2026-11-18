@@ -14,9 +14,11 @@
 //   (code 86), KYTY_FLIGHTREC_TRIGGER=<flip>[,<flip>..] / p<present>, the control file
 //   KYTY_FLIGHTREC_CTL (its existence is polled once per flip; it is removed after the dump) and
 //   FlightRec::Trigger() from code.
-// Decoder: tools/flightrec/decode.py in the nativeps5 repository (text / TSV, --flips, --ev filters).
+// Decoder: tools/flightrec/decode.py in the nativeps5 repository (text / TSV, --flips, --ev
+// filters).
 //
-//   KYTY_FLIGHTREC=0|1|2        unset or 0 = off (public default); 1 = LIGHT (always-on release mode: low-rate events
+//   KYTY_FLIGHTREC=0|1|2        unset or 0 = off (public default); 1 = LIGHT (always-on release
+//   mode: low-rate events
 //   + counters,
 //                               16384 records/thread, <= 16 rings, ~13 MB total, dumps only on
 //                               triggers); 2 = VERBOSE (+ every draw/dispatch/upload/bind event,

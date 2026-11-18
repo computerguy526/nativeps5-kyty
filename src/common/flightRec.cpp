@@ -27,10 +27,10 @@ namespace FlightRec {
 
 namespace {
 
-// Compiled in, OFF by default in the public builds (v1.1): KYTY_FLIGHTREC=1 turns the light recorder on, =2 the verbose one.
-// Memory bound (light mode): ring 0 (shared) + 16 thread rings of 16384 x 48 B = 768 KiB = 13 MB;
-// threads past the cap record into the shared ring. Verbose mode (KYTY_FLIGHTREC=2) uses
-// 65536-record rings.
+// Compiled in, OFF by default in the public builds (v1.1): KYTY_FLIGHTREC=1 turns the light
+// recorder on, =2 the verbose one. Memory bound (light mode): ring 0 (shared) + 16 thread rings of
+// 16384 x 48 B = 768 KiB = 13 MB; threads past the cap record into the shared ring. Verbose mode
+// (KYTY_FLIGHTREC=2) uses 65536-record rings.
 constexpr uint32_t kMaxRings    = 17;
 constexpr uint32_t kMaxTriggers = 16;
 constexpr uint32_t kMaxImages   = 192;
