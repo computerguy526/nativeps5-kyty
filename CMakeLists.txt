@@ -941,12 +941,31 @@ add_executable(kyty_msl_dump EXCLUDE_FROM_ALL
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
+	"${kyty_codegen_header}" # CodegenFingerprint.cpp includes it: a kyty_msl_dump-only build must generate it too
 )
 target_compile_definitions(kyty_msl_dump PRIVATE KYTY_MSL_STANDALONE=1)
 target_link_libraries(kyty_msl_dump common fmt::fmt Zydis::Zydis xbyak::xbyak Vulkan::Headers)
 target_include_directories(kyty_msl_dump PRIVATE ${inc_headers})
 if (APPLE)
 	target_link_libraries(kyty_msl_dump "-framework CoreFoundation" "-framework IOKit")
+endif()
+
+# msl_core_tests: the MSL back end's unit tests (tests/MslCoreTests.cpp: ALU snippets, builder, whole programs; each snippet is
+# also compiled with `xcrun metal` when it exists). Same sources as kyty_msl_dump without its main.
+add_executable(msl_core_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/MslCoreTests.cpp"
+	"${CMAKE_CURRENT_SOURCE_DIR}/tools/msl-dump/spirvStubs.cpp"
+	${kyty_msl_dump_src}
+	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
+	"${kyty_codegen_header}"
+)
+target_compile_definitions(msl_core_tests PRIVATE KYTY_MSL_STANDALONE=1)
+target_link_libraries(msl_core_tests common fmt::fmt Zydis::Zydis xbyak::xbyak Vulkan::Headers)
+target_include_directories(msl_core_tests PRIVATE ${inc_headers})
+if (APPLE)
+	target_link_libraries(msl_core_tests "-framework CoreFoundation" "-framework IOKit")
 endif()
 
 add_executable(shader_code_snapshot_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ShaderCodeSnapshotTests.cpp")
