@@ -314,12 +314,12 @@ int64_t ParseGcLazyCritical(const char* value) {
 	                           static_cast<int64_t>(VramBudget::BufferSettleMaxDeferredCriticalLimit));
 }
 Live::Switch g_gc_side_settle_lazy_critical("KYTY_GC_SIDE_SETTLE_LAZY_CRITICAL", ParseGcLazyCritical);
-// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default off; =1 on): a collection pass never
+// nps5 cpuframe, KYTY_GC_SETTLE_SELECTIVE (live, default on since v1.1; =0 = v1 behaviour): a collection pass never
 // settles all pending side readbacks (a wait for the GPU on the command-processor thread after
 // nearly every completed submission in a level: 26-27 % of that thread in Sky Garden). It skips
 // the candidate buffers whose pages a pending side readback covers instead; they are looked at
 // again by a later pass. The other candidates' tracker state does not depend on those readbacks.
-Live::Switch g_gc_settle_selective("KYTY_GC_SETTLE_SELECTIVE", Live::ParseDefaultOff);
+Live::Switch g_gc_settle_selective("KYTY_GC_SETTLE_SELECTIVE", Live::ParseDefaultOn);
 // "BufferGc 10s" line (with KYTY_CP_GAP_STATS): what the collection passes did. GPU thread only.
 struct BufferGcStats {
 	uint64_t passes = 0, below = 0, empty = 0, deferred = 0, ran = 0, waited = 0, wait_ns = 0,
