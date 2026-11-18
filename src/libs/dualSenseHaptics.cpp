@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <vector>
 
 namespace Libs::Controller::DualSenseHaptics {
@@ -85,15 +86,19 @@ float EnvF(const char* name, float def) {
 struct RumbleShape {
 	float scale = EnvF("NPS5_RUMBLE_SCALE", 0.5f);
 	float floor = EnvF("NPS5_RUMBLE_FLOOR", 0.08f);
-	float gamma = EnvF("NPS5_RUMBLE_GAMMA", 1.6f);
-	float decay = EnvF("NPS5_RUMBLE_DECAY", 0.80f);
+	// gamma <= 0 would turn silence into full strength, decay >= 1 would never release: out of range = default.
+	float gamma = [] { const float g = EnvF("NPS5_RUMBLE_GAMMA", 1.6f); return g > 0.0f && g <= 8.0f ? g : 1.6f; }();
+	float decay = [] { const float d = EnvF("NPS5_RUMBLE_DECAY", 0.80f); return d >= 0.0f && d < 1.0f ? d : 0.80f; }();
+	// Queue is called without g_mutex (any audio thread, any stream): the envelope and the counters are shared.
+	std::mutex mutex;
 	bool  log   = EnvF("NPS5_RUMBLE_LOG", 0.0f) != 0.0f;
 	float follow[2] = {0.0f, 0.0f};
 	uint32_t hist[2][11] {};
 	uint32_t calls = 0, frames_sum = 0, motor_max[2] = {0, 0};
 	uint64_t motor_sum[2] = {0, 0};
 	uint32_t last_ms = 0;
-	uint16_t Motor(int ch, float raw) {
+	uint16_t Motor(int ch, float raw) { // caller holds mutex
+		if (!(raw >= 0.0f)) raw = 0.0f; // NaN samples: silence
 		float e = raw * 2.0f; // the old gain: peak 0.5 = full
 		const float f = std::clamp(floor, 0.0f, 0.95f);
 		e = e <= f ? 0.0f : (e - f) / (1.0f - f);
@@ -103,10 +108,10 @@ struct RumbleShape {
 		const float m = std::clamp(follow[ch] * scale, 0.0f, 1.0f);
 		return static_cast<uint16_t>(m * 65535.0f);
 	}
-	void Log(const float peak[2], const uint16_t motor[2], uint32_t frames, uint32_t freq) {
+	void Log(const float peak[2], const uint16_t motor[2], uint32_t frames, uint32_t freq) { // caller holds mutex
 		if (!log) return;
 		for (int c = 0; c < 2; c++) {
-			hist[c][std::min(10, static_cast<int>(peak[c] * 10.0f))]++;
+			hist[c][peak[c] >= 0.0f ? std::min(10, static_cast<int>(std::min(peak[c], 2.0f) * 10.0f)) : 0]++;
 			motor_max[c] = std::max<uint32_t>(motor_max[c], motor[c]);
 			motor_sum[c] += motor[c];
 		}
@@ -455,8 +460,13 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 				peak[ch] = std::max(peak[ch], std::fabs(value));
 			}
 		}
-		const uint16_t motor[2] = {g_rumble_shape.Motor(0, peak[0]), g_rumble_shape.Motor(1, peak[1])};
-		g_rumble_shape.Log(peak, motor, frames, stream->freq);
+		uint16_t motor[2];
+		{
+			std::scoped_lock shape_lock(g_rumble_shape.mutex);
+			motor[0] = g_rumble_shape.Motor(0, peak[0]);
+			motor[1] = g_rumble_shape.Motor(1, peak[1]);
+			g_rumble_shape.Log(peak, motor, frames, stream->freq);
+		}
 		SDL_LockJoysticks();
 		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
 		    pad != nullptr) {
