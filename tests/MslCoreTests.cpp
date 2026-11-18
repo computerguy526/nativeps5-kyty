@@ -285,6 +285,87 @@ void TestLoopCap() {
   options.msl_force_dispatcher = false;
 }
 
+// mslbadopt: math semantics guard (rv103 N1 / skyflick: fast math folds
+// isnan/isinf guards -> sky flicker). Compute B must be compiled with 'math
+// safe' (kk-mslinject header), never contain math_mode(fast) or fast:: calls;
+// only relaxed scopes (inf/NaN kept). Also KYTY_MSL_VOTE_MERGE (default 1; 0 =
+// old): wave64 halves vote once (any(a)||any(b) == any(a||b)), the merged text
+// compiles.
+size_t CountOutsideComments(const std::string &s, const std::string &pat) {
+  size_t n = 0, pos = 0;
+  while ((pos = s.find(pat, pos)) != std::string::npos) {
+    const size_t ls = s.rfind('\n', pos);
+    const size_t lb = ls == std::string::npos ? 0 : ls + 1;
+    if (s.find("//", lb) == std::string::npos || s.find("//", lb) > pos)
+      n++;
+    pos += pat.size();
+  }
+  return n;
+}
+
+void TestMathSafeAndVoteMerge() {
+  const std::string prelude = Msl::MslPrelude();
+  Check(CountOutsideComments(prelude, "math_mode(fast)") == 0,
+        "prelude: no math_mode(fast)");
+  Check(CountOutsideComments(prelude, "fast::") == 0,
+        "prelude: no fast:: functions");
+  const std::vector<uint32_t> code = {0xbe8a0480, 0x7d8a0080, 0x888a6a0a,
+                                      0x8afe6a7e, 0xbf89fffc, 0x88fe0a7e,
+                                      0x7e020281, 0xbf810000};
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Compute;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.compute = &info;
+  std::string text[2];
+  for (const int merge : {0, 1}) {
+    setenv("KYTY_MSL_CONVENTION", "kk-bda", 1);
+    setenv("KYTY_MSL_VOTE_MERGE", merge ? "1" : "0", 1);
+    auto translated = SR::TranslateProgram(code, options);
+    SR::IR::ResourceSpecialization spec;
+    auto result = SR::CompileProgram(std::move(translated), options, spec, 0);
+    unsetenv("KYTY_MSL_CONVENTION");
+    unsetenv("KYTY_MSL_VOTE_MERGE");
+    const std::string tag = merge ? "vote merge" : "default";
+    text[merge] = result.msl;
+    Check(result.msl.rfind("// kk-mslinject v1 local_size", 0) == 0 &&
+              result.msl.find(" math safe\n") != std::string::npos,
+          tag + ": kk-bda header asks for math safe");
+    Check(CountOutsideComments(result.msl, "math_mode(fast)") == 0 &&
+              CountOutsideComments(result.msl, "fast::") == 0,
+          tag + ": no fast-math scope in compute");
+    if (HaveMetal()) {
+      const std::string f =
+          "/tmp/msl_core_vote_" + std::to_string(merge) + ".metal";
+      std::ofstream(f) << result.msl;
+      Check(std::system(("xcrun -sdk macosx metal -std=metal3.1 "
+                         "-fmetal-math-mode=safe -fsyntax-only " +
+                         f + " 2>" + f + ".err")
+                            .c_str()) == 0,
+            tag + ": compiles (see " + f + ".err)");
+    }
+  }
+  const auto votes = [](const std::string &s) {
+    return CountOutsideComments(s, "kyty_any(") +
+           CountOutsideComments(s, "kyty_all(");
+  };
+  Check(votes(text[1]) < votes(text[0]),
+        "vote merge: fewer simdgroup votes (" + std::to_string(votes(text[0])) +
+            " -> " + std::to_string(votes(text[1])) + ")");
+  Check(text[1].find(") || (") != std::string::npos ||
+            text[1].find(") && (") != std::string::npos,
+        "vote merge: halves combined before the vote");
+}
+
 } // namespace
 
 int main() {
@@ -293,6 +374,7 @@ int main() {
   TestAluCompiles();
   TestProgram();
   TestLoopCap();
+  TestMathSafeAndVoteMerge();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

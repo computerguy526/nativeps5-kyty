@@ -256,6 +256,11 @@ std::string BranchExpr(MslCtx& ctx, const IR::BlockInfo& info) {
 	if (ctx.lanes == 1) {
 		return fmt::format("{}({}, lid)", op, ctx.Val(info.condition, 0));
 	}
+	if (ctx.vote_merge) { // one simdgroup vote over both halves: all(a)&&all(b) == all(a&&b),
+		                  // any(a)||any(b) == any(a||b)
+		return fmt::format("{}(({}) {} ({}), lid)", op, ctx.Val(info.condition, 0),
+		                   zero ? "&&" : "||", ctx.Val(info.condition, 1));
+	}
 	return fmt::format("({}({}, lid) {} {}({}, lid))", op, ctx.Val(info.condition, 0),
 	                   zero ? "&&" : "||", op, ctx.Val(info.condition, 1));
 }
@@ -436,6 +441,13 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 				continue;
 			}
 			case O::AnyLane: {
+				if (ctx.vote_merge &&
+				    ctx.lanes == 2) { // wave-uniform: vote once (half 0), half 1 copies it
+					assign(h, h == 0 ? fmt::format("kyty_any(({}) || ({}), lid)",
+					                               ctx.Val(inst.Arg(0), 0), ctx.Val(inst.Arg(0), 1))
+					                 : ctx.Name(inst, 0));
+					continue;
+				}
 				auto e = fmt::format("kyty_any({}, lid)", ctx.Val(inst.Arg(0), 0));
 				if (ctx.lanes == 2)
 					e = fmt::format("({} || kyty_any({}, lid))", e, ctx.Val(inst.Arg(0), 1));
@@ -447,6 +459,8 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 				const auto v0 = ctx.Val(inst.Arg(0), 0), e0 = ctx.Val(inst.Arg(1), 0);
 				if (ctx.lanes == 1) {
 					assign(h, fmt::format("simd_shuffle({}, ctz(kyty_ballot({}, lid)))", v0, e0));
+				} else if (ctx.vote_merge && h == 1) {
+					assign(h, ctx.Name(inst, 0)); // wave-uniform result: computed once in half 0
 				} else {
 					const auto v1 = ctx.Val(inst.Arg(0), 1), e1 = ctx.Val(inst.Arg(1), 1);
 					assign(h, fmt::format(
@@ -1011,6 +1025,11 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	// Lane model (see STATUS.md): wave64 on Apple's simdgroup(32) = two guest halves per thread.
 	uint32_t lanes    = ChooseLanes(program, input_info, options.lanes_override);
 	ctx.wave64_single = program.wave_size == 64u && lanes == 1;
+	// mslbadopt: default ON (harness exact + faster on 472/473/304/753 and the 16 changed v1.1
+	// kernels); KYTY_MSL_VOTE_MERGE=0 = old text.
+	if (const char* e = std::getenv("KYTY_MSL_VOTE_MERGE");
+	    e == nullptr || std::strcmp(e, "0") != 0)
+		ctx.vote_merge = true;
 	ctx.lanes         = lanes;
 	result.lanes      = lanes;
 	uint32_t total    = shape.threads[0] * shape.threads[1] * shape.threads[2];
