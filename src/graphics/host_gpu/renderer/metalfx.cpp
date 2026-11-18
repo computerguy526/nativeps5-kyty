@@ -345,9 +345,17 @@ void AstroTileGridPatch() {
 	// "auto": ceil(MetalFX input size / 16) per axis (1280x720 -> 80x45, 1600x900 -> 100x57,
 	// 1920x1080 -> 120x68 = the game's own level 0, nothing to change), known after the first
 	// MetalFX evaluation; an invalid spec ends it.
-	if (!AstroTileGrid::Resolve(value, Get().in_w, Get().in_h, tx, ty)) {
-		if (std::strcmp(value, "auto") != 0) {
+	const uint32_t in_w = Get().in_w;
+	const uint32_t in_h = Get().in_h;
+	if (!AstroTileGrid::Resolve(value, in_w, in_h, tx, ty)) {
+		// auto waits for the first MetalFX evaluation; an invalid spec or a grid beyond the game's largest
+		// level (240x135, its 2160p entry) ends it.
+		if (std::strcmp(value, "auto") != 0 || (in_w != 0 && in_h != 0)) {
 			state = 1;
+			std::printf("AstroTileGrid: KYTY_ASTRO_TILE_GRID=%s (input %ux%u) is not a grid of at most %ux%u tiles, "
+			            "nothing changed\n",
+			            value, in_w, in_h, AstroTileGrid::MAX_TILES_X, AstroTileGrid::MAX_TILES_Y);
+			std::fflush(stdout);
 		}
 		return;
 	}

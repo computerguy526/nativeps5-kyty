@@ -31,6 +31,11 @@ int main() {
 	Check(!G::Resolve(nullptr, 1280, 720, tx, ty), "null");
 	Check(!G::Resolve("0x45", 0, 0, tx, ty) && !G::Resolve("junk", 0, 0, tx, ty), "invalid");
 	Check(G::Resolve("80x45", 0, 0, tx, ty) && tx == 80 && ty == 45, "explicit");
+	// Larger than the game's 2160p level, or a negative number wrapped by %u: refused, outputs untouched.
+	Check(G::Resolve("240x135", 0, 0, tx, ty) && tx == 240 && ty == 135, "largest level");
+	Check(!G::Resolve("241x135", 0, 0, tx, ty) && !G::Resolve("240x136", 0, 0, tx, ty), "over the largest level");
+	Check(!G::Resolve("-1x45", 0, 0, tx, ty) && !G::Resolve("80x-1", 0, 0, tx, ty), "negative");
+	Check(!G::Resolve("auto", 3856, 2160, tx, ty) && tx == 240 && ty == 135, "auto over 2160p");
 	std::puts("AstroTileGridTests: ok");
 	return 0;
 }
