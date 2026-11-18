@@ -262,11 +262,14 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		const std::string d      = "(kk_set0 + " + KU(off) + ")";
 		std::string       prefix = "0u";
 		if (i < bl.memory_offset_count) {
+			// mslfix2 (graphics): Kyty's SPIR-V addresses buffers in dwords: base = offset byte &
+			// ~3, element k valid while (offset >> 2) + k < size >> 2 (KK FS 48096ca2: t126 = byte
+			// & 0xfffffffc). Compute text unchanged.
 			prefix = "((push[" + KU(bl.memory_offset_dword + i / 4u) + "] >> " + KU(8u * (i % 4u)) +
-			         ") & 255u)";
+			         ") & " + (gfx ? "252u)" : "255u)");
 		}
 		b.Line("{ const ulong a = *(constant ulong*)" + d + "; const uint n = *(constant uint*)(" +
-		       d + " + 8u); const uint p = " + prefix + ";");
+		       d + " + 8u)" + (gfx ? " & 0xfffffffcu" : "") + "; const uint p = " + prefix + ";");
 		b.Line("  r.b" + std::to_string(i) + " = (" +
 		       std::string(buf.written || buf.atomic ? "device" : "const device") +
 		       " uchar*)(a + ulong(p)); r.b" + std::to_string(i) + "_size = n > p ? n - p : 0u; }");

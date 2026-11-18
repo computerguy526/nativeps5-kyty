@@ -59,6 +59,8 @@ struct Perm {
   int perm = 0;
   std::string digest;
   std::vector<uint8_t> spec;
+  uint32_t cursor = 0; // mslfix2: push-data cursor the permutation was compiled
+                       // with (VS data follows the PS's)
 };
 
 bool ReadAll(const char *path, std::vector<uint8_t> &d) {
@@ -129,6 +131,7 @@ std::vector<Src> LoadPrograms(const char *path,
         uint32_t sl;
         std::memcpy(&sl, &d[p + 20], 4);
         pm.spec.assign(&d[p + 24], &d[p + 24] + sl);
+        std::memcpy(&pm.cursor, &d[p + 16], 4);
         perms->push_back(std::move(pm));
       }
       perm_idx++;
@@ -412,7 +415,18 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   }
   (void)lanes;
   (void)comments;
-  auto result = SR::CompileProgram(std::move(translated), options, spec, 0);
+  // mslfix2: graphics permutations keep their in-game push-data cursor (the
+  // pipeline packs the VS push data after the PS's: KK FS/VS read
+  // root+672+4*(cursor+k)); compute stays at 0 (v1.1 kernels byte-identical).
+  // KYTY_MSL_PERM_CURSOR=0 = old.
+  uint32_t cursor = 0;
+  if (perm && s.stage != static_cast<uint32_t>(ShaderType::Compute)) {
+    const char *e = std::getenv("KYTY_MSL_PERM_CURSOR");
+    if (e == nullptr || std::strcmp(e, "0") != 0)
+      cursor = perm->cursor;
+  }
+  auto result =
+      SR::CompileProgram(std::move(translated), options, spec, cursor);
   std::FILE *out = out_path ? std::fopen(out_path, "wb") : stdout;
   std::fwrite(result.msl.data(), 1, result.msl.size(), out);
   if (out_path)
