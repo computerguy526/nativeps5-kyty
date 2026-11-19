@@ -1132,6 +1132,9 @@ void TestDeferredProtectCoWatch(bool fix) {
 
 namespace Libs::LibKernel::Memory {
 
+// The tests run as the host process that owns guest memory (16 KB host pages on arm64 macOS are then allowed).
+bool HostedActive() noexcept { return true; }
+
 bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size,
                             Common::VirtualMemory::Mode mode) {
   return ProtectAddressSpace(vaddr, size, mode);
