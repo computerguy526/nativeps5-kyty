@@ -332,20 +332,21 @@ bool LoopGuardApplies(uint64_t shader_hash) {
 	                                      options.loop_guard_shaders.end());
 }
 
-bool FastMathShaderAllowed(uint64_t shader_hash) {
+bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage) {
 	const auto& options = Storage();
 	const bool  allowed =
 	    (!options.fast_math_allow_set ||
 	     std::binary_search(options.fast_math_allow.begin(), options.fast_math_allow.end(), shader_hash)) &&
 	    !std::binary_search(options.fast_math_deny.begin(), options.fast_math_deny.end(), shader_hash);
-	// KYTY_FAST_MATH_LOG=1: one line per guest hash the first time a decision is made (checks that the lists hit real hashes).
+	// KYTY_FAST_MATH_LOG=1: one line per guest hash (with its stage) the first time a decision is made, lists set or not
+	// (checks that the lists hit real hashes and harvests the hashes a scene uses).
 	static const bool        log_on = EnvFlag("KYTY_FAST_MATH_LOG", false);
 	static std::mutex        mutex;
 	static std::set<uint64_t> seen;
-	if (log_on && (options.fast_math_allow_set || !options.fast_math_deny.empty())) {
+	if (log_on) {
 		std::lock_guard lock(mutex);
 		if (seen.insert(shader_hash).second) {
-			LOGF("[fastmath] shader 0x%016" PRIx64 " %s\n", shader_hash, allowed ? "FAST" : "EXACT (listed)");
+			LOGF("[fastmath] shader 0x%016" PRIx64 " %s %s\n", shader_hash, stage, allowed ? "FAST" : "EXACT (listed)");
 		}
 	}
 	return allowed;

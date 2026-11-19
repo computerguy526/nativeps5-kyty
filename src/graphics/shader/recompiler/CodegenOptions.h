@@ -448,7 +448,7 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 // True when KYTY_LOOP_GUARD applies to the guest shader with this hash.
 [[nodiscard]] bool LoopGuardApplies(uint64_t shader_hash);
 // KYTY_FAST_MATH_DENY / KYTY_FAST_MATH_ALLOW: may this guest shader use fast math? (true when no list is set)
-[[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash);
+[[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage = "?");
 
 [[nodiscard]] const CodegenOptions& GetCodegenOptions();
 // KYTY_LOD_STATS_PLAIN_VARIANT's value means "on" (the renderer's default).

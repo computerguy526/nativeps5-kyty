@@ -28,6 +28,28 @@
 #include <limits>
 #include <span>
 #include <vector>
+#include <cstdio>
+#include <cstdlib>
+#include <pthread.h>
+
+
+namespace {
+// fmsel4: KYTY_FMSEL_PIPELOG=1 brackets every driver pipeline creation on stderr with the guest shader hashes
+// ('[fmsel4] gfx begin <tid> <vs> <ps>' ... '[fmsel4] end <tid>'), so the KosmicKrisp MSL keys it logs in between
+// (KK_MSL_OVERRIDE_LOG=1 '[kk-mslinject] seen <key> ...') can be tied to guest hashes offline.
+bool FmselPipeLog() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_FMSEL_PIPELOG");
+		return v != nullptr && v[0] != '\0' && v[0] != '0';
+	}();
+	return on;
+}
+unsigned long long FmselTid() {
+	uint64_t tid = 0;
+	pthread_threadid_np(nullptr, &tid);
+	return static_cast<unsigned long long>(tid);
+}
+} // namespace
 
 namespace Libs::Graphics {
 
@@ -628,6 +650,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		     (with_depth ? "true" : "false"), (static_params.blend_enable[0] ? "true" : "false"),
 		     dynamic_state.dynamicStateCount);
 	}
+	if (FmselPipeLog()) {
+		std::fprintf(stderr, "[fmsel4] gfx begin %llu %016llx %016llx\n", FmselTid(),
+		             static_cast<unsigned long long>(vs_input_info.stage.program != nullptr ? vs_input_info.stage.program->shader_hash : 0),
+		             static_cast<unsigned long long>(ps_active && ps_input_info->stage.program != nullptr ? ps_input_info->stage.program->shader_hash : 0));
+	}
 	const auto driver_begin = std::chrono::steady_clock::now();
 	if (create_hook != nullptr) {
 		// The pipeline-library path shares libraries only between identically defined layouts.
@@ -665,6 +692,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	} else {
 		result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
 		                                                 &pipeline.pipeline);
+	}
+	if (FmselPipeLog()) {
+		std::fprintf(stderr, "[fmsel4] end %llu\n", FmselTid());
 	}
 	Profiler::AddFrameWait(Profiler::FrameWait::GraphicsPipelineDriver, 1,
 	                       static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -757,6 +787,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	EXIT_IF(pipeline.pipeline != nullptr);
 
+	if (FmselPipeLog()) {
+		std::fprintf(stderr, "[fmsel4] cs begin %llu %016llx\n", FmselTid(),
+		             static_cast<unsigned long long>(input_info.stage.program != nullptr ? input_info.stage.program->shader_hash : 0));
+	}
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
 	if (create_hook != nullptr) {
@@ -764,6 +798,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	} else {
 		result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
 		                                                &pipeline.pipeline);
+	}
+	if (FmselPipeLog()) {
+		std::fprintf(stderr, "[fmsel4] end %llu\n", FmselTid());
 	}
 	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
 	     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
