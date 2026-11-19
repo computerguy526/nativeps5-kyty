@@ -57,6 +57,13 @@ static thread_local bool g_ftz_tr = false;
 void                     SetFlushTranscendentalInputs(bool on) {
 	g_ftz_tr = on;
 }
+// mslfix6: graphics text spells V_MIN/MAX/MIN3/MAX3/MED3_F32 as KK prints Kyty's SPIR-V min/max
+// (kyty_fmin/kyty_fmax/kyty_fmed3 in the graphics prelude: a NaN operand gives the other one, -0 < +0,
+// any NaN in med3 gives min3). Metal's fmin/fmax/fmedian3 differ on NaN and signed zeros.
+static thread_local bool g_kk_minmax = false;
+void                     SetKkMinMax(bool on) {
+	g_kk_minmax = on;
+}
 static std::string FtzIn(const std::string& x) {
 	if (!g_ftz_tr) return x;
 	return fmt::format("as_type<float>((as_type<uint>({0}) & 0x7fffffffu) < 8388608u ? "
@@ -219,11 +226,18 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 				    "fma({}, {}, {})", a[0], a[1],
 				    a[2]); // MadMode Position/Fused outside position data: same as the SPIR-V path
 			return fmt::format("(({} * {}) + {})", a[0], a[1], a[2]);
-		case O::FPMin32: return fmt::format("fmin({}, {})", a[0], a[1]);
-		case O::FPMax32: return fmt::format("fmax({}, {})", a[0], a[1]);
-		case O::FPMinTri32: return fmt::format("fmin3({}, {}, {})", a[0], a[1], a[2]);
-		case O::FPMaxTri32: return fmt::format("fmax3({}, {}, {})", a[0], a[1], a[2]);
-		case O::FPMedTri32: return fmt::format("fmedian3({}, {}, {})", a[0], a[1], a[2]);
+		case O::FPMin32:
+			return (g_kk_minmax ? "kyty_fmin(" : "fmin(") + a[0] + ", " + a[1] + ")";
+		case O::FPMax32:
+			return (g_kk_minmax ? "kyty_fmax(" : "fmax(") + a[0] + ", " + a[1] + ")";
+		case O::FPMinTri32:
+			return g_kk_minmax ? fmt::format("kyty_fmin(kyty_fmin({}, {}), {})", a[0], a[1], a[2])
+			                   : fmt::format("fmin3({}, {}, {})", a[0], a[1], a[2]);
+		case O::FPMaxTri32:
+			return g_kk_minmax ? fmt::format("kyty_fmax(kyty_fmax({}, {}), {})", a[0], a[1], a[2])
+			                   : fmt::format("fmax3({}, {}, {})", a[0], a[1], a[2]);
+		case O::FPMedTri32:
+			return (g_kk_minmax ? "kyty_fmed3(" : "fmedian3(") + a[0] + ", " + a[1] + ", " + a[2] + ")";
 		case O::FPRecip32:
 			return fmt::format("kyty_rcp({})",
 			                   FtzIn(a[0])); // relaxed 1/x = what KK's NIR->MSL emits (mslrest:

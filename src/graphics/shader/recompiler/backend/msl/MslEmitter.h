@@ -54,6 +54,7 @@ void SetFuseMad(bool fuse);
 void SetPreciseTranscendentals(bool on); // mslfix: precise:: exp2/log2 (relaxed pixel text)
 void SetFlushTranscendentalInputs(
     bool on); // mslfix2: denormal inputs of rcp/rsq/sqrt/exp/log -> signed zero (graphics)
+void SetKkMinMax(bool on); // mslfix6: KK-exact f32 min/max/med3 helpers (graphics)
 [[nodiscard]] std::string AluExpression(IR::ValueOpcode opcode, std::span<const std::string> args);
 
 // MSL type name of an IR value type ("" for Void/opaque/unsupported).

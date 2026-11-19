@@ -132,9 +132,39 @@ static inline bool kyty_all(bool p, uint l) { return p; }
 #define simd_is_first() true
 )";
 
+// mslfix6: V_MIN/V_MAX_F32 exactly as KosmicKrisp prints Kyty's SPIR-V min/max (NIR fmin/fmax with
+// signed zeros: `!isnan(a) && !isnan(b) && a == b ? bits(a | b) : precise::fmin(a, b)` under
+// math_mode(safe)): a NaN operand gives the other one, min(-0, +0) = -0, max(-0, +0) = +0.
+// V_MED3_F32: any NaN operand gives min3, otherwise max(min(a, b), min(max(a, b), c)) (GCN, as
+// EmitFastMedTri32). Metal's own fmin/fmax/fmedian3 under relaxed math differ on NaN/signed zeros.
+constexpr const char* kKkMinMax = R"(static inline float kyty_fmin(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return !isnan(a) && !isnan(b) && a == b ? as_type<float>(as_type<uint>(a) | as_type<uint>(b)) : precise::fmin(a, b);
+}
+static inline float kyty_fmax(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return !isnan(a) && !isnan(b) && a == b ? as_type<float>(as_type<uint>(a) & as_type<uint>(b)) : precise::fmax(a, b);
+}
+static inline float kyty_fmed3(float a, float b, float c) {
+#pragma METAL fp math_mode(safe)
+  float lo = kyty_fmin(a, b);
+  return (isnan(a) || isnan(b) || isnan(c)) ? kyty_fmin(lo, c) : kyty_fmax(lo, kyty_fmin(kyty_fmax(a, b), c));
+}
+)";
+
+bool KkMinMaxEnabled() {
+	const char* e = std::getenv("KYTY_MSL_GFX_MINMAX");
+	return e == nullptr || std::strcmp(e, "0") != 0;
+}
+
 std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
-                        bool single_lane = false) {
+                        bool single_lane = false, bool kk_minmax = false) {
 	std::string t(Prelude);
+	if (kk_minmax) {
+		const std::string anchor = "// nps5 gpuguard";
+		const auto        at     = t.find(anchor);
+		t.insert(at == std::string::npos ? t.size() : at, kKkMinMax);
+	}
 	if (single_lane) {
 		const auto b0 = t.find("static inline uint kyty_ballot(bool p, uint l)");
 		const auto b1 = t.find("static inline bool kyty_all(bool p, uint l)", b0);
@@ -1128,6 +1158,9 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		                            return e == nullptr || std::strcmp(e, "0") != 0;
 	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
+	// mslfix6: KYTY_MSL_GFX_MINMAX=0 = old text (Metal fmin/fmax/fmin3/fmax3/fmedian3)
+	const bool kk_minmax = gfx_stage && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled();
+	SetKkMinMax(kk_minmax);
 	// mslfix5: replay KK NIR float re-association on pixel text (MslNirReassoc.cpp);
 	// KYTY_MSL_GFX_REASSOC=0 = old text
 	// fmafix: one statement per NIR op (V_MAD/V_FMA as fmul then fadd) like KK's text, so Metal
@@ -1233,7 +1266,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
 		result.source      = KkInjectHeader(ctx, result) +
-		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane) +
+		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane, kk_minmax) +
 		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
@@ -1267,7 +1300,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	b.Close(); // kernel
 
 	result.source      = KkInjectHeader(ctx, result) +
-	                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane) +
+	                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane, kk_minmax) +
 	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();
