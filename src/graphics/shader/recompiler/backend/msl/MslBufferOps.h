@@ -25,6 +25,10 @@ struct BufferOpts {
 	bool coherent_loads = false; // emit `volatile` + relaxed atomic-ish loads (rarely needed)
 	bool elide_bounds =
 	    BoundsElideFromEnv(); // global override: trust the harness/host to size buffers (no guard)
+	// v1.1.1 (graphics stages): a 32-bit x2/x3/x4 raw access that fails the whole-vector bounds
+	// check falls back to one check per dword, as GCN and KosmicKrisp do (the in-range dwords load
+	// / store normally); compute keeps the v1.1 text.
+	bool per_dword_bounds = false;
 };
 
 // Descriptor-derived address inputs (all MSL uint expressions; empty = 0).
