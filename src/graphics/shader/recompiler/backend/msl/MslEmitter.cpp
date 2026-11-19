@@ -208,12 +208,23 @@ bool GfxPixelRelaxed() {
 	return on;
 }
 
+bool GfxPixelFast() {
+	static const bool on = [] {
+		const char* e = std::getenv("KYTY_MSL_GFX_MATH");
+		return e != nullptr && std::strcmp(e, "fast") == 0;
+	}();
+	return on;
+}
+
 std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	if (!ctx.kk_bda) return {};
 	// mslgfx: graphics stages are swapped as a VS+PS pair inside KK's render pipeline descriptor.
 	if (ctx.program.stage == ShaderType::Vertex)
 		return "// kk-mslinject v1 stage vertex entry main0 math safe\n";
 	if (ctx.program.stage == ShaderType::Pixel)
+		// perfmode (heavyshade, opt-in KYTY_MSL_GFX_MATH=fast): KK compiles the injected FS with Metal fast math. Validated
+		// under autoval outprec (stored-output precision), never bit-exact; pair with KYTY_MSL_GFX_SPLIT=0 REASSOC=0 MINMAX=0.
+		if (GfxPixelFast()) return "// kk-mslinject v1 stage fragment entry main0 math fast\n";
 		return GfxPixelRelaxed() ? "// kk-mslinject v1 stage fragment entry main0 math relaxed\n"
 		                         : "// kk-mslinject v1 stage fragment entry main0 math safe\n";
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
