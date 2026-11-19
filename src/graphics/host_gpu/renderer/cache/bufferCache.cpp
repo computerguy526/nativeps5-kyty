@@ -377,6 +377,14 @@ std::atomic<uint64_t> g_readback_flush_side_copies {0};
 // CPU-dirty transitions (emulator writes reported through InvalidateMemory, direct HandleFault
 // calls) still drain: nothing faults again after them.
 Live::Switch g_readback_side_writes("KYTY_READBACK_SIDE_WRITES", Live::ParseDefaultOn);
+
+// KYTY_READBACK_EAGER_WRITES (live, default off; =1 on; upstream a3458ee7, eager-writes part only):
+// a guest write fault on GPU-owned bytes makes its pages eager-hot as a read fault does
+// (KYTY_READBACK_EAGER). The next recordings that write them then end with a copy of their bytes,
+// published when the recording completes, so a later write fault finds the page clean (an
+// ordinary write fault, no command-processor round trip) or waits only for that copy. With it,
+// raise KYTY_READBACK_EAGER_PAGES (default 64; up to 2048).
+Live::Switch g_readback_eager_writes("KYTY_READBACK_EAGER_WRITES", Live::ParseDefaultOff);
 std::atomic<uint64_t> g_readback_side_writes_copies {0};
 
 // KYTY_READ_FAULT_PUBLISHED (live, default off; =1 on, =verify): a guest thread's read fault on a
@@ -1023,7 +1031,7 @@ bool EagerReadbackEnabled() {
 EagerReadbackPages::Limits EagerReadbackLimits() {
 	EagerReadbackPages::Limits limits;
 	limits.capacity =
-	    static_cast<uint32_t>(std::min<uint64_t>(ParseEnvU64("KYTY_READBACK_EAGER_PAGES", 64), 256));
+	    static_cast<uint32_t>(std::min<uint64_t>(ParseEnvU64("KYTY_READBACK_EAGER_PAGES", 64), 2048));
 	limits.idle_frames = static_cast<uint32_t>(
 	    std::clamp<uint64_t>(ParseEnvU64("KYTY_READBACK_EAGER_IDLE_FRAMES", 600), 1, 1000000));
 	limits.frame_budget = static_cast<uint32_t>(
@@ -2422,7 +2430,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			                                              : 1;
 		}
 		gpu.SendCommandSync([&, this, vaddr, size, is_write, gpu_thread] {
-			if (!is_write) {
+			if (!is_write || g_readback_eager_writes.On()) {
 				NoteEagerRead(vaddr, size, gpu_thread);
 			}
 			CpGaps::Note(is_write ? CpGaps::Event::DrainWrite : CpGaps::Event::DrainOther);
@@ -2474,7 +2482,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 	const auto                    write_mark = is_write ? ReadFaultDiag::NowNs() : 0;
 	bool                          current   = false; // KYTY_CLEAN_PAGE
 	gpu.SendCommandSync([&, this, vaddr, size, is_write] {
-		if (!is_write) {
+		if (!is_write || g_readback_eager_writes.On()) {
 			NoteEagerRead(vaddr, size, false);
 		}
 		// KYTY_CLEAN_PAGE: another thread's read made the faulting pages current meanwhile; a
