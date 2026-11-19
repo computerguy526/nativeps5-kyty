@@ -1,6 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/programDiskCache.h"
 
 #include "common/file.h"
+#include "common/nps5Frame.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -451,10 +452,16 @@ void ProgramDiskCache::Invalidate(uint32_t id) {
 	m_stats.invalidated++;
 }
 
+// transfx: KYTY_SAVE_LOAD_QUIET_S hold state of the (single) saver thread; kept out of the class so its
+// layout, seen by every file that includes programDiskCache.h, is unchanged.
+static uint64_t g_load_held_since = 0;
+
 bool ProgramDiskCache::Due(uint64_t now) const {
 	// Requires m_mutex.
+	// transfx: KYTY_SAVE_LOAD_QUIET_S (nps5Frame.h): no periodic save during or right after a level load.
+	const bool held    = Nps5Frame::SaveHeldForLoad(now, g_load_held_since);
 	const auto pending = m_changes - m_saved_changes;
-	if (pending == 0) return false;
+	if (pending == 0 || held) return false;
 	const auto quiet      = now - std::min(now, m_last_change_ns);
 	const auto since_save = now - std::min(now, m_last_save_ns);
 	const auto interval   = m_settings.interval_ns;

@@ -6562,10 +6562,21 @@ struct PipelineCache::DriverCacheSaver {
 
 	[[nodiscard]] bool Due(uint64_t now) const {
 		const auto& settings = DriverCacheSaveSettings::Get();
+		// transfx: KYTY_SAVE_LOAD_QUIET_S (nps5Frame.h): no periodic save during or right after a level
+		// load. Sampled on every check (also with nothing pending) so the VFS read rate stays per second.
+		const bool  held     = Nps5Frame::SaveHeldForLoad(now, load_held_since);
 		const auto  pending  = created.load(std::memory_order_acquire) - saved_created;
 		if (pending == 0 || oversized || now < retry_after_ns) {
 			return false;
 		}
+		if (held) {
+			if (!load_hold_logged) {
+				PipelineCacheLog("Vulkan pipeline cache: periodic save held back for a level load ({} pipelines pending, KYTY_SAVE_LOAD_QUIET_S)", pending);
+				load_hold_logged = true;
+			}
+			return false;
+		}
+		load_hold_logged = false;
 		if (!LegacySave()) {
 			// cachesave: defer while the game is stalled/loading (frame >100 ms in the last 5 s;
 			// the serialize + 285 MB write competes with it), and back off after saves that found
@@ -6698,6 +6709,9 @@ struct PipelineCache::DriverCacheSaver {
 	uint64_t last_payload_hash = 0;
 	bool     oversized      = false;
 	bool     term_hook      = false;
+	// transfx: KYTY_SAVE_LOAD_QUIET_S state (saver thread only; Due() is const).
+	mutable uint64_t load_held_since  = 0;
+	mutable bool     load_hold_logged = false;
 	// While a save runs vkGetPipelineCacheData; pipelines created meanwhile are counted as overlaps.
 	std::atomic<bool> serializing {false};
 	std::jthread      thread; // Last: stopped before the members it uses are destroyed.
