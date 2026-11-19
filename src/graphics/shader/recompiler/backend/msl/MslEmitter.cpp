@@ -557,6 +557,14 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			default: break;
 		}
 		if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue;
+		if (const auto lines = NirSplitLines(ctx, inst); !lines.empty()) {
+			ctx.b.Line(lines);
+			continue;
+		}
+		if (const auto re = NirReassocText(ctx, inst); !re.empty()) {
+			assign(h, re);
+			continue;
+		}
 		std::vector<std::string> args;
 		for (size_t i = 0; i < inst.NumArgs(); i++)
 			args.push_back(ctx.Val(inst.Arg(i)));
@@ -1120,6 +1128,23 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		                            return e == nullptr || std::strcmp(e, "0") != 0;
 	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
+	// mslfix5: replay KK NIR float re-association on pixel text (MslNirReassoc.cpp);
+	// KYTY_MSL_GFX_REASSOC=0 = old text
+	// fmafix: one statement per NIR op (V_MAD/V_FMA as fmul then fadd) like KK's text, so Metal
+	// contracts B exactly where it contracts KK; KYTY_MSL_GFX_SPLIT=0 = mslfix5 text (one
+	// expression per IR instruction)
+	NirReassocBuild(
+	    program,
+	    gfx_relaxed &&
+	        [] {
+		        const char* e = std::getenv("KYTY_MSL_GFX_REASSOC");
+		        return e == nullptr || std::strcmp(e, "0") != 0;
+	        }(),
+	    gfx_relaxed &&
+	        [] {
+		        const char* e = std::getenv("KYTY_MSL_GFX_SPLIT");
+		        return e == nullptr || std::strcmp(e, "0") != 0;
+	        }());
 	SetFlushTranscendentalInputs(gfx_stage && (options.kk_bda || KkBdaRequested()) && [] {
 		const char* e = std::getenv("KYTY_MSL_GFX_FTZ");
 		return e == nullptr || std::strcmp(e, "0") != 0;

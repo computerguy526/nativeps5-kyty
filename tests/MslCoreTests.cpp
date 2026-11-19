@@ -5,6 +5,7 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
+#include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include <cstdio>
@@ -393,6 +394,61 @@ void TestKkLiveComponents() {
         "live components: a non-export user reads the whole vector");
 }
 
+// fmafix: KosmicKrisp prints every NIR ALU op as its own statement (each in its
+// own math_mode(relaxed) block), so Metal's front end never forms an fmuladd
+// from Kyty's split V_MAD/V_FMA (ffma_weak(contract) -> fadd(fmul)). Relaxed
+// pixel text gives every multiply its own statement too; with the split off the
+// mslfix5 one-expression text is kept.
+void TestKkStatementSplit() {
+  SR::IR::Program p;
+  p.block_storage.push_back(std::make_unique<SR::IR::Block>());
+  auto *blk = p.block_storage.back().get();
+  p.blocks.push_back(blk);
+  using SR::IR::Value;
+  auto &x = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(1u)});
+  auto &y = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(2u)});
+  auto &z = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(3u)});
+  auto &mad = blk->AppendNewInst(ValueOpcode::FPMad32,
+                                 {Value(&x), Value(&y), Value(&z)});
+  auto &fma = blk->AppendNewInst(ValueOpcode::FPFma32,
+                                 {Value(&x), Value(&y), Value(&z)});
+  auto &mul = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&x), Value(&y)});
+  auto &mulc = blk->AppendNewInst(
+      ValueOpcode::FPMul32, {Value(&mul), Value::F32(0.5f)});
+  auto &add = blk->AppendNewInst(ValueOpcode::FPAdd32, {Value(&x), Value(&z)});
+  for (auto *i : {&mad, &fma, &mulc, &add})
+    blk->AppendNewInst(ValueOpcode::FPMax32, {Value(i), Value(i)}); // a use
+  Msl::MslCtx ctx(p, {});
+  uint32_t id = 0;
+  for (auto &i : *blk) ctx.ids[&i] = id++;
+  Msl::NirReassocBuild(p, true, true);
+  Check(Msl::NirSplitLines(ctx, mad) ==
+            "{ const float v3_0 = (v0 * v1); v3 = (v3_0 + v2); }",
+        "split: V_MAD = fmul statement then fadd: " +
+            Msl::NirSplitLines(ctx, mad));
+  Check(Msl::NirSplitLines(ctx, fma) ==
+            "{ const float v4_0 = (v0 * v1); v4 = (v4_0 + v2); }",
+        "split: V_FMA is ffma_weak(contract) in KK too: " +
+            Msl::NirSplitLines(ctx, fma));
+  Check(Msl::NirSplitLines(ctx, mulc) ==
+            "{ const float v6_0 = (v0 * 0.5f); v6 = (v6_0 * v1); }",
+        "split: re-associated (x*y)*c -> (x*c)*y one op per statement: " +
+            Msl::NirSplitLines(ctx, mulc));
+  Check(Msl::NirSplitLines(ctx, add).empty() &&
+            Msl::NirReassocText(ctx, add).empty(),
+        "split: a plain fadd keeps its usual text");
+  Msl::NirReassocBuild(p, true, false);
+  Check(Msl::NirSplitLines(ctx, mad).empty() &&
+            Msl::NirReassocText(ctx, mulc) == "((v0 * 0.5f) * v1)",
+        "split off: mslfix5 one-expression text: " + Msl::NirReassocText(ctx, mulc));
+  Msl::NirReassocBuild(p, false, true);
+  Check(Msl::NirSplitLines(ctx, mad) ==
+                "{ const float v3_0 = (v0 * v1); v3 = (v3_0 + v2); }" &&
+            Msl::NirSplitLines(ctx, mulc).empty(),
+        "split without re-association: only V_MAD/V_FMA split");
+  Msl::NirReassocBuild(p, false, false);
+}
+
 } // namespace
 
 int main() {
@@ -403,6 +459,7 @@ int main() {
   TestLoopCap();
   TestMathSafeAndVoteMerge();
   TestKkLiveComponents();
+  TestKkStatementSplit();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
