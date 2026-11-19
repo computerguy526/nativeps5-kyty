@@ -8,6 +8,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -66,6 +70,23 @@ int ToHostProt(uint32_t protection) {
   }
 }
 
+#if defined(__APPLE__)
+// macOS has no /proc/self/maps: ask the VM map for the region's current protection.
+uint32_t Protection(const void *address) {
+  mach_vm_address_t region = reinterpret_cast<uintptr_t>(address);
+  mach_vm_size_t size = 0;
+  vm_region_basic_info_data_64_t info{};
+  mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object = MACH_PORT_NULL;
+  const auto kr = mach_vm_region(mach_task_self(), &region, &size, VM_REGION_BASIC_INFO_64,
+                                 reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+  Check(kr == KERN_SUCCESS && region <= reinterpret_cast<uintptr_t>(address),
+        "mach_vm_region failed");
+  return (info.protection & VM_PROT_WRITE) != 0  ? PAGE_READWRITE
+         : (info.protection & VM_PROT_READ) != 0 ? PAGE_READONLY
+                                                 : PAGE_NOACCESS;
+}
+#else
 uint32_t Protection(const void *address) {
   const auto addr = reinterpret_cast<uintptr_t>(address);
   std::FILE *maps = std::fopen("/proc/self/maps", "r");
@@ -89,6 +110,7 @@ uint32_t Protection(const void *address) {
   std::fclose(maps);
   return result;
 }
+#endif
 
 std::map<void *, size_t> &AllocationSizes() {
   static std::map<void *, size_t> sizes;
@@ -159,7 +181,13 @@ bool ProtectAddressSpace(uint64_t vaddr, uint64_t size,
 }
 
 uint8_t *Allocate(uint64_t size, uint32_t protection = PAGE_READWRITE) {
+#if defined(__APPLE__)
+  // macOS: 0x2_0000_0000 is inside the dyld shared cache and there is no MAP_FIXED_NOREPLACE;
+  // a hint below the tracker's 1 TiB address space is honoured when the range is free.
+  constexpr uintptr_t test_address = 0x000000F000010000ull;
+#else
   constexpr uintptr_t test_address = 0x0000000200010000ull;
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
   auto *memory = static_cast<uint8_t *>(
       VirtualAlloc(reinterpret_cast<void *>(test_address), size,
@@ -169,7 +197,11 @@ uint8_t *Allocate(uint64_t size, uint32_t protection = PAGE_READWRITE) {
 #else
   void *raw = ::mmap(reinterpret_cast<void *>(test_address), size,
                      ToHostProt(protection),
+#if defined(MAP_FIXED_NOREPLACE)
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+#else
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+#endif
   Check(raw == reinterpret_cast<void *>(test_address), "fixed low mmap failed");
   auto *memory = static_cast<uint8_t *>(raw);
   AllocationSizes()[raw] = static_cast<size_t>(size);
@@ -1110,6 +1142,16 @@ bool ProtectGuestHostMemory(uint64_t vaddr, uint64_t size,
 int main(int argc, char **argv) {
   if (argc == 3 && std::strcmp(argv[1], "--death") == 0) {
     RunDeathCase(argv[2]);
+  }
+  // --many-watchers: only TestManyWriteWatchers, in each defer mode (runs where the other
+  // cases cannot, e.g. a 16 KiB-page host that folds the tracker's 4 KiB pages).
+  if (argc == 2 && std::strcmp(argv[1], "--many-watchers") == 0) {
+    for (const auto mode : {DeferMode::Off, DeferMode::On, DeferMode::Verify}) {
+      SetDeferMode(mode);
+      TestManyWriteWatchers();
+    }
+    std::printf("page manager many-watchers tests passed\n");
+    return 0;
   }
   TestWatchAndUnwatch();
   TestSharedWatcherCounts();
