@@ -150,7 +150,7 @@ std::string KkVertexFetch(const std::string& name, const KkVtxFmt& f, uint32_t s
                           uint32_t binding) {
 	const bool perf = VsPerfFetch();
 	const auto rt   = [&](const char* type, uint32_t off) {
-        return perf ? fmt::format("*(constant {}*)(kk_rtu + {}ul)", type, off)
+        return perf ? fmt::format("*(constant {}*)(kk_rtu + ulong({}u))", type, off)
                       : fmt::format("*(constant {}*)(kk_rt + {}u)", type, off);
 	};
 	const std::string vt = f.comps == 1 ? f.elem : fmt::format("{}{}", f.elem, f.comps);
