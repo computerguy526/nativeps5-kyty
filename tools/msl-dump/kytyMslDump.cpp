@@ -281,7 +281,7 @@ uint32_t g_loop_cap = 1u << 18u;
 
 int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
               const char *manifest_path = nullptr, const Perm *perm = nullptr,
-              const Src *link_ps = nullptr) {
+              const Src *link_ps = nullptr, const Perm *link_perm = nullptr) {
   ShaderComputeInputInfo info;
   ShaderVertexInputInfo vinfo;
   ShaderPixelInputInfo pinfo;
@@ -344,6 +344,18 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
         if (si.dimension == SR::Decoder::ImageDimension::Unknown)
           si.dimension = SR::Decoder::ImageDimension::Dim2D;
         pspec.images.push_back(si);
+      }
+      // bcover: the linked pixel permutation's own recorded specialization, as
+      // for the translated program below (the defaults gave a MipStats atomic
+      // storage image the float class: "invalid binding class", so every VS
+      // linked to such a PS failed).
+      if (link_perm && !link_perm->spec.empty()) {
+        SR::IR::ResourceSpecialization ds;
+        if (SR::IR::DecodeSpecialization(link_perm->spec, ds))
+          pspec = ds;
+        else
+          std::fprintf(stderr, "warning: spec decode failed for link perm %d\n",
+                       link_perm->perm);
       }
       auto pr = SR::CompileProgram(std::move(pt), po, pspec, 0);
       link_program.stage = ShaderType::Pixel;
@@ -577,6 +589,8 @@ int main(int argc, char **argv) {
   std::fflush(stdout);
   Src link_src;
   const Src *link_ptr = nullptr;
+  Perm link_perm_rec;
+  const Perm *link_perm_ptr = nullptr;
   if (link_perm >= 0) {
     // own perm list: reloading into `perms` would free the Perm that use_perm
     // points at (flaky SIGSEGV in DecodeSpecialization of --link-ps runs,
@@ -589,6 +603,8 @@ int main(int argc, char **argv) {
           if (x.digest == pm.digest) {
             link_src = x;
             link_ptr = &link_src;
+            link_perm_rec = pm;
+            link_perm_ptr = &link_perm_rec;
           }
     if (!link_ptr) {
       std::fprintf(stderr, "no such link perm\n");
@@ -598,7 +614,8 @@ int main(int argc, char **argv) {
   const pid_t pid = std::getenv("KYTY_MSL_DUMP_NOFORK") ? 0 : fork();
   if (pid == 0) {
     const int rc =
-        Translate(srcs[0], out, comments, lanes, manifest, use_perm, link_ptr);
+        Translate(srcs[0], out, comments, lanes, manifest, use_perm, link_ptr,
+                  link_perm_ptr);
     std::fflush(stdout);
     _exit(rc);
   }
