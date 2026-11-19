@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cinttypes>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -9,7 +10,6 @@
 #include <string>
 #include <tuple>
 
-#include "common/logging/log.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 
 namespace Libs::Graphics::TilerTrace {
@@ -70,17 +70,18 @@ void FlushLocked(State& state, double seconds) {
 		total_count += value.count;
 		total_bytes += value.bytes;
 	}
-	LOGF("[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
+	std::fprintf(stderr, "[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
 	     " bytes\n",
 	     state.index, seconds, state.window.size(), total_count, total_bytes);
 	for (const auto& [key, value]: state.window) {
-		LOGF("[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
+		std::fprintf(stderr, "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
 		     "flags=%c%c%c%c n=%" PRIu64 " bytes=%" PRIu64 "\n",
 		     key.to_image ? "detile" : "tile", key.reason.c_str(), key.address, key.format,
 		     key.tile, key.width, key.height, key.layers, (key.flags & 1u) != 0 ? 'G' : '-',
 		     (key.flags & 2u) != 0 ? 'B' : '-', (key.flags & 4u) != 0 ? 'C' : '-',
 		     (key.flags & 8u) != 0 ? 'K' : '-', value.count, value.bytes);
 	}
+	std::fflush(stderr);
 	state.window.clear();
 	state.index++;
 }

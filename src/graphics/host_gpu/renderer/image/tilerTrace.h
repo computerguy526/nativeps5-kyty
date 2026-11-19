@@ -1,5 +1,5 @@
 #pragma once
-// KYTY_TILER_TRACE=<seconds> (diagnostic, default off): every <seconds> the log gets one line per
+// KYTY_TILER_TRACE=<seconds> (diagnostic, default off): every <seconds> stderr gets one line per
 // (direction, caller reason, guest image) that went through the tiler's image passes
 // (DetileToImage = guest bytes -> image, TileFromImage = image -> guest bytes) in that window:
 // count, bytes, format, extent, tile mode, and the image's modified flags at the call.
