@@ -50,6 +50,11 @@ struct MslCtx {
 	// ModelOf). Per emission: a cache keyed by the program's address and shader hash served a
 	// previous specialization's model (same hash, same stack address) to the next one.
 	mutable std::shared_ptr<const Mem::BindingModel> binding_model;
+	// fmsel6 KYTY_GPU_ACCURACY=normal (pixel/compute): float results of instructions outside `precise`
+	// (IR::CollectPreciseSet) are assigned inside `{ #pragma METAL fp math_mode(fast) }` blocks; the
+	// rest of the program (and every prelude helper) keeps the library's math mode (safe).
+	bool                                selective_precision = false;
+	std::unordered_set<const IR::Inst*> precise;
 
 	explicit MslCtx(const IR::Program& p, ShaderStageInputInfo i): program(p), input_info(i) {}
 

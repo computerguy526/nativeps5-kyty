@@ -788,6 +788,10 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 					const auto offset = ctx.state.builder.FunctionWords().size();
 					emit_instruction(lane, inst);
 					DecoratePositionFloatResults(ctx.state, offset);
+				} else if (SelectivePrecision(ctx.state) && !PreciseInst(ctx.state, inst)) {
+					const auto offset = ctx.state.builder.FunctionWords().size();
+					emit_instruction(lane, inst);
+					DecorateFastFloatResults(ctx.state, offset);
 				} else {
 					emit_instruction(lane, inst);
 				}

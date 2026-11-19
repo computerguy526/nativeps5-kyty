@@ -14,6 +14,8 @@
 #include <cstring>
 #include <fmt/format.h>
 #include <set>
+#include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/ir/passes/PrecisionAnalysis.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Msl {
 
@@ -394,6 +396,14 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 	const auto op        = inst.GetOpcode();
 	const auto type_name = MslTypeName(inst.GetType());
 	const auto assign    = [&](uint32_t h, const std::string& expr) {
+		const auto t = inst.GetType();
+		if (ctx.selective_precision && (t == IR::Type::F32 || t == IR::Type::F32x2) && !ctx.precise.contains(&inst)) {
+			ctx.b.Line("{");
+			ctx.b.Line("#pragma METAL fp math_mode(fast)");
+			ctx.b.Line(fmt::format("{} = {};", ctx.Name(inst, h), expr));
+			ctx.b.Line("}");
+			return;
+		}
 		ctx.b.Line(fmt::format("{} = {};", ctx.Name(inst, h), expr));
 	};
 	// Opcodes that are not per-half.
@@ -1079,6 +1089,13 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
                       const MslOptions& options) {
 	MslResult result;
 	MslCtx    ctx(program, input_info);
+	if (program.stage == ShaderType::Pixel || program.stage == ShaderType::Compute) {
+		ctx.selective_precision =
+		    SelectivePrecisionApplies(program.shader_hash, program.stage == ShaderType::Pixel ? "fs" : "cs");
+		if (ctx.selective_precision) {
+			IR::CollectPreciseSet(program, GetCodegenOptions().gpu_accuracy_extra, ctx.precise);
+		}
+	}
 	ctx.options_comments = options.comments;
 	ctx.loop_cap         = options.loop_cap;
 	if (const char* e = std::getenv("KYTY_MSL_LOOP_CAP"))

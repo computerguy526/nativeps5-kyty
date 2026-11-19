@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "graphics/shader/recompiler/ir/passes/PrecisionAnalysis.h"
 
 #include <algorithm>
 #include <array>
@@ -560,6 +561,81 @@ bool NoContraction(EmitterState& state, const IR::Inst& inst) {
 			return state.position_slice.contains(&inst);
 	}
 	return false;
+}
+
+// KYTY_GPU_ACCURACY=normal (fmsel6): selective precision; the precise set comes from
+// IR::CollectPreciseSet (ir/passes/PrecisionAnalysis.h).
+bool SelectivePrecision(EmitterState& state) {
+	if (state.selective_precision < 0) {
+		const auto stage = state.program.stage;
+		const char* name = stage == ShaderType::Pixel ? "fs" : stage == ShaderType::Compute ? "cs" : "";
+		state.selective_precision =
+		    name[0] != '\0' && SelectivePrecisionApplies(state.program.shader_hash, name) ? 1 : 0;
+	}
+	return state.selective_precision == 1;
+}
+
+bool PreciseInst(EmitterState& state, const IR::Inst& inst) {
+	if (!state.precise_set_ready) {
+		state.precise_set_ready = true;
+		IR::CollectPreciseSet(state.program, GetCodegenOptions().gpu_accuracy_extra, state.precise_set);
+	}
+	return state.precise_set.contains(&inst);
+}
+
+void DecorateFastFloatResults(EmitterState& state, size_t word_offset) {
+	const auto all = state.builder.FunctionWords();
+	if (word_offset >= all.size()) {
+		return;
+	}
+	const uint32_t float_types[] = {TypeF32(state), TypeF32Vector(state, 2), TypeF32Vector(state, 3),
+	                                TypeF32Vector(state, 4)};
+	uint32_t              glsl = 0;
+	std::vector<uint32_t> results;
+	for (size_t at = word_offset; at < all.size();) {
+		const uint32_t count  = all[at] >> 16u;
+		const auto     opcode = static_cast<spv::Op>(all[at] & 0xffffu);
+		if (count == 0) {
+			break;
+		}
+		bool candidate = false;
+		switch (opcode) {
+			case spv::OpFAdd:
+			case spv::OpFSub:
+			case spv::OpFMul:
+			case spv::OpFNegate:
+			case spv::OpFDiv:
+			case spv::OpFRem:
+			case spv::OpFMod:
+			case spv::OpVectorTimesScalar:
+			case spv::OpDot: candidate = true; break;
+			case spv::OpExtInst:
+				if (glsl == 0) {
+					glsl = GlslStd450(state);
+				}
+				candidate = count >= 5 && at + 3 < all.size() && all[at + 3] == glsl;
+				break;
+			default: break;
+		}
+		if (candidate && count >= 3 && at + 2 < all.size() &&
+		    std::find(std::begin(float_types), std::end(float_types), all[at + 1]) !=
+		        std::end(float_types)) {
+			results.push_back(all[at + 2]);
+		}
+		at += count;
+	}
+	if (results.empty()) {
+		return;
+	}
+	state.builder.RequireCapability(spv::CapabilityFloatControls2);
+	state.builder.RequireExtension("SPV_KHR_float_controls2");
+	const uint32_t fast = spv::FPFastMathModeNotNaNMask | spv::FPFastMathModeNotInfMask |
+	                      spv::FPFastMathModeNSZMask | spv::FPFastMathModeAllowRecipMask |
+	                      spv::FPFastMathModeAllowContractMask | spv::FPFastMathModeAllowReassocMask |
+	                      spv::FPFastMathModeAllowTransformMask;
+	for (const auto id: results) {
+		state.builder.AddAnnotation(spv::OpDecorate, id, spv::DecorationFPFastMathMode, fast);
+	}
 }
 
 uint32_t EmitFPAdd32(ValueEmitContext& ctx, const IR::Inst& inst) {

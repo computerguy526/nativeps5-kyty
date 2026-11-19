@@ -149,7 +149,14 @@ std::vector<uint8_t> CodegenFingerprint() {
 	if (options.fast_math_vs) {
 		b.Text("fast_math_vs");
 	}
-	if (options.fast_math != 0 && (!options.fast_math_deny.empty() || options.fast_math_allow_set)) {
+	if (options.gpu_accuracy != 0 && options.fast_math == 0) {
+		b.Text("gpu_accuracy");
+		b.U8(options.gpu_accuracy);
+		b.U8(options.gpu_accuracy_extra);
+		b.U8(options.fast_math_stages);
+	}
+	if ((options.fast_math != 0 || options.gpu_accuracy != 0) &&
+	    (!options.fast_math_deny.empty() || options.fast_math_allow_set)) {
 		b.Text("fast_math_acl");
 		b.U32(static_cast<uint32_t>(options.fast_math_deny.size()));
 		for (const auto hash: options.fast_math_deny) {

@@ -1966,6 +1966,33 @@ struct PipelineCache::ProgramCache {
 			words->spirv       = emitted.spirv;
 			words->spirv_plain = emitted.spirv_plain;
 		}
+		// fmsel6: KYTY_PRECISION_DUMP_DIR=<dir> writes each emitted pixel/compute module that
+		// carries FPFastMathMode decorations (KYTY_GPU_ACCURACY=normal) as <dir>/<hash>_<stage>.spv
+		// (first one per name) for offline spirv-val / KosmicKrisp MSL checks.
+		if (const char* dir = std::getenv("KYTY_PRECISION_DUMP_DIR"); dir != nullptr && dir[0] != '\0') {
+			bool decorated = false;
+			for (size_t at = 5; at < emitted.spirv.size();) {
+				const uint32_t count = emitted.spirv[at] >> 16u;
+				if (count == 0) {
+					break;
+				}
+				if ((emitted.spirv[at] & 0xffffu) == 71u /* OpDecorate */ && count >= 3 && at + 2 < emitted.spirv.size() &&
+				    emitted.spirv[at + 2] == 40u /* FPFastMathMode */) {
+					decorated = true;
+					break;
+				}
+				at += count;
+			}
+			if (decorated) {
+				const auto path = fmt::format("{}/{:016x}_{}.spv", dir, options.shader_hash, stage_name);
+				if (FILE* probe = std::fopen(path.c_str(), "rb"); probe != nullptr) {
+					std::fclose(probe);
+				} else if (FILE* out = std::fopen(path.c_str(), "wb"); out != nullptr) {
+					std::fwrite(emitted.spirv.data(), sizeof(uint32_t), emitted.spirv.size(), out);
+					std::fclose(out);
+				}
+			}
+		}
 		if (validator == nullptr) {
 			const auto validate_begin = CompileClockNs();
 			bool       valid          = false;

@@ -419,6 +419,24 @@ struct CodegenOptions {
 	// KYTY_CLIP_GUARD=0 (AMD test 3 diagnostic, default on): vertex shaders do not reserve a clip
 	// plane for the zero-position cull (the "emitted zero-position clip guard").
 	bool clip_guard = true;
+	// KYTY_GPU_ACCURACY=high|normal (fmsel6, Eden-style accuracy level; default high = exact
+	// SignedZeroInfNanPreserve math everywhere, as with KYTY_FAST_MATH=0). normal = selective
+	// precision in pixel and compute programs (KYTY_FAST_MATH_STAGES, _DENY/_ALLOW apply): the
+	// program keeps SignedZeroInfNanPreserve and every f32 result an instruction outside the
+	// precise set computes is decorated FPFastMathMode(NotNaN|NotInf|NSZ|AllowRecip|AllowContract|
+	// AllowReassoc|AllowTransform) (SPV_KHR_float_controls2), so KosmicKrisp prints it in the
+	// library's fast math while the precise set keeps math_mode(relaxed) and precise:: functions.
+	// GCN has no per-instruction precise bit (yuzu/Eden take Maxwell's), so the precise set is a
+	// data-flow analysis (PreciseSet in spirvEmitterAlu.cpp): values that may be infinite or NaN
+	// (forward from RCP/RSQ/SQRT/LOG/EXP/LDEXP results, through arithmetic, until a min/max/med3/
+	// clamp/saturate with a finite operand, a compare or a float->int conversion, which are
+	// precise themselves), plus the backward slices of the guest's explicit NaN tests
+	// (V_CMP_CLASS, unordered compares, x != x / x == x).
+	uint8_t gpu_accuracy = 0; // 0 high, 1 normal
+	// KYTY_GPU_ACCURACY_EXTRA=cmp,stores (normal only, bisect aids): also the backward slices of
+	// every float compare (cmp: selects, kills, branches, loop bounds) and of the data of every
+	// buffer/image/address store (stores: resources a later pass or frame reads back).
+	uint8_t gpu_accuracy_extra = 0; // bit 0 cmp, bit 1 stores
 };
 
 // How a compute shader's LDS allocation is placed on this host (KYTY_LDS_DEVICE_BUFFER,
@@ -449,6 +467,8 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 [[nodiscard]] bool LoopGuardApplies(uint64_t shader_hash);
 // KYTY_FAST_MATH_DENY / KYTY_FAST_MATH_ALLOW: may this guest shader use fast math? (true when no list is set)
 [[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage = "?");
+// KYTY_GPU_ACCURACY=normal covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
+[[nodiscard]] bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage);
 
 [[nodiscard]] const CodegenOptions& GetCodegenOptions();
 // KYTY_LOD_STATS_PLAIN_VARIANT's value means "on" (the renderer's default).
