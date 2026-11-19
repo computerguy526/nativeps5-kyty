@@ -897,6 +897,14 @@ static Live::Switch g_live_frame_limit("KYTY_FPS_LIMIT", [](const char* value) -
 	return limit >= 10 && limit <= 240 ? limit : 0;
 });
 
+// nps5 dispsync KYTY_FPS_LIMIT_MILLI=<10.0..240.0> (live, default unset): fractional present-side limit in fps ("37.5" = every 2nd
+// tick of a fixed 75 Hz display, "25" = every 3rd). Replaces the integer KYTY_FPS_LIMIT interval in Flip (the rest of the logic
+// sees the rounded integer limit). Value stored as milli-fps.
+static Live::Switch g_live_limit_milli("KYTY_FPS_LIMIT_MILLI", [](const char* value) -> int64_t {
+	const auto v = value != nullptr ? std::strtod(value, nullptr) : 0.0;
+	return v >= 10.0 && v <= 240.0 ? static_cast<int64_t>(v * 1000.0 + 0.5) : 0;
+});
+
 // nps5 frame pacing at the SOURCE. A present-side limit alone (ASTROHYBRID_FPS_LIMIT / KYTY_FPS_LIMIT) gives an even
 // cadence but the guest keeps producing until every queue is full: two finished frames wait in the flip queue (Astro world
 // map: guest submission -> present 116 ms uncapped, 203 ms at a present-side 20 fps cap, 242 ms at 17). The gate below
@@ -1159,12 +1167,14 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		const bool on_cadence = g_frame_limit_pacing.On() && next_flip != 0 &&
 		                        now - next_flip <= frequency / 1000;
 		const int64_t late = next_flip != 0 ? static_cast<int64_t>(now - next_flip) : 0; // >= 0: now >= next_flip here
-		next_flip = (on_cadence ? next_flip : now) + (frequency + limit - 1) / limit;
+		const auto milli = static_cast<uint64_t>(g_live_limit_milli.Get());
+		const uint64_t interval_ticks = milli != 0 ? frequency * 1000u / milli : (frequency + limit - 1) / limit;
+		next_flip = (on_cadence ? next_flip : now) + interval_ticks;
 		if (const auto ready = g_pace_flip_ready.load(std::memory_order_relaxed); ready != 0 && ready <= now) {
 			g_pace_error.store(static_cast<int64_t>(now - ready) - late, std::memory_order_relaxed);
 			g_pace_error_seq.fetch_add(1, std::memory_order_relaxed);
 		}
-		g_pace_interval.store((frequency + limit - 1) / limit, std::memory_order_relaxed);
+		g_pace_interval.store(interval_ticks, std::memory_order_relaxed);
 		UpdateGameStep(game_step, now, frequency, limit);
 		return true;
 	};
@@ -1174,7 +1184,8 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		if ((++placement_count & 7u) == 0u) {
 			Common::SamplePlacement(Common::ThreadRole::Host);
 		}
-		const auto live_limit = static_cast<uint32_t>(g_live_frame_limit.Get());
+		const auto live_milli = static_cast<uint32_t>(g_live_limit_milli.Get());
+		const auto live_limit = live_milli != 0 ? (live_milli + 500) / 1000 : static_cast<uint32_t>(g_live_frame_limit.Get());
 		// Key of the limit in force: the live value (>= 10) shifted clear of the choice indices.
 		const auto choice = live_limit != 0 ? (live_limit << 16)
 		                                    : FrameLimitChoice().load(std::memory_order_relaxed);
