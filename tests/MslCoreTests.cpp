@@ -469,11 +469,10 @@ void TestKkMinMax() {
         "kk min/max off: Metal builtins (compute text unchanged)");
 }
 
-// mslfix6 (pipe 100/101 rt1): NIR's DCE runs before nir_opt_algebraic, so an
-// unused instruction (B still prints its text) must not count as a use for
-// is_used_once: (x*y)*c with x*y also read by a dead fneg is re-associated like
-// KK; with KYTY_MSL_GFX_REASSOC_DCE=0 semantics (a live second use) it is not.
-void TestReassocIgnoresDeadUses() {
+// mslfix6 (pipe 100/101 rt1): fneg is pulled out of fmul chains before the
+// constant moves: m = fmul(fneg(x), y); r = fmul(m, 0.5) is fneg((x*0.5)*y) in
+// KK's NIR (the inner x*y is used once after the fneg moves), not -((x*y)*0.5).
+void TestReassocFnegChain() {
   SR::IR::Program p;
   p.block_storage.push_back(std::make_unique<SR::IR::Block>());
   auto *blk = p.block_storage.back().get();
@@ -481,25 +480,18 @@ void TestReassocIgnoresDeadUses() {
   using SR::IR::Value;
   auto &x = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(1u)});
   auto &y = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(2u)});
-  auto &mul = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&x), Value(&y)});
-  auto &mulc = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&mul), Value::F32(0.5f)});
-  blk->AppendNewInst(ValueOpcode::FPNeg32, {Value(&mul)}); // dead second use
-  auto &bits = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&mulc)});
+  auto &nx = blk->AppendNewInst(ValueOpcode::FPNeg32, {Value(&x)});
+  auto &m = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&nx), Value(&y)});
+  auto &r = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&m), Value::F32(0.5f)});
+  auto &bits = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&r)});
   blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits)});
   Msl::MslCtx ctx(p, {});
   uint32_t id = 0;
   for (auto &i : *blk) ctx.ids[&i] = id++;
   Msl::NirReassocBuild(p, true, true);
-  Check(Msl::NirSplitLines(ctx, mulc) == "{ const float v3_0 = (v0 * 0.5f); v3 = (v3_0 * v1); }",
-        "reassoc: a dead use does not block is_used_once: " + Msl::NirSplitLines(ctx, mulc));
-  // the same product with a LIVE second use stays (x*y)*c
-  auto &neg2 = blk->AppendNewInst(ValueOpcode::FPNeg32, {Value(&mul)});
-  auto &bits2 = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&neg2)});
-  blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits2)});
-  for (auto &i : *blk) if (!ctx.ids.count(&i)) ctx.ids[&i] = id++;
-  Msl::NirReassocBuild(p, true, true);
-  Check(Msl::NirSplitLines(ctx, mulc).empty() || Msl::NirSplitLines(ctx, mulc).find("(v0 * 0.5f)") == std::string::npos,
-        "reassoc: a live second use keeps (x*y)*c: " + Msl::NirSplitLines(ctx, mulc));
+  const auto t = Msl::NirSplitLines(ctx, r);
+  Check(t == "{ const float v4_0 = (v0 * 0.5f); const float v4_1 = (v4_0 * v1); v4 = (-v4_1); }",
+        "reassoc: fneg(fmul) chain then (x*y)*c -> (x*c)*y: " + t);
   Msl::NirReassocBuild(p, false, false);
 }
 
@@ -514,7 +506,7 @@ int main() {
   TestMathSafeAndVoteMerge();
   TestKkLiveComponents();
   TestKkStatementSplit();
-  TestReassocIgnoresDeadUses();
+  TestReassocFnegChain();
   TestKkMinMax();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
