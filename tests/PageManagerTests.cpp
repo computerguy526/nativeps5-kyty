@@ -210,6 +210,28 @@ void TestSharedWatcherCounts() {
   Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
 }
 
+// More than 127 (the old 7-bit count) and 255 (upstream's old 8-bit count) write watchers on
+// one page, as a large shadow-map array with many overlapping image slots can hold.
+void TestManyWriteWatchers() {
+  PageManager manager;
+  const auto page_size = manager.GetPageSize();
+  auto *memory = Allocate(page_size);
+  const auto address = reinterpret_cast<uint64_t>(memory);
+  constexpr int watchers = 300;
+  for (int i = 0; i < watchers; i++) {
+    manager.UpdatePageWatchers<true>(address, page_size);
+  }
+  Check(Protection(memory) == PAGE_READONLY, "many write watchers lost the protection");
+  for (int i = 0; i < watchers - 1; i++) {
+    manager.UpdatePageWatchers<false>(address, page_size);
+  }
+  Check(Protection(memory) == PAGE_READONLY,
+        "many write watchers released the page before the last unwatch");
+  manager.UpdatePageWatchers<false>(address, page_size);
+  Check(IsWritable(memory), "last of many unwatches did not restore access");
+  Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "VirtualFree failed");
+}
+
 void TestResyncHostProtection() {
   PageManager manager;
   constexpr auto page_size = TRACKER_PAGE_SIZE;
@@ -1091,6 +1113,7 @@ int main(int argc, char **argv) {
   }
   TestWatchAndUnwatch();
   TestSharedWatcherCounts();
+  TestManyWriteWatchers();
   TestCrossRegionRange();
   TestBatchedWatcherRanges();
   TestRegionMaskWatcherRanges();
@@ -1106,6 +1129,7 @@ int main(int argc, char **argv) {
   const auto verify_before = PageManager::GetDeferStats();
   TestWatchAndUnwatch();
   TestSharedWatcherCounts();
+  TestManyWriteWatchers();
   TestCrossRegionRange();
   TestBatchedWatcherRanges();
   TestRegionMaskWatcherRanges();

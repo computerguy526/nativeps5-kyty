@@ -11,6 +11,7 @@
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 
+#include <array>
 #include <bit>
 #include <cinttypes>
 #include <cstring>
@@ -145,7 +146,21 @@ void FaultManager::ProcessFaultBuffer() {
 	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 32;
 	const auto num_workgroups = (num_threads + 63) / 64;
 	command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);
-	dependency.pBufferMemoryBarriers = &post_barrier;
+	// The host reads the parser's page list after the tick (the deferred operation below): only a
+	// device-to-host dependency makes the shader's writes visible to host reads (Vulkan spec, host
+	// access); waiting for the tick alone does not. Jetsku/KytyPS5 3fd14ddb (from Senaxx/KytyPS5
+	// 1e7597c01).
+	vk::BufferMemoryBarrier2 host_barrier {};
+	host_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eComputeShader;
+	host_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
+	host_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eHost;
+	host_barrier.dstAccessMask = vk::AccessFlagBits2::eHostRead;
+	host_barrier.buffer        = m_download_buffer.Handle();
+	host_barrier.offset        = offset;
+	host_barrier.size          = PageFaultAreaSize;
+	const std::array post_barriers {post_barrier, host_barrier};
+	dependency.bufferMemoryBarrierCount = static_cast<uint32_t>(post_barriers.size());
+	dependency.pBufferMemoryBarriers    = post_barriers.data();
 	command.pipelineBarrier2(dependency);
 
 	const auto area = m_current_area;
