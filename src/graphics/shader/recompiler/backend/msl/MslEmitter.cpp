@@ -153,6 +153,24 @@ static inline float kyty_fmed3(float a, float b, float c) {
 }
 )";
 
+// perfauto transform minmax_select (MslXform.h; skyall finding 1): the same helpers with select()
+// instead of ?: . Same operands and operations (both arms are side-effect free), but Metal keeps
+// the ternary as control flow (one `if` per call) and the select as a conditional move.
+constexpr const char* kKkMinMaxSelect = R"(static inline float kyty_fmin(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return select(precise::fmin(a, b), as_type<float>(as_type<uint>(a) | as_type<uint>(b)), !isnan(a) && !isnan(b) && a == b);
+}
+static inline float kyty_fmax(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return select(precise::fmax(a, b), as_type<float>(as_type<uint>(a) & as_type<uint>(b)), !isnan(a) && !isnan(b) && a == b);
+}
+static inline float kyty_fmed3(float a, float b, float c) {
+#pragma METAL fp math_mode(safe)
+  float lo = kyty_fmin(a, b);
+  return select(kyty_fmax(lo, kyty_fmin(kyty_fmax(a, b), c)), kyty_fmin(lo, c), isnan(a) || isnan(b) || isnan(c));
+}
+)";
+
 bool KkMinMaxEnabled() {
 	const char* e = std::getenv("KYTY_MSL_GFX_MINMAX");
 	return e == nullptr || std::strcmp(e, "0") != 0;
@@ -164,7 +182,8 @@ std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
 	if (kk_minmax) {
 		const std::string anchor = "// nps5 gpuguard";
 		const auto        at     = t.find(anchor);
-		t.insert(at == std::string::npos ? t.size() : at, kKkMinMax);
+		t.insert(at == std::string::npos ? t.size() : at,
+		         Xf::On(Xf::MinMaxSelect) ? kKkMinMaxSelect : kKkMinMax);
 	}
 	if (single_lane) {
 		const auto b0 = t.find("static inline uint kyty_ballot(bool p, uint l)");

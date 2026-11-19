@@ -38,6 +38,9 @@ enum Id : uint32_t {
 	// table for 32-bit addr and size; no 64-bit temporary (a register pair on AGX) per access, and
 	// `size - N` is uniform, so it can move to the constant program. Any stage.
 	BoundsU32,
+	// kyty_fmin/fmax/fmed3 prelude helpers written with select() instead of ?: (no branch per
+	// call). Applies wherever the KK-exact min/max helpers are printed (graphics stages today).
+	MinMaxSelect,
 	Count
 };
 

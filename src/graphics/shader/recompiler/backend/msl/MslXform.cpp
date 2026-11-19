@@ -20,6 +20,8 @@ constexpr Info Registry[Count] = {
      "vertex function: no device-flush barrier for S_BARRIER"},
     {"bounds_u32", 1, ShaderType::Unknown, "semantic-exact",
      "buffer bounds check in 32 bits (no 64-bit temporary per access)"},
+    {"minmax_select", 1, ShaderType::Unknown, "semantic-exact",
+     "min/max/med3 helpers with select() instead of ?: (no branch per call)"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
