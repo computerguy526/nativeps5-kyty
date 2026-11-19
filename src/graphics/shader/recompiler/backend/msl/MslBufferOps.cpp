@@ -73,8 +73,11 @@ std::string LoadRaw(MemOut& o, const BufferBinding& b, const std::string& addr, 
 	if (opts.per_dword_bounds && bits == 32 && comps > 1) {
 		std::string part = result_type + "(";
 		for (uint32_t i = 0; i < comps; i++) {
+			// Checked in 64 bits from the base (addr + 4i + 4 <= size): a uint `addr + 4i` wraps
+			// for an address just below 2^32 (a negative offset) and would pass as dword 0.
 			const std::string a = "(" + addr + " + " + std::to_string(4u * i) + "u)";
-			part += (i ? ", " : "") + InBounds(b, a, 4u) + " ? " + Mem(b, a, "uint", vol) + " : 0u";
+			part += (i ? ", " : "") + InBounds(b, addr, 4u * (i + 1u)) + " ? " +
+			        Mem(b, a, "uint", vol) + " : 0u";
 		}
 		part += ")";
 		return o.Def(result_type.c_str(), InBounds(b, addr, bytes) + " ? " + load + " : " + part);
@@ -105,8 +108,8 @@ void StoreRaw(MemOut& o, const BufferBinding& b, const std::string& addr, uint32
 		std::string part;
 		for (uint32_t i = 0; i < comps; i++) {
 			const std::string a = "(" + addr + " + " + std::to_string(4u * i) + "u)";
-			part += std::string(i ? " " : "") + "if (" + InBounds(b, a, 4u) + ") { " +
-			        Mem(b, a, "uint", false) + " = " + v[i] + "; }";
+			part += std::string(i ? " " : "") + "if (" + InBounds(b, addr, 4u * (i + 1u)) + ") { " +
+			        Mem(b, a, "uint", false) + " = " + v[i] + "; }"; // 64-bit check (LoadRaw)
 		}
 		o.Line("if (" + InBounds(b, addr, bytes) + ") { " + stmt + " } else { " + part + " }");
 	} else if (Checked(b, opts))

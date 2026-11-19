@@ -4,6 +4,7 @@
 // code 0 = pass.
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
@@ -413,6 +414,37 @@ void TestBindingModelPerEmission() {
         "binding model: emission is a function of its inputs only");
 }
 
+// review-fixes v1.1.1: the per-dword fallback of a raw x2..x4 access checks
+// each dword in 64 bits from the base address (a uint addr + 4i wraps to a
+// small in-range offset for an address just below 2^32).
+void TestPerDwordBoundsNoWrap() {
+  namespace Mem = Msl::Mem;
+  Mem::BufferBinding b;
+  b.id = 0;
+  b.bounds_check = true;
+  Mem::BufferOpts opts;
+  opts.elide_bounds = false;
+  opts.per_dword_bounds = true;
+  Mem::MemOut lo;
+  const auto v = Mem::LoadRaw(lo, b, "a", 32, 4, opts);
+  const std::string load = lo.code;
+  Mem::MemOut so;
+  Mem::StoreRaw(so, b, "a", 32, {"x0", "x1", "x2", "x3"}, opts);
+  const std::string store = so.code;
+  for (const auto &[what, text] : {std::pair<std::string, std::string>{"load", load},
+                                   {"store", store}}) {
+    Check(text.find("(ulong(a) + 16ul <= ulong(") != std::string::npos,
+          "per-dword " + what + ": whole-vector check kept");
+    for (const char *k : {"4ul", "8ul", "12ul"})
+      Check(text.find(std::string("(ulong(a) + ") + k + " <= ulong(") !=
+                std::string::npos,
+            "per-dword " + what + ": dword check from the base (" + k + ")");
+    Check(text.find("ulong((a + ") == std::string::npos,
+          "per-dword " + what + ": no 32-bit wrapped address in a check");
+  }
+  (void)v;
+}
+
 // review-fixes v1.1.1: KYTY_MAD_MODE=fused + a relaxed (kk-bda) pixel shader:
 // the relaxed text has no contract(off) pragma left for the fused mode to
 // replace (std::string::replace(npos) threw std::out_of_range).
@@ -468,6 +500,7 @@ int main() {
   TestLoopCap();
   TestMathSafeAndVoteMerge();
   TestBindingModelPerEmission();
+  TestPerDwordBoundsNoWrap();
   TestFusedRelaxedPixelPrelude();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
