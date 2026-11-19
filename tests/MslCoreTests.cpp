@@ -2,6 +2,7 @@
 // from hand-assembled RDNA2 code. If `xcrun metal` exists every emitted snippet
 // is also compiled (-fsyntax-only). Without arguments runs everything; exit
 // code 0 = pass.
+#include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
@@ -13,6 +14,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace Common {
 int DbgExitIfHandler(const char *, const char *, int) { return 1; }
@@ -409,6 +413,50 @@ void TestBindingModelPerEmission() {
         "binding model: emission is a function of its inputs only");
 }
 
+// review-fixes v1.1.1: KYTY_MAD_MODE=fused + a relaxed (kk-bda) pixel shader:
+// the relaxed text has no contract(off) pragma left for the fused mode to
+// replace (std::string::replace(npos) threw std::out_of_range).
+void TestFusedRelaxedPixelPrelude() {
+  auto saved = SR::GetCodegenOptions();
+  auto fused = saved;
+  fused.mad_mode = SR::MadMode::Fused;
+  SR::SetCodegenOptions(fused);
+  ShaderPixelInputInfo pinfo;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Pixel;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.pixel = &pinfo;
+  setenv("KYTY_MSL_CONVENTION", "kk-bda", 1);
+  // Built without exceptions: the old text aborted the process. Emit in a
+  // child first, then here.
+  const auto emit = [&] {
+    const std::vector<uint32_t> code = {0xbf810000}; // s_endpgm
+    auto translated = SR::TranslateProgram(code, options);
+    SR::IR::ResourceSpecialization spec;
+    return SR::CompileProgram(std::move(translated), options, spec, 0).msl;
+  };
+  int status = -1;
+  std::fflush(stdout);
+  if (const pid_t pid = fork(); pid == 0) {
+    (void)emit();
+    std::_Exit(0);
+  } else if (pid > 0) {
+    waitpid(pid, &status, 0);
+  }
+  const bool clean = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  const std::string msl = clean ? emit() : std::string();
+  unsetenv("KYTY_MSL_CONVENTION");
+  SR::SetCodegenOptions(saved);
+  Check(clean, "fused + relaxed pixel: emission does not abort");
+  Check(msl.find("math relaxed") != std::string::npos &&
+            msl.find("contract(off)") == std::string::npos,
+        "fused + relaxed pixel: relaxed header, no contract(off)");
+}
 
 } // namespace
 
@@ -420,6 +468,7 @@ int main() {
   TestLoopCap();
   TestMathSafeAndVoteMerge();
   TestBindingModelPerEmission();
+  TestFusedRelaxedPixelPrelude();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

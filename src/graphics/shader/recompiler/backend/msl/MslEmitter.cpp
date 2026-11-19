@@ -145,7 +145,7 @@ std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
 	if (contract) { // mslfix: KK-like pixel math (GfxPixelRelaxed): the host contracts like KK's
 		            // relaxed ops
 		const std::string off = "#pragma METAL fp contract(off)\n";
-		t.erase(t.find(off), off.size());
+		if (const auto at = t.find(off); at != std::string::npos) t.erase(at, off.size());
 	}
 	const char* fe = std::getenv("KYTY_MSL_F16_RTZ_INT");
 	if (fe != nullptr ? std::strcmp(fe, "1") == 0 : gfx) {
@@ -156,8 +156,10 @@ std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
 	}
 	if (fuse_mad) { // host may contract a*b+c (what KK/SPIRV-Cross output gets by default): 2x
 		            // fewer ALU ops on mad-heavy kernels
+		// The relaxed pixel text (contract) has no contract(off) line left: it contracts already.
 		const std::string off = "#pragma METAL fp contract(off)";
-		t.replace(t.find(off), off.size(), "#pragma METAL fp contract(fast)");
+		if (const auto at = t.find(off); at != std::string::npos)
+			t.replace(at, off.size(), "#pragma METAL fp contract(fast)");
 	}
 	return t;
 }
