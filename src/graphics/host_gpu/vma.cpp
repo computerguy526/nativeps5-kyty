@@ -141,16 +141,19 @@ bool CanRecycleImage(const vk::ImageCreateInfo& info) {
 	       info.initialLayout == vk::ImageLayout::eUndefined && !(info.flags & ~allowed_flags);
 }
 
-// KYTY_MEMTRIM_BIG_WIDTH=<n> (memtrim2, default 0 = off): a render target / depth / storage image at least n
-// pixels wide (the off-resolution 4K / 3328x1872 / 2432x1368 targets; n=2400) gets its own VkDeviceMemory
-// (VMA dedicated allocation, not in the native image pool) so that retiring it hands the memory back to
-// the system instead of leaving slack in a shared 256 MiB VMA block.
+// KYTY_MEMTRIM_BIG_WIDTH=<n> (memtrim2, default 0 = off): a render target / depth / storage image
+// at least n pixels wide (the off-resolution 4K / 3328x1872 / 2432x1368 targets; n=2400) gets its
+// own VkDeviceMemory (VMA dedicated allocation, not in the native image pool) so that retiring it
+// hands the memory back to the system instead of leaving slack in a shared 256 MiB VMA block.
 uint32_t MemtrimBigWidth() {
 	static const uint32_t width = [] {
 		const char* v = std::getenv("KYTY_MEMTRIM_BIG_WIDTH");
 		const auto  n = v != nullptr ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : 0u;
 		if (n != 0) {
-			std::fprintf(stderr, "[memtrim] dedicated memory for target/storage images >= %u px wide (KYTY_MEMTRIM_BIG_WIDTH)\n", n);
+			std::fprintf(stderr,
+			             "[memtrim] dedicated memory for target/storage images >= %u px wide "
+			             "(KYTY_MEMTRIM_BIG_WIDTH)\n",
+			             n);
 		}
 		return n;
 	}();
@@ -160,8 +163,9 @@ uint32_t MemtrimBigWidth() {
 bool MemtrimBigImage(const vk::ImageCreateInfo& info) {
 	const auto n = MemtrimBigWidth();
 	return n != 0 && info.extent.width >= n && info.imageType == vk::ImageType::e2D &&
-	       (info.usage & (vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eDepthStencilAttachment |
-	                      vk::ImageUsageFlagBits::eStorage));
+	       (info.usage &
+	        (vk::ImageUsageFlagBits::eColorAttachment |
+	         vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eStorage));
 }
 
 void DestroyNativeImage(VmaAllocator allocator, vk::Image image, VmaAllocation allocation) {
@@ -270,13 +274,14 @@ bool GraphicContext::CreateAllocator() {
 	info.vulkanApiVersion = VULKAN_TARGET_API_VERSION;
 	info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 	// KYTY_VMA_BLOCK_MB=<n> (memtrim, default 0 = VMA's 256 MiB): VMA's block size for large heaps.
-	// On KosmicKrisp every VkDeviceMemory is one Metal placement heap, and a heap is committed WHOLE
-	// once the GPU touches any of it (work/memtrim/mtltest/dbl.m: 3 x 64 MiB in a 256 MiB heap =
-	// +256 MiB; freeing a placed texture, madvise or heap purgeable state give nothing back, only
-	// releasing the heap does). Free space inside a block is therefore real footprint (VMA slack
-	// 0.3-1.5 GiB in Sky Garden), and a retired image returns memory only when its block empties.
-	// Smaller blocks: less slack, emptied blocks are freed (VMA keeps at most one empty block), and
-	// images larger than half a block get their own heap (VMA's dedicated-allocation heuristic).
+	// On KosmicKrisp every VkDeviceMemory is one Metal placement heap, and a heap is committed
+	// WHOLE once the GPU touches any of it (work/memtrim/mtltest/dbl.m: 3 x 64 MiB in a 256 MiB
+	// heap = +256 MiB; freeing a placed texture, madvise or heap purgeable state give nothing back,
+	// only releasing the heap does). Free space inside a block is therefore real footprint (VMA
+	// slack 0.3-1.5 GiB in Sky Garden), and a retired image returns memory only when its block
+	// empties. Smaller blocks: less slack, emptied blocks are freed (VMA keeps at most one empty
+	// block), and images larger than half a block get their own heap (VMA's dedicated-allocation
+	// heuristic).
 	if (const char* text = std::getenv("KYTY_VMA_BLOCK_MB"); text != nullptr) {
 		const uint64_t block_mb = std::strtoull(text, nullptr, 10);
 		if (block_mb >= 8 && block_mb <= 1024) {

@@ -1,5 +1,6 @@
 #pragma once
-// memtrim: pure helpers (no Vulkan) so tests/memtrim can unit-test them (work/memtrim/tests/run.sh).
+// memtrim: pure helpers (no Vulkan) so tests/memtrim can unit-test them
+// (work/memtrim/tests/run.sh).
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -30,7 +31,8 @@ public:
 			m_ranges.erase(m_ranges.begin());
 		}
 	}
-	// An image is registered over [begin, end): the first overlapping lost range is removed and returned.
+	// An image is registered over [begin, end): the first overlapping lost range is removed and
+	// returned.
 	bool Take(uint64_t begin, uint64_t end, Entry& out) {
 		for (auto it = m_ranges.begin(); it != m_ranges.end(); ++it) {
 			if (begin < it->end && it->address < end) {

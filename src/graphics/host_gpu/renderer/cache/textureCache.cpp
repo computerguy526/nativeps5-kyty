@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 
 #include "common/alignment.h"
@@ -18,6 +17,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 #include "graphics/host_gpu/renderer/cache/texelImageLookup.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
@@ -1131,7 +1131,8 @@ namespace {
 struct MemtrimConfig {
 	uint64_t stale_frames = 0;
 	uint64_t alias_frames = 0;
-	uint32_t stale_min_width = 0; // KYTY_MEMTRIM_STALE_MIN_WIDTH: stale retirement only for images at least this wide
+	uint32_t stale_min_width =
+	    0; // KYTY_MEMTRIM_STALE_MIN_WIDTH: stale retirement only for images at least this wide
 	MemtrimConfig() {
 		if (const auto* v = std::getenv("KYTY_MEMTRIM_STALE_MIN_WIDTH"); v != nullptr) {
 			stale_min_width = static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
@@ -1143,8 +1144,11 @@ struct MemtrimConfig {
 			alias_frames = std::strtoull(v, nullptr, 10);
 		}
 		if (stale_frames != 0 || alias_frames != 0) {
-			std::fprintf(stderr, "[memtrim] image retirement: GPU-written idle > %llu frames, stale aliases > %llu frames (0 = off)\n",
-			             static_cast<unsigned long long>(stale_frames), static_cast<unsigned long long>(alias_frames));
+			std::fprintf(stderr,
+			             "[memtrim] image retirement: GPU-written idle > %llu frames, stale "
+			             "aliases > %llu frames (0 = off)\n",
+			             static_cast<unsigned long long>(stale_frames),
+			             static_cast<unsigned long long>(alias_frames));
 		}
 	}
 	[[nodiscard]] bool On() const noexcept { return stale_frames != 0 || alias_frames != 0; }
@@ -1153,12 +1157,12 @@ const MemtrimConfig& Memtrim() {
 	static const MemtrimConfig config;
 	return config;
 }
-memtrim::LostRanges g_memtrim_lost;   // guarded by TextureCache::m_lock
-uint64_t g_memtrim_next_frame  = 0;
-uint64_t g_memtrim_stale_n     = 0, g_memtrim_stale_bytes = 0, g_memtrim_downloaded_n = 0;
-uint64_t g_memtrim_alias_n     = 0, g_memtrim_alias_bytes = 0;
-uint64_t g_memtrim_resurrect_n = 0;
-uint64_t g_memtrim_frame       = 0;
+memtrim::LostRanges g_memtrim_lost; // guarded by TextureCache::m_lock
+uint64_t            g_memtrim_next_frame = 0;
+uint64_t            g_memtrim_stale_n = 0, g_memtrim_stale_bytes = 0, g_memtrim_downloaded_n = 0;
+uint64_t            g_memtrim_alias_n = 0, g_memtrim_alias_bytes = 0;
+uint64_t            g_memtrim_resurrect_n = 0;
+uint64_t            g_memtrim_frame       = 0;
 } // namespace
 
 void TextureCache::RegisterImage(ImageId id) {
@@ -1167,20 +1171,27 @@ void TextureCache::RegisterImage(ImageId id) {
 		EXIT("TextureCache: invalid image registration\n");
 	}
 	if (!g_memtrim_lost.Empty()) {
-		const auto begin = image.info.data.address;
-		const auto end   = begin + image.info.data.size;
+		const auto                 begin = image.info.data.address;
+		const auto                 end   = begin + image.info.data.size;
 		memtrim::LostRanges::Entry lost_range {};
 		{
 			{
 				if (!g_memtrim_lost.Take(begin, end, lost_range)) {
 					// not over a lost range
 				} else if (++g_memtrim_resurrect_n <= 64) {
-					std::fprintf(stderr, "[memtrim] resurrect %ux%u fmt=%d %s%s%s%s at 0x%llx+0x%llx over a range lost %llu frames ago (gpu-modified %d)\n",
-					             image.info.extent.width, image.info.extent.height, static_cast<int>(image.info.pixel_format),
-					             image.usage.texture ? "tex " : "", image.usage.render_target ? "rt " : "",
-					             image.usage.depth_target ? "depth " : "", image.usage.storage ? "storage" : "",
-					             static_cast<unsigned long long>(begin), static_cast<unsigned long long>(end - begin),
-					             static_cast<unsigned long long>(g_memtrim_frame - std::min(g_memtrim_frame, lost_range.frame)),
+					std::fprintf(stderr,
+					             "[memtrim] resurrect %ux%u fmt=%d %s%s%s%s at 0x%llx+0x%llx over "
+					             "a range lost %llu frames ago (gpu-modified %d)\n",
+					             image.info.extent.width, image.info.extent.height,
+					             static_cast<int>(image.info.pixel_format),
+					             image.usage.texture ? "tex " : "",
+					             image.usage.render_target ? "rt " : "",
+					             image.usage.depth_target ? "depth " : "",
+					             image.usage.storage ? "storage" : "",
+					             static_cast<unsigned long long>(begin),
+					             static_cast<unsigned long long>(end - begin),
+					             static_cast<unsigned long long>(
+					                 g_memtrim_frame - std::min(g_memtrim_frame, lost_range.frame)),
 					             image.IsGpuModified() ? 1 : 0);
 				}
 			}
@@ -6870,13 +6881,15 @@ void TextureCache::RunGarbageCollector() {
 	g_memtrim_frame = frame;
 	if (Memtrim().On() && frame >= g_memtrim_next_frame) {
 		g_memtrim_next_frame = frame + 16;
-		const auto& cfg = Memtrim();
+		const auto& cfg      = Memtrim();
 		struct Pick {
 			ImageId id;
 			bool    alias;
 		};
 		std::vector<Pick> picks;
-		auto idle_for = [&](const Image& image) { return frame - std::min(frame, image.frame_accessed_last); };
+		auto              idle_for = [&](const Image& image) {
+			return frame - std::min(frame, image.frame_accessed_last);
+		};
 		auto freeable = [&](const Image& image) {
 			return image.registered && !image.depth_id && !image.binding.is_bound &&
 			       !image.binding.is_target && !image.usage.video_out && !image.info.data.Empty();
@@ -6888,7 +6901,8 @@ void TextureCache::RunGarbageCollector() {
 			const auto idle = idle_for(image);
 			if (cfg.alias_frames != 0 && idle > cfg.alias_frames) {
 				// A newer GPU-written image at the same address covering this one's range.
-				for (const auto other_id: FindImagesInRegion(image.info.data.address, image.info.data.size, false)) {
+				for (const auto other_id:
+				     FindImagesInRegion(image.info.data.address, image.info.data.size, false)) {
 					if (other_id == id) {
 						continue;
 					}
@@ -6921,7 +6935,8 @@ void TextureCache::RunGarbageCollector() {
 			const bool gpu     = image->IsGpuModified();
 			bool       lost    = false;
 			if (!pick.alias && gpu) {
-				if (!image->info.IsTiled() && SafeToDownload(*image) && DownloadImageMemory(pick.id)) {
+				if (!image->info.IsTiled() && SafeToDownload(*image) &&
+				    DownloadImageMemory(pick.id)) {
 					++g_memtrim_downloaded_n;
 				} else {
 					lost = true;
@@ -6930,14 +6945,18 @@ void TextureCache::RunGarbageCollector() {
 			const auto n = pick.alias ? ++g_memtrim_alias_n : ++g_memtrim_stale_n;
 			(pick.alias ? g_memtrim_alias_bytes : g_memtrim_stale_bytes) += bytes;
 			if (n <= 48) {
-				std::fprintf(stderr, "[memtrim] retire %s %ux%u x%u fmt=%d %s%s%s %.1f MiB unused %llu frames at 0x%llx+0x%llx%s (frame %llu)\n",
-				             pick.alias ? "alias" : "stale", image->info.extent.width, image->info.extent.height,
-				             image->info.resources.layers, static_cast<int>(image->info.pixel_format),
-				             image->usage.render_target ? "rt" : "", image->usage.depth_target ? "depth" : "",
-				             image->usage.storage ? "storage" : "", static_cast<double>(bytes) / 1048576.0,
-				             static_cast<unsigned long long>(idle), static_cast<unsigned long long>(address),
-				             static_cast<unsigned long long>(size), lost ? " CONTENTS-LOST" : "",
-				             static_cast<unsigned long long>(frame));
+				std::fprintf(
+				    stderr,
+				    "[memtrim] retire %s %ux%u x%u fmt=%d %s%s%s %.1f MiB unused %llu frames at "
+				    "0x%llx+0x%llx%s (frame %llu)\n",
+				    pick.alias ? "alias" : "stale", image->info.extent.width,
+				    image->info.extent.height, image->info.resources.layers,
+				    static_cast<int>(image->info.pixel_format),
+				    image->usage.render_target ? "rt" : "",
+				    image->usage.depth_target ? "depth" : "", image->usage.storage ? "storage" : "",
+				    static_cast<double>(bytes) / 1048576.0, static_cast<unsigned long long>(idle),
+				    static_cast<unsigned long long>(address), static_cast<unsigned long long>(size),
+				    lost ? " CONTENTS-LOST" : "", static_cast<unsigned long long>(frame));
 			}
 			if (lost) {
 				g_memtrim_lost.Add(address, size, frame);
@@ -7294,11 +7313,13 @@ void TextureCache::ReportVram() {
 				}
 			}
 		}
-		VramStats::Line("memtrim: stale %llu (%.1f MiB, %llu downloaded), aliases %llu (%.1f MiB), lost ranges %zu, resurrected %llu",
-		                static_cast<unsigned long long>(g_memtrim_stale_n), ToMiB(g_memtrim_stale_bytes),
-		                static_cast<unsigned long long>(g_memtrim_downloaded_n),
-		                static_cast<unsigned long long>(g_memtrim_alias_n), ToMiB(g_memtrim_alias_bytes),
-		                g_memtrim_lost.Size(), static_cast<unsigned long long>(g_memtrim_resurrect_n));
+		VramStats::Line(
+		    "memtrim: stale %llu (%.1f MiB, %llu downloaded), aliases %llu (%.1f MiB), lost ranges "
+		    "%zu, resurrected %llu",
+		    static_cast<unsigned long long>(g_memtrim_stale_n), ToMiB(g_memtrim_stale_bytes),
+		    static_cast<unsigned long long>(g_memtrim_downloaded_n),
+		    static_cast<unsigned long long>(g_memtrim_alias_n), ToMiB(g_memtrim_alias_bytes),
+		    g_memtrim_lost.Size(), static_cast<unsigned long long>(g_memtrim_resurrect_n));
 		VramStats::Line("aliases: %llu guest addresses hold 2+ registered images; all but the most "
 		                "recently used one: %.1f MiB (%llu)",
 		                static_cast<unsigned long long>(groups), ToMiB(older_bytes),

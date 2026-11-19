@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
-#include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -21,6 +20,7 @@
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/readFaultDiag.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
+#include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 #include "graphics/host_gpu/renderer/cache/readFaultFrameBurst.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/cache/uploadDma.h"
@@ -1458,7 +1458,8 @@ void BufferCache::ChangeRegister(BufferId id) {
 		}
 		EnsureBdaTableResident(pages.first, size_pages);
 		NoteBdaUncovered(pages.first, pages.last_exclusive);
-		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries()); covered != 0) {
+		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries());
+		    covered != 0) {
 			WriteDataBuffer(m_bda_pagetable_buffer, pages.first * sizeof(vk::DeviceAddress),
 			                addresses.data(), covered * sizeof(vk::DeviceAddress));
 		}
@@ -1473,7 +1474,8 @@ void BufferCache::ChangeRegister(BufferId id) {
 		EXIT_IF(buffer.Size() > m_total_used_memory && !m_graphics.CanReportMemoryUsage());
 		m_total_used_memory -= std::min(m_total_used_memory, buffer.Size());
 		m_lru_cache.Free(buffer.lru_id);
-		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries()); covered != 0) {
+		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries());
+		    covered != 0) {
 			m_bda_pagetable_buffer.Fill(pages.first * sizeof(vk::DeviceAddress),
 			                            covered * sizeof(vk::DeviceAddress), 0);
 		}
