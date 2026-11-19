@@ -366,6 +366,50 @@ void TestMathSafeAndVoteMerge() {
         "vote merge: halves combined before the vote");
 }
 
+// review-fixes v1.1.1: the binding model belongs to one emission. Two
+// specializations of one shader have the same shader_hash and, compiled one
+// after the other, the same IR::Program address; a cache keyed by both served
+// the first one's resources to the second.
+void TestBindingModelPerEmission() {
+  const std::vector<uint32_t> code = {0xbe8a0480, 0x7d8a0080, 0x888a6a0a,
+                                      0x8afe6a7e, 0xbf89fffc, 0x88fe0a7e,
+                                      0x7e020281, 0xbf810000};
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Compute;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.compute = &info;
+  auto translated = SR::TranslateProgram(code, options);
+  SR::IR::ResourceSpecialization spec;
+  auto result = SR::CompileProgram(std::move(translated), options, spec, 0);
+  auto &program = result.program;
+  ShaderStageInputInfo input;
+  input.compute = &info;
+  const auto first = Msl::EmitProgram(program, input).source;
+  Check(first.find("uchar* b0;") == std::string::npos,
+        "binding model: program without buffers declares none");
+  // Same object, same hash: another specialization's resources.
+  program.info.buffers.emplace_back();
+  program.info.buffers.back().written = true;
+  const auto second = Msl::EmitProgram(program, input).source;
+  Check(second.find("device uchar* b0;") != std::string::npos,
+        "binding model: rebuilt for the next emission at the same address "
+        "with the same shader hash");
+  program.info.buffers.clear();
+  Check(Msl::EmitProgram(program, input).source == first,
+        "binding model: emission is a function of its inputs only");
+}
+
+
 } // namespace
 
 int main() {
@@ -375,6 +419,7 @@ int main() {
   TestProgram();
   TestLoopCap();
   TestMathSafeAndVoteMerge();
+  TestBindingModelPerEmission();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

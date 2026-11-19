@@ -16,6 +16,9 @@
 namespace Libs::Graphics::ShaderRecompiler::Msl {
 
 struct GfxIo; // vertex/pixel stage IO (MslStageIo.cpp)
+namespace Mem {
+struct BindingModel;
+}
 
 struct MslCtx {
 	const IR::Program&   program;
@@ -43,6 +46,10 @@ struct MslCtx {
 	// between (lockstep code: GCN omits S_BARRIER for one-wave groups) get KYTY_LDS_FENCE()
 	// (simdgroup-scope memory fence) before them.
 	std::unordered_set<const IR::Inst*> lds_fence;
+	// The binding model of this program + input_info, built on first use (mslEmitterMem.cpp
+	// ModelOf). Per emission: a cache keyed by the program's address and shader hash served a
+	// previous specialization's model (same hash, same stack address) to the next one.
+	mutable std::shared_ptr<const Mem::BindingModel> binding_model;
 
 	explicit MslCtx(const IR::Program& p, ShaderStageInputInfo i): program(p), input_info(i) {}
 

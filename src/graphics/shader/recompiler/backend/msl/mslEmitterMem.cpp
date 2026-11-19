@@ -19,16 +19,14 @@ using namespace Mem;
 namespace {
 
 const BindingModel& ModelOf(const MslCtx& ctx) {
-	static thread_local std::unordered_map<const IR::Program*, std::pair<uint64_t, BindingModel>>
-	      cache;
-	auto& e = cache[&ctx.program];
-	if (e.first != ctx.program.shader_hash ||
-	    (e.second.buffers.empty() && e.second.images.empty() && e.second.samplers.empty() &&
-	     e.second.push_bytes == 0)) {
-		e.first  = ctx.program.shader_hash;
-		e.second = BuildBindingModel(ctx.program, ctx.input_info);
+	// Built once per emission (MslCtx), never shared between programs: two specializations of one
+	// shader have the same shader_hash and, compiled one after the other, the same IR::Program
+	// address, but different resource info (buffer strides/formats, image numeric classes).
+	if (ctx.binding_model == nullptr) {
+		ctx.binding_model =
+		    std::make_shared<const BindingModel>(BuildBindingModel(ctx.program, ctx.input_info));
 	}
-	return e.second;
+	return *ctx.binding_model;
 }
 
 struct Em {
