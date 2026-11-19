@@ -531,27 +531,14 @@ ReadOpenState& ReadOpen() {
 // KYTY_ZEROCOPY_READ_OPEN is on. One "Kyty fault class 10s" line while on.
 Live::Switch g_fault_class("KYTY_FAULT_CLASS", Live::ParseDefaultOff);
 
-// nps5 faultclass: KYTY_FAULT_BATCH (live, default off). A guest read fault that has to visit the
-// command processor (no publication pending for its page) also registers, in that visit, the
-// publication of every other read-hot page whose GPU-written bytes all come from recordings
-// already submitted (zero-copy buffers only: nothing is copied or recorded, the publication only
-// waits for the page's own newest writer). Faults of other threads on those pages then wait for
-// that writer without their own visit, and pages whose writer completes become readable by
-// themselves. At most one batch per submission tick.
-Live::Switch g_fault_batch("KYTY_FAULT_BATCH", Live::ParseDefaultOff);
-
 struct FaultClassState {
 	explicit FaultClassState(FaultClass::Limits limits): table(limits) {}
 	FaultClass::Table     table;
 	std::atomic<uint64_t> store_conflict_ns {0};
-	std::atomic<uint64_t> batches {0};
-	std::atomic<uint64_t> batch_pages {0};
-	std::atomic<uint64_t> batch_scanned {0};
 	std::atomic<uint64_t> seed_hot {0};
 	std::string           profile_out;
-	uint64_t              report_ns  = 0; // GPU thread
-	uint64_t              batch_tick = 0; // GPU thread
-	size_t                saved      = 0; // GPU thread
+	uint64_t              report_ns = 0; // GPU thread
+	size_t                saved     = 0; // GPU thread
 };
 uint32_t FaultClassEnvU32(const char* name, uint32_t fallback) {
 	const auto* value = std::getenv(name);
@@ -2699,95 +2686,6 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 	const auto                    sync_mark = diag ? ReadFaultDiag::NowNs() : 0;
 	const auto                    write_mark = is_write ? ReadFaultDiag::NowNs() : 0;
 	bool                          current   = false; // KYTY_CLEAN_PAGE
-	// nps5 faultclass (KYTY_FAULT_BATCH): in this visit of the command processor, register the
-	// publication of every other read-hot candidate page (zero-copy buffers) whose GPU bytes were
-	// all written by recordings the driver already has. Nothing is recorded or copied: each
-	// publication waits for its page's newest writer (as the zero-copy branch of
-	// TryIssueSideReadback does for the faulting window), completed by the first reader that needs
-	// it or by the completion runner. `dispatched_floor`: the faulting window's own writer tick,
-	// which TryIssueSideReadback has just made the driver take.
-	const auto issue_fault_batch = [this](uint64_t dispatched_floor) {
-		auto&      cls     = FaultClasses();
-		const auto current_tick = m_scheduler.CurrentTick();
-		if (m_side == nullptr || !m_eager_enabled || cls.batch_tick == current_tick || m_eager.Candidates() == 0 ||
-		    CommandScheduler::InDeferredOperation() || m_unbounded_write_tick == current_tick) {
-			return;
-		}
-		cls.batch_tick = current_tick;
-		uint64_t dispatched = dispatched_floor;
-		if (const auto& progress = m_scheduler.GetMasterSemaphore().GetSubmissionProgress(); progress != nullptr) {
-			dispatched = std::max(dispatched, progress->dispatched_tick.load(std::memory_order_acquire));
-		} else if (dispatched == 0) {
-			return;
-		}
-		dispatched = std::min(dispatched, current_tick - 1);
-		using Result = EagerReadbackPages::IssueResult;
-		uint64_t issued_pages = 0;
-		uint64_t offered      = 0;
-		m_eager.IssueCandidates(m_memory_tracker.Frame(), [&](uint64_t page) {
-			offered++;
-			const auto  end   = page + TRACKER_PAGE_SIZE;
-			const auto* owner = m_page_table.Find(page >> PageTable::kPageBits);
-			if (owner == nullptr || !*owner || IsBufferInvalid(*owner) ||
-			    !m_slot_buffers[*owner].IsInBounds(page, TRACKER_PAGE_SIZE)) {
-				return Result::Drop;
-			}
-			if (!ZeroCopyReadback(m_slot_buffers[*owner]) || OverlapsPendingSideReadback(page, end) ||
-			    HasPendingBackingPublication(page, TRACKER_PAGE_SIZE)) {
-				return Result::Retry; // the submission's eager copy takes it
-			}
-			std::vector<GuestRange> dirty;
-			uint64_t                newest = m_write_tick_floor;
-			uint64_t                bytes  = 0;
-			m_gpu_modified_ranges.ForEachInRange(page, TRACKER_PAGE_SIZE, [&](uint64_t start, uint64_t stop) {
-				dirty.push_back({start, stop - start});
-				newest = std::max(newest, m_write_ticks.MaxTick(start, stop - start));
-				bytes += stop - start;
-			});
-			if (dirty.empty()) {
-				return Result::Drop;
-			}
-			const uint64_t wait_tick = std::max(newest, m_unbounded_write_tick);
-			if (wait_tick > dispatched) {
-				return Result::Retry; // a writer the driver does not have yet (or the current recording)
-			}
-			if (!m_memory_tracker.IsRegionGpuModified(page, TRACKER_PAGE_SIZE)) {
-				return Result::Drop;
-			}
-			auto readback       = std::make_shared<SideReadback>();
-			readback->begin     = page;
-			readback->end       = end;
-			readback->slot      = UINT32_MAX;
-			readback->ranges    = dirty;
-			readback->zero_copy = true;
-			readback->producer  = wait_tick;
-			readback->value     = wait_tick;
-			for (const auto& range: dirty) {
-				CleanVerdict::Invalidate(range.address, range.size, Coherence::Source::BufferDirtySubtract);
-			}
-			for (const auto& range: dirty) {
-				m_gpu_range_removals.fetch_add(1, std::memory_order_acq_rel);
-				m_gpu_modified_ranges.Subtract(range.address, range.size);
-			}
-			m_memory_tracker.MarkReadbackPending(page, TRACKER_PAGE_SIZE);
-			readback->publication = BeginBackingPublication(dirty, newest);
-			{
-				std::lock_guard lock(m_side->pending_mutex);
-				m_side->pending.push_back(readback);
-				m_side->pending_count.store(m_side->pending.size(), std::memory_order_release);
-			}
-			m_scheduler.DeferPriorityOperation(
-			    [this, readback = std::move(readback)] { CompleteSideReadback(*readback); });
-			auto& totals = ZeroCopy::GetRangeTotals();
-			totals.readback_free++;
-			totals.readback_free_bytes += bytes;
-			issued_pages++;
-			return Result::Issued;
-		});
-		cls.batches.fetch_add(1, std::memory_order_relaxed);
-		cls.batch_pages.fetch_add(issued_pages, std::memory_order_relaxed);
-		cls.batch_scanned.fetch_add(offered, std::memory_order_relaxed);
-	};
 	gpu.SendCommandSync([&, this, vaddr, size, is_write] {
 		if (!is_write || g_readback_eager_writes.On()) {
 			NoteEagerRead(vaddr, size, false);
@@ -2824,9 +2722,6 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 			             : result == SideIssueResult::Unbounded     ? CpGaps::Event::DrainUnbounded
 			                                                        : CpGaps::Event::DrainOther);
 			ReadMemoryDrain(vaddr, size, is_write, trace);
-		}
-		if (g_fault_batch.On() && !is_write) {
-			issue_fault_batch(result == SideIssueResult::Issued && issued && issued->zero_copy ? issued->producer : 0);
 		}
 	});
 	if (is_write && result != SideIssueResult::Issued && result != SideIssueResult::Pending) {
@@ -3680,7 +3575,7 @@ void BufferCache::IssueEagerReadbacks() {
 			}
 			live = open.pages.size();
 		}
-		if (g_fault_class.On() || g_fault_batch.On()) {
+		if (g_fault_class.On()) {
 			auto& cls = FaultClasses();
 			if (cls.report_ns == 0) {
 				cls.report_ns = now;
@@ -3690,13 +3585,11 @@ void BufferCache::IssueEagerReadbacks() {
 				const auto late     = cls.table.LatePages();
 				std::printf("Kyty fault class 10s: %zu pages late (%zu open, %zu tracked); promoted %" PRIu64
 				            ", demoted to exact %" PRIu64 " (%" PRIu64 " store conflicts, %.1f ms waited); seeds: "
-				            "opened %" PRIu64 ", kept read-hot %" PRIu64 " times; batch: %" PRIu64 " visits, %" PRIu64
-				            " pages published early (%" PRIu64 " candidates offered)\n",
+				            "opened %" PRIu64 ", kept read-hot %" PRIu64 " times\n",
 				            late.size(), live, cls.table.Size(), counters.promoted, counters.demoted,
 				            counters.conflicts,
 				            static_cast<double>(cls.store_conflict_ns.exchange(0)) / 1e6, counters.seed_hits,
-				            cls.seed_hot.exchange(0), cls.batches.exchange(0), cls.batch_pages.exchange(0),
-				            cls.batch_scanned.exchange(0));
+				            cls.seed_hot.exchange(0));
 				if (!cls.profile_out.empty() && late.size() != cls.saved && !late.empty()) {
 					cls.saved = late.size();
 					(void)FaultClass::SaveProfile(cls.profile_out, late, TRACKER_PAGE_SIZE);
