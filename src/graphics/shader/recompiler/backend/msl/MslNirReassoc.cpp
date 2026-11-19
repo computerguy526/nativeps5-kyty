@@ -21,6 +21,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fmt/format.h>
@@ -53,6 +54,9 @@ struct State {
 	     text; // per rewritten inst (filled lazily at emit time)
 	bool on    = false;
 	bool split = false; // fmafix: one statement per NIR op
+	// mslfix6: pure ALU instructions whose value no live instruction reads (NIR has removed them
+	// by the time nir_opt_algebraic runs, so they do not count as uses for is_used_once)
+	std::unordered_map<const IR::Inst*, bool> dead;
 };
 
 thread_local State g;
@@ -74,10 +78,73 @@ const IR::Inst* SkipCast(IR::Value v) {
 	return i;
 }
 
+bool PureAlu(const IR::Inst* i) {
+	if (i->MayHaveSideEffects()) return false;
+	std::vector<std::string> args(i->NumArgs(), std::string("x"));
+	return !AluExpression(i->GetOpcode(), args).empty();
+}
+
+// mslfix6 (pipe 100/101 rt1): a pure ALU instruction is dead when every user is a dead pure ALU
+// instruction (an unused one prints its text but NIR's DCE drops it before the algebraic pass).
+// Only pure ALU instructions are ever dead: values read from block conditions or other side tables
+// are never seeded.
+void MarkDead(const IR::Program& program) {
+	std::vector<const IR::Inst*> work;
+	for (const auto* block: program.blocks)
+		for (const auto& inst: *block)
+			if (inst.UseCount() == 0 && PureAlu(&inst)) {
+				g.dead[&inst] = true;
+				work.push_back(&inst);
+			}
+	for (const auto& bi: program.block_info) {
+		for (const auto* v: {&bi.condition, &bi.indirect_target}) {
+			if (v->IsEmpty() || v->IsImmediate()) continue;
+			if (const auto* ci = v->TryInstruction(); ci != nullptr && g.dead.count(ci)) g.dead[ci] = false;
+		}
+	}
+	while (!work.empty()) {
+		const auto* i = work.back();
+		work.pop_back();
+		if (!g.dead[i]) continue;
+		for (size_t k = 0; k < i->NumArgs(); k++) {
+			const auto a = i->Arg(k);
+			if (a.IsEmpty() || a.IsImmediate()) continue;
+			const auto* ai = a.TryInstruction();
+			if (ai == nullptr || g.dead.count(ai) || !PureAlu(ai)) continue;
+			bool all_dead = true;
+			for (const auto& u: ai->Uses())
+				if (u.user != nullptr && !(g.dead.count(u.user) && g.dead[u.user])) {
+					all_dead = false;
+					break;
+				}
+			if (!all_dead) continue;
+			bool referenced = false;
+			for (const auto& bi: program.block_info)
+				if ((!bi.condition.IsEmpty() && !bi.condition.IsImmediate() &&
+				     bi.condition.TryInstruction() == ai) ||
+				    (!bi.indirect_target.IsEmpty() && !bi.indirect_target.IsImmediate() &&
+				     bi.indirect_target.TryInstruction() == ai))
+					referenced = true;
+			if (referenced) continue;
+			g.dead[ai] = true;
+			work.push_back(ai);
+		}
+	}
+}
+
+bool NirDeadUses() {
+	static const bool on = [] {
+		const char* e = std::getenv("KYTY_MSL_GFX_REASSOC_DCE");
+		return e == nullptr || std::strcmp(e, "0") != 0;
+	}();
+	return on;
+}
+
 int NirUses(const IR::Inst* i) {
 	int n = 0;
 	for (const auto& u: i->Uses()) {
 		if (u.user == nullptr) continue;
+		if (const auto it = g.dead.find(u.user); it != g.dead.end() && it->second) continue;
 		const auto o = u.user->GetOpcode();
 		if (o == O::BitCastF32U32 || o == O::BitCastU32F32)
 			n += NirUses(u.user);
@@ -325,6 +392,7 @@ void NirReassocBuild(const IR::Program& program, bool on, bool split) {
 	g.on    = on;
 	g.split = split;
 	if (!on) return;
+	if (NirDeadUses()) MarkDead(program); // KYTY_MSL_GFX_REASSOC_DCE=0 = fmafix use counts
 	for (const auto* block: program.blocks)
 		for (const auto& inst: *block) {
 			const auto o = inst.GetOpcode();

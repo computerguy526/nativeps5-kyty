@@ -416,8 +416,11 @@ void TestKkStatementSplit() {
   auto &mulc = blk->AppendNewInst(
       ValueOpcode::FPMul32, {Value(&mul), Value::F32(0.5f)});
   auto &add = blk->AppendNewInst(ValueOpcode::FPAdd32, {Value(&x), Value(&z)});
-  for (auto *i : {&mad, &fma, &mulc, &add})
-    blk->AppendNewInst(ValueOpcode::FPMax32, {Value(i), Value(i)}); // a use
+  for (auto *i : {&mad, &fma, &mulc, &add}) {
+    auto &u = blk->AppendNewInst(ValueOpcode::FPMax32, {Value(i), Value(i)}); // a use
+    auto &bits = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&u)});
+    blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits)}); // keeps it live
+  }
   Msl::MslCtx ctx(p, {});
   uint32_t id = 0;
   for (auto &i : *blk) ctx.ids[&i] = id++;
@@ -449,6 +452,57 @@ void TestKkStatementSplit() {
   Msl::NirReassocBuild(p, false, false);
 }
 
+// mslfix6: graphics min/max/med3 use the KK-exact helpers (NaN -> other operand,
+// -0 < +0, med3 with a NaN operand = min3); compute keeps Metal's builtins.
+void TestKkMinMax() {
+  const std::vector<std::string> a2 {"a", "b"}, a3 {"a", "b", "c"};
+  Msl::SetKkMinMax(true);
+  Check(Msl::AluExpression(ValueOpcode::FPMin32, a2) == "kyty_fmin(a, b)" &&
+            Msl::AluExpression(ValueOpcode::FPMax32, a2) == "kyty_fmax(a, b)" &&
+            Msl::AluExpression(ValueOpcode::FPMinTri32, a3) == "kyty_fmin(kyty_fmin(a, b), c)" &&
+            Msl::AluExpression(ValueOpcode::FPMaxTri32, a3) == "kyty_fmax(kyty_fmax(a, b), c)" &&
+            Msl::AluExpression(ValueOpcode::FPMedTri32, a3) == "kyty_fmed3(a, b, c)",
+        "kk min/max: graphics spellings");
+  Msl::SetKkMinMax(false);
+  Check(Msl::AluExpression(ValueOpcode::FPMin32, a2) == "fmin(a, b)" &&
+            Msl::AluExpression(ValueOpcode::FPMedTri32, a3) == "fmedian3(a, b, c)",
+        "kk min/max off: Metal builtins (compute text unchanged)");
+}
+
+// mslfix6 (pipe 100/101 rt1): NIR's DCE runs before nir_opt_algebraic, so an
+// unused instruction (B still prints its text) must not count as a use for
+// is_used_once: (x*y)*c with x*y also read by a dead fneg is re-associated like
+// KK; with KYTY_MSL_GFX_REASSOC_DCE=0 semantics (a live second use) it is not.
+void TestReassocIgnoresDeadUses() {
+  SR::IR::Program p;
+  p.block_storage.push_back(std::make_unique<SR::IR::Block>());
+  auto *blk = p.block_storage.back().get();
+  p.blocks.push_back(blk);
+  using SR::IR::Value;
+  auto &x = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(1u)});
+  auto &y = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(2u)});
+  auto &mul = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&x), Value(&y)});
+  auto &mulc = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&mul), Value::F32(0.5f)});
+  blk->AppendNewInst(ValueOpcode::FPNeg32, {Value(&mul)}); // dead second use
+  auto &bits = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&mulc)});
+  blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits)});
+  Msl::MslCtx ctx(p, {});
+  uint32_t id = 0;
+  for (auto &i : *blk) ctx.ids[&i] = id++;
+  Msl::NirReassocBuild(p, true, true);
+  Check(Msl::NirSplitLines(ctx, mulc) == "{ const float v3_0 = (v0 * 0.5f); v3 = (v3_0 * v1); }",
+        "reassoc: a dead use does not block is_used_once: " + Msl::NirSplitLines(ctx, mulc));
+  // the same product with a LIVE second use stays (x*y)*c
+  auto &neg2 = blk->AppendNewInst(ValueOpcode::FPNeg32, {Value(&mul)});
+  auto &bits2 = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&neg2)});
+  blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits2)});
+  for (auto &i : *blk) if (!ctx.ids.count(&i)) ctx.ids[&i] = id++;
+  Msl::NirReassocBuild(p, true, true);
+  Check(Msl::NirSplitLines(ctx, mulc).empty() || Msl::NirSplitLines(ctx, mulc).find("(v0 * 0.5f)") == std::string::npos,
+        "reassoc: a live second use keeps (x*y)*c: " + Msl::NirSplitLines(ctx, mulc));
+  Msl::NirReassocBuild(p, false, false);
+}
+
 } // namespace
 
 int main() {
@@ -460,6 +514,8 @@ int main() {
   TestMathSafeAndVoteMerge();
   TestKkLiveComponents();
   TestKkStatementSplit();
+  TestReassocIgnoresDeadUses();
+  TestKkMinMax();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
