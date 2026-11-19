@@ -372,6 +372,9 @@ struct GfxIo {
 	};
 	std::map<uint32_t, KkBlend>
 	    kk_blend; // only MRTs that need a dst read (blend or partial write mask)
+	// MRT indices with a declared `kk_d<i> [[color(..)]]` input: KYTY_MSL_KK_BLEND names the
+	// pipeline's attachments, the shader may export fewer of them.
+	std::set<uint32_t> kk_dst;
 };
 
 namespace {
@@ -868,6 +871,7 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 					if (k.co > 4u || k.ao > 4u) unsup("gfx:kk_blend_advanced");
 				}
 				b.Line(fmt::format("float4 kk_d{} [[color({})]];", o.index, o.location));
+				g->kk_dst.insert(o.index);
 			}
 		}
 		if (!any_param) b.Line("float4 unused_ [[user(locn31)]];");
@@ -1104,7 +1108,7 @@ void GfxLocals(MslCtx& c, const GfxIo& g) {
 	c.b.Line(g.out_type + " out = {};");
 	if (g.ps)
 		for (const auto& [i, kb]: g.kk_blend)
-			if (!g.kk_drop_mrt.contains(i))
+			if (!g.kk_drop_mrt.contains(i) && g.kk_dst.contains(i))
 				c.b.Line(fmt::format("out.c{} = fin.kk_d{}; // mslfix2: KK reads dst first "
 				                     "(nir_lower_blend fb fetch)",
 				                     i, i));
