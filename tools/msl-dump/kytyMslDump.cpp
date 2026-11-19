@@ -544,9 +544,12 @@ int main(int argc, char **argv) {
     if (xf_keys) { // "<vs|ps|cs> <guest hash> <source digest>": the table key (MslXform.h) per source
       for (const auto &src : srcs) {
         const auto st = static_cast<ShaderType>(src.stage);
-        std::printf("%s %016" PRIx64 " %s\n",
+        std::printf("%s %016" PRIx64 " ",
                     st == ShaderType::Vertex ? "vs" : st == ShaderType::Pixel ? "ps" : st == ShaderType::Compute ? "cs" : "??",
-                    src.hash, src.digest.c_str());
+                    src.hash);
+        for (const unsigned char ch : src.digest) // the digest is raw bytes
+          std::printf("%02x", ch);
+        std::printf("\n");
       }
       return 0;
     }
