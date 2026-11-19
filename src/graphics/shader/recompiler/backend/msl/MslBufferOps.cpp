@@ -1,4 +1,5 @@
 #include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 
 #include "graphics/shader/recompiler/BufferFormat.h"
 
@@ -11,6 +12,13 @@ bool Checked(const BufferBinding& b, const BufferOpts& opts) {
 }
 
 std::string InBounds(const BufferBinding& b, const std::string& addr, uint32_t bytes) {
+	// perfauto transform bounds_u32 (MslXform.h): the same predicate without a 64-bit sum. For a
+	// 64-bit `addr` the comparison still promotes, so the result is unchanged there too.
+	if (Xf::On(Xf::BoundsU32)) {
+		const std::string n = std::to_string(bytes) + "u";
+		return "(" + BufSizeName(b.id) + " >= " + n + " && (" + addr + ") <= " + BufSizeName(b.id) +
+		       " - " + n + ")";
+	}
 	return "(ulong(" + addr + ") + " + std::to_string(bytes) + "ul <= ulong(" + BufSizeName(b.id) +
 	       "))";
 }

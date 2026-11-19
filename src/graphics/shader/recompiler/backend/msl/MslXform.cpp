@@ -18,6 +18,8 @@ constexpr Info Registry[Count] = {
      "vertex fetch: unconditional attribute load, then the out-of-range select"},
     {"vs_no_barrier", 1, ShaderType::Vertex, "structural",
      "vertex function: no device-flush barrier for S_BARRIER"},
+    {"bounds_u32", 1, ShaderType::Unknown, "semantic-exact",
+     "buffer bounds check in 32 bits (no 64-bit temporary per access)"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
@@ -158,8 +160,12 @@ std::string Catalogue() {
 		s += '@';
 		s += std::to_string(Registry[i].version);
 		s += ' ';
-		s += StageChar(Registry[i].stage);
-		s += "s ";
+		if (Registry[i].stage == ShaderType::Unknown) {
+			s += "any ";
+		} else {
+			s += StageChar(Registry[i].stage);
+			s += "s ";
+		}
 		s += Registry[i].cls;
 		s += "  ";
 		s += Registry[i].doc;

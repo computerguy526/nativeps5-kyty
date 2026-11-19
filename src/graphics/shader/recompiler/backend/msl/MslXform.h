@@ -33,6 +33,11 @@ enum Id : uint32_t {
 	// No device-flush barrier for S_BARRIER in a vertex function (one lane, no LDS, no
 	// threadgroup): the barrier pins every later uniform load below it.
 	VsNoBarrier,
+	// Register pressure (megakernels, large VS): the per-access buffer bounds check in 32 bits,
+	// `size >= N && addr <= size - N`, instead of `ulong(addr) + N <= ulong(size)`. Same truth
+	// table for 32-bit addr and size; no 64-bit temporary (a register pair on AGX) per access, and
+	// `size - N` is uniform, so it can move to the constant program. Any stage.
+	BoundsU32,
 	Count
 };
 
