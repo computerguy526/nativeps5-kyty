@@ -9,6 +9,7 @@
 // unsupported encodings). Game-derived output stays local; never commit it.
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
@@ -482,6 +483,9 @@ int main(int argc, char **argv) {
     else if (a == "--hash") {
       hash = std::strtoull(next(), nullptr, 16);
       have_hash = true;
+    } else if (a == "--xf-list") { // perfauto: the transform catalogue (MslXform.h)
+      std::fputs(SR::Msl::Xf::Catalogue().c_str(), stdout);
+      return 0;
     } else if (a == "--list")
       list = true;
     else if (a == "--perm")

@@ -23,6 +23,7 @@
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/LodStatsEarlyTests.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/opcodes/ValueOpcodes.h"
 
@@ -130,27 +131,20 @@ bool KkVertexFormat(uint32_t vk, KkVtxFmt& f) {
 	}
 }
 
-// vsperf (opt-in KYTY_MSL_VS_PERF=1): KK's own vertex-fetch form. (1) The root buffer is read
+// vsperf / perfauto (transforms vs_root_int and vs_fetch_select, MslXform.h; KYTY_MSL_VS_PERF=1
+// still selects both): KK's own vertex-fetch form. (1) The root buffer is read
 // through an integer address (`(ulong)&kkroot.contents[0]`, as KK prints it): Apple's compiler
 // then hoists the vertex-buffer pointer / stride / count reads into the per-draw constant program;
 // through a `constant uchar*` derived from the argument it reloaded them for every vertex (G-buffer
 // 9d2710dd: 20 root loads per vertex, spills). (2) The attribute is loaded unconditionally and the
 // out-of-range select happens afterwards (KK: load, then `oob ? 0 : v`); `oob ? 0 : *(p)` makes
 // the load conditional. Same values: the vertex buffer is bound with KK's robustness padding.
-bool VsPerfFetch() {
-	static const bool on = [] {
-		const char* e = std::getenv("KYTY_MSL_VS_PERF");
-		return e != nullptr && std::strcmp(e, "0") != 0;
-	}();
-	return on;
-}
-
 // Statements filling `float4|uint4 name` for one attribute (see KkVertexFormat).
 std::string KkVertexFetch(const std::string& name, const KkVtxFmt& f, uint32_t slot,
                           uint32_t binding) {
-	const bool perf = VsPerfFetch();
-	const auto rt   = [&](const char* type, uint32_t off) {
-        return perf ? fmt::format("*(constant {}*)(kk_rtu + ulong({}u))", type, off)
+	const bool root_int = Xf::On(Xf::VsRootInt);
+	const auto rt       = [&](const char* type, uint32_t off) {
+        return root_int ? fmt::format("*(constant {}*)(kk_rtu + ulong({}u))", type, off)
                       : fmt::format("*(constant {}*)(kk_rt + {}u)", type, off);
 	};
 	const std::string vt = f.comps == 1 ? f.elem : fmt::format("{}{}", f.elem, f.comps);
@@ -163,7 +157,7 @@ std::string KkVertexFetch(const std::string& name, const KkVtxFmt& f, uint32_t s
 	s += fmt::format("    const uint kk_el = gl_vertex_id * ({} / {}u);\n",
 	                 rt("uint", 8u + 4u * binding), f.size);
 	s += fmt::format("    const bool kk_oob = {} < gl_vertex_id;\n", rt("uint", 392u + 4u * slot));
-	if (perf) {
+	if (Xf::On(Xf::VsFetchSelect)) {
 		s += fmt::format("    const {} kk_ld = {};\n", vt, load);
 		s += fmt::format("    const {} r = kk_oob ? {}(0u) : kk_ld;\n", vt, vt);
 	} else {
@@ -1157,7 +1151,7 @@ void GfxLocals(MslCtx& c, const GfxIo& g) {
 		c.b.Line("const uint lid = 0u; // vertex stage has no simd lane index (the SPIR-V emitter "
 		         "answers lane 0 too)");
 	if (g.vs && !g.kk_fetch.empty()) {
-		c.b.Line(VsPerfFetch() ? "const ulong kk_rtu = (ulong)&kkroot.contents[0];"
+		c.b.Line(Xf::On(Xf::VsRootInt) ? "const ulong kk_rtu = (ulong)&kkroot.contents[0];"
 		                       : "constant uchar* kk_rt = (constant uchar*)&kkroot;");
 		for (const auto& [loc, code]: g.kk_fetch) {
 			const auto k = g.vkind.at(loc);

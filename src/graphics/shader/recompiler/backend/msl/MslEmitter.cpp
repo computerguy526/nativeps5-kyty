@@ -5,6 +5,7 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 
 #include <algorithm>
@@ -451,16 +452,13 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			// wave64 at 2 lanes/thread) orders nothing beyond the simdgroup: simdgroup_barrier with
 			// a threadgroup memory fence (KK: Kyty SPIR-V's barrier on a one-wave workgroup ->
 			// simdgroup-scope fence) instead of threadgroup_barrier + device flush.
-			// vsperf (opt-in KYTY_MSL_VS_PERF=1): a vertex function has no threadgroup and the B vertex
+			// vsperf / perfauto (transform vs_no_barrier, MslXform.h; KYTY_MSL_VS_PERF=1 still
+			// selects it): a vertex function has no threadgroup and the B vertex
 			// stage is one lane with no LDS; KK (Kyty SPIR-V -> NIR) prints no barrier there. The
 			// device-flush barrier is not free: it pins every later load below it, so Apple's compiler
 			// cannot hoist the uniform constant-buffer reads into the per-draw constant program
 			// (cloud 1548c37d VS: 64 -> 21 device loads per vertex without it).
-			static const bool vs_perf = [] {
-				const char* e = std::getenv("KYTY_MSL_VS_PERF");
-				return e != nullptr && std::strcmp(e, "0") != 0;
-			}();
-			if (vs_perf && ctx.program.stage == ShaderType::Vertex) {
+			if (Xf::On(Xf::VsNoBarrier) && ctx.program.stage == ShaderType::Vertex) {
 				ctx.b.Line("// S_BARRIER: none in a vertex function (vsperf)");
 				return;
 			}
@@ -1139,6 +1137,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
                       const MslOptions& options) {
 	MslResult result;
 	MslCtx    ctx(program, input_info);
+	Xf::Begin(program.stage, program.shader_hash); // perfauto: transform set of this program
 	ctx.options_comments = options.comments;
 	ctx.loop_cap         = options.loop_cap;
 	if (const char* e = std::getenv("KYTY_MSL_LOOP_CAP"))
