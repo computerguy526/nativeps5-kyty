@@ -341,6 +341,9 @@ void TestMathSafeAndVoteMerge() {
     Check(result.msl.rfind("// kk-mslinject v1 local_size", 0) == 0 &&
               result.msl.find(" math safe\n") != std::string::npos,
           tag + ": kk-bda header asks for math safe");
+    Check(result.msl.find("stage fragment") == std::string::npos &&
+              result.msl.find("math relaxed") == std::string::npos,
+          tag + ": compute header is not the fragment header (dangling else, 7f9ba790)");
     Check(CountOutsideComments(result.msl, "math_mode(fast)") == 0 &&
               CountOutsideComments(result.msl, "fast::") == 0,
           tag + ": no fast-math scope in compute");

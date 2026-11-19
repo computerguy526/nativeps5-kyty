@@ -222,12 +222,14 @@ std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	// mslgfx: graphics stages are swapped as a VS+PS pair inside KK's render pipeline descriptor.
 	if (ctx.program.stage == ShaderType::Vertex)
 		return "// kk-mslinject v1 stage vertex entry main0 math safe\n";
-	if (ctx.program.stage == ShaderType::Pixel)
+	if (ctx.program.stage == ShaderType::Pixel) {
 		// perfmode (heavyshade, opt-in KYTY_MSL_GFX_MATH=fast): KK compiles the injected FS with Metal fast math. Validated
 		// under autoval outprec (stored-output precision), never bit-exact; pair with KYTY_MSL_GFX_SPLIT=0 REASSOC=0 MINMAX=0.
 		if (GfxPixelFast()) return "// kk-mslinject v1 stage fragment entry main0 math fast\n";
 		return GfxPixelRelaxed() ? "// kk-mslinject v1 stage fragment entry main0 math relaxed\n"
 		                         : "// kk-mslinject v1 stage fragment entry main0 math safe\n";
+	}
+	// Compute (litcompute 2026-11-19): 7f9ba790 lost the braces above, so every compute kernel got the fragment header.
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
 	                   r.threadgroup[0], r.threadgroup[1], r.threadgroup[2]);
 }
