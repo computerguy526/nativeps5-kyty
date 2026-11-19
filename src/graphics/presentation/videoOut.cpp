@@ -223,6 +223,13 @@ struct VideoOutConfig {
 	std::array<BufferAttributeGroup, VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX> groups;
 };
 
+// Frame work time (GPU service time: ready - max(submit, previous ready)) accumulated by
+// FlipQueue::Complete, drained by AutoCapTick. Lets autocap see headroom of a capped game (the
+// presented interval saturates at the cap).
+static std::atomic<uint64_t> g_autocap_work_ticks {0};
+static std::atomic<uint32_t> g_autocap_work_count {0};
+static std::atomic<uint64_t> g_autocap_prev_ready {0};
+
 class FlipQueue {
 public:
 	explicit FlipQueue(Graphics::Presenter& presenter): m_presenter(presenter) {
@@ -260,6 +267,7 @@ private:
 		bool                        premultiplied_alpha;
 		uint64_t                    latency_frame; // ASTROHYBRID_LOW_LATENCY frame number
 		uint64_t                    ready_tick;    // nps5 frame pacing: QPC when the frame became Ready
+		uint64_t                    submit_tick;   // nps5 autocap: QPC when the request was created
 	};
 
 	Graphics::Presenter& m_presenter;
@@ -919,11 +927,18 @@ static uint32_t LimitMilli() {
 	             : static_cast<uint32_t>(v);
 }
 
+static double AutoCapFloor() {
+	const char*  v = std::getenv("KYTY_FPS_AUTOCAP_MIN");
+	const double f = v != nullptr ? std::strtod(v, nullptr) : 0.0;
+	return f >= 1.0 && f <= 240.0 ? f : AutoCap::kDefaultFloorFps;
+}
+
 struct AutoCapRun {
-	AutoCap::Controller controller;
-	AutoCap::Estimator  estimator; // vblank thread only
-	uint32_t            seen_seq = 0;
-	bool                active   = false;
+	AutoCap::Controller    controller {AutoCapFloor()};
+	AutoCap::Estimator     estimator; // vblank thread only
+	AutoCap::WorkEstimator work;
+	uint32_t               seen_seq = 0;
+	bool                   active   = false;
 };
 static AutoCapRun g_autocap;
 
@@ -948,17 +963,28 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 		}
 		r.controller.SetScreen(AutoCap::Snapshot(), now);
 		r.estimator.Reset();
+		r.work.Reset();
 		log = true;
 	} else if (seq != 0) {
-		r.controller.Tick(now, r.estimator.Fps());
+		if (const auto cnt = g_autocap_work_count.exchange(0, std::memory_order_relaxed);
+		    cnt != 0) {
+			const auto ticks = g_autocap_work_ticks.exchange(0, std::memory_order_relaxed);
+			r.work.OnWork(static_cast<double>(ticks) / cnt /
+			              static_cast<double>(Common::Timer::QueryPerformanceFrequency()));
+		}
+		r.controller.Tick(now, r.estimator.Fps(), r.work.Fps());
 		log = r.controller.Changed();
 	}
 	const auto cap_milli = static_cast<uint32_t>(r.controller.Cap() * 1000.0 + 0.5);
 	st.cap_milli.store(cap_milli, std::memory_order_relaxed);
 	if (log) {
 		const auto& s = r.controller.Current();
-		std::fprintf(stderr, "[autocap] screen %s %.4g Hz %s -> cap %.4g fps\n", s.name.c_str(),
-		             s.refresh_hz, s.adaptive ? "adaptive" : "fixed", cap_milli / 1000.0);
+		std::fprintf(stderr,
+		             "[autocap] screen %s %.4g Hz %s -> %s %.4g fps (present %.1f fps, work %.1f "
+		             "fps, floor %.4g)\n",
+		             s.name.c_str(), s.refresh_hz, s.adaptive ? "adaptive" : "fixed",
+		             cap_milli != 0 ? "cap" : "uncapped", cap_milli / 1000.0, r.estimator.Fps(),
+		             r.work.Fps(), AutoCapFloor());
 	}
 }
 
@@ -1446,6 +1472,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	r.index      = index;
 	r.flip_arg   = flip_arg;
 	r.submit_ptc = LibKernel::KernelGetProcessTimeCounter();
+	r.submit_tick = Common::Timer::QueryPerformanceCounter();
 	r.source     = source;
 	r.state      = RequestState::Reserved;
 	Graphics::PassTrace::NoteFlip();
@@ -1657,6 +1684,16 @@ void FlipQueue::Complete(uint64_t request_id) {
 		}
 		request->state = RequestState::Ready;
 		request->ready_tick = Common::Timer::QueryPerformanceCounter();
+		{
+			const auto prev =
+			    g_autocap_prev_ready.exchange(request->ready_tick, std::memory_order_relaxed);
+			const auto start = std::max(request->submit_tick, prev);
+			if (request->ready_tick > start) {
+				g_autocap_work_ticks.fetch_add(request->ready_tick - start,
+				                               std::memory_order_relaxed);
+				g_autocap_work_count.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
 		PaceLog::NoteReady(request_id);
 		m_submit_cond_var.Signal();
 		m_mutex.Unlock();

@@ -8,28 +8,32 @@ static int g_fail = 0;
 #define NEAR(a, b) CHECK(std::fabs((a) - (b)) < 1e-6)
 
 // run the controller with a constant "game can do `game_fps`" model: measured = min(cap, game)
+// (presented = min(cap, game) when capped, game when uncapped; work fps = game)
 static double Run(AutoCap::Controller& c, double t0, double secs, double game_fps) {
 	double t = t0;
-	for (; t < t0 + secs; t += 0.1) c.Tick(t, std::fmin(c.Cap(), game_fps));
+	for (; t < t0 + secs; t += 0.1) c.Tick(t, c.Cap() > 0 ? std::fmin(c.Cap(), game_fps) : game_fps, game_fps);
 	return t;
 }
 
 // run until cap == want; returns time, d = elapsed
 static double RunUntil(AutoCap::Controller& c, double t0, double want, double maxs, double& d) {
 	double t = t0;
-	for (; t < t0 + maxs; t += 0.1) { c.Tick(t, std::fmin(c.Cap(), 30)); if (std::fabs(c.Cap() - want) < 1e-6) break; }
+	for (; t < t0 + maxs; t += 0.1) { c.Tick(t, std::fmin(c.Cap(), 30), 30); if (std::fabs(c.Cap() - want) < 1e-6) break; }
 	d = t - t0; return t;
 }
 
 int main() {
 	using namespace AutoCap;
 	NEAR(PickCap(75, 40), 37.5);
-	NEAR(PickCap(75, 30), 25.0);
+	NEAR(PickCap(75, 30), 0.0);
 	NEAR(PickCap(75, 37.5), 37.5);
 	NEAR(PickCap(75, 80), 75.0);
-	NEAR(PickCap(75, 5), 75.0 / 7); // floor: cap stays >= 10
+	NEAR(PickCap(75, 5), 0.0);   // floor: never below 30 fps -> uncapped
+	NEAR(PickCap(75, 20), 0.0);  // 18.75 < floor
+	NEAR(PickCap(75, 28), 0.0);  // 25 < floor
 	NEAR(PickCap(60, 35), 30.0);
-	NEAR(PickCap(60, 25), 20.0);
+	NEAR(PickCap(60, 25), 0.0);
+	NEAR(PickCap(60, 25, 10), 20.0); // KYTY_FPS_AUTOCAP_MIN=10
 	NEAR(PickCap(144, 50), 48.0);
 	NEAR(PickCap(144, 40), 36.0);
 	NEAR(PickCap(144, 100), 72.0);
@@ -44,15 +48,28 @@ int main() {
 	NEAR(c.SetScreen(mon, 0), 37.5);
 	// game sustains 60: stays 37.5 (probe to 75 is long), no down
 	Run(c, 1, 20, 60); NEAR(c.Cap(), 37.5);
-	// game sustains 30: moves down to 25 within ~3.5 s
-	double t = Run(c, 30, 4, 30); NEAR(c.Cap(), 25.0); CHECK(c.Changed() || true);
-	// on cadence 5 s -> probe up to 37.5 (game 30 fails -> down again after ~2 s, back-off 2)
+	// game sustains 30 (< floor-limited 37.5): 25 would be below the floor -> uncapped within ~3.5 s, and stays so
+	double t = Run(c, 30, 4, 30); NEAR(c.Cap(), 0.0);
+	t = Run(c, t, 60, 30); NEAR(c.Cap(), 0.0);
+	// game recovers to 40: capped at 37.5 after ~5 s
 	double d = 0;
-	t = RunUntil(c, t, 37.5, 8, d); CHECK(d > 3.5 && d < 8.5);
-	t = RunUntil(c, t, 25.0, 6, d); CHECK(d > 1.5 && d < 3.5);
-	t = RunUntil(c, t, 37.5, 14, d); CHECK(d > 9.5 && d < 12.5); // back-off: ~10 s, not 5
-	// game recovers to 60: stays at 37.5, reaching 75 only after 30 s * backoff (>= 1 probe)
-	Run(c, t, 400, 200); NEAR(c.Cap(), 75.0);
+	{ double t0 = t; for (; t < t0 + 20; t += 0.1) { c.Tick(t, c.Cap() > 0 ? std::fmin(c.Cap(), 40) : 40, 40); if (c.Cap() > 0) break; }
+	  NEAR(c.Cap(), 37.5); CHECK(t - t0 > 4.5 && t - t0 < 7.5); }
+	// game sustains 60: 37.5 holds until work fps shows headroom for 75 (needs 72.75): 60 is not enough
+	t = Run(c, t, 100, 60); NEAR(c.Cap(), 37.5);
+	// work time shows headroom (game could do 200 fps; presented saturates at the cap): reaches 75 after ~30 s
+	t = Run(c, t, 100, 200); NEAR(c.Cap(), 75.0);
+	// game drops to 20 at cap 75: straight to uncapped (no 15/18.75 steps)
+	t = Run(c, t, 5, 20); NEAR(c.Cap(), 0.0);
+	// failing probes back off: uncapped at 36 (cap 37.5 ok? no, 36 < 37.5 -> PickCap 0 at 75 Hz) stays uncapped
+	t = Run(c, t, 60, 36); NEAR(c.Cap(), 0.0);
+	(void)RunUntil;
+	// scenarios from the field (floor 30)
+	{ Controller x; x.SetScreen(Screen{"M", 75.0, false}, 0); Run(x, 1, 60, 20); NEAR(x.Cap(), 0.0); }   // 75 Hz, 20 fps
+	{ Controller x; x.SetScreen(Screen{"M", 75.0, false}, 0); Run(x, 1, 60, 40); NEAR(x.Cap(), 37.5); }  // 75 Hz, 40 fps
+	{ Controller x; x.SetScreen(Screen{"M", 60.0, false}, 0); Run(x, 1, 60, 25); NEAR(x.Cap(), 0.0); }   // 60 Hz, 25 fps
+	{ Controller x; x.SetScreen(Screen{"M", 144.0, false}, 0); Run(x, 1, 60, 40); NEAR(x.Cap(), 36.0); } // 144 Hz, 40 fps
+	{ Controller x(10.0); x.SetScreen(Screen{"M", 60.0, false}, 0); Run(x, 1, 60, 25); NEAR(x.Cap(), 20.0); } // custom floor
 	// screen moves: reset to R/2 of the new display, adaptive -> none, back -> n=2
 	NEAR(c.SetScreen(adaptive, 500), 0.0);
 	NEAR(c.SetScreen(Screen{"X", 60.0, false}, 501), 30.0);
@@ -60,6 +77,8 @@ int main() {
 	// unknown refresh: no cap
 	NEAR(c.SetScreen(Screen{"?", 0.0, false}, 503), 0.0);
 
+	// work estimator
+	{ WorkEstimator w; for (int i = 0; i < 100; i++) w.OnWork(0.01); CHECK(std::fabs(w.Fps() - 100.0) < 0.5); w.OnWork(2.0); CHECK(std::fabs(w.Fps() - 100.0) < 0.5); }
 	// estimator
 	Estimator e; for (int i = 0; i < 100; i++) e.OnPresent(i / 37.5);
 	CHECK(std::fabs(e.Fps() - 37.5) < 0.1);
