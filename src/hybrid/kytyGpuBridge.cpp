@@ -377,8 +377,9 @@ void Relay() {
 	namespace PM = Hybrid::PadMotion;
 	auto pad_sensors = [](int* type, float* rate_hz) {
 		bool has = false;
-		// The id first: GetActiveControllerId takes the controller's mutex, and no Kyty pad mutex may be taken while
-		// holding SDL's joystick lock (lock order in libs/controller.cpp; the reverse froze the main thread).
+		// The id first: GetActiveControllerId takes the controller's mutex, and no Kyty pad mutex
+		// may be taken while holding SDL's joystick lock (lock order in libs/controller.cpp; the
+		// reverse froze the main thread).
 		const int id = Controller::GetActiveControllerId();
 		SDL_LockJoysticks();
 		if (auto* sdl_pad = id > 0 ? SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(id)) : nullptr) {

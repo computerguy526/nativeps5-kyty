@@ -189,11 +189,13 @@ private:
 
 static std::array<std::unique_ptr<GameController>, Config::MAX_PLAYERS> g_players;
 
-// Lock order (pad code): SDL's joystick lock (SDL_LockJoysticks, also taken inside every SDL gamepad call) is always
-// the INNERMOST lock. Never acquire a Kyty pad mutex (g_router_mutex, GameController::m_mutex, the haptics locks)
-// while holding the SDL joystick lock, and do not hold GameController::m_mutex across SDL gamepad calls in
-// SetDevices / StopHostPad (they run on the main thread from pad-added events). The inverse order deadlocked the
-// main thread (window pump) against the pad relay thread: spinning wheel, controller dead.
+// Lock order (pad code): SDL's joystick lock (SDL_LockJoysticks, also taken inside every SDL
+// gamepad call) is always the INNERMOST lock. Never acquire a Kyty pad mutex (g_router_mutex,
+// GameController::m_mutex, the haptics locks) while holding the SDL joystick lock, and do not hold
+// GameController::m_mutex across SDL gamepad calls in SetDevices / StopHostPad (they run on the
+// main thread from pad-added events). The inverse order deadlocked the main thread (window pump)
+// against the pad relay thread: spinning wheel, controller dead.
+
 // Maps host gamepads to players; the keyboard follows the configured keyboard player.
 static Common::Mutex g_router_mutex;
 static std::vector<std::pair<int, int>> g_pad_players;
@@ -528,8 +530,9 @@ void GameController::SetDevices(int active_id) {
 			return;
 		}
 	}
-	// SDL gamepad calls take SDL's joystick lock: make them without m_mutex (lock order above). The callers
-	// serialise SetDevices through g_router_mutex, so the state below is still set once per change.
+	// SDL gamepad calls take SDL's joystick lock: make them without m_mutex (lock order above). The
+	// callers serialise SetDevices through g_router_mutex, so the state below is still set once per
+	// change.
 	if (active_id != HOST_INPUT_CONTROLLER_ID && active_id != -1) {
 		if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(active_id));
 		    pad != nullptr) {
