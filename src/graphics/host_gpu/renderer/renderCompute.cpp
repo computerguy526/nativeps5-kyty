@@ -92,15 +92,18 @@ static bool RtLoadHold() {
 	}();
 	static uint64_t skipped = 0;
 	static bool     was     = false;
-	const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-	                                              std::chrono::steady_clock::now().time_since_epoch())
-	                                              .count());
-	const bool held = hold.Hold(bytes->load(std::memory_order_relaxed),
-	                            phase != nullptr ? phase->load(std::memory_order_relaxed) : 0, now_ms);
+	const auto      now_ms =
+	    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                              std::chrono::steady_clock::now().time_since_epoch())
+	                              .count());
+	const bool held =
+	    hold.Hold(bytes->load(std::memory_order_relaxed),
+	              phase != nullptr ? phase->load(std::memory_order_relaxed) : 0, now_ms);
 	if (held) {
 		if (!was) {
 			Log::WriteToConsoleAndLog(fmt::format(
-			    "RT load hold: the game is streaming a level; software-RT dispatches are skipped until "
+			    "RT load hold: the game is streaming a level; software-RT dispatches are skipped "
+			    "until "
 			    "{} ms after the reads calm down (hold {}; KYTY_RT_LOAD_HOLD=0 disables)\n",
 			    hold.quiet_ms, hold.Holds()));
 		}
@@ -133,16 +136,19 @@ static bool RtBudgetHold(RenderContext& context) {
 	if (mapped.size() < Recompiler::RtNodeBudgetGdsFromEnd * sizeof(uint32_t)) return false;
 	uint32_t exhausted = 0;
 	std::memcpy(&exhausted,
-	            mapped.data() + mapped.size() - Recompiler::RtNodeBudgetGdsFromEnd * sizeof(uint32_t),
+	            mapped.data() + mapped.size() -
+	                Recompiler::RtNodeBudgetGdsFromEnd * sizeof(uint32_t),
 	            sizeof(exhausted));
-	const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-	                                              std::chrono::steady_clock::now().time_since_epoch())
-	                                              .count());
+	const auto now_ms =
+	    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                              std::chrono::steady_clock::now().time_since_epoch())
+	                              .count());
 	const auto trips = guard.Trips();
 	const bool allow = guard.Allow(exhausted, now_ms);
 	if (guard.Trips() != trips) {
 		Log::WriteToConsoleAndLog(fmt::format(
-		    "RT budget guard: {} lanes have exhausted the BVH node budget (invalid BVH?); software-RT "
+		    "RT budget guard: {} lanes have exhausted the BVH node budget (invalid BVH?); "
+		    "software-RT "
 		    "dispatches are skipped for {} ms (trip {}; KYTY_RT_BUDGET_GUARD=0 disables)\n",
 		    exhausted, guard.CurrentHoldMs(), guard.Trips()));
 	}

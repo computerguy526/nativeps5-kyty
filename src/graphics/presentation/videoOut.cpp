@@ -1,5 +1,4 @@
 #include "graphics/presentation/videoOut.h"
-#include "graphics/presentation/autoCap.h"
 
 #include "common/abi.h"
 #include "common/assert.h"
@@ -28,6 +27,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/loadCard.h"
+#include "graphics/presentation/autoCap.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/renderDoc.h"
@@ -898,9 +898,10 @@ static Live::Switch g_live_frame_limit("KYTY_FPS_LIMIT", [](const char* value) -
 	return limit >= 10 && limit <= 240 ? limit : 0;
 });
 
-// nps5 dispsync KYTY_FPS_LIMIT_MILLI=<10.0..240.0> (live, default unset): fractional present-side limit in fps ("37.5" = every 2nd
-// tick of a fixed 75 Hz display, "25" = every 3rd). Replaces the integer KYTY_FPS_LIMIT interval in Flip (the rest of the logic
-// sees the rounded integer limit). Value stored as milli-fps.
+// nps5 dispsync KYTY_FPS_LIMIT_MILLI=<10.0..240.0> (live, default unset): fractional present-side
+// limit in fps ("37.5" = every 2nd tick of a fixed 75 Hz display, "25" = every 3rd). Replaces the
+// integer KYTY_FPS_LIMIT interval in Flip (the rest of the logic sees the rounded integer limit).
+// Value stored as milli-fps.
 static Live::Switch g_live_limit_milli("KYTY_FPS_LIMIT_MILLI", [](const char* value) -> int64_t {
 	if (value != nullptr && std::strcmp(value, "auto") == 0) {
 		return -1; // autocap: cap picked from the display the window is on (autoCap.h)
@@ -909,11 +910,13 @@ static Live::Switch g_live_limit_milli("KYTY_FPS_LIMIT_MILLI", [](const char* va
 	return v >= 10.0 && v <= 240.0 ? static_cast<int64_t>(v * 1000.0 + 0.5) : 0;
 });
 
-// KYTY_FPS_LIMIT_MILLI=auto: the cap in milli-fps in force (0 = none), from AutoCap::State().cap_milli (maintained by
-// AutoCapTick on the vblank thread); a numeric value is returned as is.
+// KYTY_FPS_LIMIT_MILLI=auto: the cap in milli-fps in force (0 = none), from
+// AutoCap::State().cap_milli (maintained by AutoCapTick on the vblank thread); a numeric value is
+// returned as is.
 static uint32_t LimitMilli() {
 	const auto v = g_live_limit_milli.Get();
-	return v < 0 ? AutoCap::State().cap_milli.load(std::memory_order_relaxed) : static_cast<uint32_t>(v);
+	return v < 0 ? AutoCap::State().cap_milli.load(std::memory_order_relaxed)
+	             : static_cast<uint32_t>(v);
 }
 
 struct AutoCapRun {
@@ -924,8 +927,9 @@ struct AutoCapRun {
 };
 static AutoCapRun g_autocap;
 
-// Vblank thread, once per loop pass: applies a screen change published by the window thread, steps the controller and logs
-// every cap change. enabled=false (a numeric limit or none) leaves cap_milli alone.
+// Vblank thread, once per loop pass: applies a screen change published by the window thread, steps
+// the controller and logs every cap change. enabled=false (a numeric limit or none) leaves
+// cap_milli alone.
 static void AutoCapTick(AutoCapRun& r, bool enabled) {
 	if (!enabled) {
 		r.active = false;
@@ -953,8 +957,8 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 	st.cap_milli.store(cap_milli, std::memory_order_relaxed);
 	if (log) {
 		const auto& s = r.controller.Current();
-		std::fprintf(stderr, "[autocap] screen %s %.4g Hz %s -> cap %.4g fps\n", s.name.c_str(), s.refresh_hz,
-		             s.adaptive ? "adaptive" : "fixed", cap_milli / 1000.0);
+		std::fprintf(stderr, "[autocap] screen %s %.4g Hz %s -> cap %.4g fps\n", s.name.c_str(),
+		             s.refresh_hz, s.adaptive ? "adaptive" : "fixed", cap_milli / 1000.0);
 	}
 }
 
@@ -1220,8 +1224,9 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		const bool on_cadence = g_frame_limit_pacing.On() && next_flip != 0 &&
 		                        now - next_flip <= frequency / 1000;
 		const int64_t late = next_flip != 0 ? static_cast<int64_t>(now - next_flip) : 0; // >= 0: now >= next_flip here
-		const auto milli = static_cast<uint64_t>(LimitMilli());
-		const uint64_t interval_ticks = milli != 0 ? frequency * 1000u / milli : (frequency + limit - 1) / limit;
+		const auto     milli = static_cast<uint64_t>(LimitMilli());
+		const uint64_t interval_ticks =
+		    milli != 0 ? frequency * 1000u / milli : (frequency + limit - 1) / limit;
 		next_flip = (on_cadence ? next_flip : now) + interval_ticks;
 		if (const auto ready = g_pace_flip_ready.load(std::memory_order_relaxed); ready != 0 && ready <= now) {
 			g_pace_error.store(static_cast<int64_t>(now - ready) - late, std::memory_order_relaxed);
@@ -1240,7 +1245,8 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		}
 		AutoCapTick(g_autocap, g_live_limit_milli.Get() < 0);
 		const auto live_milli = LimitMilli();
-		const auto live_limit = live_milli != 0 ? (live_milli + 500) / 1000 : static_cast<uint32_t>(g_live_frame_limit.Get());
+		const auto live_limit = live_milli != 0 ? (live_milli + 500) / 1000
+		                                        : static_cast<uint32_t>(g_live_frame_limit.Get());
 		// Key of the limit in force: the live value (>= 10) shifted clear of the choice indices.
 		const auto choice = live_limit != 0 ? (live_limit << 16)
 		                                    : FrameLimitChoice().load(std::memory_order_relaxed);

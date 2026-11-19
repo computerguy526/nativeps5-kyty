@@ -1,11 +1,13 @@
 #ifndef EMULATOR_SRC_GRAPHICS_PRESENTATION_AUTOCAP_H_
 #define EMULATOR_SRC_GRAPHICS_PRESENTATION_AUTOCAP_H_
 
-// nps5 autocap: KYTY_FPS_LIMIT_MILLI=auto picks the present-side fps cap from the display the window is on.
+// nps5 autocap: KYTY_FPS_LIMIT_MILLI=auto picks the present-side fps cap from the display the
+// window is on.
 //  - adaptive-refresh display (NSScreen minimumRefreshInterval < maximumRefreshInterval): no cap;
-//  - fixed refresh R Hz: cap = R/n, smallest n >= 2 with R/n <= the sustained-fps estimate (n = 1, cap R, only when the
-//    game sustains >= R). Moves down after ~2 s below the cap, probes one step up after ~5 s on it (30 s for R/2 -> R),
-//    with a doubling back-off (max 16x) when a probe fails within 12 s.
+//  - fixed refresh R Hz: cap = R/n, smallest n >= 2 with R/n <= the sustained-fps estimate (n = 1,
+//  cap R, only when the
+//    game sustains >= R). Moves down after ~2 s below the cap, probes one step up after ~5 s on it
+//    (30 s for R/2 -> R), with a doubling back-off (max 16x) when a probe fails within 12 s.
 // This header is pure (no SDL / no objc) so tests/AutoCapTests.cpp can compile it standalone.
 
 #include <atomic>
@@ -40,10 +42,14 @@ inline double PickCap(double refresh_hz, double est_fps) {
 	return refresh_hz / n;
 }
 
-// EMA of present intervals (seconds). Gaps above max_gap_s (loading stalls, pauses) are not samples.
+// EMA of present intervals (seconds). Gaps above max_gap_s (loading stalls, pauses) are not
+// samples.
 class Estimator {
 public:
-	void Reset() { m_ema = 0.0; m_last = -1.0; }
+	void Reset() {
+		m_ema  = 0.0;
+		m_last = -1.0;
+	}
 	void OnPresent(double t) {
 		if (m_last >= 0.0) {
 			const double dt = t - m_last;
@@ -65,29 +71,31 @@ private:
 
 class Controller {
 public:
-	static constexpr double kDownS    = 2.0;
-	static constexpr double kUpS      = 5.0;
-	static constexpr double kFullUpS  = 30.0; // R/2 -> R
-	static constexpr double kSettleS  = 1.0;
+	static constexpr double kDownS      = 2.0;
+	static constexpr double kUpS        = 5.0;
+	static constexpr double kFullUpS    = 30.0; // R/2 -> R
+	static constexpr double kSettleS    = 1.0;
 	static constexpr double kProbeFailS = 12.0;
 
 	// New screen (or display mode): restart from n = 2. Returns the new cap (0 = none).
 	double SetScreen(const Screen& s, double t) {
-		m_screen   = s;
-		m_backoff  = 1;
-		m_below    = m_above = -1.0;
-		m_last_up  = -1e9;
-		m_settle   = t + kSettleS;
-		m_cap      = Initial();
+		m_screen  = s;
+		m_backoff = 1;
+		m_below = m_above = -1.0;
+		m_last_up         = -1e9;
+		m_settle          = t + kSettleS;
+		m_cap             = Initial();
 		return m_cap;
 	}
-	double Cap() const { return m_cap; }
+	double        Cap() const { return m_cap; }
 	const Screen& Current() const { return m_screen; }
 
-	// Feed the sustained-fps estimate (0 = none). Returns the cap (0 = none); Changed() tells whether it moved.
+	// Feed the sustained-fps estimate (0 = none). Returns the cap (0 = none); Changed() tells
+	// whether it moved.
 	double Tick(double t, double est_fps) {
 		m_changed = false;
-		if (m_cap == 0.0 || m_screen.adaptive || m_screen.refresh_hz <= 0.0 || est_fps <= 0.0 || t < m_settle) {
+		if (m_cap == 0.0 || m_screen.adaptive || m_screen.refresh_hz <= 0.0 || est_fps <= 0.0 ||
+		    t < m_settle) {
 			return m_cap;
 		}
 		const double R = m_screen.refresh_hz;
@@ -133,25 +141,27 @@ private:
 	void Apply(double cap, double t) {
 		m_cap     = cap;
 		m_changed = true;
-		m_below   = m_above = -1.0;
-		m_settle  = t + kSettleS;
+		m_below = m_above = -1.0;
+		m_settle          = t + kSettleS;
 	}
 
 	Screen m_screen;
-	double m_cap      = 0.0;
-	double m_below    = -1.0, m_above = -1.0;
-	double m_last_up  = -1e9;
-	double m_settle   = 0.0;
-	int    m_backoff  = 1;
-	bool   m_changed  = false;
+	double m_cap   = 0.0;
+	double m_below = -1.0, m_above = -1.0;
+	double m_last_up = -1e9;
+	double m_settle  = 0.0;
+	int    m_backoff = 1;
+	bool   m_changed = false;
 };
 
-// ---- shared state: the window thread publishes the screen, the present thread consumes it -------------------------
+// ---- shared state: the window thread publishes the screen, the present thread consumes it
+// -------------------------
 struct Shared {
-	std::mutex           mutex;
-	Screen               screen;
-	std::atomic<uint32_t> seq {0};   // bumped on each published change
-	std::atomic<uint32_t> cap_milli {0}; // effective cap (milli-fps), 0 = none; written by the present thread
+	std::mutex            mutex;
+	Screen                screen;
+	std::atomic<uint32_t> seq {0}; // bumped on each published change
+	std::atomic<uint32_t> cap_milli {
+	    0}; // effective cap (milli-fps), 0 = none; written by the present thread
 };
 inline Shared& State() {
 	static Shared s;
@@ -170,7 +180,7 @@ inline void Publish(const Screen& s) {
 	st.seq.fetch_add(1);
 }
 inline Screen Snapshot() {
-	auto& st = State();
+	auto&                       st = State();
 	std::lock_guard<std::mutex> g(st.mutex);
 	return st.screen;
 }

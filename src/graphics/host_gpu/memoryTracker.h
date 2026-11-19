@@ -34,7 +34,7 @@ public:
 	// the regions' published mirrors (RegionManager::IsModifiedAcquire) instead of taking their
 	// locks. Other threads lock as before. Set once by the buffer cache.
 	using OwnerThreadFn = bool (*)() noexcept;
-	static void SetLockFreeDirtyOwner(OwnerThreadFn is_owner) noexcept;
+	static void        SetLockFreeDirtyOwner(OwnerThreadFn is_owner) noexcept;
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	// IsRegionCpuModified and IsRegionGpuModified of one range with each region lock taken once.

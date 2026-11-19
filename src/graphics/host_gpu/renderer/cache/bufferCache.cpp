@@ -385,7 +385,7 @@ Live::Switch g_readback_side_writes("KYTY_READBACK_SIDE_WRITES", Live::ParseDefa
 // published when the recording completes, so a later write fault finds the page clean (an
 // ordinary write fault, no command-processor round trip) or waits only for that copy. With it,
 // raise KYTY_READBACK_EAGER_PAGES (default 64; up to 2048).
-Live::Switch g_readback_eager_writes("KYTY_READBACK_EAGER_WRITES", Live::ParseDefaultOff);
+Live::Switch          g_readback_eager_writes("KYTY_READBACK_EAGER_WRITES", Live::ParseDefaultOff);
 std::atomic<uint64_t> g_readback_side_writes_copies {0};
 
 // KYTY_READ_FAULT_PUBLISHED (live, default off; =1 on, =verify): a guest thread's read fault on a
@@ -467,19 +467,21 @@ ReadFaultFrameBurst::PageFrameCounter& ReadRelaxCounter() {
 	return counter;
 }
 
-// nps5 zerocopy4: KYTY_ZEROCOPY_READ_OPEN (live, default off; needs KYTY_READ_FAULT_PUBLISHED). A buffer
-// page whose load a guest thread was just served from its published bytes becomes READ-OPEN: its read
-// watch stays off across new GPU writers (MemoryTracker::OpenRead), so later guest loads read the
-// page's backing directly and take no fault at all, as long as readbacks keep publishing the page.
-// What a load of an open page returns is what a served load returns: the GPU-written bytes as last
-// published (now by the GPU copying them straight into the guest pages, ZeroCopy::DirectReadback, or
-// by a staged publication), the other bytes as they are. The page stays GPU-dirty and write-watched:
-// guest writes, the command processor and every other library reader synchronize as before (they ask
-// the tracker; they never relied on the read watch). Once per guest frame (GPU thread,
-// BufferCache::IssueEagerReadbacks) every open page is checked:
-//  - not published within KYTY_READ_FAULT_PUBLISHED_FRAMES frames, an image took the page, the switch
+// nps5 zerocopy4: KYTY_ZEROCOPY_READ_OPEN (live, default off; needs KYTY_READ_FAULT_PUBLISHED). A
+// buffer page whose load a guest thread was just served from its published bytes becomes READ-OPEN:
+// its read watch stays off across new GPU writers (MemoryTracker::OpenRead), so later guest loads
+// read the page's backing directly and take no fault at all, as long as readbacks keep publishing
+// the page. What a load of an open page returns is what a served load returns: the GPU-written
+// bytes as last published (now by the GPU copying them straight into the guest pages,
+// ZeroCopy::DirectReadback, or by a staged publication), the other bytes as they are. The page
+// stays GPU-dirty and write-watched: guest writes, the command processor and every other library
+// reader synchronize as before (they ask the tracker; they never relied on the read watch). Once
+// per guest frame (GPU thread, BufferCache::IssueEagerReadbacks) every open page is checked:
+//  - not published within KYTY_READ_FAULT_PUBLISHED_FRAMES frames, an image took the page, the
+//  switch
 //    went off, or it has been open for KYTY_ZEROCOPY_READ_OPEN_FRAMES (default 600) frames: closed
-//    (GPU-dirty pages are access-watched again; a page still read re-opens at its next served load);
+//    (GPU-dirty pages are access-watched again; a page still read re-opens at its next served
+//    load);
 //  - else it is kept read-hot (its eager copy keeps publishing the GPU's new bytes), and the other
 //    tracker pages of its host page (KYTY_READ_RELAX_SPAN_KB, default 16 KiB) are opened too once
 //    they are published recently, or made read-hot when the GPU owns them unpublished: a host page
@@ -499,18 +501,19 @@ uint32_t ReadOpenMaxFrames() {
 }
 
 struct ReadOpenState {
-	std::mutex                             mutex;
-	std::unordered_map<uint64_t, uint32_t> pages; // open tracker page -> guest frame it was opened in
-	std::atomic<uint64_t>                  opened {0};
-	std::atomic<uint64_t>                  neighbours {0};
-	std::atomic<uint64_t>                  promoted {0};
-	std::atomic<uint64_t>                  closed_stale {0};
-	std::atomic<uint64_t>                  closed_image {0};
-	std::atomic<uint64_t>                  closed_expired {0};
-	std::atomic<uint64_t>                  closed_off {0};
-	std::atomic<uint32_t>                  sweep_frame {0}; // written by the GPU thread
-	std::atomic<uint64_t>                  closed_unchecked {0};
-	uint64_t                               report_ns = 0; // GPU thread
+	std::mutex mutex;
+	std::unordered_map<uint64_t, uint32_t>
+	                      pages; // open tracker page -> guest frame it was opened in
+	std::atomic<uint64_t> opened {0};
+	std::atomic<uint64_t> neighbours {0};
+	std::atomic<uint64_t> promoted {0};
+	std::atomic<uint64_t> closed_stale {0};
+	std::atomic<uint64_t> closed_image {0};
+	std::atomic<uint64_t> closed_expired {0};
+	std::atomic<uint64_t> closed_off {0};
+	std::atomic<uint32_t> sweep_frame {0}; // written by the GPU thread
+	std::atomic<uint64_t> closed_unchecked {0};
+	uint64_t              report_ns = 0; // GPU thread
 };
 ReadOpenState& ReadOpen() {
 	static ReadOpenState state;
@@ -542,28 +545,36 @@ struct FaultClassState {
 };
 uint32_t FaultClassEnvU32(const char* name, uint32_t fallback) {
 	const auto* value = std::getenv(name);
-	return value != nullptr && value[0] != 0 ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : fallback;
+	return value != nullptr && value[0] != 0
+	           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
+	           : fallback;
 }
 FaultClassState& FaultClasses() {
 	static FaultClassState* state = [] {
 		FaultClass::Limits limits;
-		limits.promote_frames   = std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_FRAMES", limits.promote_frames));
-		limits.window_frames    = std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_WINDOW", limits.window_frames));
-		limits.demote_conflicts = std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_CONFLICTS", limits.demote_conflicts));
-		limits.exact_frames     = std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_EXACT_FRAMES", limits.exact_frames));
-		auto* made = new FaultClassState(limits);
-		const auto* in  = std::getenv("KYTY_FAULT_CLASS_PROFILE");
-		const auto* out = std::getenv("KYTY_FAULT_CLASS_PROFILE_OUT");
+		limits.promote_frames =
+		    std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_FRAMES", limits.promote_frames));
+		limits.window_frames =
+		    std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_WINDOW", limits.window_frames));
+		limits.demote_conflicts =
+		    std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_CONFLICTS", limits.demote_conflicts));
+		limits.exact_frames =
+		    std::max(1u, FaultClassEnvU32("KYTY_FAULT_CLASS_EXACT_FRAMES", limits.exact_frames));
+		auto*       made   = new FaultClassState(limits);
+		const auto* in     = std::getenv("KYTY_FAULT_CLASS_PROFILE");
+		const auto* out    = std::getenv("KYTY_FAULT_CLASS_PROFILE_OUT");
 		size_t      loaded = 0;
 		if (in != nullptr && in[0] != 0) {
 			loaded = FaultClass::LoadProfile(in, TRACKER_PAGE_SIZE,
-			                                 FaultClassEnvU32("KYTY_FAULT_CLASS_SEEDS", 4096), made->table);
+			                                 FaultClassEnvU32("KYTY_FAULT_CLASS_SEEDS", 4096),
+			                                 made->table);
 		}
 		made->profile_out = out != nullptr ? out : in != nullptr ? in : "";
-		std::printf("Kyty fault class (KYTY_FAULT_CLASS): late after %u read frames in %u, exact after %u store "
+		std::printf("Kyty fault class (KYTY_FAULT_CLASS): late after %u read frames in %u, exact "
+		            "after %u store "
 		            "conflicts for %u frames; profile: %zu seed pages from %s, written to %s\n",
-		            limits.promote_frames, limits.window_frames, limits.demote_conflicts, limits.exact_frames,
-		            loaded, in != nullptr && in[0] != 0 ? in : "(none)",
+		            limits.promote_frames, limits.window_frames, limits.demote_conflicts,
+		            limits.exact_frames, loaded, in != nullptr && in[0] != 0 ? in : "(none)",
 		            made->profile_out.empty() ? "(none)" : made->profile_out.c_str());
 		return made;
 	}();
@@ -571,12 +582,13 @@ FaultClassState& FaultClasses() {
 }
 
 // nps5 zerocopy4: KYTY_ZC_UPLOAD_CLASSIFY=<n> (diagnostic, default off; read once): classifies the
-// CPU->GPU upload traffic by what an in-place (zero-copy) upload would need. Every n-th tracker page
-// (by address) that an upload copies is hashed and compared with its previous upload:
+// CPU->GPU upload traffic by what an in-place (zero-copy) upload would need. Every n-th tracker
+// page (by address) that an upload copies is hashed and compared with its previous upload:
 //  first      no previous upload of the page seen;
 //  unchanged  same bytes as the previous upload (fault-ahead, false sharing, rewritten equal);
 //  settled    changed, and the recording of the previous upload had completed on the GPU;
-//  in flight  changed while the recording that took the previous snapshot had not completed: GPU work
+//  in flight  changed while the recording that took the previous snapshot had not completed: GPU
+//  work
 //             recorded against the old bytes would read the new ones in place.
 // One "Kyty upload classes" line every 10 s (pages and MiB, scaled by n).
 struct UploadClassState {
@@ -1175,8 +1187,8 @@ bool EagerReadbackEnabled() {
 // default 600) and KYTY_READBACK_EAGER_FRAME_BUDGET (copies per page and frame, default 4).
 EagerReadbackPages::Limits EagerReadbackLimits() {
 	EagerReadbackPages::Limits limits;
-	limits.capacity =
-	    static_cast<uint32_t>(std::min<uint64_t>(ParseEnvU64("KYTY_READBACK_EAGER_PAGES", 64), 2048));
+	limits.capacity = static_cast<uint32_t>(
+	    std::min<uint64_t>(ParseEnvU64("KYTY_READBACK_EAGER_PAGES", 64), 2048));
 	limits.idle_frames = static_cast<uint32_t>(
 	    std::clamp<uint64_t>(ParseEnvU64("KYTY_READBACK_EAGER_IDLE_FRAMES", 600), 1, 1000000));
 	limits.frame_budget = static_cast<uint32_t>(
@@ -2090,7 +2102,8 @@ BufferCache::UploadBatch::~UploadBatch() {
 void BufferCache::AdvanceFrame() noexcept {
 	m_memory_tracker.AdvanceFrame();
 	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the per-frame check runs on the GPU thread before a
-	// submission. If it did not run for 3 guest frames, nothing vouches for the open pages: close all.
+	// submission. If it did not run for 3 guest frames, nothing vouches for the open pages: close
+	// all.
 	if (auto& open = ReadOpen();
 	    m_memory_tracker.Frame() - open.sweep_frame.load(std::memory_order_relaxed) > 3) {
 		std::lock_guard lock(open.mutex);
@@ -2488,11 +2501,13 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 				    std::memory_order_relaxed);
 			}
 			// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the served page (a buffer page, no image,
-			// published recently) stays readable from now on; the per-frame check keeps or closes it.
-			// nps5 faultclass (KYTY_FAULT_CLASS): the same, but only for a page read in several frames.
+			// published recently) stays readable from now on; the per-frame check keeps or closes
+			// it. nps5 faultclass (KYTY_FAULT_CLASS): the same, but only for a page read in several
+			// frames.
 			if (m_eager_enabled &&
-			    (g_read_open.On() || (g_fault_class.On() && other_page == 0 &&
-			                          FaultClasses().table.NoteRead(page, static_cast<uint32_t>(frame))))) {
+			    (g_read_open.On() ||
+			     (g_fault_class.On() && other_page == 0 &&
+			      FaultClasses().table.NoteRead(page, static_cast<uint32_t>(frame))))) {
 				auto&           open = ReadOpen();
 				std::lock_guard lock(open.mutex);
 				if (open.pages.emplace(page, static_cast<uint32_t>(frame)).second) {
@@ -2685,7 +2700,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write, bool 
 	auto                          result    = SideIssueResult::Other;
 	const auto                    sync_mark = diag ? ReadFaultDiag::NowNs() : 0;
 	const auto                    write_mark = is_write ? ReadFaultDiag::NowNs() : 0;
-	bool                          current   = false; // KYTY_CLEAN_PAGE
+	bool                          current    = false; // KYTY_CLEAN_PAGE
 	gpu.SendCommandSync([&, this, vaddr, size, is_write] {
 		if (!is_write || g_readback_eager_writes.On()) {
 			NoteEagerRead(vaddr, size, false);
@@ -3484,14 +3499,15 @@ void BufferCache::IssueEagerReadbacks() {
 	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the per-frame check of the read-open pages.
 	if (auto& open = ReadOpen(); open.sweep_frame.load(std::memory_order_relaxed) != frame) {
 		open.sweep_frame.store(frame, std::memory_order_relaxed);
-		const auto now   = ReadFaultDiag::NowNs();
-		size_t     live  = 0;
+		const auto now  = ReadFaultDiag::NowNs();
+		size_t     live = 0;
 		{
-			// nps5 faultclass: KYTY_FAULT_CLASS keeps the check running like the read-open switch; a
-			// page its table made Exact (guest stores waited for unpublished GPU bytes) is closed.
+			// nps5 faultclass: KYTY_FAULT_CLASS keeps the check running like the read-open switch;
+			// a page its table made Exact (guest stores waited for unpublished GPU bytes) is
+			// closed.
 			const bool            classes = g_fault_class.On();
-			const bool            on   = g_read_open.On() || classes;
-			const uint64_t        span = ReadRelaxSpan();
+			const bool            on      = g_read_open.On() || classes;
+			const uint64_t        span    = ReadRelaxSpan();
 			std::vector<uint64_t> add;
 			std::lock_guard       lock(open.mutex);
 			for (auto it = open.pages.begin(); it != open.pages.end();) {
@@ -3499,14 +3515,23 @@ void BufferCache::IssueEagerReadbacks() {
 				const bool image = m_texture_cache.IsRegionGpuModified(page, TRACKER_PAGE_SIZE);
 				const bool stale = !ReadFaultPublishedRecently(page, frame);
 				const bool old   = frame - it->second > ReadOpenMaxFrames();
-				const bool exact = classes && FaultClasses().table.Get(page, frame) == FaultClass::Class::Exact;
+				const bool exact =
+				    classes && FaultClasses().table.Get(page, frame) == FaultClass::Class::Exact;
 				if (!on || image || stale || old || exact) {
 					(void)m_memory_tracker.CloseRead(page, TRACKER_PAGE_SIZE);
-					(!on ? open.closed_off : image ? open.closed_image : stale ? open.closed_stale
-					                                                         : open.closed_expired)
+					(!on     ? open.closed_off
+					 : image ? open.closed_image
+					 : stale ? open.closed_stale
+					         : open.closed_expired)
 					    .fetch_add(1, std::memory_order_relaxed);
-					// reason 10 = faultclass: demoted to exact (counted with "expired" in the read-open line)
-					FlightRec::ZcSkip(page, TRACKER_PAGE_SIZE, !on ? 9 : image ? 8 : stale ? 6 : exact ? 10 : 7);
+					// reason 10 = faultclass: demoted to exact (counted with "expired" in the
+					// read-open line)
+					FlightRec::ZcSkip(page, TRACKER_PAGE_SIZE,
+					                  !on     ? 9
+					                  : image ? 8
+					                  : stale ? 6
+					                  : exact ? 10
+					                          : 7);
 					// An expired page keeps its class: its next served load re-opens it.
 					if (classes && !exact && !old) {
 						FaultClasses().table.NoteClosed(page);
@@ -3521,7 +3546,8 @@ void BufferCache::IssueEagerReadbacks() {
 					if (other == page || open.pages.contains(other) ||
 					    !IsRegionGpuModifiedRelaxed(other, TRACKER_PAGE_SIZE) ||
 					    m_texture_cache.IsRegionGpuModified(other, TRACKER_PAGE_SIZE) ||
-					    (classes && FaultClasses().table.Get(other, frame) == FaultClass::Class::Exact)) {
+					    (classes &&
+					     FaultClasses().table.Get(other, frame) == FaultClass::Class::Exact)) {
 						continue;
 					}
 					if (ReadFaultPublishedRecently(other, frame)) {
@@ -3583,13 +3609,14 @@ void BufferCache::IssueEagerReadbacks() {
 				cls.report_ns       = now;
 				const auto counters = cls.table.TakeCounters();
 				const auto late     = cls.table.LatePages();
-				std::printf("Kyty fault class 10s: %zu pages late (%zu open, %zu tracked); promoted %" PRIu64
-				            ", demoted to exact %" PRIu64 " (%" PRIu64 " store conflicts, %.1f ms waited); seeds: "
+				std::printf("Kyty fault class 10s: %zu pages late (%zu open, %zu tracked); "
+				            "promoted %" PRIu64 ", demoted to exact %" PRIu64 " (%" PRIu64
+				            " store conflicts, %.1f ms waited); seeds: "
 				            "opened %" PRIu64 ", kept read-hot %" PRIu64 " times\n",
-				            late.size(), live, cls.table.Size(), counters.promoted, counters.demoted,
-				            counters.conflicts,
-				            static_cast<double>(cls.store_conflict_ns.exchange(0)) / 1e6, counters.seed_hits,
-				            cls.seed_hot.exchange(0));
+				            late.size(), live, cls.table.Size(), counters.promoted,
+				            counters.demoted, counters.conflicts,
+				            static_cast<double>(cls.store_conflict_ns.exchange(0)) / 1e6,
+				            counters.seed_hits, cls.seed_hot.exchange(0));
 				if (!cls.profile_out.empty() && late.size() != cls.saved && !late.empty()) {
 					cls.saved = late.size();
 					(void)FaultClass::SaveProfile(cls.profile_out, late, TRACKER_PAGE_SIZE);
@@ -3599,32 +3626,37 @@ void BufferCache::IssueEagerReadbacks() {
 		if (open.report_ns == 0) {
 			open.report_ns = now;
 		} else if (now - open.report_ns >= 10'000'000'000ull) {
-			open.report_ns  = now;
-			const auto take = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
+			open.report_ns    = now;
+			const auto take   = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
 			const auto opened = take(open.opened);
 			const auto closed = take(open.closed_stale);
 			if (g_read_open.On() || live != 0 || opened != 0 || closed != 0) {
 				std::printf("Kyty read-open 10s: %zu pages open; opened %" PRIu64 " (+%" PRIu64
-				            " neighbours, %" PRIu64 " neighbours made read-hot); closed: not published "
-				            "recently %" PRIu64 ", image %" PRIu64 ", expired %" PRIu64 ", switched off %" PRIu64
-				            ", check missing %" PRIu64 "\n",
+				            " neighbours, %" PRIu64
+				            " neighbours made read-hot); closed: not published "
+				            "recently %" PRIu64 ", image %" PRIu64 ", expired %" PRIu64
+				            ", switched off %" PRIu64 ", check missing %" PRIu64 "\n",
 				            live, opened, take(open.neighbours), take(open.promoted), closed,
-				            take(open.closed_image), take(open.closed_expired), take(open.closed_off),
-				            take(open.closed_unchecked));
+				            take(open.closed_image), take(open.closed_expired),
+				            take(open.closed_off), take(open.closed_unchecked));
 			}
 			if (UploadClassifyEvery() != 0) {
 				auto&        cls   = UploadClass();
 				const double scale = static_cast<double>(UploadClassifyEvery());
 				const auto   mib   = [scale](uint64_t pages) {
-					return static_cast<double>(pages) * scale * TRACKER_PAGE_SIZE / (1024.0 * 1024.0);
+					return static_cast<double>(pages) * scale * TRACKER_PAGE_SIZE /
+					       (1024.0 * 1024.0);
 				};
-				std::printf("Kyty upload classes 10s (every %u. page, scaled): first %.1f MiB, unchanged %.1f "
-				            "MiB, changed after its last upload completed %.1f MiB, changed in flight %.1f "
-				            "MiB; hot pages (rewritten every frame, compared by shadow) %.1f MiB\n",
-				            UploadClassifyEvery(), mib(cls.count[0]), mib(cls.count[1]), mib(cls.count[2]),
-				            mib(cls.count[3]), static_cast<double>(cls.hot_pages) * TRACKER_PAGE_SIZE / (1024.0 * 1024.0));
+				std::printf(
+				    "Kyty upload classes 10s (every %u. page, scaled): first %.1f MiB, unchanged "
+				    "%.1f "
+				    "MiB, changed after its last upload completed %.1f MiB, changed in flight %.1f "
+				    "MiB; hot pages (rewritten every frame, compared by shadow) %.1f MiB\n",
+				    UploadClassifyEvery(), mib(cls.count[0]), mib(cls.count[1]), mib(cls.count[2]),
+				    mib(cls.count[3]),
+				    static_cast<double>(cls.hot_pages) * TRACKER_PAGE_SIZE / (1024.0 * 1024.0));
 				cls.count[0] = cls.count[1] = cls.count[2] = cls.count[3] = 0;
-				cls.hot_pages                                              = 0;
+				cls.hot_pages                                             = 0;
 				if (cls.pages.size() > 400000) {
 					cls.pages.clear();
 				}
@@ -4049,7 +4081,8 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		for (const auto& copy: copies) {
 			EraseHotShadows(buffer.CpuAddress() + copy.dstOffset, copy.size);
 		}
-		if (const auto every = UploadClassifyEvery(); every != 0 && GuestGpu::IsGpuThread()) [[unlikely]] {
+		if (const auto every = UploadClassifyEvery(); every != 0 && GuestGpu::IsGpuThread())
+		    [[unlikely]] {
 			// nps5 zerocopy4 (KYTY_ZC_UPLOAD_CLASSIFY): see UploadClassState.
 			auto&      cls  = UploadClass();
 			const auto tick = m_scheduler.CurrentTick();
@@ -4066,9 +4099,10 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 					}
 					const auto hash = HashPage(bytes);
 					auto&      seen = cls.pages[page];
-					const int  kind = seen.tick == 0 ? 0
-					                 : seen.hash == hash ? 1
-					                 : m_scheduler.IsFree(seen.tick) ? 2 : 3;
+					const int  kind = seen.tick == 0                  ? 0
+					                  : seen.hash == hash             ? 1
+					                  : m_scheduler.IsFree(seen.tick) ? 2
+					                                                  : 3;
 					cls.count[kind]++;
 					seen.hash = hash;
 					seen.tick = tick;

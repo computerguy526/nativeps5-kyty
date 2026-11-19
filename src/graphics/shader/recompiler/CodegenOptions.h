@@ -188,9 +188,11 @@ struct CodegenOptions {
 	// slice (CollectPositionSlice) is decorated NoContraction, so KosmicKrisp keeps all position
 	// math in math_mode(safe) while the other outputs (normals, UVs, colours) become fast math.
 	bool fast_math_vs = false;
-	// KYTY_FAST_MATH_DENY=<file> / KYTY_FAST_MATH_ALLOW=<file> (hex guest shader hashes, one per line, '#' comments): per-shader
-	// override of KYTY_FAST_MATH. DENY: listed shaders keep exact (v1) math. ALLOW: ONLY listed shaders get fast math (an ALLOW file wins
-	// over DENY when both are set: listed in ALLOW and not in DENY). Sorted; part of the codegen fingerprint only when a list is set.
+	// KYTY_FAST_MATH_DENY=<file> / KYTY_FAST_MATH_ALLOW=<file> (hex guest shader hashes, one per
+	// line, '#' comments): per-shader override of KYTY_FAST_MATH. DENY: listed shaders keep exact
+	// (v1) math. ALLOW: ONLY listed shaders get fast math (an ALLOW file wins over DENY when both
+	// are set: listed in ALLOW and not in DENY). Sorted; part of the codegen fingerprint only when
+	// a list is set.
 	std::vector<uint64_t> fast_math_deny;
 	std::vector<uint64_t> fast_math_allow;
 	bool                  fast_math_allow_set = false;
@@ -467,7 +469,8 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 
 // True when KYTY_LOOP_GUARD applies to the guest shader with this hash.
 [[nodiscard]] bool LoopGuardApplies(uint64_t shader_hash);
-// KYTY_FAST_MATH_DENY / KYTY_FAST_MATH_ALLOW: may this guest shader use fast math? (true when no list is set)
+// KYTY_FAST_MATH_DENY / KYTY_FAST_MATH_ALLOW: may this guest shader use fast math? (true when no
+// list is set)
 [[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage = "?");
 // KYTY_GPU_ACCURACY=normal covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
 [[nodiscard]] bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage);

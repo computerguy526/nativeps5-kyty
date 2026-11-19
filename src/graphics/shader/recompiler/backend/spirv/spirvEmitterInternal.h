@@ -216,9 +216,9 @@ struct EmitterState {
 	std::unordered_set<const IR::Inst*>   position_slice;
 	// KYTY_GPU_ACCURACY=normal: -1 undecided, 0 off, 1 on for this program; the precise set
 	// (PreciseSet in spirvEmitterAlu.cpp) is built on first use.
-	int8_t                                selective_precision = -1;
-	bool                                  precise_set_ready   = false;
-	std::unordered_set<const IR::Inst*>   precise_set;
+	int8_t                              selective_precision = -1;
+	bool                                precise_set_ready   = false;
+	std::unordered_set<const IR::Inst*> precise_set;
 	// Pixel inputs whose V_INTERP_P2 reads were all resolved to hardware I/J pairs of one
 	// perspective mode (KYTY_INTERP_MODES): variable -> sampling location its decoration selects.
 	std::unordered_map<uint32_t, IR::InterpolationMode> input_interpolation;
@@ -642,12 +642,14 @@ bool FastMathVertex(const EmitterState& state);
 bool InPositionSlice(EmitterState& state, const IR::Inst& inst);
 // KYTY_FAST_MATH_VS: decorates the f32 results among the function words from word_offset on.
 void DecoratePositionFloatResults(EmitterState& state, size_t word_offset);
-// KYTY_GPU_ACCURACY=normal applies to this program (pixel/compute, lists, not under KYTY_FAST_MATH).
+// KYTY_GPU_ACCURACY=normal applies to this program (pixel/compute, lists, not under
+// KYTY_FAST_MATH).
 bool SelectivePrecision(EmitterState& state);
 // The instruction is in the program's precise set (KYTY_GPU_ACCURACY=normal; built on first use).
 bool PreciseInst(EmitterState& state, const IR::Inst& inst);
 // KYTY_GPU_ACCURACY=normal: decorates the f32 arithmetic results among the function words from
-// word_offset on FPFastMathMode(fast) (they were emitted for an instruction outside the precise set).
+// word_offset on FPFastMathMode(fast) (they were emitted for an instruction outside the precise
+// set).
 void DecorateFastFloatResults(EmitterState& state, size_t word_offset);
 
 F32Class EmitClassifyF32Bits(EmitterState& state, uint32_t bits);

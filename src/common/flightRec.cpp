@@ -398,7 +398,9 @@ void* MonitorMain(void*) {
 			armed_present = 0;
 		}
 		if (pt != 0 && Detail::g_present.load(std::memory_order_relaxed) >= 2) {
-			const uint64_t gap_ms = TicksToNs(now > pt ? now - pt : 0) / 1000000ull; // pt may be newer than now (stored after the read): no wrap
+			const uint64_t gap_ms =
+			    TicksToNs(now > pt ? now - pt : 0) /
+			    1000000ull; // pt may be newer than now (stored after the read): no wrap
 			if (gap_ms > 2000 && (armed_present & 1u) == 0) {
 				armed_present |= 1u;
 				Rec(EvStall, 1, gap_ms);
@@ -423,7 +425,10 @@ void* MonitorMain(void*) {
 			armed_main = 0;
 		}
 		if (hb != 0) {
-			const uint64_t gap_ms = TicksToNs(now > hb ? now - hb : 0) / 1000000ull; // hb may be newer than now: an unsigned wrap gave false "mainhang" dumps (earlysub sky2, gap 6148914691236 ms)
+			const uint64_t gap_ms =
+			    TicksToNs(now > hb ? now - hb : 0) /
+			    1000000ull; // hb may be newer than now: an unsigned wrap gave false "mainhang"
+			                // dumps (earlysub sky2, gap 6148914691236 ms)
 			if (gap_ms > 250 && gap_ms % 500 < 100) {
 				Rec(EvHeartbeat, gap_ms);
 			}

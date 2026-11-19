@@ -18,19 +18,21 @@ inline std::atomic<uint32_t> g_last_frame_ms {0};
 // Steady ns at which the frame time was last above 100 ms (0 = never).
 inline std::atomic<uint64_t> g_slow_frame_ns {0};
 
-// transfx: periodic cache saves (Vulkan pipeline cache ~285 MB, program cache ~180 MB) wait out level
-// loads. KYTY_SAVE_LOAD_QUIET_S=N (default 0 = off, behaviour unchanged): a periodic save is not
-// started until N s after the last sign of a level load:
+// transfx: periodic cache saves (Vulkan pipeline cache ~285 MB, program cache ~180 MB) wait out
+// level loads. KYTY_SAVE_LOAD_QUIET_S=N (default 0 = off, behaviour unchanged): a periodic save is
+// not started until N s after the last sign of a level load:
 //   - a frame above 100 ms (g_slow_frame_ns),
-//   - the game's VFS read counter (nps5_vfs_bytes_read, exported by the runtime) growing by at least
-//     KYTY_SAVE_LOAD_VFS_MBS (default 48) MB/s between two checks (the savers check about once a second),
+//   - the game's VFS read counter (nps5_vfs_bytes_read, exported by the runtime) growing by at
+//   least
+//     KYTY_SAVE_LOAD_VFS_MBS (default 48) MB/s between two checks (the savers check about once a
+//     second),
 //   - a new level opened (nps5_vfs_phase).
-// A save is held back at most KYTY_SAVE_LOAD_MAX_DEFER_S (default 180) s in a row, so a long stream of
-// loads cannot postpone it forever. Exit, SIGTERM and window-close saves are never held back.
+// A save is held back at most KYTY_SAVE_LOAD_MAX_DEFER_S (default 180) s in a row, so a long stream
+// of loads cannot postpone it forever. Exit, SIGTERM and window-close saves are never held back.
 inline uint64_t EnvU64Or(const char* name, uint64_t def) {
 	const char* v = std::getenv(name);
 	if (v == nullptr || *v == '\0') return def;
-	char* end = nullptr;
+	char*      end    = nullptr;
 	const auto parsed = std::strtoull(v, &end, 10);
 	return end != v ? parsed : def;
 }
@@ -47,18 +49,21 @@ inline uint64_t LastLoadSignNs(uint64_t now) {
 	static uint64_t   last_ns = 0, last_bytes = 0, last_sign = 0;
 	static int        last_phase = -1;
 #if defined(__APPLE__) || defined(__linux__)
-	static const auto* bytes = reinterpret_cast<const std::atomic<unsigned long long>*>(dlsym(RTLD_DEFAULT, "nps5_vfs_bytes_read"));
-	static const auto* phase = reinterpret_cast<const std::atomic<int>*>(dlsym(RTLD_DEFAULT, "nps5_vfs_phase"));
+	static const auto* bytes = reinterpret_cast<const std::atomic<unsigned long long>*>(
+	    dlsym(RTLD_DEFAULT, "nps5_vfs_bytes_read"));
+	static const auto* phase =
+	    reinterpret_cast<const std::atomic<int>*>(dlsym(RTLD_DEFAULT, "nps5_vfs_phase"));
 #else
 	static const std::atomic<unsigned long long>* bytes = nullptr;
 	static const std::atomic<int>*                phase = nullptr;
 #endif
 	static const uint64_t mbs = EnvU64Or("KYTY_SAVE_LOAD_VFS_MBS", 48);
-	std::scoped_lock lock(m);
+	std::scoped_lock      lock(m);
 	if (bytes != nullptr) {
 		const uint64_t b = bytes->load(std::memory_order_relaxed);
 		if (last_ns != 0 && now > last_ns && b >= last_bytes) {
-			const double rate = static_cast<double>(b - last_bytes) * 1e9 / static_cast<double>(now - last_ns);
+			const double rate =
+			    static_cast<double>(b - last_bytes) * 1e9 / static_cast<double>(now - last_ns);
 			if (rate >= static_cast<double>(mbs) * 1048576.0) last_sign = now;
 		}
 		last_ns    = now;
@@ -79,7 +84,8 @@ inline uint64_t LastLoadSignNs(uint64_t now) {
 inline bool SaveHeldForLoad(uint64_t now, uint64_t& since) {
 	const uint64_t quiet = SaveLoadQuietNs();
 	if (quiet == 0) return false;
-	static const uint64_t max_defer = EnvU64Or("KYTY_SAVE_LOAD_MAX_DEFER_S", 180) * 1'000'000'000ull;
+	static const uint64_t max_defer =
+	    EnvU64Or("KYTY_SAVE_LOAD_MAX_DEFER_S", 180) * 1'000'000'000ull;
 	const uint64_t sign = LastLoadSignNs(now);
 	if (sign == 0 || now - sign >= quiet) {
 		since = 0;

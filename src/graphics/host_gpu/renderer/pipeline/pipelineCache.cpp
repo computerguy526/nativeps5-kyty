@@ -1969,14 +1969,16 @@ struct PipelineCache::ProgramCache {
 		// fmsel6: KYTY_PRECISION_DUMP_DIR=<dir> writes each emitted pixel/compute module that
 		// carries FPFastMathMode decorations (KYTY_GPU_ACCURACY=normal) as <dir>/<hash>_<stage>.spv
 		// (first one per name) for offline spirv-val / KosmicKrisp MSL checks.
-		if (const char* dir = std::getenv("KYTY_PRECISION_DUMP_DIR"); dir != nullptr && dir[0] != '\0') {
+		if (const char* dir = std::getenv("KYTY_PRECISION_DUMP_DIR");
+		    dir != nullptr && dir[0] != '\0') {
 			bool decorated = false;
 			for (size_t at = 5; at < emitted.spirv.size();) {
 				const uint32_t count = emitted.spirv[at] >> 16u;
 				if (count == 0) {
 					break;
 				}
-				if ((emitted.spirv[at] & 0xffffu) == 71u /* OpDecorate */ && count >= 3 && at + 2 < emitted.spirv.size() &&
+				if ((emitted.spirv[at] & 0xffffu) == 71u /* OpDecorate */ && count >= 3 &&
+				    at + 2 < emitted.spirv.size() &&
 				    emitted.spirv[at + 2] == 40u /* FPFastMathMode */) {
 					decorated = true;
 					break;
@@ -1984,7 +1986,8 @@ struct PipelineCache::ProgramCache {
 				at += count;
 			}
 			if (decorated) {
-				const auto path = fmt::format("{}/{:016x}_{}.spv", dir, options.shader_hash, stage_name);
+				const auto path =
+				    fmt::format("{}/{:016x}_{}.spv", dir, options.shader_hash, stage_name);
 				if (FILE* probe = std::fopen(path.c_str(), "rb"); probe != nullptr) {
 					std::fclose(probe);
 				} else if (FILE* out = std::fopen(path.c_str(), "wb"); out != nullptr) {
@@ -6589,8 +6592,9 @@ struct PipelineCache::DriverCacheSaver {
 
 	[[nodiscard]] bool Due(uint64_t now) const {
 		const auto& settings = DriverCacheSaveSettings::Get();
-		// transfx: KYTY_SAVE_LOAD_QUIET_S (nps5Frame.h): no periodic save during or right after a level
-		// load. Sampled on every check (also with nothing pending) so the VFS read rate stays per second.
+		// transfx: KYTY_SAVE_LOAD_QUIET_S (nps5Frame.h): no periodic save during or right after a
+		// level load. Sampled on every check (also with nothing pending) so the VFS read rate stays
+		// per second.
 		const bool  held     = Nps5Frame::SaveHeldForLoad(now, load_held_since);
 		const auto  pending  = created.load(std::memory_order_acquire) - saved_created;
 		if (pending == 0 || oversized || now < retry_after_ns) {
@@ -6598,7 +6602,9 @@ struct PipelineCache::DriverCacheSaver {
 		}
 		if (held) {
 			if (!load_hold_logged) {
-				PipelineCacheLog("Vulkan pipeline cache: periodic save held back for a level load ({} pipelines pending, KYTY_SAVE_LOAD_QUIET_S)", pending);
+				PipelineCacheLog("Vulkan pipeline cache: periodic save held back for a level load "
+				                 "({} pipelines pending, KYTY_SAVE_LOAD_QUIET_S)",
+				                 pending);
 				load_hold_logged = true;
 			}
 			return false;

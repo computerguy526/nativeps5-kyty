@@ -246,9 +246,10 @@ void MemoryTracker::SetLockFreeDirtyOwner(OwnerThreadFn is_owner) noexcept {
 bool MemoryTracker::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 	CheckNotInUploadCallback();
 	if (LockFreeDirtyHere()) {
-		return Iterate<true>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-			return manager->IsModifiedAcquire<DirtySource::Cpu>(offset, bytes);
-		});
+		return Iterate<true>(vaddr, size,
+		                     [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+			                     return manager->IsModifiedAcquire<DirtySource::Cpu>(offset, bytes);
+		                     });
 	}
 	return Iterate<true>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		std::scoped_lock lock(manager->lock);
@@ -259,9 +260,10 @@ bool MemoryTracker::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 bool MemoryTracker::IsRegionGpuModified(uint64_t vaddr, uint64_t size) {
 	CheckNotInUploadCallback();
 	if (LockFreeDirtyHere()) {
-		return Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-			return manager->IsModifiedAcquire<DirtySource::Gpu>(offset, bytes);
-		});
+		return Iterate<false>(
+		    vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
+			    return manager->IsModifiedAcquire<DirtySource::Gpu>(offset, bytes);
+		    });
 	}
 	return Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		std::scoped_lock lock(manager->lock);

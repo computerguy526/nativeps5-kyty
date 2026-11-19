@@ -6,6 +6,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
+#include "graphics/shader/recompiler/ir/passes/PrecisionAnalysis.h"
 
 #include <algorithm>
 #include <bit>
@@ -14,8 +15,6 @@
 #include <cstring>
 #include <fmt/format.h>
 #include <set>
-#include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/ir/passes/PrecisionAnalysis.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Msl {
 
@@ -397,7 +396,8 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 	const auto type_name = MslTypeName(inst.GetType());
 	const auto assign    = [&](uint32_t h, const std::string& expr) {
 		const auto t = inst.GetType();
-		if (ctx.selective_precision && (t == IR::Type::F32 || t == IR::Type::F32x2) && !ctx.precise.contains(&inst)) {
+		if (ctx.selective_precision && (t == IR::Type::F32 || t == IR::Type::F32x2) &&
+		    !ctx.precise.contains(&inst)) {
 			ctx.b.Line("{");
 			ctx.b.Line("#pragma METAL fp math_mode(fast)");
 			ctx.b.Line(fmt::format("{} = {};", ctx.Name(inst, h), expr));
@@ -1090,9 +1090,11 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	MslResult result;
 	MslCtx    ctx(program, input_info);
 	if (program.stage == ShaderType::Pixel || program.stage == ShaderType::Compute) {
-		const char* stage_name  = program.stage == ShaderType::Pixel ? "fs" : "cs";
-		const bool  all_fast    = AllFastApplies(program.shader_hash, stage_name); // low: empty precise set
-		ctx.selective_precision = all_fast || SelectivePrecisionApplies(program.shader_hash, stage_name);
+		const char* stage_name = program.stage == ShaderType::Pixel ? "fs" : "cs";
+		const bool  all_fast =
+		    AllFastApplies(program.shader_hash, stage_name); // low: empty precise set
+		ctx.selective_precision =
+		    all_fast || SelectivePrecisionApplies(program.shader_hash, stage_name);
 		if (ctx.selective_precision && !all_fast) {
 			IR::CollectPreciseSet(program, GetCodegenOptions().gpu_accuracy_extra, ctx.precise);
 		}

@@ -42,8 +42,8 @@ enum class Class : uint8_t { Unknown, Late, Exact };
 struct Limits {
 	uint32_t promote_frames   = 3;   // distinct frames with a read fault before a page is Late
 	uint32_t window_frames    = 120; // the frames those faults / conflicts must fall into
-	uint32_t demote_conflicts = 3;   // store conflicts within the window before a Late page is Exact
-	uint32_t exact_frames     = 600; // first Exact period
+	uint32_t demote_conflicts = 3; // store conflicts within the window before a Late page is Exact
+	uint32_t exact_frames     = 600;   // first Exact period
 	uint32_t capacity         = 16384; // pages tracked; past it idle Unknown pages are dropped
 };
 
@@ -163,9 +163,9 @@ public:
 		std::lock_guard lock(m_mutex);
 		out.clear();
 		for (size_t n = 0; n < m_seeds.size() && out.size() < max; n++) {
-			m_seed_cursor       = m_seed_cursor >= m_seeds.size() ? 0 : m_seed_cursor;
-			const auto page     = m_seeds[m_seed_cursor++];
-			const auto it       = m_pages.find(page);
+			m_seed_cursor   = m_seed_cursor >= m_seeds.size() ? 0 : m_seed_cursor;
+			const auto page = m_seeds[m_seed_cursor++];
+			const auto it   = m_pages.find(page);
 			if (it != m_pages.end() && it->second.seed && it->second.cls == Class::Late) {
 				out.push_back(page);
 			}
@@ -257,7 +257,8 @@ inline bool SaveProfile(const std::string& path, const std::vector<uint64_t>& so
 	std::fprintf(file, "# kyty fault class profile v1 page=%" PRIu64 "\n", page_size);
 	for (size_t i = 0; i < sorted_pages.size();) {
 		size_t n = 1;
-		while (i + n < sorted_pages.size() && sorted_pages[i + n] == sorted_pages[i] + n * page_size) {
+		while (i + n < sorted_pages.size() &&
+		       sorted_pages[i + n] == sorted_pages[i] + n * page_size) {
 			n++;
 		}
 		std::fprintf(file, "%" PRIx64 " %zu\n", sorted_pages[i], n);
@@ -267,7 +268,8 @@ inline bool SaveProfile(const std::string& path, const std::vector<uint64_t>& so
 	return ok && std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
-inline size_t LoadProfile(const std::string& path, uint64_t page_size, size_t max_pages, Table& table) {
+inline size_t LoadProfile(const std::string& path, uint64_t page_size, size_t max_pages,
+                          Table& table) {
 	std::FILE* file = std::fopen(path.c_str(), "r");
 	if (file == nullptr) {
 		return 0;

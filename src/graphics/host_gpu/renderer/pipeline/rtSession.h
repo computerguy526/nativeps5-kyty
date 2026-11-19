@@ -55,8 +55,8 @@ enum class DispatchAction : uint8_t {
 }
 
 // Budget guard (KYTY_RT_BUDGET_GUARD, default on). A RT kernel that traverses an invalid BVH (level
-// still streaming, stale upload) runs every lane to KYTY_RT_NODE_BUDGET: bounded, but seconds of GPU
-// time per dispatch, and the dispatches of the next frames queue behind it (GPU stalls and, by
+// still streaming, stale upload) runs every lane to KYTY_RT_NODE_BUDGET: bounded, but seconds of
+// GPU time per dispatch, and the dispatches of the next frames queue behind it (GPU stalls and, by
 // correlation, GPU watchdog stops at level entry). The exhausted-lane counter lives in mapped
 // GDS memory and rises while such a dispatch is still running, so the command processor reads it
 // before every RT dispatch: a rise of `trip_lanes` or more since the previous look holds all RT
@@ -70,9 +70,10 @@ struct BudgetGuard {
 	uint64_t max_hold_ms = 8000;
 	uint64_t calm_ms     = 30000;
 
-	// True when a RT dispatch may run now. `exhausted` = the GDS counter (wraps), `now_ms` monotonic.
+	// True when a RT dispatch may run now. `exhausted` = the GDS counter (wraps), `now_ms`
+	// monotonic.
 	[[nodiscard]] bool Allow(uint32_t exhausted, uint64_t now_ms) {
-		const uint32_t rise = exhausted - m_seen;   // unsigned: correct across a wrap
+		const uint32_t rise = exhausted - m_seen; // unsigned: correct across a wrap
 		m_seen              = exhausted;
 		if (!m_primed) {
 			// Lanes exhausted before the first look are not evidence against this dispatch.
@@ -85,10 +86,11 @@ struct BudgetGuard {
 		}
 		if (rise >= trip_lanes) {
 			const bool repeat = m_trips != 0 && now_ms - m_last_trip < calm_ms + m_cur_hold;
-			m_cur_hold        = repeat ? (m_cur_hold * 2 > max_hold_ms ? max_hold_ms : m_cur_hold * 2) : hold_ms;
-			m_holding         = true;
-			m_hold_until      = now_ms + m_cur_hold;
-			m_last_trip       = now_ms;
+			m_cur_hold =
+			    repeat ? (m_cur_hold * 2 > max_hold_ms ? max_hold_ms : m_cur_hold * 2) : hold_ms;
+			m_holding    = true;
+			m_hold_until = now_ms + m_cur_hold;
+			m_last_trip  = now_ms;
 			m_trips++;
 			return false;
 		}
@@ -108,13 +110,13 @@ private:
 	uint64_t m_trips      = 0;
 };
 
-// Load hold (KYTY_RT_LOAD_HOLD, default on): the proactive half of the budget guard. The invalid BVH
-// shows up while a level streams in, and the first dispatch on it already costs seconds (the guard
-// above only stops the following ones). While the game reads files fast (>= `rate_bytes_s`, sampled
-// every `sample_ms` or slower) or, optionally, its level phase changed, and for `quiet_ms` after the
-// last such sign, software-RT dispatches are skipped. One hold lasts at most `max_hold_ms`; after
-// that RT runs again until the signs have paused for `quiet_ms` (a long stream of loads cannot keep
-// the lighting off).
+// Load hold (KYTY_RT_LOAD_HOLD, default on): the proactive half of the budget guard. The invalid
+// BVH shows up while a level streams in, and the first dispatch on it already costs seconds (the
+// guard above only stops the following ones). While the game reads files fast (>= `rate_bytes_s`,
+// sampled every `sample_ms` or slower) or, optionally, its level phase changed, and for `quiet_ms`
+// after the last such sign, software-RT dispatches are skipped. One hold lasts at most
+// `max_hold_ms`; after that RT runs again until the signs have paused for `quiet_ms` (a long stream
+// of loads cannot keep the lighting off).
 struct LoadHold {
 	uint64_t rate_bytes_s = 48ull << 20;
 	uint64_t sample_ms    = 250;
@@ -122,8 +124,8 @@ struct LoadHold {
 	uint64_t max_hold_ms  = 30000;
 	bool     use_phase    = false;
 
-	// True when RT dispatches are skipped now. `bytes` = the runtime's VFS read counter, `phase` its
-	// level phase, `now_ms` monotonic.
+	// True when RT dispatches are skipped now. `bytes` = the runtime's VFS read counter, `phase`
+	// its level phase, `now_ms` monotonic.
 	[[nodiscard]] bool Hold(uint64_t bytes, int phase, uint64_t now_ms) {
 		if (!m_primed) {
 			m_primed = true;
@@ -137,7 +139,8 @@ struct LoadHold {
 			if (use_phase) Sign(now_ms);
 		}
 		if (now_ms - m_t >= sample_ms) {
-			if (bytes >= m_bytes && (bytes - m_bytes) * 1000 >= rate_bytes_s * (now_ms - m_t)) Sign(now_ms);
+			if (bytes >= m_bytes && (bytes - m_bytes) * 1000 >= rate_bytes_s * (now_ms - m_t))
+				Sign(now_ms);
 			m_t     = now_ms;
 			m_bytes = bytes;
 		}

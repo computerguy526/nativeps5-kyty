@@ -1,7 +1,5 @@
 ﻿#include "graphics/presentation/window.h"
 
-#include "graphics/compileProgress.h"
-
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -12,15 +10,16 @@
 #include "common/systemInfo.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "graphics/compileProgress.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/autoCap.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
-#include "graphics/presentation/autoCap.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kytyGitVersion.h"
@@ -28,22 +27,22 @@
 #include "loader/systemContent.h"
 
 #include <SDL3/SDL.h>
-#include <dlfcn.h>
-#include <objc/message.h>
-#include <objc/runtime.h>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <fmt/format.h>
 #include <memory>
 #include <mutex>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <string>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -856,19 +855,22 @@ std::string ProgressTitleName() {
 	return name.empty() ? std::string("Kyty") : name;
 }
 
-// nps5 autocap: the display the window is on, from its NSScreen (objc runtime: no AppKit link needed, the window exists so
-// AppKit is loaded). Adaptive = NSScreen minimumRefreshInterval < maximumRefreshInterval (ProMotion / Adaptive-Sync).
-// Runs on the window (main) thread. Returns false when there is no screen yet.
+// nps5 autocap: the display the window is on, from its NSScreen (objc runtime: no AppKit link
+// needed, the window exists so AppKit is loaded). Adaptive = NSScreen minimumRefreshInterval <
+// maximumRefreshInterval (ProMotion / Adaptive-Sync). Runs on the window (main) thread. Returns
+// false when there is no screen yet.
 bool QueryWindowScreen(SDL_Window* window, AutoCap::Screen& out) {
 	const auto props = SDL_GetWindowProperties(window);
-	void*      nswin = props != 0 ? SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr) : nullptr;
+	void* nswin = props != 0
+	                  ? SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr)
+	                  : nullptr;
 	if (nswin == nullptr) {
 		return false;
 	}
-	using IdFn  = void* (*)(void*, SEL);
-	using DblFn = double (*)(void*, SEL);
-	using IntFn = long (*)(void*, SEL);
-	using StrFn = const char* (*)(void*, SEL);
+	using IdFn          = void* (*)(void*, SEL);
+	using DblFn         = double (*)(void*, SEL);
+	using IntFn         = long (*)(void*, SEL);
+	using StrFn         = const char* (*)(void*, SEL);
 	const auto send_id  = reinterpret_cast<IdFn>(objc_msgSend);
 	const auto send_dbl = reinterpret_cast<DblFn>(objc_msgSend);
 	const auto send_int = reinterpret_cast<IntFn>(objc_msgSend);
@@ -877,14 +879,14 @@ bool QueryWindowScreen(SDL_Window* window, AutoCap::Screen& out) {
 	if (screen == nullptr) {
 		return false;
 	}
-	const auto fps      = send_int(screen, sel_registerName("maximumFramesPerSecond"));
-	const auto min_iv   = send_dbl(screen, sel_registerName("minimumRefreshInterval"));
-	const auto max_iv   = send_dbl(screen, sel_registerName("maximumRefreshInterval"));
-	void*      name     = send_id(screen, sel_registerName("localizedName"));
-	const char* utf8    = name != nullptr ? send_str(name, sel_registerName("UTF8String")) : nullptr;
-	out.name       = utf8 != nullptr ? utf8 : "screen";
-	out.refresh_hz = static_cast<double>(fps);
-	out.adaptive   = min_iv > 0.0 && max_iv > min_iv + 1e-6;
+	const auto  fps    = send_int(screen, sel_registerName("maximumFramesPerSecond"));
+	const auto  min_iv = send_dbl(screen, sel_registerName("minimumRefreshInterval"));
+	const auto  max_iv = send_dbl(screen, sel_registerName("maximumRefreshInterval"));
+	void*       name   = send_id(screen, sel_registerName("localizedName"));
+	const char* utf8   = name != nullptr ? send_str(name, sel_registerName("UTF8String")) : nullptr;
+	out.name           = utf8 != nullptr ? utf8 : "screen";
+	out.refresh_hz     = static_cast<double>(fps);
+	out.adaptive       = min_iv > 0.0 && max_iv > min_iv + 1e-6;
 	return true;
 }
 
@@ -1049,7 +1051,8 @@ bool WindowContext::RunStep(int max_wait_ms) {
 		RefreshProgressTitle(window, now);
 	}
 	{
-		// KYTY_FPS_LIMIT_MILLI=auto: re-read the window's screen (moved to another display, display mode changed).
+		// KYTY_FPS_LIMIT_MILLI=auto: re-read the window's screen (moved to another display, display
+		// mode changed).
 		static const bool autocap = [] {
 			const char* v = std::getenv("KYTY_FPS_LIMIT_MILLI");
 			return v != nullptr && std::strcmp(v, "auto") == 0;

@@ -11,7 +11,6 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 
 namespace {
 
-
 bool PrecisionGenerator(ValueOpcode op) {
 	switch (op) {
 		case ValueOpcode::FPRecip32:
@@ -123,7 +122,8 @@ bool PrecisionCarries(const Inst& inst, const std::unordered_set<const Inst*>& t
 
 } // namespace
 
-void CollectPreciseSet(const Program& program, uint8_t extra, std::unordered_set<const Inst*>& precise_set) {
+void CollectPreciseSet(const Program& program, uint8_t extra,
+                       std::unordered_set<const Inst*>& precise_set) {
 	std::unordered_set<const Inst*> tainted;
 	// Forward: to a fixed point (loop phis).
 	for (bool changed = true; changed;) {
@@ -136,7 +136,7 @@ void CollectPreciseSet(const Program& program, uint8_t extra, std::unordered_set
 				bool any = PrecisionGenerator(inst.GetOpcode());
 				for (size_t i = 0; !any && i < inst.NumArgs(); i++) {
 					const auto* producer = inst.Arg(i).Resolve().TryInstruction();
-					any = producer != nullptr && tainted.contains(producer);
+					any                  = producer != nullptr && tainted.contains(producer);
 				}
 				if (!any) {
 					continue;
@@ -192,12 +192,13 @@ void CollectPreciseSet(const Program& program, uint8_t extra, std::unordered_set
 		}
 		std::lock_guard lock(mutex);
 		if (seen.insert(program.shader_hash).second) {
-			std::fprintf(stderr, "[precision] shader 0x%016" PRIx64 " %s float=%zu precise=%zu tainted=%zu\n",
+			std::fprintf(stderr,
+			             "[precision] shader 0x%016" PRIx64
+			             " %s float=%zu precise=%zu tainted=%zu\n",
 			             program.shader_hash, program.stage == ShaderType::Pixel ? "fs" : "cs", fp,
 			             precise, tainted.size());
 		}
 	}
 }
-
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

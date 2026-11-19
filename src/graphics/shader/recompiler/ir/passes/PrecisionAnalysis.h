@@ -24,7 +24,8 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 //    the data of every buffer/address/image store.
 // extra: KYTY_GPU_ACCURACY_EXTRA bits (1 cmp, 2 stores). KYTY_FAST_MATH_LOG prints one
 // "[precision] shader" line per guest hash.
-void CollectPreciseSet(const Program& program, uint8_t extra, std::unordered_set<const Inst*>& precise_set);
+void CollectPreciseSet(const Program& program, uint8_t extra,
+                       std::unordered_set<const Inst*>& precise_set);
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 

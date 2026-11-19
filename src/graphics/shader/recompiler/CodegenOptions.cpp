@@ -4,13 +4,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
 #include <set>
-#include <cinttypes>
 #include <string>
 #include <string_view>
 
@@ -199,19 +199,23 @@ CodegenOptions FromEnvironment() {
 	}
 	options.fast_math_vs = EnvFlag("KYTY_FAST_MATH_VS", options.fast_math_vs);
 	if (const auto* path = std::getenv("KYTY_FAST_MATH_DENY"); path != nullptr && path[0] != '\0') {
-		bool ok              = false;
+		bool ok                = false;
 		options.fast_math_deny = ReadHashFile(path, &ok);
 	}
-	if (const auto* path = std::getenv("KYTY_FAST_MATH_ALLOW"); path != nullptr && path[0] != '\0') {
-		options.fast_math_allow     = ReadHashFile(path, &options.fast_math_allow_set);
+	if (const auto* path = std::getenv("KYTY_FAST_MATH_ALLOW");
+	    path != nullptr && path[0] != '\0') {
+		options.fast_math_allow = ReadHashFile(path, &options.fast_math_allow_set);
 	}
 	if (const auto* accuracy = std::getenv("KYTY_GPU_ACCURACY"); accuracy != nullptr) {
-		options.gpu_accuracy = std::strcmp(accuracy, "normal") == 0 ? 1u : std::strcmp(accuracy, "low") == 0 ? 2u : 0u;
+		options.gpu_accuracy = std::strcmp(accuracy, "normal") == 0 ? 1u
+		                       : std::strcmp(accuracy, "low") == 0  ? 2u
+		                                                            : 0u;
 	}
 	if (const auto* extra = std::getenv("KYTY_GPU_ACCURACY_EXTRA"); extra != nullptr) {
 		const std::string text(extra);
-		options.gpu_accuracy_extra = static_cast<uint8_t>((text.find("cmp") != std::string::npos ? 1u : 0u) |
-		                                                  (text.find("stores") != std::string::npos ? 2u : 0u));
+		options.gpu_accuracy_extra =
+		    static_cast<uint8_t>((text.find("cmp") != std::string::npos ? 1u : 0u) |
+		                         (text.find("stores") != std::string::npos ? 2u : 0u));
 	}
 	if (const auto* stages = std::getenv("KYTY_FAST_MATH_STAGES"); stages != nullptr) {
 		const std::string text(stages);
@@ -343,19 +347,22 @@ bool LoopGuardApplies(uint64_t shader_hash) {
 
 bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage) {
 	const auto& options = Storage();
-	const bool  allowed =
-	    (!options.fast_math_allow_set ||
-	     std::binary_search(options.fast_math_allow.begin(), options.fast_math_allow.end(), shader_hash)) &&
-	    !std::binary_search(options.fast_math_deny.begin(), options.fast_math_deny.end(), shader_hash);
-	// KYTY_FAST_MATH_LOG=1: one stderr line (LOGF reached neither .err nor .out) per guest hash (with its stage) the first time a decision is made, lists set or not
-	// (checks that the lists hit real hashes and harvests the hashes a scene uses).
-	static const bool        log_on = EnvFlag("KYTY_FAST_MATH_LOG", false);
-	static std::mutex        mutex;
+	const bool  allowed = (!options.fast_math_allow_set ||
+	                       std::binary_search(options.fast_math_allow.begin(),
+	                                          options.fast_math_allow.end(), shader_hash)) &&
+	                      !std::binary_search(options.fast_math_deny.begin(),
+	                                          options.fast_math_deny.end(), shader_hash);
+	// KYTY_FAST_MATH_LOG=1: one stderr line (LOGF reached neither .err nor .out) per guest hash
+	// (with its stage) the first time a decision is made, lists set or not (checks that the lists
+	// hit real hashes and harvests the hashes a scene uses).
+	static const bool         log_on = EnvFlag("KYTY_FAST_MATH_LOG", false);
+	static std::mutex         mutex;
 	static std::set<uint64_t> seen;
 	if (log_on) {
 		std::lock_guard lock(mutex);
 		if (seen.insert(shader_hash).second) {
-			std::fprintf(stderr, "[fastmath] shader 0x%016" PRIx64 " %s %s\n", shader_hash, stage, allowed ? "FAST" : "EXACT (listed)");
+			std::fprintf(stderr, "[fastmath] shader 0x%016" PRIx64 " %s %s\n", shader_hash, stage,
+			             allowed ? "FAST" : "EXACT (listed)");
 		}
 	}
 	return allowed;
@@ -366,7 +373,9 @@ bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage) {
 	if (options.gpu_accuracy != 1 || options.fast_math != 0) {
 		return false;
 	}
-	const uint32_t bit = std::strcmp(stage, "fs") == 0 ? 1u : std::strcmp(stage, "cs") == 0 ? 2u : 0u;
+	const uint32_t bit = std::strcmp(stage, "fs") == 0   ? 1u
+	                     : std::strcmp(stage, "cs") == 0 ? 2u
+	                                                     : 0u;
 	return (options.fast_math_stages & bit) != 0 && FastMathShaderAllowed(shader_hash, stage);
 }
 
@@ -375,7 +384,9 @@ bool AllFastApplies(uint64_t shader_hash, const char* stage) {
 	if (options.gpu_accuracy != 2 || options.fast_math != 0) {
 		return false;
 	}
-	const uint32_t bit = std::strcmp(stage, "fs") == 0 ? 1u : std::strcmp(stage, "cs") == 0 ? 2u : 0u;
+	const uint32_t bit = std::strcmp(stage, "fs") == 0   ? 1u
+	                     : std::strcmp(stage, "cs") == 0 ? 2u
+	                                                     : 0u;
 	return (options.fast_math_stages & bit) != 0 && FastMathShaderAllowed(shader_hash, stage);
 }
 

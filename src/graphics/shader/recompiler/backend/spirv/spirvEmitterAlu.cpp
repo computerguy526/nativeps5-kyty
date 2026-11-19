@@ -481,14 +481,19 @@ uint32_t FastMathLevel(const EmitterState& state) {
 	const auto& options = GetCodegenOptions();
 	if (options.fast_math == 0) {
 		// KYTY_GPU_ACCURACY=low: level 1 for the pixel/compute programs the lists allow.
-		const auto low_stage = state.program.stage;
-		const char* name     = low_stage == ShaderType::Pixel ? "fs" : low_stage == ShaderType::Compute ? "cs" : "";
+		const auto  low_stage = state.program.stage;
+		const char* name      = low_stage == ShaderType::Pixel     ? "fs"
+		                        : low_stage == ShaderType::Compute ? "cs"
+		                                                           : "";
 		return name[0] != '\0' && AllFastApplies(state.program.shader_hash, name) ? 1u : 0u;
 	}
 	const auto stage   = state.program.stage;
 	const bool covered = (stage == ShaderType::Pixel && (options.fast_math_stages & 1u) != 0) ||
 	                     (stage == ShaderType::Compute && (options.fast_math_stages & 2u) != 0);
-	return covered && FastMathShaderAllowed(state.program.shader_hash, stage == ShaderType::Pixel ? "fs" : "cs") ? options.fast_math : 0u;
+	return covered && FastMathShaderAllowed(state.program.shader_hash,
+	                                        stage == ShaderType::Pixel ? "fs" : "cs")
+	           ? options.fast_math
+	           : 0u;
 }
 
 bool FastMathVertex(const EmitterState& state) {
@@ -570,8 +575,10 @@ bool NoContraction(EmitterState& state, const IR::Inst& inst) {
 // IR::CollectPreciseSet (ir/passes/PrecisionAnalysis.h).
 bool SelectivePrecision(EmitterState& state) {
 	if (state.selective_precision < 0) {
-		const auto stage = state.program.stage;
-		const char* name = stage == ShaderType::Pixel ? "fs" : stage == ShaderType::Compute ? "cs" : "";
+		const auto  stage = state.program.stage;
+		const char* name  = stage == ShaderType::Pixel     ? "fs"
+		                    : stage == ShaderType::Compute ? "cs"
+		                                                   : "";
 		state.selective_precision =
 		    name[0] != '\0' && SelectivePrecisionApplies(state.program.shader_hash, name) ? 1 : 0;
 	}
@@ -581,7 +588,8 @@ bool SelectivePrecision(EmitterState& state) {
 bool PreciseInst(EmitterState& state, const IR::Inst& inst) {
 	if (!state.precise_set_ready) {
 		state.precise_set_ready = true;
-		IR::CollectPreciseSet(state.program, GetCodegenOptions().gpu_accuracy_extra, state.precise_set);
+		IR::CollectPreciseSet(state.program, GetCodegenOptions().gpu_accuracy_extra,
+		                      state.precise_set);
 	}
 	return state.precise_set.contains(&inst);
 }
@@ -591,9 +599,9 @@ void DecorateFastFloatResults(EmitterState& state, size_t word_offset) {
 	if (word_offset >= all.size()) {
 		return;
 	}
-	const uint32_t float_types[] = {TypeF32(state), TypeF32Vector(state, 2), TypeF32Vector(state, 3),
-	                                TypeF32Vector(state, 4)};
-	uint32_t              glsl = 0;
+	const uint32_t        float_types[] = {TypeF32(state), TypeF32Vector(state, 2),
+	                                       TypeF32Vector(state, 3), TypeF32Vector(state, 4)};
+	uint32_t              glsl          = 0;
 	std::vector<uint32_t> results;
 	for (size_t at = word_offset; at < all.size();) {
 		const uint32_t count  = all[at] >> 16u;
@@ -632,10 +640,10 @@ void DecorateFastFloatResults(EmitterState& state, size_t word_offset) {
 	}
 	state.builder.RequireCapability(spv::CapabilityFloatControls2);
 	state.builder.RequireExtension("SPV_KHR_float_controls2");
-	const uint32_t fast = spv::FPFastMathModeNotNaNMask | spv::FPFastMathModeNotInfMask |
-	                      spv::FPFastMathModeNSZMask | spv::FPFastMathModeAllowRecipMask |
-	                      spv::FPFastMathModeAllowContractMask | spv::FPFastMathModeAllowReassocMask |
-	                      spv::FPFastMathModeAllowTransformMask;
+	const uint32_t fast =
+	    spv::FPFastMathModeNotNaNMask | spv::FPFastMathModeNotInfMask | spv::FPFastMathModeNSZMask |
+	    spv::FPFastMathModeAllowRecipMask | spv::FPFastMathModeAllowContractMask |
+	    spv::FPFastMathModeAllowReassocMask | spv::FPFastMathModeAllowTransformMask;
 	for (const auto id: results) {
 		state.builder.AddAnnotation(spv::OpDecorate, id, spv::DecorationFPFastMathMode, fast);
 	}
