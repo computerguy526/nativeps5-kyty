@@ -107,7 +107,7 @@ int main() {
 			b += 200 * MB * 16 / 1000;
 			if (h.Hold(b, 0, t)) held_ms += 16;
 		}
-		CHECK(held_ms >= 29000 && held_ms <= 30100);
+		CHECK(held_ms >= 59000 && held_ms <= 60100);
 		CHECK(h.Holds() == 1);
 	}
 	{ // phase: off when asked, on by default; a change holds for phase_quiet_ms
@@ -122,7 +122,7 @@ int main() {
 		CHECK(!on.Hold(0, 2, 5016));
 		CHECK(on.Holds() == 1);
 	}
-	{ // direct level boot (hsfinal_cands2): no fast reads at all, level opens, UI scenes follow;
+	{ // direct level boot (a test run): no fast reads at all, level opens, UI scenes follow;
 	  // the RT burst 1.4 s after the level opened is held, RT is back 5 s after the last new scene
 		LoadHold h;
 		uint64_t b = 0;
@@ -152,15 +152,32 @@ int main() {
 		}
 		CHECK(last_hold >= 9000 + 1500 - 300 && last_hold <= 9000 + 1500 + 300);
 		CHECK(held_ms < 30000);
-		LoadHold m;
+		LoadHold m; // phase changes every 2 s: each restarts the budget; bounded once they stop
 		uint64_t mh = 0;
 		int      ph = 0;
-		for (uint64_t t = 0; t < 120000; t += 16) {
-			if (t % 2000 == 0) ph++;            // a new scene every 2 s for ever
+		for (uint64_t t = 0; t < 200000; t += 16) {
+			if (t % 2000 == 0 && t <= 100000) ph++;
 			if (m.Hold(0, ph, t)) mh += 16;
 		}
-		CHECK(mh >= 29000 && mh <= 30100);
+		CHECK(mh >= 103000 - 100 && mh <= 103000 + 100); // first change seen at 2 s, last at 100 s, + 5 s
 		CHECK(m.Holds() == 1);
+	}
+	{ // hub -> level (from a play session): hub scenes at 383-389 s, level at 404.5 s, reads
+	  // stay fast until 420 s; RT must still be held at 416 s and be free again by 423 s
+		LoadHold h;
+		uint64_t b = 0;
+		int      ph = 0;
+		bool     held_416 = false, free_423 = false;
+		for (uint64_t t = 370000; t < 430000; t += 16) {
+			if (t >= 383200 && t < 420000) b += 100 * MB * 16 / 1000;
+			if (t == 383200 || t == 385008 || t == 389008 || t == 404496) ph++;
+			const bool held = h.Hold(b, ph, t);
+			if (t == 416000) held_416 = held;
+			if (t == 423008) free_423 = !held;
+		}
+		CHECK(held_416);
+		CHECK(free_423);
+		CHECK(h.Holds() == 1);
 	}
 	{ // a counter that goes backwards (runtime restart of the counter) is not a sign
 		LoadHold h;

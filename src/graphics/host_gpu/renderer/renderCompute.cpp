@@ -64,8 +64,9 @@ namespace Libs::Graphics {
 // rtSession.h LoadHold: true while the game streams a level in (software-RT dispatches are skipped,
 // the BVH they would traverse may not be valid yet). Command processor thread only.
 // KYTY_RT_LOAD_HOLD=0 off; _PHASE_MS (5000, after a level phase change), _QUIET_MS (1500, after
-// fast reads), _MAX_MS (30000), _VFS_MBS (48), _PHASE=0 (phase changes do not count). Called for
-// EVERY compute dispatch so the signs are sampled every frame; `rt` = this dispatch is a RT kernel.
+// fast reads), _MAX_MS (60000, counted from the last level phase change), _VFS_MBS (48), _PHASE=0
+// (phase changes do not count). Called for EVERY compute dispatch so the signs are sampled every
+// frame; `rt` = this dispatch is a RT kernel.
 static bool RtLoadHold(bool rt) {
 	static const auto env = [](const char* name, uint64_t fallback) {
 		const char* v = std::getenv(name);

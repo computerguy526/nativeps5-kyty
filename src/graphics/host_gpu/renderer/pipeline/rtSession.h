@@ -119,17 +119,17 @@ private:
 //   - while the game reads files fast (>= `rate_bytes_s`, sampled every `sample_ms` or slower) and
 //   for
 //     `quiet_ms` after the last such sample,
-// whichever ends later. One hold lasts at most `max_hold_ms`; after that RT runs again until every
-// sign has paused (a long stream of loads cannot keep the lighting off). Observe() must be called
-// from a path that runs every frame (every compute dispatch), not only at RT dispatches: a direct
-// level boot has no RT dispatch before the level opens, and a VFS-only trigger missed that case
-// (a GPU watchdog stop with the hold nominally on).
+// whichever ends later. One hold lasts at most `max_hold_ms` after the last level phase change;
+// after that RT runs again until every sign has paused (a long stream of loads cannot keep the
+// lighting off). Observe() must be called from a path that runs every frame (every compute
+// dispatch), not only at RT dispatches: a direct level boot has no RT dispatch before the level
+// opens, and a VFS-only trigger missed that case (a GPU watchdog stop with the hold nominally on).
 struct LoadHold {
 	uint64_t rate_bytes_s   = 48ull << 20;
 	uint64_t sample_ms      = 250;
 	uint64_t quiet_ms       = 1500;
 	uint64_t phase_quiet_ms = 5000;
-	uint64_t max_hold_ms    = 30000;
+	uint64_t max_hold_ms    = 60000;
 	bool     use_phase      = true;
 
 	// True when RT dispatches are skipped now. `bytes` = the runtime's VFS read counter, `phase`
@@ -144,7 +144,14 @@ struct LoadHold {
 		}
 		if (phase != m_phase) {
 			m_phase = phase;
-			if (use_phase) Until(now_ms + phase_quiet_ms);
+			if (use_phase) {
+				Until(now_ms + phase_quiet_ms);
+				// A newly opened level starts a new hold budget: hub -> level is two loads in a
+				// row, and a budget counted from the hub's start ran out in the middle of the
+				// level's load (the RT kernel then ran on invalid data and the GPU watchdog ended
+				// the session). Distinct levels are finite, so this stays bounded.
+				if (m_holding) m_since = now_ms;
+			}
 		}
 		if (now_ms - m_t >= sample_ms) {
 			if (bytes >= m_bytes && (bytes - m_bytes) * 1000 >= rate_bytes_s * (now_ms - m_t)) {
