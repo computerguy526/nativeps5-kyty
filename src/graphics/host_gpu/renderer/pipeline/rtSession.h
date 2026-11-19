@@ -56,8 +56,8 @@ enum class DispatchAction : uint8_t {
 
 // Budget guard (KYTY_RT_BUDGET_GUARD, default on). A RT kernel that traverses an invalid BVH (level
 // still streaming, stale upload) runs every lane to KYTY_RT_NODE_BUDGET: bounded, but seconds of GPU
-// time per dispatch, and the dispatches of the next frames queue behind it (GPU watchdog at Sky
-// Garden level entry, work/research/wdog-2026-11-19.md). The exhausted-lane counter lives in mapped
+// time per dispatch, and the dispatches of the next frames queue behind it (GPU stalls and, by
+// correlation, GPU watchdog stops at level entry). The exhausted-lane counter lives in mapped
 // GDS memory and rises while such a dispatch is still running, so the command processor reads it
 // before every RT dispatch: a rise of `trip_lanes` or more since the previous look holds all RT
 // dispatches for `hold_ms` (they are skipped, as while a pipeline builds: the lighting they feed
