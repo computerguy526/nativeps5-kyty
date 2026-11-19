@@ -123,6 +123,8 @@ bool BufferOp(Em& e, ValueOpcode op) {
 	in.imm                   = mem.offset;
 	in.lane                  = e.ctx.LaneExpr(e.ctx.half);
 	const std::string active = e.A(e.inst.NumArgs() - 1);
+	BufferOpts        raw_opts;
+	raw_opts.per_dword_bounds = e.ctx.program.stage != ShaderType::Compute; // v1.1.1: graphics only
 
 	if (access == IR::BufferAccess::Read) {
 		const uint32_t bits = e.inst.GetType() == IR::Type::U8    ? 8u
@@ -158,7 +160,7 @@ bool BufferOp(Em& e, ValueOpcode op) {
 				e.o.Line("    " + e.ctx.Name(e.inst) + " = " + e.type + "(" + x + ");");
 				return;
 			}
-			const auto v = LoadRaw(e.o, *b, addr, bits, bits == 32 ? comps : 1u);
+			const auto v = LoadRaw(e.o, *b, addr, bits, bits == 32 ? comps : 1u, raw_opts);
 			e.o.Line("    " + e.ctx.Name(e.inst) + " = " + e.type + "(" + v + ");");
 		});
 		return e.Done();
@@ -182,7 +184,7 @@ bool BufferOp(Em& e, ValueOpcode op) {
 					return;
 				}
 			}
-			StoreRaw(e.o, *b, addr, bits, vals);
+			StoreRaw(e.o, *b, addr, bits, vals, raw_opts);
 		});
 		return e.Done();
 	}

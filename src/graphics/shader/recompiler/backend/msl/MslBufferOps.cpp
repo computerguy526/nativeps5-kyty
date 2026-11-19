@@ -70,6 +70,15 @@ std::string LoadRaw(MemOut& o, const BufferBinding& b, const std::string& addr, 
 	else if (bits != 32)
 		load = "uint(" + load + ")";
 	if (!Checked(b, opts)) return o.Def(result_type.c_str(), load);
+	if (opts.per_dword_bounds && bits == 32 && comps > 1) {
+		std::string part = result_type + "(";
+		for (uint32_t i = 0; i < comps; i++) {
+			const std::string a = "(" + addr + " + " + std::to_string(4u * i) + "u)";
+			part += (i ? ", " : "") + InBounds(b, a, 4u) + " ? " + Mem(b, a, "uint", vol) + " : 0u";
+		}
+		part += ")";
+		return o.Def(result_type.c_str(), InBounds(b, addr, bytes) + " ? " + load + " : " + part);
+	}
 	return o.Def(result_type.c_str(),
 	             InBounds(b, addr, bytes) + " ? " + load + " : " + result_type + "(0u)");
 }
@@ -92,7 +101,15 @@ void StoreRaw(MemOut& o, const BufferBinding& b, const std::string& addr, uint32
 			stmt += (i ? ", " : "") + v[i];
 		stmt += ");";
 	}
-	if (Checked(b, opts))
+	if (Checked(b, opts) && opts.per_dword_bounds && bits == 32 && comps > 1) {
+		std::string part;
+		for (uint32_t i = 0; i < comps; i++) {
+			const std::string a = "(" + addr + " + " + std::to_string(4u * i) + "u)";
+			part += std::string(i ? " " : "") + "if (" + InBounds(b, a, 4u) + ") { " +
+			        Mem(b, a, "uint", false) + " = " + v[i] + "; }";
+		}
+		o.Line("if (" + InBounds(b, addr, bytes) + ") { " + stmt + " } else { " + part + " }");
+	} else if (Checked(b, opts))
 		o.Line("if (" + InBounds(b, addr, bytes) + ") { " + stmt + " }");
 	else
 		o.Line(stmt);
