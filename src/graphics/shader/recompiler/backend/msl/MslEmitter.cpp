@@ -1090,9 +1090,10 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	MslResult result;
 	MslCtx    ctx(program, input_info);
 	if (program.stage == ShaderType::Pixel || program.stage == ShaderType::Compute) {
-		ctx.selective_precision =
-		    SelectivePrecisionApplies(program.shader_hash, program.stage == ShaderType::Pixel ? "fs" : "cs");
-		if (ctx.selective_precision) {
+		const char* stage_name  = program.stage == ShaderType::Pixel ? "fs" : "cs";
+		const bool  all_fast    = AllFastApplies(program.shader_hash, stage_name); // low: empty precise set
+		ctx.selective_precision = all_fast || SelectivePrecisionApplies(program.shader_hash, stage_name);
+		if (ctx.selective_precision && !all_fast) {
 			IR::CollectPreciseSet(program, GetCodegenOptions().gpu_accuracy_extra, ctx.precise);
 		}
 	}

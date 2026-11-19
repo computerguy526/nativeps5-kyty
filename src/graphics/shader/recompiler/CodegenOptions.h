@@ -432,7 +432,9 @@ struct CodegenOptions {
 	// clamp/saturate with a finite operand, a compare or a float->int conversion, which are
 	// precise themselves), plus the backward slices of the guest's explicit NaN tests
 	// (V_CMP_CLASS, unordered compares, x != x / x == x).
-	uint8_t gpu_accuracy = 0; // 0 high, 1 normal
+	// KYTY_GPU_ACCURACY=low: KYTY_FAST_MATH=1 for every pixel/compute program the lists allow (pass
+	// the override deny list so overridden shaders keep their exact text and still apply).
+	uint8_t gpu_accuracy = 0; // 0 high, 1 normal, 2 low
 	// KYTY_GPU_ACCURACY_EXTRA=cmp,stores (normal only, bisect aids): also the backward slices of
 	// every float compare (cmp: selects, kills, branches, loop bounds) and of the data of every
 	// buffer/image/address store (stores: resources a later pass or frame reads back).
@@ -469,6 +471,8 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 [[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage = "?");
 // KYTY_GPU_ACCURACY=normal covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
 [[nodiscard]] bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage);
+// KYTY_GPU_ACCURACY=low covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
+[[nodiscard]] bool AllFastApplies(uint64_t shader_hash, const char* stage);
 
 [[nodiscard]] const CodegenOptions& GetCodegenOptions();
 // KYTY_LOD_STATS_PLAIN_VARIANT's value means "on" (the renderer's default).

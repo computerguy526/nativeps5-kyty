@@ -480,7 +480,10 @@ uint32_t EmitFloatBinary(ValueEmitContext& ctx, const IR::Inst& inst, spv::Op op
 uint32_t FastMathLevel(const EmitterState& state) {
 	const auto& options = GetCodegenOptions();
 	if (options.fast_math == 0) {
-		return 0;
+		// KYTY_GPU_ACCURACY=low: level 1 for the pixel/compute programs the lists allow.
+		const auto low_stage = state.program.stage;
+		const char* name     = low_stage == ShaderType::Pixel ? "fs" : low_stage == ShaderType::Compute ? "cs" : "";
+		return name[0] != '\0' && AllFastApplies(state.program.shader_hash, name) ? 1u : 0u;
 	}
 	const auto stage   = state.program.stage;
 	const bool covered = (stage == ShaderType::Pixel && (options.fast_math_stages & 1u) != 0) ||

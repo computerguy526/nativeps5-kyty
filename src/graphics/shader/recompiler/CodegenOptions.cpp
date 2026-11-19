@@ -206,7 +206,7 @@ CodegenOptions FromEnvironment() {
 		options.fast_math_allow     = ReadHashFile(path, &options.fast_math_allow_set);
 	}
 	if (const auto* accuracy = std::getenv("KYTY_GPU_ACCURACY"); accuracy != nullptr) {
-		options.gpu_accuracy = std::strcmp(accuracy, "normal") == 0 ? 1u : 0u;
+		options.gpu_accuracy = std::strcmp(accuracy, "normal") == 0 ? 1u : std::strcmp(accuracy, "low") == 0 ? 2u : 0u;
 	}
 	if (const auto* extra = std::getenv("KYTY_GPU_ACCURACY_EXTRA"); extra != nullptr) {
 		const std::string text(extra);
@@ -364,6 +364,15 @@ bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage) {
 bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage) {
 	const auto& options = Storage();
 	if (options.gpu_accuracy != 1 || options.fast_math != 0) {
+		return false;
+	}
+	const uint32_t bit = std::strcmp(stage, "fs") == 0 ? 1u : std::strcmp(stage, "cs") == 0 ? 2u : 0u;
+	return (options.fast_math_stages & bit) != 0 && FastMathShaderAllowed(shader_hash, stage);
+}
+
+bool AllFastApplies(uint64_t shader_hash, const char* stage) {
+	const auto& options = Storage();
+	if (options.gpu_accuracy != 2 || options.fast_math != 0) {
 		return false;
 	}
 	const uint32_t bit = std::strcmp(stage, "fs") == 0 ? 1u : std::strcmp(stage, "cs") == 0 ? 2u : 0u;
