@@ -35,12 +35,11 @@ namespace {
 using O = IR::ValueOpcode;
 
 struct Node {
-	enum Kind { Leaf, Const, Add, Mul, Neg, Flrp } kind = Leaf;
+	enum Kind { Leaf, Const, Add, Mul, Neg } kind = Leaf;
 	float           c                             = 0.0f; // Const
 	IR::Value       leaf;           // Leaf (an IR value, emitted with ctx.Val)
 	Node*           a    = nullptr; // Add/Mul/Neg operands
 	Node*           b    = nullptr;
-	Node*           t    = nullptr; // Flrp: a + (b - a) * t
 	const IR::Inst* inst = nullptr; // the IR instruction this node is the value of (null: virtual)
 	int             uses = 0;
 	bool            changed = false; // inst node whose expression was rewritten
@@ -137,7 +136,6 @@ void Release(Node* n) {
 	// use
 	Release(n->a);
 	Release(n->b);
-	Release(n->t);
 }
 
 bool IsConst(const Node* n) {
@@ -151,12 +149,9 @@ bool IsFmul(const Node* n) {
 void Rewrite(Node* n, Node::Kind k, Node* a, Node* b) {
 	Node* oa = n->a;
 	Node* ob = n->b;
-	Node* ot = n->t;
 	n->kind  = k;
 	n->a     = a;
 	n->b     = b;
-	n->t     = nullptr;
-	Release(ot);
 	if (n->inst != nullptr) n->changed = true;
 	Release(oa);
 	Release(ob);
@@ -280,44 +275,11 @@ bool TryRules(Node* n) {
 			return true;
 		}
 	}
-	if (n->kind == Node::Add) {
-		// heavyshade: ~fadd(a, fmul(c, fadd(b, fneg(a)))) -> flrp(a, b, c) (nir_opt_algebraic, !lower_flrp32).
-		// V_INTERP_P1_F32 of a manually interpolated attribute (P0 + I * (P1 - P0)) is this shape; KK
-		// prints flrp as `a + (b - a) * c` in one statement, which Metal contracts.
-		for (int k = 0; k < 2; k++) {
-			Node* a = k ? n->b : n->a;
-			Node* m = k ? n->a : n->b;
-			if (m->kind != Node::Mul) continue;
-			for (int j = 0; j < 2; j++) {
-				Node* c = j ? m->b : m->a;
-				Node* s = j ? m->a : m->b;
-				if (s->kind != Node::Add) continue;
-				for (int q = 0; q < 2; q++) {
-					Node* ng = q ? s->a : s->b;
-					Node* b  = q ? s->b : s->a;
-					if (ng->kind != Node::Neg || !Same(ng->a, a)) continue;
-					a->uses++;
-					b->uses++;
-					c->uses++;
-					Node* oa = n->a;
-					Node* ob = n->b;
-					n->kind  = Node::Flrp;
-					n->a     = a;
-					n->b     = b;
-					n->t     = c;
-					if (n->inst != nullptr) n->changed = true;
-					Release(oa);
-					Release(ob);
-					return true;
-				}
-			}
-		}
-	}
 	return false;
 }
 
 void Collect(Node* n, std::vector<Node*>& out) { // virtual nodes under an inst node, children first
-	for (Node* c: {n->a, n->b, n->t}) {
+	for (Node* c: {n->a, n->b}) {
 		if (c == nullptr || c->inst != nullptr || c->kind == Node::Leaf || c->kind == Node::Const)
 			continue;
 		Collect(c, out);
@@ -331,9 +293,6 @@ std::string Text(MslCtx& ctx, const Node* n, bool root) {
 		case Node::Const: return MslF32Bits(FloatBitsOf(n->c));
 		case Node::Leaf: return ctx.Val(n->leaf);
 		case Node::Neg: return fmt::format("(-{})", Text(ctx, n->a, false));
-		case Node::Flrp:
-			return fmt::format("({0} + (({1} - {0}) * {2}))", Text(ctx, n->a, false), Text(ctx, n->b, false),
-			                   Text(ctx, n->t, false));
 		case Node::Add:
 			return fmt::format("({} + {})", Text(ctx, n->a, false), Text(ctx, n->b, false));
 		case Node::Mul:
@@ -357,14 +316,6 @@ std::string Stmt(MslCtx& ctx, const Node* n, bool root, const std::string& base,
 		case Node::Const: return MslF32Bits(FloatBitsOf(n->c));
 		case Node::Leaf: return ctx.Val(n->leaf);
 		case Node::Neg: s = fmt::format("(-{})", Stmt(ctx, n->a, false, base, k, out)); break;
-		case Node::Flrp: {
-			// KK prints nir flrp inline in ONE statement, so Metal may contract it (fma((b-a), t, a))
-			const auto x = Stmt(ctx, n->a, false, base, k, out);
-			const auto y = Stmt(ctx, n->b, false, base, k, out);
-			const auto z = Stmt(ctx, n->t, false, base, k, out);
-			s            = fmt::format("({0} + (({1} - {0}) * {2}))", x, y, z);
-			break;
-		}
 		case Node::Add:
 		case Node::Mul: {
 			const auto x = Stmt(ctx, n->a, false, base, k, out);
