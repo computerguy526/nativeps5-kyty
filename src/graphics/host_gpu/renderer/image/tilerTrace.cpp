@@ -122,6 +122,9 @@ void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
 	         flags};
 	auto&            state = GetState();
 	std::scoped_lock lock(state.mutex);
+	if (state.window.empty() && state.index == 0) {
+		std::fprintf(stderr, "[tilertrace] first pass (window %.1f s)\n", window);
+	}
 	auto&            value = state.window[key];
 	value.count++;
 	value.bytes += bytes;

@@ -15,6 +15,7 @@
 #include <array>
 #include <bit>
 #include <cinttypes>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -97,6 +98,9 @@ FaultManager::FaultManager(GraphicContext& graphics, CommandScheduler& scheduler
 	m_graphics.device.destroyShaderModule(module, nullptr);
 	RequireVulkanSuccess(result, "create fault-buffer pipeline");
 	SetVulkanObjectNameF(m_graphics.device, m_fault_process_pipeline, "Fault Buffer Parser");
+	if (FaultProcessVec()) {
+		std::fprintf(stderr, "[litcompute] KYTY_FAULT_PROCESS_VEC=1: 4-word fault parser\n");
+	}
 }
 
 FaultManager::~FaultManager() {
