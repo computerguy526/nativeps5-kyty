@@ -6778,6 +6778,9 @@ uint64_t PipelineCache::WriteDriverCache(bool periodic) {
 			                 "bytes, serialize {:.1f} ms, {} in a row)",
 			                 payload.size(), static_cast<double>(serialized - begin) / 1.0e6,
 			                 m_saver->identical_saves);
+			// The file on disk holds these bytes: the keys sealed above are in it, so the
+			// known-pipeline list still gets them (a skipped close/SIGTERM save is the last one).
+			if (m_known != nullptr) m_known->Flush();
 			return payload.size();
 		}
 		if (periodic) m_saver->identical_saves = 0;
