@@ -112,17 +112,25 @@ private:
 
 // Load hold (KYTY_RT_LOAD_HOLD, default on): the proactive half of the budget guard. The invalid
 // BVH shows up while a level streams in, and the first dispatch on it already costs seconds (the
-// guard above only stops the following ones). While the game reads files fast (>= `rate_bytes_s`,
-// sampled every `sample_ms` or slower) or, optionally, its level phase changed, and for `quiet_ms`
-// after the last such sign, software-RT dispatches are skipped. One hold lasts at most
-// `max_hold_ms`; after that RT runs again until the signs have paused for `quiet_ms` (a long stream
-// of loads cannot keep the lighting off).
+// guard above only stops the following ones). Software-RT dispatches are skipped
+//   - for `phase_quiet_ms` after the runtime's level phase changed (nps5_vfs_phase: the n-th
+//   DISTINCT
+//     levels/<name> opened, so a UI scene counts once per session, not every time it is shown), and
+//   - while the game reads files fast (>= `rate_bytes_s`, sampled every `sample_ms` or slower) and
+//   for
+//     `quiet_ms` after the last such sample,
+// whichever ends later. One hold lasts at most `max_hold_ms`; after that RT runs again until every
+// sign has paused (a long stream of loads cannot keep the lighting off). Observe() must be called
+// from a path that runs every frame (every compute dispatch), not only at RT dispatches: a direct
+// level boot has no RT dispatch before the level opens, and a VFS-only trigger missed that case
+// (a GPU watchdog stop with the hold nominally on).
 struct LoadHold {
-	uint64_t rate_bytes_s = 48ull << 20;
-	uint64_t sample_ms    = 250;
-	uint64_t quiet_ms     = 1500;
-	uint64_t max_hold_ms  = 30000;
-	bool     use_phase    = false;
+	uint64_t rate_bytes_s   = 48ull << 20;
+	uint64_t sample_ms      = 250;
+	uint64_t quiet_ms       = 1500;
+	uint64_t phase_quiet_ms = 5000;
+	uint64_t max_hold_ms    = 30000;
+	bool     use_phase      = true;
 
 	// True when RT dispatches are skipped now. `bytes` = the runtime's VFS read counter, `phase`
 	// its level phase, `now_ms` monotonic.
@@ -136,15 +144,16 @@ struct LoadHold {
 		}
 		if (phase != m_phase) {
 			m_phase = phase;
-			if (use_phase) Sign(now_ms);
+			if (use_phase) Until(now_ms + phase_quiet_ms);
 		}
 		if (now_ms - m_t >= sample_ms) {
-			if (bytes >= m_bytes && (bytes - m_bytes) * 1000 >= rate_bytes_s * (now_ms - m_t))
-				Sign(now_ms);
+			if (bytes >= m_bytes && (bytes - m_bytes) * 1000 >= rate_bytes_s * (now_ms - m_t)) {
+				Until(now_ms + quiet_ms);
+			}
 			m_t     = now_ms;
 			m_bytes = bytes;
 		}
-		if (!m_has_sign || now_ms - m_sign >= quiet_ms) {
+		if (now_ms >= m_until) {
 			m_holding = false;
 			return false;
 		}
@@ -158,19 +167,17 @@ struct LoadHold {
 	[[nodiscard]] uint64_t Holds() const { return m_holds; }
 
 private:
-	void Sign(uint64_t now_ms) {
-		m_has_sign = true;
-		m_sign     = now_ms;
+	void Until(uint64_t t) {
+		if (t > m_until) m_until = t;
 	}
-	bool     m_primed   = false;
-	bool     m_has_sign = false;
-	bool     m_holding  = false;
-	int      m_phase    = 0;
-	uint64_t m_t        = 0;
-	uint64_t m_bytes    = 0;
-	uint64_t m_sign     = 0;
-	uint64_t m_since    = 0;
-	uint64_t m_holds    = 0;
+	bool     m_primed  = false;
+	bool     m_holding = false;
+	int      m_phase   = 0;
+	uint64_t m_t       = 0;
+	uint64_t m_bytes   = 0;
+	uint64_t m_until   = 0;
+	uint64_t m_since   = 0;
+	uint64_t m_holds   = 0;
 };
 
 } // namespace Libs::Graphics::RtSession

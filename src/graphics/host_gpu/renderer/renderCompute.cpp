@@ -63,9 +63,10 @@ namespace Libs::Graphics {
 // processor thread only. KYTY_RT_BUDGET_GUARD=0 turns it off; _LANES / _HOLD_MS tune it.
 // rtSession.h LoadHold: true while the game streams a level in (software-RT dispatches are skipped,
 // the BVH they would traverse may not be valid yet). Command processor thread only.
-// KYTY_RT_LOAD_HOLD=0 off; _QUIET_MS (1500), _MAX_MS (30000), _VFS_MBS (48), _PHASE=1 (level phase
-// changes count as a sign too).
-static bool RtLoadHold() {
+// KYTY_RT_LOAD_HOLD=0 off; _PHASE_MS (5000, after a level phase change), _QUIET_MS (1500, after
+// fast reads), _MAX_MS (30000), _VFS_MBS (48), _PHASE=0 (phase changes do not count). Called for
+// EVERY compute dispatch so the signs are sampled every frame; `rt` = this dispatch is a RT kernel.
+static bool RtLoadHold(bool rt) {
 	static const auto env = [](const char* name, uint64_t fallback) {
 		const char* v = std::getenv(name);
 		return v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 0) : fallback;
@@ -84,10 +85,11 @@ static bool RtLoadHold() {
 	if (bytes == nullptr) return false;
 	static RtSession::LoadHold hold = [] {
 		RtSession::LoadHold h;
-		h.quiet_ms     = env("KYTY_RT_LOAD_HOLD_QUIET_MS", h.quiet_ms);
-		h.max_hold_ms  = env("KYTY_RT_LOAD_HOLD_MAX_MS", h.max_hold_ms);
-		h.rate_bytes_s = env("KYTY_RT_LOAD_HOLD_VFS_MBS", 48) << 20;
-		h.use_phase    = env("KYTY_RT_LOAD_HOLD_PHASE", 0) != 0;
+		h.quiet_ms       = env("KYTY_RT_LOAD_HOLD_QUIET_MS", h.quiet_ms);
+		h.phase_quiet_ms = env("KYTY_RT_LOAD_HOLD_PHASE_MS", h.phase_quiet_ms);
+		h.max_hold_ms    = env("KYTY_RT_LOAD_HOLD_MAX_MS", h.max_hold_ms);
+		h.rate_bytes_s   = env("KYTY_RT_LOAD_HOLD_VFS_MBS", 48) << 20;
+		h.use_phase      = env("KYTY_RT_LOAD_HOLD_PHASE", 1) != 0;
 		return h;
 	}();
 	static uint64_t skipped = 0;
@@ -101,13 +103,15 @@ static bool RtLoadHold() {
 	              phase != nullptr ? phase->load(std::memory_order_relaxed) : 0, now_ms);
 	if (held) {
 		if (!was) {
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "RT load hold: the game is streaming a level; software-RT dispatches are skipped "
-			    "until "
-			    "{} ms after the reads calm down (hold {}; KYTY_RT_LOAD_HOLD=0 disables)\n",
-			    hold.quiet_ms, hold.Holds()));
+			Log::WriteToConsoleAndLog(fmt::format("RT load hold: a level is loading; software-RT "
+			                                      "dispatches are skipped until {} ms after "
+			                                      "the level opened and {} ms after the reads calm "
+			                                      "down (hold {}; KYTY_RT_LOAD_HOLD=0 "
+			                                      "disables)\n",
+			                                      hold.phase_quiet_ms, hold.quiet_ms,
+			                                      hold.Holds()));
 		}
-		skipped++;
+		if (rt) skipped++;
 	} else if (was) {
 		Log::WriteToConsoleAndLog(
 		    fmt::format("RT load hold: over, {} software-RT dispatches skipped so far\n", skipped));
@@ -606,8 +610,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	CpGaps::Phase(CpGaps::Cat::DispatchPipeline);
 	// A software ray-tracing kernel whose pipeline is still being built, or any RT kernel after one
 	// failed to build (rtSession.h), is skipped: the lighting it feeds lags or stays as it was.
-	auto* pipeline_or_null =
-	    input_info.stage.program->info.uses_bvh && (RtBudgetHold(m_context) || RtLoadHold())
+	const bool rt_kernel    = input_info.stage.program->info.uses_bvh;
+	const bool rt_load_hold = RtLoadHold(rt_kernel);
+	auto*      pipeline_or_null =
+	    rt_kernel && (RtBudgetHold(m_context) || rt_load_hold)
 	        ? nullptr
 	        : m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
 	if (pipeline_or_null == nullptr) {
@@ -919,8 +925,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		return;
 	}
 	buffer.EndRendering();
-	auto* pipeline_or_null =
-	    input_info.stage.program->info.uses_bvh && (RtBudgetHold(m_context) || RtLoadHold())
+	const bool rt_kernel    = input_info.stage.program->info.uses_bvh;
+	const bool rt_load_hold = RtLoadHold(rt_kernel);
+	auto*      pipeline_or_null =
+	    rt_kernel && (RtBudgetHold(m_context) || rt_load_hold)
 	        ? nullptr
 	        : m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
 	if (pipeline_or_null == nullptr) {

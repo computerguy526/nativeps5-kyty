@@ -110,16 +110,57 @@ int main() {
 		CHECK(held_ms >= 29000 && held_ms <= 30100);
 		CHECK(h.Holds() == 1);
 	}
-	{ // phase changes count only when asked for
+	{ // phase: off when asked, on by default; a change holds for phase_quiet_ms
 		LoadHold off;
+		off.use_phase = false;
 		CHECK(!off.Hold(0, 1, 0));
 		CHECK(!off.Hold(0, 2, 16));
 		LoadHold on;
-		on.use_phase = true;
 		CHECK(!on.Hold(0, 1, 0));
 		CHECK(on.Hold(0, 2, 16));
-		CHECK(on.Hold(0, 2, 1500));
-		CHECK(!on.Hold(0, 2, 1516));
+		CHECK(on.Hold(0, 2, 5000));
+		CHECK(!on.Hold(0, 2, 5016));
+		CHECK(on.Holds() == 1);
+	}
+	{ // direct level boot (hsfinal_cands2): no fast reads at all, level opens, UI scenes follow;
+	  // the RT burst 1.4 s after the level opened is held, RT is back 5 s after the last new scene
+		LoadHold h;
+		uint64_t b = 0;
+		int      phase = 3;
+		bool     burst_held = false, late_free = false;
+		for (uint64_t t = 0; t < 30000; t += 16) {
+			b += 5 * MB * 16 / 1000;            // slow trickle, far below the VFS trigger
+			if (t == 13104) phase++;            // level opened
+			if (t == 13504) phase++;            // ui_level_name_banner (new scene)
+			const bool held = h.Hold(b, phase, t);
+			if (t == 14496) burst_held = held;  // the RT burst
+			if (t == 18528) late_free = !held;  // first tick 5 s after the last new scene
+		}
+		CHECK(burst_held);
+		CHECK(late_free);
+		CHECK(h.Holds() == 1);
+	}
+	{ // whichever is later: reads still fast after the phase window keep the hold; bounded by max
+		LoadHold h;
+		uint64_t b = 0, last_hold = 0, held_ms = 0;
+		for (uint64_t t = 0; t < 60000; t += 16) {
+			if (t >= 1000 && t < 9000) b += 200 * MB * 16 / 1000;
+			if (h.Hold(b, t >= 1000 ? 1 : 0, t)) {
+				last_hold = t;
+				held_ms += 16;
+			}
+		}
+		CHECK(last_hold >= 9000 + 1500 - 300 && last_hold <= 9000 + 1500 + 300);
+		CHECK(held_ms < 30000);
+		LoadHold m;
+		uint64_t mh = 0;
+		int      ph = 0;
+		for (uint64_t t = 0; t < 120000; t += 16) {
+			if (t % 2000 == 0) ph++;            // a new scene every 2 s for ever
+			if (m.Hold(0, ph, t)) mh += 16;
+		}
+		CHECK(mh >= 29000 && mh <= 30100);
+		CHECK(m.Holds() == 1);
 	}
 	{ // a counter that goes backwards (runtime restart of the counter) is not a sign
 		LoadHold h;
