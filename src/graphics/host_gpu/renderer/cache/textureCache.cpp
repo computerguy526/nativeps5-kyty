@@ -5611,7 +5611,7 @@ void TextureCache::TakeOverOwnedBytes(Image& destination, Image& source) {
 
 uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, ImageId except,
                                              const char* reason, Buffer* target) {
-	const TilerTrace::Reason tiler_reason("download.materialize");
+	const TilerTrace::Reason tiler_reason(reason != nullptr ? reason : "download.materialize");
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	if (!AliasBytesEnabled() || range.Empty() || !m_scheduler.Active() ||

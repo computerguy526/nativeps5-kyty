@@ -40,8 +40,9 @@ struct Key {
 	uint32_t    height;
 	uint32_t    layers;
 	uint32_t    flags;
+	uint32_t    vk_format;
 	auto        Tie() const {
-		return std::tie(to_image, reason, address, format, tile, width, height, layers, flags);
+		return std::tie(to_image, reason, address, format, tile, width, height, layers, flags, vk_format);
 	}
 	bool operator<(const Key& other) const { return Tie() < other.Tie(); }
 };
@@ -75,11 +76,11 @@ void FlushLocked(State& state, double seconds) {
 	     state.index, seconds, state.window.size(), total_count, total_bytes);
 	for (const auto& [key, value]: state.window) {
 		std::fprintf(stderr, "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
-		     "flags=%c%c%c%c n=%" PRIu64 " bytes=%" PRIu64 "\n",
+		     "flags=%c%c%c%c%c vk=%u n=%" PRIu64 " bytes=%" PRIu64 "\n",
 		     key.to_image ? "detile" : "tile", key.reason.c_str(), key.address, key.format,
 		     key.tile, key.width, key.height, key.layers, (key.flags & 1u) != 0 ? 'G' : '-',
 		     (key.flags & 2u) != 0 ? 'B' : '-', (key.flags & 4u) != 0 ? 'C' : '-',
-		     (key.flags & 8u) != 0 ? 'K' : '-', value.count, value.bytes);
+		     (key.flags & 8u) != 0 ? 'K' : '-', (key.flags & 16u) != 0 ? 'O' : '-', key.vk_format, value.count, value.bytes);
 	}
 	std::fflush(stderr);
 	state.window.clear();
@@ -111,6 +112,7 @@ void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
 	flags |= image.IsBufferModified() ? 2u : 0u;
 	flags |= image.IsCpuDirty() ? 4u : 0u;
 	flags |= image.HasKeptDirty() ? 8u : 0u;
+	flags |= image.alias_owner ? 16u : 0u;
 	Key key {to_image,
 	         t_reason != nullptr ? t_reason : "?",
 	         info.data.address,
@@ -119,7 +121,8 @@ void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
 	         info.extent.width,
 	         info.extent.height,
 	         info.resources.layers,
-	         flags};
+	         flags,
+	         static_cast<uint32_t>(image.backing.format)};
 	auto&            state = GetState();
 	std::scoped_lock lock(state.mutex);
 	if (state.window.empty() && state.index == 0) {
