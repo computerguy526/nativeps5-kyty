@@ -1,6 +1,8 @@
 // Scalar & vector ALU, conversions, compares and selects as MSL expressions.
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::Msl {
@@ -63,6 +65,22 @@ void                     SetFlushTranscendentalInputs(bool on) {
 static thread_local bool g_kk_minmax = false;
 void                     SetKkMinMax(bool on) {
 	g_kk_minmax = on;
+}
+// mslfix6 (pair 70e345eb pipe 97): with one operand a non-zero finite constant, Metal's relaxed fmin/fmax
+// already gives KK's result (a NaN operand -> the constant; no -0/+0 pair) and Metal compiles the code
+// around it exactly as around KK's statement, while the helper (or KK's own statement spelled in B)
+// shifts one f32 rounding downstream (1 f16 ulp on 1 pixel). So only variable/zero operands use the helper.
+static bool NonZeroFiniteLiteral(const std::string& x) {
+	if (x.size() < 2 || x.back() != 'f') return false;
+	const std::string body = x.substr(0, x.size() - 1);
+	char*             end  = nullptr;
+	const float       v    = std::strtof(body.c_str(), &end);
+	return end != nullptr && *end == '\0' && end != body.c_str() && v != 0.0f && std::isfinite(v);
+}
+static std::string KkMinMax(bool max_value, const std::string& a, const std::string& b) {
+	const bool helper = g_kk_minmax && !NonZeroFiniteLiteral(a) && !NonZeroFiniteLiteral(b);
+	return std::string(helper ? (max_value ? "kyty_fmax(" : "kyty_fmin(") : (max_value ? "fmax(" : "fmin(")) +
+	       a + ", " + b + ")";
 }
 static std::string FtzIn(const std::string& x) {
 	if (!g_ftz_tr) return x;
@@ -227,14 +245,14 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 				    a[2]); // MadMode Position/Fused outside position data: same as the SPIR-V path
 			return fmt::format("(({} * {}) + {})", a[0], a[1], a[2]);
 		case O::FPMin32:
-			return (g_kk_minmax ? "kyty_fmin(" : "fmin(") + a[0] + ", " + a[1] + ")";
+			return KkMinMax(false, a[0], a[1]);
 		case O::FPMax32:
-			return (g_kk_minmax ? "kyty_fmax(" : "fmax(") + a[0] + ", " + a[1] + ")";
+			return KkMinMax(true, a[0], a[1]);
 		case O::FPMinTri32:
-			return g_kk_minmax ? fmt::format("kyty_fmin(kyty_fmin({}, {}), {})", a[0], a[1], a[2])
+			return g_kk_minmax ? KkMinMax(false, KkMinMax(false, a[0], a[1]), a[2])
 			                   : fmt::format("fmin3({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPMaxTri32:
-			return g_kk_minmax ? fmt::format("kyty_fmax(kyty_fmax({}, {}), {})", a[0], a[1], a[2])
+			return g_kk_minmax ? KkMinMax(true, KkMinMax(true, a[0], a[1]), a[2])
 			                   : fmt::format("fmax3({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPMedTri32:
 			return (g_kk_minmax ? "kyty_fmed3(" : "fmedian3(") + a[0] + ", " + a[1] + ", " + a[2] + ")";

@@ -463,6 +463,11 @@ void TestKkMinMax() {
             Msl::AluExpression(ValueOpcode::FPMaxTri32, a3) == "kyty_fmax(kyty_fmax(a, b), c)" &&
             Msl::AluExpression(ValueOpcode::FPMedTri32, a3) == "kyty_fmed3(a, b, c)",
         "kk min/max: graphics spellings");
+  Check(Msl::AluExpression(ValueOpcode::FPMax32, std::vector<std::string>{"-32767.0f", "x"}) == "fmax(-32767.0f, x)" &&
+            Msl::AluExpression(ValueOpcode::FPMin32, std::vector<std::string>{"x", "1.13097346f"}) == "fmin(x, 1.13097346f)" &&
+            Msl::AluExpression(ValueOpcode::FPMax32, std::vector<std::string>{"0.0f", "x"}) == "kyty_fmax(0.0f, x)" &&
+            Msl::AluExpression(ValueOpcode::FPMax32, std::vector<std::string>{"-0.0f", "x"}) == "kyty_fmax(-0.0f, x)",
+        "kk min/max: a non-zero finite constant operand keeps Metal fmin/fmax (pair 70e345eb), zero uses the helper");
   Msl::SetKkMinMax(false);
   Check(Msl::AluExpression(ValueOpcode::FPMin32, a2) == "fmin(a, b)" &&
             Msl::AluExpression(ValueOpcode::FPMedTri32, a3) == "fmedian3(a, b, c)",
