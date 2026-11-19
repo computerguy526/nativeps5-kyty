@@ -787,6 +787,9 @@ if(LINUX)
 	target_link_libraries(gpu_safety_tests Threads::Threads)
 endif()
 
+add_executable(rt_budget_guard_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RtBudgetGuardTests.cpp")
+target_include_directories(rt_budget_guard_tests PRIVATE ${inc_headers})
+
 add_executable(hang_watchdog_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HangWatchdogTests.cpp")
 target_link_libraries(hang_watchdog_tests common)
 target_include_directories(hang_watchdog_tests PRIVATE ${inc_headers})

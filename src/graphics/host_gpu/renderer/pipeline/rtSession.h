@@ -54,4 +54,58 @@ enum class DispatchAction : uint8_t {
 	return DispatchAction::Skip;
 }
 
+// Budget guard (KYTY_RT_BUDGET_GUARD, default on). A RT kernel that traverses an invalid BVH (level
+// still streaming, stale upload) runs every lane to KYTY_RT_NODE_BUDGET: bounded, but seconds of GPU
+// time per dispatch, and the dispatches of the next frames queue behind it (GPU watchdog at Sky
+// Garden level entry, work/research/wdog-2026-11-19.md). The exhausted-lane counter lives in mapped
+// GDS memory and rises while such a dispatch is still running, so the command processor reads it
+// before every RT dispatch: a rise of `trip_lanes` or more since the previous look holds all RT
+// dispatches for `hold_ms` (they are skipped, as while a pipeline builds: the lighting they feed
+// lags). When the hold ends one dispatch probes; another rise doubles the hold up to `max_hold_ms`,
+// `calm_ms` without a rise resets it. The guard cannot stop the first bad dispatch: the node budget
+// bounds that one.
+struct BudgetGuard {
+	uint32_t trip_lanes  = 1024;
+	uint64_t hold_ms     = 500;
+	uint64_t max_hold_ms = 8000;
+	uint64_t calm_ms     = 30000;
+
+	// True when a RT dispatch may run now. `exhausted` = the GDS counter (wraps), `now_ms` monotonic.
+	[[nodiscard]] bool Allow(uint32_t exhausted, uint64_t now_ms) {
+		const uint32_t rise = exhausted - m_seen;   // unsigned: correct across a wrap
+		m_seen              = exhausted;
+		if (!m_primed) {
+			// Lanes exhausted before the first look are not evidence against this dispatch.
+			m_primed = true;
+			return true;
+		}
+		if (m_holding && now_ms < m_hold_until) {
+			// The running bad dispatch keeps counting: not new evidence, the hold is not extended.
+			return false;
+		}
+		if (rise >= trip_lanes) {
+			const bool repeat = m_trips != 0 && now_ms - m_last_trip < calm_ms + m_cur_hold;
+			m_cur_hold        = repeat ? (m_cur_hold * 2 > max_hold_ms ? max_hold_ms : m_cur_hold * 2) : hold_ms;
+			m_holding         = true;
+			m_hold_until      = now_ms + m_cur_hold;
+			m_last_trip       = now_ms;
+			m_trips++;
+			return false;
+		}
+		m_holding = false;
+		return true;
+	}
+	[[nodiscard]] uint64_t Trips() const { return m_trips; }
+	[[nodiscard]] uint64_t CurrentHoldMs() const { return m_cur_hold; }
+
+private:
+	uint32_t m_seen       = 0;
+	bool     m_primed     = false;
+	bool     m_holding    = false;
+	uint64_t m_hold_until = 0;
+	uint64_t m_cur_hold   = 0;
+	uint64_t m_last_trip  = 0;
+	uint64_t m_trips      = 0;
+};
+
 } // namespace Libs::Graphics::RtSession

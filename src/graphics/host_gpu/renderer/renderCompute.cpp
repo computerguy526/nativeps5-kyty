@@ -23,6 +23,7 @@
 #include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/rtSession.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -52,6 +53,47 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+
+namespace Libs::Graphics {
+// rtSession.h BudgetGuard: true when this dispatch of a software-RT kernel must be skipped because
+// lanes of an earlier RT dispatch are exhausting the BVH node budget (invalid BVH). Command
+// processor thread only. KYTY_RT_BUDGET_GUARD=0 turns it off; _LANES / _HOLD_MS tune it.
+static bool RtBudgetHold(RenderContext& context) {
+	namespace Recompiler = Libs::Graphics::ShaderRecompiler;
+	const auto& options  = Recompiler::GetCodegenOptions();
+	if (!options.rt_software || options.rt_node_budget == 0) return false;
+	static const auto env = [](const char* name, uint64_t fallback) {
+		const char* v = std::getenv(name);
+		return v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 0) : fallback;
+	};
+	static const bool enabled = env("KYTY_RT_BUDGET_GUARD", 1) != 0;
+	if (!enabled) return false;
+	static RtSession::BudgetGuard guard = [] {
+		RtSession::BudgetGuard g;
+		g.trip_lanes = static_cast<uint32_t>(env("KYTY_RT_BUDGET_GUARD_LANES", g.trip_lanes));
+		g.hold_ms    = env("KYTY_RT_BUDGET_GUARD_HOLD_MS", g.hold_ms);
+		return g;
+	}();
+	const auto mapped = context.GetBufferCache().GetGdsBuffer()->Mapped();
+	if (mapped.size() < Recompiler::RtNodeBudgetGdsFromEnd * sizeof(uint32_t)) return false;
+	uint32_t exhausted = 0;
+	std::memcpy(&exhausted,
+	            mapped.data() + mapped.size() - Recompiler::RtNodeBudgetGdsFromEnd * sizeof(uint32_t),
+	            sizeof(exhausted));
+	const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                              std::chrono::steady_clock::now().time_since_epoch())
+	                                              .count());
+	const auto trips = guard.Trips();
+	const bool allow = guard.Allow(exhausted, now_ms);
+	if (guard.Trips() != trips) {
+		Log::WriteToConsoleAndLog(fmt::format(
+		    "RT budget guard: {} lanes have exhausted the BVH node budget (invalid BVH?); software-RT "
+		    "dispatches are skipped for {} ms (trip {}; KYTY_RT_BUDGET_GUARD=0 disables)\n",
+		    exhausted, guard.CurrentHoldMs(), guard.Trips()));
+	}
+	return !allow;
+}
+} // namespace Libs::Graphics
 
 namespace Libs::Graphics {
 // KYTY_DISPATCH_OVERLAP accounting, printed every 10 s once a direct dispatch ran:
@@ -504,7 +546,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// A software ray-tracing kernel whose pipeline is still being built, or any RT kernel after one
 	// failed to build (rtSession.h), is skipped: the lighting it feeds lags or stays as it was.
 	auto* pipeline_or_null =
-	    m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
+	    input_info.stage.program->info.uses_bvh && RtBudgetHold(m_context)
+	        ? nullptr
+	        : m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
 	if (pipeline_or_null == nullptr) {
 		ResetBindings();
 		return;
@@ -815,7 +859,9 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	buffer.EndRendering();
 	auto* pipeline_or_null =
-	    m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
+	    input_info.stage.program->info.uses_bvh && RtBudgetHold(m_context)
+	        ? nullptr
+	        : m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
 	if (pipeline_or_null == nullptr) {
 		ResetBindings();
 		return;
