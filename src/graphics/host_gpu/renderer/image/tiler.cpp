@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -1204,6 +1205,7 @@ bool TileManager::DetileToImage(Image& image, vk::Buffer tiled, uint64_t tiled_o
 	}
 	Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageUploads);
 	Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageUploadBytes, bytes);
+	TilerTrace::Note(true, image, bytes);
 	if (image.info.IsBlock()) {
 		Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageBlockUploads);
 		Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageBlockUploadBytes, bytes);
@@ -1295,6 +1297,7 @@ bool TileManager::TileFromImage(Image& image, std::span<const vk::BufferImageCop
 	}
 	Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageDownloads);
 	Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageDownloadBytes, bytes);
+	TilerTrace::Note(false, image, bytes);
 	if (verify) {
 		VerifyOnCompletion("download", image.info.data.address, reference.buffer, 0, tiled,
 		                   tiled_offset, tiled_capacity, {{0, tiled_capacity}});

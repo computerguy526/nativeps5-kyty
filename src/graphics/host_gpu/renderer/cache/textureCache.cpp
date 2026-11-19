@@ -31,6 +31,7 @@
 #include "graphics/host_gpu/renderer/image/stagingCopier.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/vramBudget.h"
 #include "graphics/host_gpu/vramStats.h"
@@ -1728,6 +1729,7 @@ bool TextureCache::KeepGpuBytes(Image& image, uint64_t address, uint64_t size, b
 }
 
 TextureCache::PartialUploadResult TextureCache::UploadKeptRanges(Image& image) {
+	const TilerTrace::Reason tiler_reason("upload.kept");
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	PartialUploadResult result;
@@ -2848,6 +2850,7 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 }
 
 void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
+	const TilerTrace::Reason tiler_reason(intent == RefreshIntent::Write ? "upload.refresh_w" : "upload.refresh_r");
 	auto& image = m_slot_images[id];
 	if (image.info.data.Empty()) {
 		return;
@@ -3006,6 +3009,7 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 }
 
 TextureCache::PartialUploadResult TextureCache::TryPartialUpload(Image& image) {
+	const TilerTrace::Reason tiler_reason("upload.partial");
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	PartialUploadResult result;
@@ -3203,6 +3207,7 @@ TextureCache::PartialUploadResult TextureCache::TryPartialUpload(Image& image) {
 }
 
 bool TextureCache::TryAsyncFullUpload(Image& image) {
+	const TilerTrace::Reason tiler_reason("upload.async");
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	const auto& info = image.info;
@@ -5606,6 +5611,7 @@ void TextureCache::TakeOverOwnedBytes(Image& destination, Image& source) {
 
 uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, ImageId except,
                                              const char* reason, Buffer* target) {
+	const TilerTrace::Reason tiler_reason("download.materialize");
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	if (!AliasBytesEnabled() || range.Empty() || !m_scheduler.Active() ||
@@ -5853,6 +5859,7 @@ bool BufferCache::SynchronizeBufferFromOwner(Buffer& buffer, Common::SlotId sele
 
 uint64_t BufferCache::RecordImageDownload(Buffer& buffer, ImageId id, bool skip_unchanged,
                                           bool* skipped) {
+	const TilerTrace::Reason tiler_reason("download.buffer_sync");
 	auto& image = m_texture_cache.m_slot_images[id];
 	if (!buffer.IsInBounds(image.info.data.address, 1)) {
 		return 0;
@@ -6045,6 +6052,7 @@ void BufferCache::PreserveImagesForGpuWrite(BufferId id, uint64_t vaddr, uint64_
 }
 
 bool TextureCache::DownloadImageMemory(ImageId id) {
+	const TilerTrace::Reason tiler_reason("download.cpu_readback");
 	KYTY_GPU_OP_SITE("texcache.download");
 	auto& image = m_slot_images[id];
 	if (image.depth_id) {

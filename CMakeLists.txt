@@ -430,6 +430,22 @@ add_custom_command(
 	VERBATIM
 )
 list(APPEND kyty_emulator_src "${fault_buffer_shader_header}")
+# KYTY_FAULT_PROCESS_VEC: the same parser, 4 bitmap words per invocation (litcompute).
+set(fault_buffer_vec_shader_source "${gpu_tiler_shader_dir}/fault_buffer_process_vec.comp")
+set(fault_buffer_vec_shader_spv "${gpu_tiler_generated_dir}/fault_buffer_process_vec.spv")
+set(fault_buffer_vec_shader_header "${gpu_tiler_generated_dir}/fault_buffer_process_vec_spv.h")
+add_custom_command(
+	OUTPUT "${fault_buffer_vec_shader_header}"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_tiler_generated_dir}"
+	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+	        -DCACHING_PAGEBITS=14 -DMAX_PAGE_FAULTS=1024
+	        -o "${fault_buffer_vec_shader_spv}" "${fault_buffer_vec_shader_source}"
+	COMMAND ${CMAKE_COMMAND} -DINPUT=${fault_buffer_vec_shader_spv} -DOUTPUT=${fault_buffer_vec_shader_header}
+	        -DSYMBOL=FAULT_BUFFER_PROCESS_VEC_SPV -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+	DEPENDS "${fault_buffer_vec_shader_source}"
+	VERBATIM
+)
+list(APPEND kyty_emulator_src "${fault_buffer_vec_shader_header}")
 # KYTY_BDA_WRITES: the same compaction over the written-page bitmap, with room for 64Ki pages
 # (1 GiB) per settle.
 set(bda_write_pages_shader_spv "${gpu_tiler_generated_dir}/bda_write_pages_process.spv")

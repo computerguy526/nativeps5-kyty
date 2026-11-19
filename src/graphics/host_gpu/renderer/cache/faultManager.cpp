@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "gpu_tiler_shaders/fault_buffer_process_vec_spv.h"
 #include "gpu_tiler_shaders/bda_write_pages_process_spv.h"
 #include "gpu_tiler_shaders/fault_buffer_process_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -14,6 +15,7 @@
 #include <array>
 #include <bit>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -34,6 +36,16 @@ constexpr size_t BdaDownloadSize   = BdaStoreLogOffset + BufferCache::BDA_STORE_
 
 bool StoreLogEnabled() {
 	return ShaderRecompiler::GetCodegenOptions().bda_store_log;
+}
+// KYTY_FAULT_PROCESS_VEC=1 (opt-in, litcompute): the fault-bitmap parser reads 4 words per
+// invocation, skips the clearing store of all-zero quads and takes one counter atomic per
+// invocation (fault_buffer_process_vec.comp; same page list contract, a quarter of the threads).
+bool FaultProcessVec() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_FAULT_PROCESS_VEC");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return enabled;
 }
 
 } // namespace
@@ -61,7 +73,9 @@ FaultManager::FaultManager(GraphicContext& graphics, CommandScheduler& scheduler
 	                                                &m_fault_process_desc_layout),
 	    "create fault-buffer descriptor layout");
 
-	const auto module = CompileSPV(FAULT_BUFFER_PROCESS_SPV, m_graphics.device);
+	const auto module = FaultProcessVec()
+	                        ? CompileSPV(FAULT_BUFFER_PROCESS_VEC_SPV, m_graphics.device)
+	                        : CompileSPV(FAULT_BUFFER_PROCESS_SPV, m_graphics.device);
 
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.setLayoutCount = 1;
@@ -143,7 +157,7 @@ void FaultManager::ProcessFaultBuffer() {
 	m_scheduler.Current().PushDescriptors(vk::PipelineBindPoint::eCompute,
 	                             m_fault_process_pipeline_layout, 0,
 	                             static_cast<uint32_t>(writes.size()), writes.data());
-	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 32;
+	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 32 / (FaultProcessVec() ? 4 : 1);
 	const auto num_workgroups = (num_threads + 63) / 64;
 	command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);
 	// The host reads the parser's page list after the tick (the deferred operation below): only a
