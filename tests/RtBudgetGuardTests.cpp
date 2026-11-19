@@ -14,6 +14,7 @@ static int g_checks = 0;
 	} while (0)
 
 using Libs::Graphics::RtSession::BudgetGuard;
+using Libs::Graphics::RtSession::LoadHold;
 
 int main() {
 	{ // a valid BVH: the counter never moves, nothing is ever skipped
@@ -74,6 +75,57 @@ int main() {
 		CHECK(g.Allow(0xFFFFFF00u, 0));
 		CHECK(!g.Allow(0x00000400u, 16)); // rose by 0x500 across the wrap
 		CHECK(g.Trips() == 1);
+	}
+	const uint64_t MB = 1ull << 20;
+	{ // gameplay: slow trickle of reads (8 MB/s) never holds
+		LoadHold h;
+		uint64_t b = 0;
+		for (uint64_t t = 0; t < 60000; t += 16) {
+			b += 8 * MB * 16 / 1000;
+			CHECK(!h.Hold(b, 0, t));
+		}
+		CHECK(h.Holds() == 0);
+	}
+	{ // level load: 200 MB/s for 3 s, then quiet: held from the first sample to quiet_ms after the last
+		LoadHold h;
+		uint64_t b = 0, first_hold = 0, last_hold = 0;
+		for (uint64_t t = 0; t < 10000; t += 16) {
+			if (t >= 1000 && t < 4000) b += 200 * MB * 16 / 1000;
+			if (h.Hold(b, 0, t)) {
+				if (first_hold == 0) first_hold = t;
+				last_hold = t;
+			}
+		}
+		CHECK(first_hold >= 1000 && first_hold <= 1000 + 2 * (250 + 16)); // first full sample window
+		CHECK(last_hold >= 4000 + 1500 - 250 - 32 && last_hold <= 4000 + 1500 + 250 + 16);
+		CHECK(h.Holds() == 1);
+	}
+	{ // an endless stream of loads: one hold ends at max_hold_ms and no new one starts without a pause
+		LoadHold h;
+		uint64_t b = 0, held_ms = 0;
+		for (uint64_t t = 0; t < 120000; t += 16) {
+			b += 200 * MB * 16 / 1000;
+			if (h.Hold(b, 0, t)) held_ms += 16;
+		}
+		CHECK(held_ms >= 29000 && held_ms <= 30100);
+		CHECK(h.Holds() == 1);
+	}
+	{ // phase changes count only when asked for
+		LoadHold off;
+		CHECK(!off.Hold(0, 1, 0));
+		CHECK(!off.Hold(0, 2, 16));
+		LoadHold on;
+		on.use_phase = true;
+		CHECK(!on.Hold(0, 1, 0));
+		CHECK(on.Hold(0, 2, 16));
+		CHECK(on.Hold(0, 2, 1500));
+		CHECK(!on.Hold(0, 2, 1516));
+	}
+	{ // a counter that goes backwards (runtime restart of the counter) is not a sign
+		LoadHold h;
+		CHECK(!h.Hold(500 * MB, 0, 0));
+		CHECK(!h.Hold(0, 0, 300));
+		CHECK(h.Holds() == 0);
 	}
 	std::printf("RtBudgetGuardTests: %d checks passed\n", g_checks);
 	return 0;

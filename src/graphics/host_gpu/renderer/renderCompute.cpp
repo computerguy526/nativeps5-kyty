@@ -53,11 +53,66 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#if defined(__APPLE__) || defined(__linux__)
+#include <dlfcn.h>
+#endif
 
 namespace Libs::Graphics {
 // rtSession.h BudgetGuard: true when this dispatch of a software-RT kernel must be skipped because
 // lanes of an earlier RT dispatch are exhausting the BVH node budget (invalid BVH). Command
 // processor thread only. KYTY_RT_BUDGET_GUARD=0 turns it off; _LANES / _HOLD_MS tune it.
+// rtSession.h LoadHold: true while the game streams a level in (software-RT dispatches are skipped,
+// the BVH they would traverse may not be valid yet). Command processor thread only.
+// KYTY_RT_LOAD_HOLD=0 off; _QUIET_MS (1500), _MAX_MS (30000), _VFS_MBS (48), _PHASE=1 (level phase
+// changes count as a sign too).
+static bool RtLoadHold() {
+	static const auto env = [](const char* name, uint64_t fallback) {
+		const char* v = std::getenv(name);
+		return v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 0) : fallback;
+	};
+	static const bool enabled = env("KYTY_RT_LOAD_HOLD", 1) != 0;
+	if (!enabled) return false;
+#if defined(__APPLE__) || defined(__linux__)
+	static const auto* bytes = reinterpret_cast<const std::atomic<unsigned long long>*>(
+	    dlsym(RTLD_DEFAULT, "nps5_vfs_bytes_read"));
+	static const auto* phase =
+	    reinterpret_cast<const std::atomic<int>*>(dlsym(RTLD_DEFAULT, "nps5_vfs_phase"));
+#else
+	static const std::atomic<unsigned long long>* bytes = nullptr;
+	static const std::atomic<int>*                phase = nullptr;
+#endif
+	if (bytes == nullptr) return false;
+	static RtSession::LoadHold hold = [] {
+		RtSession::LoadHold h;
+		h.quiet_ms     = env("KYTY_RT_LOAD_HOLD_QUIET_MS", h.quiet_ms);
+		h.max_hold_ms  = env("KYTY_RT_LOAD_HOLD_MAX_MS", h.max_hold_ms);
+		h.rate_bytes_s = env("KYTY_RT_LOAD_HOLD_VFS_MBS", 48) << 20;
+		h.use_phase    = env("KYTY_RT_LOAD_HOLD_PHASE", 0) != 0;
+		return h;
+	}();
+	static uint64_t skipped = 0;
+	static bool     was     = false;
+	const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                              std::chrono::steady_clock::now().time_since_epoch())
+	                                              .count());
+	const bool held = hold.Hold(bytes->load(std::memory_order_relaxed),
+	                            phase != nullptr ? phase->load(std::memory_order_relaxed) : 0, now_ms);
+	if (held) {
+		if (!was) {
+			Log::WriteToConsoleAndLog(fmt::format(
+			    "RT load hold: the game is streaming a level; software-RT dispatches are skipped until "
+			    "{} ms after the reads calm down (hold {}; KYTY_RT_LOAD_HOLD=0 disables)\n",
+			    hold.quiet_ms, hold.Holds()));
+		}
+		skipped++;
+	} else if (was) {
+		Log::WriteToConsoleAndLog(
+		    fmt::format("RT load hold: over, {} software-RT dispatches skipped so far\n", skipped));
+	}
+	was = held;
+	return held;
+}
+
 static bool RtBudgetHold(RenderContext& context) {
 	namespace Recompiler = Libs::Graphics::ShaderRecompiler;
 	const auto& options  = Recompiler::GetCodegenOptions();
@@ -546,7 +601,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// A software ray-tracing kernel whose pipeline is still being built, or any RT kernel after one
 	// failed to build (rtSession.h), is skipped: the lighting it feeds lags or stays as it was.
 	auto* pipeline_or_null =
-	    input_info.stage.program->info.uses_bvh && RtBudgetHold(m_context)
+	    input_info.stage.program->info.uses_bvh && (RtBudgetHold(m_context) || RtLoadHold())
 	        ? nullptr
 	        : m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
 	if (pipeline_or_null == nullptr) {
@@ -859,7 +914,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	buffer.EndRendering();
 	auto* pipeline_or_null =
-	    input_info.stage.program->info.uses_bvh && RtBudgetHold(m_context)
+	    input_info.stage.program->info.uses_bvh && (RtBudgetHold(m_context) || RtLoadHold())
 	        ? nullptr
 	        : m_context.GetPipelineCache().TryGetComputePipeline(input_info, compute_program);
 	if (pipeline_or_null == nullptr) {

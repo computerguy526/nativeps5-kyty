@@ -108,4 +108,66 @@ private:
 	uint64_t m_trips      = 0;
 };
 
+// Load hold (KYTY_RT_LOAD_HOLD, default on): the proactive half of the budget guard. The invalid BVH
+// shows up while a level streams in, and the first dispatch on it already costs seconds (the guard
+// above only stops the following ones). While the game reads files fast (>= `rate_bytes_s`, sampled
+// every `sample_ms` or slower) or, optionally, its level phase changed, and for `quiet_ms` after the
+// last such sign, software-RT dispatches are skipped. One hold lasts at most `max_hold_ms`; after
+// that RT runs again until the signs have paused for `quiet_ms` (a long stream of loads cannot keep
+// the lighting off).
+struct LoadHold {
+	uint64_t rate_bytes_s = 48ull << 20;
+	uint64_t sample_ms    = 250;
+	uint64_t quiet_ms     = 1500;
+	uint64_t max_hold_ms  = 30000;
+	bool     use_phase    = false;
+
+	// True when RT dispatches are skipped now. `bytes` = the runtime's VFS read counter, `phase` its
+	// level phase, `now_ms` monotonic.
+	[[nodiscard]] bool Hold(uint64_t bytes, int phase, uint64_t now_ms) {
+		if (!m_primed) {
+			m_primed = true;
+			m_t      = now_ms;
+			m_bytes  = bytes;
+			m_phase  = phase;
+			return false;
+		}
+		if (phase != m_phase) {
+			m_phase = phase;
+			if (use_phase) Sign(now_ms);
+		}
+		if (now_ms - m_t >= sample_ms) {
+			if (bytes >= m_bytes && (bytes - m_bytes) * 1000 >= rate_bytes_s * (now_ms - m_t)) Sign(now_ms);
+			m_t     = now_ms;
+			m_bytes = bytes;
+		}
+		if (!m_has_sign || now_ms - m_sign >= quiet_ms) {
+			m_holding = false;
+			return false;
+		}
+		if (!m_holding) {
+			m_holding = true;
+			m_since   = now_ms;
+			m_holds++;
+		}
+		return now_ms - m_since < max_hold_ms;
+	}
+	[[nodiscard]] uint64_t Holds() const { return m_holds; }
+
+private:
+	void Sign(uint64_t now_ms) {
+		m_has_sign = true;
+		m_sign     = now_ms;
+	}
+	bool     m_primed   = false;
+	bool     m_has_sign = false;
+	bool     m_holding  = false;
+	int      m_phase    = 0;
+	uint64_t m_t        = 0;
+	uint64_t m_bytes    = 0;
+	uint64_t m_sign     = 0;
+	uint64_t m_since    = 0;
+	uint64_t m_holds    = 0;
+};
+
 } // namespace Libs::Graphics::RtSession
