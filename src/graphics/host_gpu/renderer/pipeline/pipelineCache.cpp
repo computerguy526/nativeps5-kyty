@@ -6609,6 +6609,16 @@ struct PipelineCache::DriverCacheSaver {
 			setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_THROTTLE);
 		}
 #endif
+		// The window-close and SIGTERM saves are the last chance before the host ends the process
+		// (RequestCloseSave waits 3 s): they run at normal QoS and I/O priority, not throttled.
+		const auto urgent = [] {
+#ifdef __APPLE__
+			if (!LegacySave()) {
+				pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+				setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_DEFAULT);
+			}
+#endif
+		};
 		std::mutex                  mutex;
 		std::condition_variable_any wake;
 		std::unique_lock            lock(mutex);
@@ -6624,6 +6634,7 @@ struct PipelineCache::DriverCacheSaver {
 			    !close_done.load(std::memory_order_acquire)) {
 				const auto pending = created.load(std::memory_order_acquire) - saved_created;
 				if (pending != 0 && !oversized && !stop.stop_requested()) {
+					urgent();
 					const auto covered = created.load(std::memory_order_acquire);
 					if (const auto written = cache.WriteDriverCache(true);
 					    written != 0 && written != WriteOversized) {
@@ -6639,6 +6650,7 @@ struct PipelineCache::DriverCacheSaver {
 			if (term_hook && g_term_requested != 0 && !stop.stop_requested()) {
 				const auto pending = created.load(std::memory_order_acquire) - saved_created;
 				if (pending != 0 && !oversized) {
+					urgent();
 					const auto covered = created.load(std::memory_order_acquire);
 					if (const auto written = cache.WriteDriverCache(true); written != 0 && written != WriteOversized) {
 						saved_created = covered;
