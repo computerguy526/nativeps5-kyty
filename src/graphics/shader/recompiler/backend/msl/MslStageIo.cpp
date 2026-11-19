@@ -336,6 +336,14 @@ std::set<const IR::Inst*> PsLiveAdce(const IR::Program&                         
 }
 } // namespace
 
+uint32_t KkLiveComponents(const IR::Inst&                                 composite,
+                          const std::function<uint32_t(const IR::Inst&)>& user_mask) {
+	uint32_t live = 0u;
+	for (const auto& u: composite.Uses())
+		live |= user_mask(*u.user);
+	return live & 0xfu;
+}
+
 struct GfxIo {
 	bool                            vs = false, ps = false, kk = false;
 	const ShaderVertexInputInfo*    vinfo = nullptr;
@@ -574,6 +582,20 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 			std::set<const IR::Inst*> dead;
 			std::set<std::pair<const IR::Inst*, size_t>>
 			    dead_use; // operands of kept exports' dropped components
+			// bcover: a component of an exported CompositeConstructU32x4 is dead only when NO user
+			// of the composite reads it. A shader can export one vector to two parameters (e.g. loc
+			// 1 .xyz and loc 2 .w of the same uint4); the old per-export rule unioned the dropped
+			// components of both and zeroed a live UV, which also dropped its attribute load (slot
+			// renumbering).
+			auto export_mask = [&](const IR::Inst& inst) -> uint32_t { // components a user reads
+				if (inst.GetOpcode() != IR::ValueOpcode::SetAttribute) return 0xfu;
+				const auto& exp = p.export_info.at(inst.Flags<IR::ExportFlags>().index);
+				if (exp.kind != IR::ExportTargetKind::Parameter) return 0xfu;
+				if (g->kk_drop_exports.contains(exp.index)) return 0u;
+				const auto nc = g->kk_export_mask.find(exp.index);
+				if (nc == g->kk_export_mask.end() || exp.compr) return 0xfu;
+				return nc->second;
+			};
 			for (const auto* blk: p.blocks)
 				for (const auto& inst: *blk)
 					if (inst.GetOpcode() == IR::ValueOpcode::SetAttribute) {
@@ -590,8 +612,9 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 						if (v == nullptr ||
 						    v->GetOpcode() != IR::ValueOpcode::CompositeConstructU32x4)
 							continue;
+						const uint32_t live = KkLiveComponents(*v, export_mask);
 						for (size_t i = 0; i < v->NumArgs(); i++)
-							if (((nc->second >> i) & 1u) == 0u) dead_use.insert({v, i});
+							if (((live >> i) & 1u) == 0u) dead_use.insert({v, i});
 					}
 			for (bool grew = true;
 			     grew;) { // also unused values (NIR DCE drops an attribute load nothing reads)

@@ -366,6 +366,33 @@ void TestMathSafeAndVoteMerge() {
         "vote merge: halves combined before the vote");
 }
 
+// bcover: kk-bda VS liveness of an exported vector shared by two parameter
+// exports (e.g. the same uint4 goes to loc 1 .xyz and loc 2 .w). A
+// component is dead only when no user reads it; the old rule unioned the
+// DROPPED components of both exports and zeroed a live UV (and dropped its
+// vertex attribute load, so B's slots no longer matched KosmicKrisp's).
+void TestKkLiveComponents() {
+  SR::IR::Inst v(ValueOpcode::CompositeConstructU32x4);
+  SR::IR::Inst e1(ValueOpcode::SetAttribute), e2(ValueOpcode::SetAttribute),
+      other(ValueOpcode::IAdd32);
+  e1.SetArg(0, SR::IR::Value(&v));
+  e2.SetArg(0, SR::IR::Value(&v));
+  auto mask = [&](uint32_t m1, uint32_t m2) {
+    return [&, m1, m2](const SR::IR::Inst &u) -> uint32_t {
+      return &u == &e1 ? m1 : &u == &e2 ? m2 : 0xfu;
+    };
+  };
+  Check(Msl::KkLiveComponents(v, mask(0x7u, 0x8u)) == 0xfu,
+        "live components: .xyz + .w of one vector = all four");
+  Check(Msl::KkLiveComponents(v, mask(0x3u, 0x1u)) == 0x3u,
+        "live components: .xy + .x = .xy (z, w dead)");
+  Check(Msl::KkLiveComponents(v, mask(0x0u, 0x4u)) == 0x4u,
+        "live components: a dropped export keeps nothing alive");
+  other.SetArg(0, SR::IR::Value(&v));
+  Check(Msl::KkLiveComponents(v, mask(0x1u, 0x1u)) == 0xfu,
+        "live components: a non-export user reads the whole vector");
+}
+
 } // namespace
 
 int main() {
@@ -375,6 +402,7 @@ int main() {
   TestProgram();
   TestLoopCap();
   TestMathSafeAndVoteMerge();
+  TestKkLiveComponents();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
