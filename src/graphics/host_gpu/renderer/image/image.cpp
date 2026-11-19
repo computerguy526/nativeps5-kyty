@@ -154,6 +154,20 @@ ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::Imag
 	return static_cast<bool>(properties.optimalTilingFeatures & feature);
 }
 
+// KYTY_DEPTH_FEEDBACK_USAGE=0 (rpass, default 1 = upstream): depth images are created without
+// VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT. KosmicKrisp turns that usage bit into
+// allowGPUOptimizedContents=NO (kk_image_layout_can_optimize), so every sampled depth/stencil
+// target (all of them) loses Apple lossless compression. KosmicKrisp ignores image layouts and
+// the feedback-loop dynamic state, so the feedback layouts the renderer still selects behave the
+// same; only the Metal texture's optimized-contents flag changes. Read once (creation time).
+bool DepthFeedbackUsageEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_DEPTH_FEEDBACK_USAGE");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
 [[nodiscard]] vk::ImageUsageFlags ImageUsageFlags(GraphicContext& graphics, const ImageInfo& info) {
 	if (info.IsBlock()) {
 		vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eTransferSrc |
@@ -181,7 +195,8 @@ ImageCreateFlags(const GraphicContext& graphics, const ImageInfo& info, vk::Imag
 	}
 	if (DepthAspectTransferFormat(info.pixel_format) != vk::Format::eUndefined) {
 		usage |= vk::ImageUsageFlagBits::eDepthStencilAttachment;
-		if (graphics.attachment_feedback_loop_enabled && (usage & vk::ImageUsageFlagBits::eSampled)) {
+		if (graphics.attachment_feedback_loop_enabled && (usage & vk::ImageUsageFlagBits::eSampled) &&
+		    DepthFeedbackUsageEnabled()) {
 			usage |= vk::ImageUsageFlagBits::eAttachmentFeedbackLoopEXT;
 		}
 		return usage;
