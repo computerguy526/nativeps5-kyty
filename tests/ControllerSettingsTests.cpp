@@ -4,7 +4,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <chrono>
 #include <limits>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -27,6 +31,24 @@ bool                               haptics_handles_rumble = false;
 std::array<Rumble, 6>               pad_rumble {};
 std::vector<int>                    closed_pads;
 std::array<std::array<Uint8, 3>, 6> pad_colors {};
+// SDL's joystick lock: every SDL gamepad call takes it (recursive in SDL). On only in TestLockOrder.
+std::recursive_mutex sdl_joystick_lock;
+std::atomic<bool>    sdl_lock_model {false};
+struct SdlCall {
+	SdlCall() {
+		if (sdl_lock_model) {
+			sdl_joystick_lock.lock();
+			std::this_thread::sleep_for(std::chrono::microseconds(50)); // a HID write inside the lock
+		}
+	}
+	~SdlCall() {
+		if (sdl_lock_model) {
+			sdl_joystick_lock.unlock();
+		}
+	}
+	SdlCall(const SdlCall&)            = delete;
+	SdlCall& operator=(const SdlCall&) = delete;
+};
 } // namespace
 
 namespace Fake {
@@ -34,6 +56,7 @@ Uint64 GetTicks() {
 	return now;
 }
 SDL_Gamepad* GetGamepadFromID(SDL_JoystickID id) {
+	SdlCall sdl;
 	return id >= 1 && id <= 5 ? reinterpret_cast<SDL_Gamepad*>(static_cast<uintptr_t>(id))
 	                          : nullptr;
 }
@@ -53,10 +76,12 @@ bool SendGamepadEffect(SDL_Gamepad*, const void* data, int size) {
 	return true;
 }
 bool SetGamepadLED(SDL_Gamepad* pad, Uint8 r, Uint8 g, Uint8 b) {
+	SdlCall sdl;
 	pad_colors[reinterpret_cast<uintptr_t>(pad)] = {r, g, b};
 	return true;
 }
 bool GamepadHasSensor(SDL_Gamepad*, SDL_SensorType) {
+	SdlCall sdl;
 	return false;
 }
 bool SetGamepadSensorEnabled(SDL_Gamepad*, SDL_SensorType, bool) {
@@ -621,6 +646,44 @@ void TestTriggerEffectState() {
 }
 } // namespace
 
+// The pad relay thread reads the active controller while SDL's joystick lock is held (kytyGpuBridge.cpp pad_sensors
+// before the fix took them in that order) while the main thread connects pads (Connect -> SetDevices -> SDL gamepad
+// calls). SetDevices must not hold the controller mutex across SDL calls: with the old SetDevices this deadlocks
+// within milliseconds (main: m_mutex -> SDL lock, relay: SDL lock -> m_mutex) and the watchdog fails the test.
+void TestLockOrder() {
+	Controller          controller;
+	std::atomic<bool>   stop {false};
+	std::atomic<bool>   done {false};
+	std::atomic<uint64_t> relay_reads {0};
+	std::thread watchdog([&] {
+		for (int i = 0; i < 1000 && !done; i++) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+		Check(done, "lock-order deadlock: main thread (controller mutex -> SDL joystick lock) vs relay thread "
+		            "(SDL joystick lock -> controller mutex)");
+	});
+	sdl_lock_model = true;
+	std::thread relay([&] {
+		while (!stop) {
+			std::lock_guard<std::recursive_mutex> sdl(sdl_joystick_lock); // SDL_LockJoysticks()
+			(void)GetActiveControllerId();                                // the old pad_sensors order
+			relay_reads++;
+		}
+	});
+	for (int i = 0; i < 400; i++) {
+		Connect(2);
+		Disconnect(1);
+		Connect(1);
+		Disconnect(2);
+	}
+	stop = true;
+	relay.join();
+	sdl_lock_model = false;
+	done = true;
+	watchdog.join();
+	Check(relay_reads > 0, "the relay thread never ran");
+}
+
 int main() {
 	Config::Initialize();
 	TestPlayerUserIds();
@@ -634,6 +697,7 @@ int main() {
 	TestTriggerEffectState();
 	TestMultiplayerRouting();
 	TestDedicatedKeyboardOutputs();
+	TestLockOrder();
 	Config::Shutdown();
 	return 0;
 }
