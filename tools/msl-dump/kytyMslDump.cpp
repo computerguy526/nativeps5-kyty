@@ -466,6 +466,8 @@ int main(int argc, char **argv) {
   const char *programs = nullptr, *bin = nullptr, *out = nullptr,
              *manifest = nullptr;
   long index = -1, perm_sel = -1, link_perm = -1;
+  bool xf_keys = false; // perfauto: print the KYTY_MSL_XF_TABLE key of every source
+
   uint64_t hash = 0;
   bool have_hash = false, list = false, comments = true;
   uint32_t lanes = 0, wave = 64, ud = 16;
@@ -486,7 +488,9 @@ int main(int argc, char **argv) {
     } else if (a == "--xf-list") { // perfauto: the transform catalogue (MslXform.h)
       std::fputs(SR::Msl::Xf::Catalogue().c_str(), stdout);
       return 0;
-    } else if (a == "--list")
+    } else if (a == "--xf-keys")
+      xf_keys = true;
+    else if (a == "--list")
       list = true;
     else if (a == "--perm")
       perm_sel = std::atol(next());
@@ -535,6 +539,15 @@ int main(int argc, char **argv) {
         std::printf("%zu hash=%016" PRIx64 " stage=%u wave=%u words=%zu\n", i,
                     srcs[i].hash, srcs[i].stage, srcs[i].wave,
                     srcs[i].code.size());
+      return 0;
+    }
+    if (xf_keys) { // "<vs|ps|cs> <guest hash> <source digest>": the table key (MslXform.h) per source
+      for (const auto &src : srcs) {
+        const auto st = static_cast<ShaderType>(src.stage);
+        std::printf("%s %016" PRIx64 " %s\n",
+                    st == ShaderType::Vertex ? "vs" : st == ShaderType::Pixel ? "ps" : st == ShaderType::Compute ? "cs" : "??",
+                    src.hash, src.digest.c_str());
+      }
       return 0;
     }
     long pick = index;
