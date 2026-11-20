@@ -226,11 +226,6 @@ std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
 // differently (mslcap7 pipe 13 ~1 % of 10-bit words +-1). B's comparisons are NaN-explicit
 // (isordered/isunordered) and its transcendental calls are precise::, so the whole pixel function
 // can be relaxed. KYTY_MSL_GFX_MATH=safe restores the old text.
-bool ModeFix6() { // read per call: the unit tests switch it inside one process
-	const char* e = std::getenv("KYTY_MSL_FIX6");
-	return e != nullptr && std::strcmp(e, "0") != 0;
-}
-
 bool GfxPixelRelaxed() {
 	static const bool on = [] {
 		const char* e = std::getenv("KYTY_MSL_GFX_MATH");
@@ -1291,6 +1286,11 @@ uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info
 	    }()))
 		lanes = 1;
 	return lanes;
+}
+
+bool ModeFix6() { // read per call: the unit tests switch it inside one process
+	const char* e = std::getenv("KYTY_MSL_FIX6");
+	return e != nullptr && std::strcmp(e, "0") != 0;
 }
 
 MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,
