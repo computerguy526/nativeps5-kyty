@@ -10,6 +10,13 @@ class MslBuilder {
 public:
 	void Line(std::string_view text);
 	void Raw(std::string_view text) { out_.append(text); }
+	// Replaces the first occurrence of `from` (text already written); false when absent.
+	bool ReplaceFirst(std::string_view from, std::string_view to) {
+		const auto at = out_.find(from);
+		if (at == std::string::npos) return false;
+		out_.replace(at, from.size(), to);
+		return true;
+	}
 	void Open(std::string_view header = {}); // "header {"
 	void Close(std::string_view tail = {});  // "} tail"
 	void Blank() { out_.push_back('\n'); }
