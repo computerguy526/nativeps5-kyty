@@ -24,6 +24,8 @@ constexpr Info Registry[Count] = {
      "min/max/med3 helpers with select() instead of ?: (no branch per call)"},
     {"mipstats_plain_load", 1, ShaderType::Pixel, "semantic-exact",
      "MipStats record: plain load in the pre-check before atomic_fetch_min"},
+    {"load_group", 1, ShaderType::Unknown, "semantic-exact",
+     "dword reads with a common dynamic base: one range check + packed vector loads"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;

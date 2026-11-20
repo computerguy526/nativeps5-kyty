@@ -6,6 +6,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include <cstdio>
@@ -505,6 +506,26 @@ void TestReassocFnegChain() {
 
 } // namespace
 
+// perfauto: every transform is listed in the catalogue with a version, and nothing is active without
+// KYTY_MSL_XF / KYTY_MSL_XF_TABLE (the default text is the base emitter's).
+void TestXfCatalogue() {
+  namespace Xf = Msl::Xf;
+  const std::string cat = Xf::Catalogue();
+  for (uint32_t i = 0; i < Xf::Count; i++) {
+    const auto &info = Xf::InfoOf(static_cast<Xf::Id>(i));
+    Check(cat.find(std::string(info.id) + "@" + std::to_string(info.version)) != std::string::npos,
+          std::string("xf catalogue lists ") + info.id);
+  }
+  Check(cat.find("load_group@1 any semantic-exact") != std::string::npos, "xf load_group registered");
+  if (std::getenv("KYTY_MSL_XF") == nullptr && std::getenv("KYTY_MSL_XF_TABLE") == nullptr &&
+      std::getenv("KYTY_MSL_VS_PERF") == nullptr) {
+    for (const ShaderType st : {ShaderType::Vertex, ShaderType::Pixel, ShaderType::Compute}) {
+      Xf::Begin(st, 0x1234u);
+      Check(Xf::ActiveList().empty(), "xf: nothing active by default");
+    }
+  }
+}
+
 int main() {
   TestBuilder();
   TestAluGolden();
@@ -516,6 +537,7 @@ int main() {
   TestKkStatementSplit();
   TestReassocFnegChain();
   TestKkMinMax();
+  TestXfCatalogue();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

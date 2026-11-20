@@ -44,6 +44,10 @@ enum Id : uint32_t {
 	// GET_LOD_STATS record: plain load instead of a relaxed atomic load in the pre-check before
 	// atomic_fetch_min (pixel stage; shaders with the MipStats record only).
 	MipStatsPlainLoad,
+	// bigshader loadgroup (skyall finding 5): raw dword reads of one binding with the same dynamic address
+	// operands in one block (span <= 64 B) share ONE range check and packed vector loads; when the check fails
+	// each member runs its original guarded text. Bit-exact by construction (mslEmitterMem.cpp). Any stage.
+	LoadGroup,
 	Count
 };
 
