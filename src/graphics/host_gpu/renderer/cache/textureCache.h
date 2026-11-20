@@ -432,8 +432,18 @@ private:
 	// destination); except: every owner but that one. Returns the bytes moved. Caller holds
 	// m_lock; records GPU work.
 	// target: the cache buffer to move the bytes into, when it covers them (a texel read's).
+	// within (KYTY_ALIAS_REBUILD_PARTIAL): only the owned bytes inside these ranges (all inside
+	// range); download: the tiles to download instead of the whole image (they must cover within).
 	uint64_t MaterializeOwnedBytes(GuestRange range, ImageId only, ImageId except,
-	                               const char* reason, Buffer* target = nullptr);
+	                               const char* reason, Buffer* target = nullptr,
+	                               const RangeSet*      within   = nullptr,
+	                               const ImageDownload* download = nullptr);
+	// KYTY_ALIAS_REBUILD_PARTIAL=1 (default off): a buffer-modified image that owns only some of
+	// its bytes is rebuilt from the buffer only in the 64 KiB blocks it does not own wholly
+	// (image/ownedRebuildPlan.h) instead of tiling all its owned bytes out and detiling it whole.
+	// done = false: not applicable, nothing changed (the caller takes the old rebuild).
+	[[nodiscard]] static bool         AliasRebuildPartialEnabled();
+	[[nodiscard]] PartialUploadResult TryOwnedPartialRebuild(ImageId id, RefreshIntent intent);
 	// Whether any GPU-modified image other than `except` owns a byte of `range`.
 	[[nodiscard]] bool OtherImagesOwnBytes(GuestRange range, ImageId except);
 	// False when no image is registered on the 1 MiB pages of the range (lock-free, any thread).

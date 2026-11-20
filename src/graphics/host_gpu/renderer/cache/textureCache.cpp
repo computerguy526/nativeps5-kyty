@@ -27,6 +27,7 @@
 #include "graphics/host_gpu/renderer/image/dccClear.h"
 #include "graphics/host_gpu/renderer/image/imageClearRange.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/ownedRebuildPlan.h"
 #include "graphics/host_gpu/renderer/image/residentTrim.h"
 #include "graphics/host_gpu/renderer/image/stagingCopier.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
@@ -2867,7 +2868,12 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 	}
 	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
 	bool       guest_refresh = false;
-	if (upload && AliasBytesEnabled() && !image.depth_id) {
+	// KYTY_ALIAS_REBUILD_PARTIAL: replaces the owned-byte round trip below when it applies (it
+	// moves the bytes the rebuild needs itself, including the other images' ones for a read).
+	const PartialUploadResult owned_partial = upload && AliasRebuildPartialEnabled()
+	                                              ? TryOwnedPartialRebuild(id, intent)
+	                                              : PartialUploadResult {};
+	if (upload && !owned_partial.done && AliasBytesEnabled() && !image.depth_id) {
 		// The rebuild reads buffer (or guest) bytes over the whole image. Bytes it still owns
 		// itself (a bounded buffer write took the others) reach the buffer first; a read also
 		// takes the bytes other images own there (a write binding usually overwrites them).
@@ -2903,7 +2909,9 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 		guest_refresh = image.ChunkTracked() && !image.IsBufferModified() &&
 		                !image.IsGpuModified() && !image.depth_id && binding == BindingType::Texture;
 		PartialUploadResult partial {};
-		if (image.HasKeptDirty()) {
+		if (owned_partial.done) {
+			partial = owned_partial;
+		} else if (image.HasKeptDirty()) {
 			// KYTY_IMAGE_GPU_KEEP: only the subresources over the replaced bytes.
 			partial = UploadKeptRanges(image);
 			if (!partial.done) {
@@ -3006,6 +3014,175 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 			}
 		}
 	}
+}
+
+bool TextureCache::AliasRebuildPartialEnabled() {
+	static const bool enabled = [] {
+		const bool on = AliasBytesEnabled() && EnvNotZero("KYTY_ALIAS_REBUILD_PARTIAL");
+		if (on) {
+			std::fprintf(stderr, "[tilerfix] KYTY_ALIAS_REBUILD_PARTIAL=1: partly owned images are "
+			                     "rebuilt only in the blocks they do not own\n");
+		}
+		return on;
+	}();
+	return enabled;
+}
+
+TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId       id,
+                                                                       RefreshIntent intent) {
+	const TilerTrace::Reason       tiler_reason("upload.rebuild_partial");
+	const TileManager::ScratchHold scratch_hold(m_tiler);
+	PartialUploadResult            result;
+	auto&                          image = m_slot_images[id];
+	const auto&                    info  = image.info;
+	// Only the case the old rebuild-own round trip handles: buffer-modified, GPU-modified, owning
+	// some but not all bytes, nothing CPU-side pending.
+	if (!AliasBytesEnabled() || image.depth_id || !image.IsBufferModified() || image.IsCpuDirty() ||
+	    image.HasKeptDirty() || image.OwnedSet() == nullptr || image.OwnsNoBytes() ||
+	    !image.FullyResident() || image.residency_refresh || image.backing.image == nullptr ||
+	    (image.ChunkTracked() && image.chunks.dirty_count != 0)) {
+		return result;
+	}
+	const auto fallback = [&](const char* why) {
+		TilerTrace::Event(why, image, info.data.size);
+		return PartialUploadResult {};
+	};
+	// The render-target block layout of BlocksUnderRect: one level, one layer, row-major blocks.
+	TileBlockLayout block {};
+	if (info.tile_mode != Prospero::TileMode::kRenderTarget || info.IsDepth() || info.IsVolume() ||
+	    info.resources.levels != 1 || info.resources.layers != 1 || info.samples != 1 ||
+	    image.backing.samples != 1 || info.HasStencil() ||
+	    info.metadata.compression != VideoOutCompression::Uncompressed ||
+	    !TileGetBlockLayout(TileBlockFamily::RenderTarget64KB, info.bytes_per_block, block) ||
+	    block.block_depth != 1 || block.block_width == 0 || block.block_height == 0 ||
+	    info.pitch % block.block_width != 0 || info.data.address % block.block_size != 0) {
+		return fallback("rebuild_partial.fallback.layout");
+	}
+	const uint64_t columns = info.pitch / block.block_width;
+	const uint64_t rows    = (info.extent.height + block.block_height - 1) / block.block_height;
+	if (columns == 0 || columns > UINT32_MAX || rows > UINT32_MAX ||
+	    info.data.size != columns * rows * block.block_size || image.live != info.data) {
+		return fallback("rebuild_partial.fallback.layout");
+	}
+	const auto binding  = UploadBinding(image);
+	const auto transfer = BuildTextureTransfer(image, binding, TransferDirection::Upload);
+	auto       download = BuildDownload(image);
+	if (!transfer.valid || transfer.color_transform != ColorTransform::None ||
+	    transfer.tiles.size() != 1 || transfer.regions.size() != 1 || !download.valid ||
+	    download.depth_target || download.texture.color_transform != ColorTransform::None ||
+	    download.texture.tiles.size() != 1 || download.texture.regions.size() != 1) {
+		return fallback("rebuild_partial.fallback.transfer");
+	}
+	const auto& tile0   = transfer.tiles.front();
+	const auto& region0 = transfer.regions.front();
+	if (tile0.family != TileBlockFamily::RenderTarget64KB || tile0.tail || tile0.depth != 1 ||
+	    tile0.tiled_offset != 0 || tile0.bytes_per_element != info.bytes_per_block ||
+	    tile0.width != info.extent.width || tile0.height != info.extent.height ||
+	    region0.imageOffset.x != 0 || region0.imageOffset.y != 0 ||
+	    region0.imageSubresource.mipLevel != 0 ||
+	    download.texture.tiles.front().family != tile0.family ||
+	    download.texture.tiles.front().bytes_per_element != tile0.bytes_per_element ||
+	    download.texture.tiles.front().tiled_offset != 0 ||
+	    download.texture.tiles.front().width != tile0.width ||
+	    download.texture.tiles.front().height != tile0.height) {
+		return fallback("rebuild_partial.fallback.transfer");
+	}
+	OwnedRebuild::Surface surface;
+	surface.base         = info.data.address;
+	surface.width        = tile0.width;
+	surface.height       = tile0.height;
+	surface.block_width  = block.block_width;
+	surface.block_height = block.block_height;
+	surface.block_size   = block.block_size;
+	surface.columns      = static_cast<uint32_t>(columns);
+	surface.rows         = static_cast<uint32_t>(rows);
+	OwnedRebuild::Plan plan;
+	const bool         planned = OwnedRebuild::Build(
+	    surface,
+	    [&](uint64_t address, uint64_t size) {
+		    return image.OwnsBytes(address, size)      ? OwnedRebuild::BlockState::Owned
+			       : !image.OwnsBytesIn(address, size) ? OwnedRebuild::BlockState::NotOwned
+			                                           : OwnedRebuild::BlockState::Mixed;
+	    },
+	    plan, OwnedRebuild::RowAlign(tile0.bytes_per_element),
+	    OwnedRebuild::ColumnAlign(tile0.bytes_per_element));
+	if (!planned) {
+		return fallback("rebuild_partial.fallback.segments");
+	}
+	// The segments as tiler sub-surfaces (tight linear rows for the buffer fallbacks).
+	std::vector<GpuTileInfo>         tiles;
+	std::vector<vk::BufferImageCopy> regions;
+	RangeSet                         within;
+	uint64_t                         linear_total = 0;
+	uint64_t                         tiled_bytes  = 0;
+	for (const auto& segment: plan.segments) {
+		within.Add(surface.base + OwnedRebuild::SegmentOffset(surface, segment),
+		           OwnedRebuild::SegmentBytes(surface, segment));
+		const auto rect = OwnedRebuild::SegmentRect(surface, segment);
+		if (rect.width == 0 || rect.height == 0) {
+			continue; // padding blocks only: no texel reads them
+		}
+		GpuTileInfo tile         = tile0;
+		tile.width               = rect.width;
+		tile.height              = rect.height;
+		tile.pitch               = rect.width;
+		tile.tiled_width         = segment.column_count * block.block_width;
+		tile.tiled_height        = segment.row_count * block.block_height;
+		tile.tiled_offset        = OwnedRebuild::SegmentOffset(surface, segment);
+		tile.tiled_size          = OwnedRebuild::SegmentBytes(surface, segment);
+		tile.linear_slice_stride = 0;
+		linear_total             = Common::AlignUp(linear_total, uint64_t {256});
+		tile.linear_offset       = linear_total;
+		tile.linear_size         = uint64_t {rect.width} * rect.height * tile0.bytes_per_element;
+		linear_total += tile.linear_size;
+		tiled_bytes += tile.tiled_size;
+		auto region              = region0;
+		region.bufferOffset      = tile.linear_offset;
+		region.bufferRowLength   = rect.width;
+		region.bufferImageHeight = rect.height;
+		region.imageOffset =
+		    vk::Offset3D {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y), 0};
+		region.imageExtent = vk::Extent3D {rect.width, rect.height, 1};
+		tiles.push_back(tile);
+		regions.push_back(region);
+	}
+	// Committed from here on: the bytes the segments read must be in the buffer.
+	if (plan.preserve_blocks != 0 && !tiles.empty()) {
+		// This image's owned bytes inside the segments (blocks it owns only in part, and owned
+		// blocks an aligned segment had to take in): out through the segments' tiles only.
+		download.texture.tiles   = tiles;
+		download.texture.regions = regions;
+		(void)MaterializeOwnedBytes(info.data, id, {}, "rebuild-own-part", nullptr, &within,
+		                            &download);
+	}
+	if (intent == RefreshIntent::Read) {
+		// As the old rebuild: a read also takes the bytes other images own here.
+		(void)MaterializeOwnedBytes(info.data, {}, id, "rebuild");
+	}
+	TilerTrace::Event("rebuild_partial", image, tiled_bytes);
+	result.done        = true;
+	result.bytes       = tiled_bytes;
+	result.dirty_bytes = plan.refresh_blocks * surface.block_size;
+	if (tiles.empty()) {
+		return result;
+	}
+	auto& current = m_slot_images[id];
+	const auto [source, source_offset] =
+	    m_buffer_cache.ObtainBufferForImage(info.data.address, info.data.size);
+	if (source == nullptr) {
+		EXIT("TextureCache: failed to obtain image upload source\n");
+	}
+	Profiler::CountFrameEvent(Profiler::FrameEvent::TextureUploadBytesBuffer, tiled_bytes);
+	if (!m_tiler.DetileToImage(current, source->Handle(), source_offset, info.data.size,
+	                           linear_total, tiles, regions)) {
+		const auto linear =
+		    m_tiler.Detile(source->Handle(), source_offset, info.data.size, linear_total, tiles);
+		for (auto& region: regions) {
+			region.bufferOffset += linear.offset;
+		}
+		current.Upload(regions, linear.buffer, linear.offset, linear.size);
+	}
+	return result;
 }
 
 TextureCache::PartialUploadResult TextureCache::TryPartialUpload(Image& image) {
@@ -5610,7 +5787,9 @@ void TextureCache::TakeOverOwnedBytes(Image& destination, Image& source) {
 }
 
 uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, ImageId except,
-                                             const char* reason, Buffer* target) {
+                                             const char* reason, Buffer* target,
+                                             const RangeSet*      within,
+                                             const ImageDownload* download) {
 	const TilerTrace::Reason tiler_reason(reason != nullptr ? reason : "download.materialize");
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
@@ -5652,9 +5831,19 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
 			return;
 		}
 		Owner owner {id, {}};
-		image->ForEachOwnedRange(range.address, range.size, [&](uint64_t begin, uint64_t end) {
-			owner.ranges.Add(begin, end - begin);
-		});
+		const auto add_owned = [&](uint64_t address, uint64_t size) {
+			image->ForEachOwnedRange(address, size, [&](uint64_t begin, uint64_t end) {
+				owner.ranges.Add(begin, end - begin);
+			});
+		};
+		if (within != nullptr) {
+			within->ForEach([&](uint64_t begin, uint64_t end) { add_owned(begin, end - begin); });
+		} else {
+			add_owned(range.address, range.size);
+		}
+		if (owner.ranges.Empty()) {
+			return;
+		}
 		owners.push_back(std::move(owner));
 	};
 	if (only) {
@@ -5684,7 +5873,7 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
 	uint64_t moved = 0;
 	for (auto& owner: owners) {
 		auto& image    = m_slot_images[owner.id];
-		auto  transfer = BuildDownload(image);
+		auto  transfer = download != nullptr && owner.id == only ? *download : BuildDownload(image);
 		if (!transfer.valid || !image.FullyResident() || image.backing.image == nullptr) {
 			// No download layout (e.g. multisampled, or a colour view of depth-tiled memory):
 			// the bytes stay with the image (a free drops them, as before).
@@ -6047,7 +6236,10 @@ void BufferCache::PreserveImagesForGpuWrite(BufferId id, uint64_t vaddr, uint64_
 		ForgetKnownFills(range.address, range.size);
 		HangTrace::NoteGpuWrite(range.address, range.size);
 		// As for any GPU buffer write: overlapping images are now rebuilt from the buffer.
-		m_texture_cache.InvalidateMemoryFromGPU(range.address, range.size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("preserve");
+			m_texture_cache.InvalidateMemoryFromGPU(range.address, range.size);
+		}
 	}
 }
 
@@ -6339,6 +6531,9 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 			if (m_exact_range_mode == 1) {
 				continue;
 			}
+		}
+		if (!image.IsBufferModified()) {
+			TilerTrace::BufferWrite(image, address, size);
 		}
 		image.MarkBufferModified();
 		image.NoteDirtySpan(address, size);

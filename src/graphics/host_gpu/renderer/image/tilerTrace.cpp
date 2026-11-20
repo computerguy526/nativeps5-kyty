@@ -1,5 +1,8 @@
 #include "graphics/host_gpu/renderer/image/tilerTrace.h"
 
+#include "graphics/host_gpu/renderer/image/image.h"
+
+#include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
@@ -9,8 +12,7 @@
 #include <mutex>
 #include <string>
 #include <tuple>
-
-#include "graphics/host_gpu/renderer/image/image.h"
+#include <utility>
 
 namespace Libs::Graphics::TilerTrace {
 
@@ -31,7 +33,7 @@ double WindowSeconds() noexcept {
 }
 
 struct Key {
-	bool        to_image;
+	uint8_t     to_image; // 0 tile, 1 detile, 2 event (Event / BufferWrite)
 	std::string reason;
 	uint64_t    address;
 	uint32_t    format;
@@ -75,12 +77,15 @@ void FlushLocked(State& state, double seconds) {
 	     " bytes\n",
 	     state.index, seconds, state.window.size(), total_count, total_bytes);
 	for (const auto& [key, value]: state.window) {
-		std::fprintf(stderr, "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
-		     "flags=%c%c%c%c%c vk=%u n=%" PRIu64 " bytes=%" PRIu64 "\n",
-		     key.to_image ? "detile" : "tile", key.reason.c_str(), key.address, key.format,
-		     key.tile, key.width, key.height, key.layers, (key.flags & 1u) != 0 ? 'G' : '-',
-		     (key.flags & 2u) != 0 ? 'B' : '-', (key.flags & 4u) != 0 ? 'C' : '-',
-		     (key.flags & 8u) != 0 ? 'K' : '-', (key.flags & 16u) != 0 ? 'O' : '-', key.vk_format, value.count, value.bytes);
+		std::fprintf(stderr,
+		             "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
+		             "flags=%c%c%c%c%c vk=%u n=%" PRIu64 " bytes=%" PRIu64 "\n",
+		             key.to_image == 2 ? "event" : (key.to_image != 0 ? "detile" : "tile"),
+		             key.reason.c_str(), key.address, key.format, key.tile, key.width, key.height,
+		             key.layers, (key.flags & 1u) != 0 ? 'G' : '-',
+		             (key.flags & 2u) != 0 ? 'B' : '-', (key.flags & 4u) != 0 ? 'C' : '-',
+		             (key.flags & 8u) != 0 ? 'K' : '-', (key.flags & 16u) != 0 ? 'O' : '-',
+		             key.vk_format, value.count, value.bytes);
 	}
 	std::fflush(stderr);
 	state.window.clear();
@@ -101,7 +106,8 @@ Reason::~Reason() {
 	t_reason = m_previous;
 }
 
-void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
+namespace {
+void Add(uint8_t kind, std::string reason, const Image& image, uint64_t bytes) noexcept {
 	const double window = WindowSeconds();
 	if (window <= 0.0) {
 		return;
@@ -113,16 +119,16 @@ void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
 	flags |= image.IsCpuDirty() ? 4u : 0u;
 	flags |= image.HasKeptDirty() ? 8u : 0u;
 	flags |= image.alias_owner ? 16u : 0u;
-	Key key {to_image,
-	         t_reason != nullptr ? t_reason : "?",
-	         info.data.address,
-	         static_cast<uint32_t>(info.guest_format),
-	         static_cast<uint32_t>(info.tile_mode),
-	         info.extent.width,
-	         info.extent.height,
-	         info.resources.layers,
-	         flags,
-	         static_cast<uint32_t>(image.backing.format)};
+	Key              key {kind,
+	                      std::move(reason),
+	                      info.data.address,
+	                      static_cast<uint32_t>(info.guest_format),
+	                      static_cast<uint32_t>(info.tile_mode),
+	                      info.extent.width,
+	                      info.extent.height,
+	                      info.resources.layers,
+	                      flags,
+	                      static_cast<uint32_t>(image.backing.format)};
 	auto&            state = GetState();
 	std::scoped_lock lock(state.mutex);
 	if (state.window.empty() && state.index == 0) {
@@ -137,6 +143,39 @@ void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
 		FlushLocked(state, elapsed);
 		state.start = now;
 	}
+}
+} // namespace
+
+void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
+	if (WindowSeconds() <= 0.0) {
+		return;
+	}
+	Add(to_image ? 1 : 0, t_reason != nullptr ? t_reason : "?", image, bytes);
+}
+
+void Event(const char* what, const Image& image, uint64_t bytes) noexcept {
+	if (WindowSeconds() <= 0.0) {
+		return;
+	}
+	Add(2, what, image, bytes);
+}
+
+void BufferWrite(const Image& image, uint64_t address, uint64_t size) noexcept {
+	if (WindowSeconds() <= 0.0) {
+		return;
+	}
+	const auto&    data  = image.info.data;
+	const char*    cover = address == data.address && size == data.size              ? "exact"
+	                       : address >= data.address && address + size <= data.End() ? "inside"
+	                       : address <= data.address && address + size >= data.End() ? "covers"
+	                                                                                 : "partial";
+	const uint64_t begin = std::max(address, data.address);
+	const uint64_t end   = std::min(address + size, data.End());
+	std::string    what  = "bwrite.";
+	what += t_reason != nullptr ? t_reason : "?";
+	what += '.';
+	what += cover;
+	Add(2, std::move(what), image, end > begin ? end - begin : 0);
 }
 
 } // namespace Libs::Graphics::TilerTrace

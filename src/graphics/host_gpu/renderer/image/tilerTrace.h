@@ -26,6 +26,13 @@ private:
 };
 
 void Note(bool to_image, const Image& image, uint64_t bytes) noexcept;
+// A named event about an image ("event <what>" lines; e.g. the partial-rebuild path and its
+// fallbacks). bytes is what the event concerns.
+void Event(const char* what, const Image& image, uint64_t bytes) noexcept;
+// A GPU buffer write marked the image buffer-modified ("event bwrite.<reason>.<cover>", cover =
+// exact / inside / covers / partial relative to the image's range; reason = this thread's
+// Reason, set by the writer: storage, bda, fill, write_data, copy, preserve).
+void BufferWrite(const Image& image, uint64_t address, uint64_t size) noexcept;
 
 } // namespace TilerTrace
 } // namespace Libs::Graphics

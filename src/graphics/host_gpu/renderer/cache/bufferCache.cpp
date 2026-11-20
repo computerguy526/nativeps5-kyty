@@ -32,6 +32,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/syncEpoch.h"
@@ -5644,12 +5645,18 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	// bytes outside the fill survive); only then do those images lose GPU ownership.
 	const bool preserve_images = ImageWritebackOnGpuWriteEnabled();
 	if (!preserve_images) {
-		m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("fill");
+			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		}
 	}
 	HangTrace::ScopedGpuWriteKind trace_kind(HangTrace::GpuWriteKind::Fill);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
 	if (preserve_images) {
-		m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("fill");
+			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		}
 	}
 	dst->Fill(dst_offset, size, value);
 	RecordKnownFill(vaddr, size, value);
@@ -5670,12 +5677,18 @@ bool BufferCache::TryWriteDataGpu(uint64_t vaddr, const uint32_t* data, uint64_t
 	// images into it (KYTY_IMAGE_WRITEBACK_ON_GPU_WRITE); only then do they lose GPU ownership.
 	const bool preserve_images = ImageWritebackOnGpuWriteEnabled();
 	if (!preserve_images) {
-		m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("write_data");
+			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		}
 	}
 	HangTrace::ScopedGpuWriteKind trace_kind(HangTrace::GpuWriteKind::Copy);
 	auto [buffer, offset] = ObtainBuffer(vaddr, size, true, true);
 	if (preserve_images) {
-		m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("write_data");
+			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
+		}
 	}
 	auto& command         = m_scheduler.Current();
 	command.EndRendering();
@@ -5838,7 +5851,10 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	// overlapping GPU-modified images into itself before those images lose GPU ownership.
 	const bool preserve_images = ImageWritebackOnGpuWriteEnabled();
 	if (dst_memory && !preserve_images) {
-		m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("copy");
+			m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
+		}
 	}
 	const auto src_id      = src_memory ? FindBuffer(src_vaddr, size) : BufferId {};
 	const auto dst_id      = dst_memory ? FindBuffer(dst_vaddr, size) : BufferId {};
@@ -5848,7 +5864,10 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	auto [dst, dst_offset] = dst_memory ? ObtainBuffer(dst_vaddr, size, true, true, dst_id)
 	                                    : std::pair {&m_gds_buffer, dst_vaddr};
 	if (dst_memory && preserve_images) {
-		m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("copy");
+			m_texture_cache.InvalidateMemoryFromGPU(dst_vaddr, size);
+		}
 	}
 	if (src_memory && src->is_deleted) {
 		// Obtaining the destination created a buffer that joined (and deleted) the source's. The
@@ -7161,7 +7180,10 @@ void BufferCache::SettleBdaWrittenRange(uint64_t vaddr, uint64_t size, uint64_t 
 		ForgetKnownFills(start, bytes);
 		HangTrace::NoteGpuWrite(start, bytes);
 		// Overlapping images are rebuilt from the buffer (the Water agent's rule for BDA writes).
-		m_texture_cache.InvalidateMemoryFromGPU(start, bytes);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("bda");
+			m_texture_cache.InvalidateMemoryFromGPU(start, bytes);
+		}
 	}
 }
 

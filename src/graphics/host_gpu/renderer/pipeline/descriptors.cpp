@@ -37,6 +37,7 @@
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/lodStats.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -275,10 +276,16 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	const auto invalidate_start = resource.written ? BufferLookupStats::Now() : 0;
 	if (narrowed) {
 		for (const auto& range: *written_ranges) {
-			context.GetTextureCache().InvalidateMemoryFromGPU(range.address, range.size);
+			{ // KYTY_TILER_TRACE: who marks images buffer-modified
+				const TilerTrace::Reason bwrite_reason("storage");
+				context.GetTextureCache().InvalidateMemoryFromGPU(range.address, range.size);
+			}
 		}
 	} else if (resource.written) {
-		context.GetTextureCache().InvalidateMemoryFromGPU(address, size);
+		{ // KYTY_TILER_TRACE: who marks images buffer-modified
+			const TilerTrace::Reason bwrite_reason("storage");
+			context.GetTextureCache().InvalidateMemoryFromGPU(address, size);
+		}
 	}
 	if (invalidate_start != 0) {
 		BufferLookupStats::AddPart(BufferLookupStats::Part::Invalidate,
