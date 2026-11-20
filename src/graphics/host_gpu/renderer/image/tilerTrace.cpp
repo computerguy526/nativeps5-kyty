@@ -69,13 +69,18 @@ State& GetState() {
 void FlushLocked(State& state, double seconds) {
 	uint64_t total_count = 0;
 	uint64_t total_bytes = 0;
+	uint64_t event_count = 0;
 	for (const auto& [key, value]: state.window) {
-		total_count += value.count;
-		total_bytes += value.bytes;
+		// Events (kind 2: bwrite / coh / rp diagnostics) are not tiler passes: the header counts
+		// passes only, events separately.
+		(key.to_image == 2 ? event_count : total_count) += value.count;
+		if (key.to_image != 2) {
+			total_bytes += value.bytes;
+		}
 	}
 	std::fprintf(stderr, "[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
-	     " bytes\n",
-	     state.index, seconds, state.window.size(), total_count, total_bytes);
+	     " bytes (passes only; %" PRIu64 " events)\n",
+	     state.index, seconds, state.window.size(), total_count, total_bytes, event_count);
 	for (const auto& [key, value]: state.window) {
 		std::fprintf(stderr,
 		             "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
