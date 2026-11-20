@@ -9,6 +9,7 @@
 // unsupported encodings). Game-derived output stays local; never commit it.
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
@@ -281,7 +282,7 @@ uint32_t g_loop_cap = 1u << 18u;
 
 int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
               const char *manifest_path = nullptr, const Perm *perm = nullptr,
-              const Src *link_ps = nullptr) {
+              const Src *link_ps = nullptr, const Perm *link_perm = nullptr) {
   ShaderComputeInputInfo info;
   ShaderVertexInputInfo vinfo;
   ShaderPixelInputInfo pinfo;
@@ -344,6 +345,18 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
         if (si.dimension == SR::Decoder::ImageDimension::Unknown)
           si.dimension = SR::Decoder::ImageDimension::Dim2D;
         pspec.images.push_back(si);
+      }
+      // bcover: the linked pixel permutation's own recorded specialization, as
+      // for the translated program below (the defaults gave a MipStats atomic
+      // storage image the float class: "invalid binding class", so every VS
+      // linked to such a PS failed).
+      if (link_perm && !link_perm->spec.empty()) {
+        SR::IR::ResourceSpecialization ds;
+        if (SR::IR::DecodeSpecialization(link_perm->spec, ds))
+          pspec = ds;
+        else
+          std::fprintf(stderr, "warning: spec decode failed for link perm %d\n",
+                       link_perm->perm);
       }
       auto pr = SR::CompileProgram(std::move(pt), po, pspec, 0);
       link_program.stage = ShaderType::Pixel;
@@ -453,6 +466,8 @@ int main(int argc, char **argv) {
   const char *programs = nullptr, *bin = nullptr, *out = nullptr,
              *manifest = nullptr;
   long index = -1, perm_sel = -1, link_perm = -1;
+  bool xf_keys = false; // perfauto: print the KYTY_MSL_XF_TABLE key of every source
+
   uint64_t hash = 0;
   bool have_hash = false, list = false, comments = true;
   uint32_t lanes = 0, wave = 64, ud = 16;
@@ -470,7 +485,12 @@ int main(int argc, char **argv) {
     else if (a == "--hash") {
       hash = std::strtoull(next(), nullptr, 16);
       have_hash = true;
-    } else if (a == "--list")
+    } else if (a == "--xf-list") { // perfauto: the transform catalogue (MslXform.h)
+      std::fputs(SR::Msl::Xf::Catalogue().c_str(), stdout);
+      return 0;
+    } else if (a == "--xf-keys")
+      xf_keys = true;
+    else if (a == "--list")
       list = true;
     else if (a == "--perm")
       perm_sel = std::atol(next());
@@ -519,6 +539,18 @@ int main(int argc, char **argv) {
         std::printf("%zu hash=%016" PRIx64 " stage=%u wave=%u words=%zu\n", i,
                     srcs[i].hash, srcs[i].stage, srcs[i].wave,
                     srcs[i].code.size());
+      return 0;
+    }
+    if (xf_keys) { // "<vs|ps|cs> <guest hash> <source digest>": the table key (MslXform.h) per source
+      for (const auto &src : srcs) {
+        const auto st = static_cast<ShaderType>(src.stage);
+        std::printf("%s %016" PRIx64 " ",
+                    st == ShaderType::Vertex ? "vs" : st == ShaderType::Pixel ? "ps" : st == ShaderType::Compute ? "cs" : "??",
+                    src.hash);
+        for (const unsigned char ch : src.digest) // the digest is raw bytes
+          std::printf("%02x", ch);
+        std::printf("\n");
+      }
       return 0;
     }
     long pick = index;
@@ -577,6 +609,8 @@ int main(int argc, char **argv) {
   std::fflush(stdout);
   Src link_src;
   const Src *link_ptr = nullptr;
+  Perm link_perm_rec;
+  const Perm *link_perm_ptr = nullptr;
   if (link_perm >= 0) {
     // own perm list: reloading into `perms` would free the Perm that use_perm
     // points at (flaky SIGSEGV in DecodeSpecialization of --link-ps runs,
@@ -589,6 +623,8 @@ int main(int argc, char **argv) {
           if (x.digest == pm.digest) {
             link_src = x;
             link_ptr = &link_src;
+            link_perm_rec = pm;
+            link_perm_ptr = &link_perm_rec;
           }
     if (!link_ptr) {
       std::fprintf(stderr, "no such link perm\n");
@@ -598,7 +634,8 @@ int main(int argc, char **argv) {
   const pid_t pid = std::getenv("KYTY_MSL_DUMP_NOFORK") ? 0 : fork();
   if (pid == 0) {
     const int rc =
-        Translate(srcs[0], out, comments, lanes, manifest, use_perm, link_ptr);
+        Translate(srcs[0], out, comments, lanes, manifest, use_perm, link_ptr,
+                  link_perm_ptr);
     std::fflush(stdout);
     _exit(rc);
   }

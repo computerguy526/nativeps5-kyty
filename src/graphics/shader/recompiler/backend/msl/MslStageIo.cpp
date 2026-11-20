@@ -23,6 +23,7 @@
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/LodStatsEarlyTests.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/opcodes/ValueOpcodes.h"
 
@@ -130,23 +131,38 @@ bool KkVertexFormat(uint32_t vk, KkVtxFmt& f) {
 	}
 }
 
+// vsperf / perfauto (transforms vs_root_int and vs_fetch_select, MslXform.h; KYTY_MSL_VS_PERF=1
+// still selects both): KK's own vertex-fetch form. (1) The root buffer is read
+// through an integer address (`(ulong)&kkroot.contents[0]`, as KK prints it): Apple's compiler
+// then hoists the vertex-buffer pointer / stride / count reads into the per-draw constant program;
+// through a `constant uchar*` derived from the argument it reloaded them for every vertex (G-buffer
+// 9d2710dd: 20 root loads per vertex, spills). (2) The attribute is loaded unconditionally and the
+// out-of-range select happens afterwards (KK: load, then `oob ? 0 : v`); `oob ? 0 : *(p)` makes
+// the load conditional. Same values: the vertex buffer is bound with KK's robustness padding.
 // Statements filling `float4|uint4 name` for one attribute (see KkVertexFormat).
 std::string KkVertexFetch(const std::string& name, const KkVtxFmt& f, uint32_t slot,
                           uint32_t binding) {
+	const bool root_int = Xf::On(Xf::VsRootInt);
+	const auto rt       = [&](const char* type, uint32_t off) {
+        return root_int ? fmt::format("*(constant {}*)(kk_rtu + ulong({}u))", type, off)
+                      : fmt::format("*(constant {}*)(kk_rt + {}u)", type, off);
+	};
 	const std::string vt = f.comps == 1 ? f.elem : fmt::format("{}{}", f.elem, f.comps);
 	const std::string load =
 	    f.comps == 1 ? fmt::format("(*(((constant {}*)kk_vb) + kk_el))", f.elem)
 	                 : fmt::format("{}(*(constant packed_{}*)(((constant {}*)kk_vb) + kk_el))", vt,
 	                               vt, f.elem);
 	std::string s = "{\n";
-	s +=
-	    fmt::format("    const ulong kk_vb = *(constant ulong*)(kk_rt + {}u);\n", 136u + 8u * slot);
-	s += fmt::format(
-	    "    const uint kk_el = gl_vertex_id * (*(constant uint*)(kk_rt + {}u) / {}u);\n",
-	    8u + 4u * binding, f.size);
-	s += fmt::format("    const bool kk_oob = *(constant uint*)(kk_rt + {}u) < gl_vertex_id;\n",
-	                 392u + 4u * slot);
-	s += fmt::format("    const {} r = kk_oob ? {}(0u) : {};\n", vt, vt, load);
+	s += fmt::format("    const ulong kk_vb = {};\n", rt("ulong", 136u + 8u * slot));
+	s += fmt::format("    const uint kk_el = gl_vertex_id * ({} / {}u);\n",
+	                 rt("uint", 8u + 4u * binding), f.size);
+	s += fmt::format("    const bool kk_oob = {} < gl_vertex_id;\n", rt("uint", 392u + 4u * slot));
+	if (Xf::On(Xf::VsFetchSelect)) {
+		s += fmt::format("    const {} kk_ld = {};\n", vt, load);
+		s += fmt::format("    const {} r = kk_oob ? {}(0u) : kk_ld;\n", vt, vt);
+	} else {
+		s += fmt::format("    const {} r = kk_oob ? {}(0u) : {};\n", vt, vt, load);
+	}
 	std::string c[4];
 	const char* sw = "xyzw";
 	for (uint32_t i = 0; i < 4; i++)
@@ -335,6 +351,14 @@ std::set<const IR::Inst*> PsLiveAdce(const IR::Program&                         
 	return live;
 }
 } // namespace
+
+uint32_t KkLiveComponents(const IR::Inst&                                 composite,
+                          const std::function<uint32_t(const IR::Inst&)>& user_mask) {
+	uint32_t live = 0u;
+	for (const auto& u: composite.Uses())
+		live |= user_mask(*u.user);
+	return live & 0xfu;
+}
 
 struct GfxIo {
 	bool                            vs = false, ps = false, kk = false;
@@ -577,6 +601,20 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 			std::set<const IR::Inst*> dead;
 			std::set<std::pair<const IR::Inst*, size_t>>
 			    dead_use; // operands of kept exports' dropped components
+			// bcover: a component of an exported CompositeConstructU32x4 is dead only when NO user
+			// of the composite reads it. A shader can export one vector to two parameters (e.g. loc
+			// 1 .xyz and loc 2 .w of the same uint4); the old per-export rule unioned the dropped
+			// components of both and zeroed a live UV, which also dropped its attribute load (slot
+			// renumbering).
+			auto export_mask = [&](const IR::Inst& inst) -> uint32_t { // components a user reads
+				if (inst.GetOpcode() != IR::ValueOpcode::SetAttribute) return 0xfu;
+				const auto& exp = p.export_info.at(inst.Flags<IR::ExportFlags>().index);
+				if (exp.kind != IR::ExportTargetKind::Parameter) return 0xfu;
+				if (g->kk_drop_exports.contains(exp.index)) return 0u;
+				const auto nc = g->kk_export_mask.find(exp.index);
+				if (nc == g->kk_export_mask.end() || exp.compr) return 0xfu;
+				return nc->second;
+			};
 			for (const auto* blk: p.blocks)
 				for (const auto& inst: *blk)
 					if (inst.GetOpcode() == IR::ValueOpcode::SetAttribute) {
@@ -593,8 +631,9 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 						if (v == nullptr ||
 						    v->GetOpcode() != IR::ValueOpcode::CompositeConstructU32x4)
 							continue;
+						const uint32_t live = KkLiveComponents(*v, export_mask);
 						for (size_t i = 0; i < v->NumArgs(); i++)
-							if (((nc->second >> i) & 1u) == 0u) dead_use.insert({v, i});
+							if (((live >> i) & 1u) == 0u) dead_use.insert({v, i});
 					}
 			for (bool grew = true;
 			     grew;) { // also unused values (NIR DCE drops an attribute load nothing reads)
@@ -1116,7 +1155,8 @@ void GfxLocals(MslCtx& c, const GfxIo& g) {
 		c.b.Line("const uint lid = 0u; // vertex stage has no simd lane index (the SPIR-V emitter "
 		         "answers lane 0 too)");
 	if (g.vs && !g.kk_fetch.empty()) {
-		c.b.Line("constant uchar* kk_rt = (constant uchar*)&kkroot;");
+		c.b.Line(Xf::On(Xf::VsRootInt) ? "const ulong kk_rtu = (ulong)&kkroot.contents[0];"
+		                       : "constant uchar* kk_rt = (constant uchar*)&kkroot;");
 		for (const auto& [loc, code]: g.kk_fetch) {
 			const auto k = g.vkind.at(loc);
 			c.b.Line(fmt::format("{} vin_a{};", k == VKind::Uint ? "uint4" : "float4", loc));

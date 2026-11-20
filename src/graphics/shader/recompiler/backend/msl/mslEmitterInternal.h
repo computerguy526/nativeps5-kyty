@@ -106,4 +106,10 @@ const std::vector<std::string>& GfxParams(const GfxIo& g);
 void                            GfxLocals(MslCtx& ctx, const GfxIo& g); // "VOut out = {};" ...
 std::string GfxBuiltin(MslCtx& ctx, const GfxIo& g, uint32_t kind, uint32_t comp);
 bool        GfxEmitInst(MslCtx& ctx, GfxIo& g, const IR::Inst& inst);
+// --- mslfix5 KK NIR float re-association (MslNirReassoc.cpp) ---
+void NirReassocBuild(const IR::Program& program, bool on, bool split);
+// fmafix: statements in KK's one-NIR-op-per-statement shape for a split/re-associated float op (""
+// = usual text)
+std::string NirSplitLines(MslCtx& ctx, const IR::Inst& inst);
+std::string NirReassocText(MslCtx& ctx, const IR::Inst& inst);
 } // namespace Libs::Graphics::ShaderRecompiler::Msl

@@ -4,6 +4,7 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/shader.h"
 
+#include <functional>
 #include <map>
 #include <span>
 #include <string>
@@ -53,6 +54,7 @@ void SetFuseMad(bool fuse);
 void SetPreciseTranscendentals(bool on); // mslfix: precise:: exp2/log2 (relaxed pixel text)
 void SetFlushTranscendentalInputs(
     bool on); // mslfix2: denormal inputs of rcp/rsq/sqrt/exp/log -> signed zero (graphics)
+void SetKkMinMax(bool on); // mslfix6: KK-exact f32 min/max/med3 helpers (graphics)
 [[nodiscard]] std::string AluExpression(IR::ValueOpcode opcode, std::span<const std::string> args);
 
 // MSL type name of an IR value type ("" for Void/opaque/unsupported).
@@ -60,6 +62,12 @@ void SetFlushTranscendentalInputs(
 
 // The helper prelude every emitted source starts with (includes, fp contract(off), kyty_* helpers).
 [[nodiscard]] const char* MslPrelude();
+
+// kk-bda VS (bcover): components of an exported vector value that some user still reads = OR of
+// user_mask(user) over every use of `composite` (a non-export user must return 0xf). One vector
+// exported to two parameters with different kept components stays live in the union.
+[[nodiscard]] uint32_t KkLiveComponents(const IR::Inst&                                 composite,
+                                        const std::function<uint32_t(const IR::Inst&)>& user_mask);
 
 [[nodiscard]] MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,
                                     const MslOptions& options = {});
