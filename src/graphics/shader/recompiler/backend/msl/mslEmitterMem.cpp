@@ -128,6 +128,7 @@ struct LgGroup {
 	const IR::Inst* first  = nullptr;
 	uint32_t        lo_imm = 0, end_imm = 0;  // byte immediates: [lo_imm, end_imm)
 	uint32_t        id     = 0;
+	IR::Value       index;  // load_group: common index Value (vindex) the immediates are relative to
 	std::vector<std::pair<const IR::Inst*, uint32_t>> members; // inst, imm
 };
 struct LgInfo {
@@ -159,7 +160,28 @@ bool LgCandidate(const MslCtx& ctx, const BindingModel& model, const IR::Inst& i
 	const bool swz = stride != 0u && (b.packed_stride & (1u << 14u)) != 0u;
 	if (swz || (b.packed_stride & (1u << 20u)) != 0u) return false;
 	bytes = 4u * std::max(IR::BufferComponentCount(op), 1u);
-	key = {IR::Value(2u), mem.idxen ? inst.Arg(1) : IR::Value(), mem.offen ? inst.Arg(2) : IR::Value(), inst.Arg(3), inst.Arg(inst.NumArgs() - 1)};
+	IR::Value index = mem.idxen ? inst.Arg(1) : IR::Value();
+	// load_group@1: an index `c + X` (IAdd32 with an immediate c) is index X with c*stride added to the immediate,
+	// so consecutive structured elements (the rows of a bone matrix) join one group. Same uint value: the member
+	// computes (c + X) * stride + off + imm, the group X * stride + off + (imm + c * stride), equal mod 2^32, and
+	// the no-wrap argument below is about that common value.
+	if (mem.idxen && stride != 0u && Xf::On(Xf::LoadGroup)) {
+		const IR::Value r = index.Resolve();
+		if (!r.IsImmediate()) {
+			if (const IR::Inst* ai = r.TryInstruction(); ai != nullptr && ai->GetOpcode() == ValueOpcode::IAdd32) {
+				for (uint32_t j = 0; j < 2; j++) {
+					const IR::Value c = ai->Arg(j).Resolve();
+					if (!c.IsImmediate() || c.GetType() != IR::Type::U32) continue;
+					const uint64_t add = uint64_t(c.U32()) * stride;
+					if (add > 64u || uint64_t(imm) + add > 0xffffff00ull) break;
+					index = ai->Arg(1u - j);
+					imm += static_cast<uint32_t>(add);
+					break;
+				}
+			}
+		}
+	}
+	key = {IR::Value(2u), index, mem.offen ? inst.Arg(2) : IR::Value(), inst.Arg(3), inst.Arg(inst.NumArgs() - 1)};
 	return true;
 }
 const LgInfo& LgOf(const MslCtx& ctx, const BindingModel& model) {
@@ -198,7 +220,7 @@ const LgInfo& LgOf(const MslCtx& ctx, const BindingModel& model) {
 					if (fits) { gr.lo_imm = lo; gr.end_imm = end; gr.members.emplace_back(&inst, imm); continue; }
 					close(i);
 				}
-				if (imm + bytes > imm) { Open o{res, key, {}}; o.grp.first = &inst; o.grp.lo_imm = imm; o.grp.end_imm = imm + bytes; o.grp.members.emplace_back(&inst, imm); open.push_back(std::move(o)); }
+				if (imm + bytes > imm) { Open o{res, key, {}}; o.grp.first = &inst; o.grp.index = key.size() > 1 ? key[1] : IR::Value(); o.grp.lo_imm = imm; o.grp.end_imm = imm + bytes; o.grp.members.emplace_back(&inst, imm); open.push_back(std::move(o)); }
 				continue;
 			}
 			if (inst.MayHaveSideEffects()) while (!open.empty()) close(open.size() - 1);
@@ -332,7 +354,7 @@ bool BufferOp(Em& e, ValueOpcode op) {
 			hi = e.o.Def("uint", "(" + e.A(1) + " + " + U(g.end_imm - 4u) + ")");
 		} else {
 			BufferAddrIn in;
-			in.index = mem.idxen ? e.A(1) : std::string();
+			in.index = mem.idxen ? (Xf::On(Xf::LoadGroup) && !g.index.IsEmpty() ? e.ctx.Val(g.index) : e.A(1)) : std::string();
 			in.offset = mem.offen ? e.A(2) : std::string();
 			in.soffset = e.A(3);
 			in.lane = e.ctx.LaneExpr(e.ctx.half);
