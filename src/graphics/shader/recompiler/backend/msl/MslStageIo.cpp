@@ -652,7 +652,8 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 						if (v == nullptr ||
 						    v->GetOpcode() != IR::ValueOpcode::CompositeConstructU32x4)
 							continue;
-						const uint32_t live = KkLiveComponents(*v, export_mask);
+						// v1.1.2 text (mode fix6 off): the per-export rule
+						const uint32_t live = ModeFix6() ? KkLiveComponents(*v, export_mask) : nc->second;
 						for (size_t i = 0; i < v->NumArgs(); i++)
 							if (((live >> i) & 1u) == 0u) dead_use.insert({v, i});
 					}

@@ -2,7 +2,8 @@
 // emits for one shader.
 //   kyty_msl_dump --programs <programs.bin> (--index N | --hash HEX) [--list]
 //   [--lanes 1|2] [--no-comments] [--loop-cap N (default 262144, 0 = off)]
-//   [--out F.metal] [--manifest F.json (T2 binding manifest)] kyty_msl_dump
+//   [--out F.metal] [--manifest F.json (T2 binding manifest)]
+//   [--mode M (emitter mode of a Metal list row: fix6+vsperf, xf=7 ...; --mode-list)] kyty_msl_dump
 //   --bin <code.bin> [--stage cs] [--wave 64] [--threads X,Y,Z] [--ud N]
 // programs.bin is Kyty's persistent program cache (source records carry the
 // guest code). The translation runs in a forked child (the frontend EXITs on
@@ -350,7 +351,9 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
       // for the translated program below (the defaults gave a MipStats atomic
       // storage image the float class: "invalid binding class", so every VS
       // linked to such a PS failed).
-      if (link_perm && !link_perm->spec.empty()) {
+      // xfclass: part of mode fix6 (bcover); without it the v1.1.2 defaults, byte for byte.
+      if (link_perm && !link_perm->spec.empty() && std::getenv("KYTY_MSL_FIX6") != nullptr &&
+          std::strcmp(std::getenv("KYTY_MSL_FIX6"), "0") != 0) {
         SR::IR::ResourceSpecialization ds;
         if (SR::IR::DecodeSpecialization(link_perm->spec, ds))
           pspec = ds;
@@ -467,6 +470,7 @@ int main(int argc, char **argv) {
              *manifest = nullptr;
   long index = -1, perm_sel = -1, link_perm = -1;
   bool xf_keys = false; // perfauto: print the KYTY_MSL_XF_TABLE key of every source
+  bool mode_given = false;
 
   uint64_t hash = 0;
   bool have_hash = false, list = false, comments = true;
@@ -490,6 +494,21 @@ int main(int argc, char **argv) {
       return 0;
     } else if (a == "--xf-keys")
       xf_keys = true;
+    else if (a == "--mode-list") { // xfclass: emitter modes (MslXform.h ApplyMode)
+      std::fputs(SR::Msl::Xf::ModeCatalogue().c_str(), stdout);
+      return 0;
+    } else if (a == "--mode") { // xfclass: a Metal list row's emitter mode, e.g. fix6+vsperf
+      if (mode_given) {
+        std::fprintf(stderr, "--mode given twice\n");
+        return 2;
+      }
+      mode_given = true;
+      std::string err;
+      if (!SR::Msl::Xf::ApplyMode(next(), err)) {
+        std::fprintf(stderr, "--mode: %s\n", err.c_str());
+        return 2;
+      }
+    }
     else if (a == "--list")
       list = true;
     else if (a == "--perm")

@@ -77,4 +77,20 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 // "id@version stage class" per line: the catalogue (kyty_msl_dump --xf-list).
 [[nodiscard]] std::string Catalogue();
 
+// xfclass: emitter MODES. A shipped Metal list row (nativeps5 games/<id>/metal-*.tsv, keys format 2 /
+// pairs format 3) names the mode its text was verified and timed with; the public generator
+// (kyty_msl_dump --mode <mode>) sets exactly these switches for that one translation, so every listed
+// text is a function of (emitter commit, mode) and is reproducible. Tokens joined by '+':
+//   base          nothing (the v1.1.2 / v1.2 text)
+//   fix6          KYTY_MSL_FIX6=1: the KK-mimicry chain (mslfix5/6, fmafix, bcover)
+//   perfr         KYTY_MSL_GFX_SPLIT=0 GFX_REASSOC=0 GFX_MINMAX=0 (relaxed pixel math without KK mimicry)
+//   vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
+//   gfxmath=M     KYTY_MSL_GFX_MATH=M (safe | relaxed | fast)
+//   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
+// false + error for an unknown or repeated token, a bad value, or a variable already set to
+// something else in the environment (a mode never mixes with hand-set switches).
+[[nodiscard]] bool ApplyMode(std::string_view mode, std::string& error);
+// "token  meaning" per line (kyty_msl_dump --mode-list).
+[[nodiscard]] std::string ModeCatalogue();
+
 } // namespace Libs::Graphics::ShaderRecompiler::Msl::Xf

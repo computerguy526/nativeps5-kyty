@@ -226,6 +226,11 @@ std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
 // differently (mslcap7 pipe 13 ~1 % of 10-bit words +-1). B's comparisons are NaN-explicit
 // (isordered/isunordered) and its transcendental calls are precise::, so the whole pixel function
 // can be relaxed. KYTY_MSL_GFX_MATH=safe restores the old text.
+bool ModeFix6() { // read per call: the unit tests switch it inside one process
+	const char* e = std::getenv("KYTY_MSL_FIX6");
+	return e != nullptr && std::strcmp(e, "0") != 0;
+}
+
 bool GfxPixelRelaxed() {
 	static const bool on = [] {
 		const char* e = std::getenv("KYTY_MSL_GFX_MATH");
@@ -1347,7 +1352,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
 	// mslfix6: KYTY_MSL_GFX_MINMAX=0 = old text (Metal fmin/fmax/fmin3/fmax3/fmedian3)
-	const bool kk_minmax = gfx_stage && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled();
+	const bool kk_minmax =
+	    gfx_stage && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled() && ModeFix6();
 	SetKkMinMax(kk_minmax);
 	// mslfix5: replay KK NIR float re-association on pixel text (MslNirReassoc.cpp);
 	// KYTY_MSL_GFX_REASSOC=0 = old text
@@ -1356,12 +1362,12 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	// expression per IR instruction)
 	NirReassocBuild(
 	    program,
-	    gfx_relaxed &&
+	    gfx_relaxed && ModeFix6() &&
 	        [] {
 		        const char* e = std::getenv("KYTY_MSL_GFX_REASSOC");
 		        return e == nullptr || std::strcmp(e, "0") != 0;
 	        }(),
-	    gfx_relaxed &&
+	    gfx_relaxed && ModeFix6() &&
 	        [] {
 		        const char* e = std::getenv("KYTY_MSL_GFX_SPLIT");
 		        return e == nullptr || std::strcmp(e, "0") != 0;

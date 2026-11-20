@@ -92,6 +92,10 @@ namespace Mem {
 struct BindingModel;
 }
 bool KkBdaRequested();         // env KYTY_MSL_CONVENTION=kk-bda
+// xfclass: emitter mode `fix6` (KYTY_MSL_FIX6=1; kyty_msl_dump --mode fix6): the KK-mimicry text of the
+// mslfix5/6, fmafix and bcover chain (KK-exact min/max helpers, NIR re-association and statement split,
+// union live components of exported vectors). Off = the v1.1.2 text, byte for byte.
+bool ModeFix6();
 bool MipStatsPlainRequested(); // env KYTY_MSL_MIPSTATS_PLAIN=1: feedback-free twin of a MipStats PS
 std::string KkBdaPrelude();
 std::string KkBdaLayoutComment(const IR::Program& program);

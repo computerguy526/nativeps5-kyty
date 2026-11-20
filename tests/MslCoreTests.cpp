@@ -648,6 +648,41 @@ void TestXfCatalogue() {
   }
 }
 
+// xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs last: it sets env vars.
+void TestEmitterModes() {
+  namespace Xf = Msl::Xf;
+  const char *vars[] = {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
+                        "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_XF"};
+  auto clear = [&] { for (const char *v : vars) unsetenv(v); };
+  auto env = [](const char *v) { const char *e = std::getenv(v); return std::string(e ? e : "<unset>"); };
+  std::string err;
+  clear();
+  Check(!Msl::ModeFix6(), "mode: fix6 off by default (v1.1.2 text)");
+  Check(Xf::ApplyMode("base", err) && Xf::ApplyMode("", err) && env("KYTY_MSL_FIX6") == "<unset>", "mode: base sets nothing");
+  Check(Xf::ApplyMode("fix6+perfr+vsperf", err) && Msl::ModeFix6() && env("KYTY_MSL_VS_PERF") == "1" &&
+            env("KYTY_MSL_GFX_SPLIT") == "0" && env("KYTY_MSL_GFX_REASSOC") == "0" && env("KYTY_MSL_GFX_MINMAX") == "0",
+        "mode: vspr = fix6+perfr+vsperf");
+  clear();
+  Check(Xf::ApplyMode("fix6+xf=117", err) &&
+            env("KYTY_MSL_XF") == "vs_root_int,vs_fetch_select,vs_no_barrier,minmax_select,movrel_tree",
+        "mode: xf=117 = perfauto pax117");
+  clear();
+  Check(Xf::ApplyMode("xf=0", err) && env("KYTY_MSL_XF") == "none", "mode: xf=0 = pax0 (none)");
+  clear();
+  Check(Xf::ApplyMode("gfxmath=fast", err) && env("KYTY_MSL_GFX_MATH") == "fast", "mode: gfxmath");
+  clear();
+  for (const char *bad : {"fix7", "fix6+fix6", "xf=zz", "xf=fffff", "gfxmath=turbo", "fix6++vsperf", "vsperf=1", "FIX6"}) {
+    err.clear();
+    Check(!Xf::ApplyMode(bad, err) && !err.empty(), std::string("mode: refused ") + bad);
+    clear();
+  }
+  setenv("KYTY_MSL_VS_PERF", "0", 1);
+  Check(!Xf::ApplyMode("vsperf", err), "mode: never mixes with a hand-set switch");
+  clear();
+  Check(Xf::ModeCatalogue().find("fix6") != std::string::npos && Xf::ModeCatalogue().find("movrel_tree@1") != std::string::npos,
+        "mode: catalogue");
+}
+
 int main() {
   TestBuilder();
   TestAluGolden();
@@ -663,6 +698,7 @@ int main() {
   TestReassocFnegChain();
   TestKkMinMax();
   TestXfCatalogue();
+  TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

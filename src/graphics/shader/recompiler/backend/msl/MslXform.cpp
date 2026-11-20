@@ -1,9 +1,11 @@
 #include "graphics/shader/recompiler/backend/msl/MslXform.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -182,6 +184,77 @@ std::string Catalogue() {
 		s += '\n';
 	}
 	return s;
+}
+
+namespace {
+bool SetOnce(const char* name, const std::string& value, std::string& error) {
+	const char* had = std::getenv(name);
+	if (had != nullptr && value != had) {
+		error = std::string(name) + " is already set to '" + had + "'";
+		return false;
+	}
+	setenv(name, value.c_str(), 1);
+	return true;
+}
+} // namespace
+
+bool ApplyMode(std::string_view mode, std::string& error) {
+	if (mode.empty() || mode == "base") return true;
+	std::map<std::string, bool> seen;
+	size_t                      at = 0;
+	while (at <= mode.size()) {
+		const size_t     end = std::min(mode.find('+', at), mode.size());
+		const std::string tok(mode.substr(at, end - at));
+		at                = end + 1;
+		const auto   eq   = tok.find('=');
+		const std::string key = tok.substr(0, eq), val = eq == std::string::npos ? "" : tok.substr(eq + 1);
+		if (!seen.emplace(key, true).second) {
+			error = "mode token '" + key + "' given twice";
+			return false;
+		}
+		bool ok = true;
+		if (key == "fix6" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_FIX6", "1", error);
+		} else if (key == "vsperf" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_VS_PERF", "1", error);
+		} else if (key == "perfr" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) && SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
+			     SetOnce("KYTY_MSL_GFX_MINMAX", "0", error);
+		} else if (key == "gfxmath" && (val == "safe" || val == "relaxed" || val == "fast")) {
+			ok = SetOnce("KYTY_MSL_GFX_MATH", val, error);
+		} else if (key == "xf" && !val.empty() && val.size() <= 8 &&
+		           val.find_first_not_of("0123456789abcdef") == std::string::npos) {
+			const uint32_t mask = static_cast<uint32_t>(std::strtoul(val.c_str(), nullptr, 16));
+			if ((mask & ~AllMask) != 0u) {
+				error = "xf=" + val + " names a transform this emitter does not have";
+				return false;
+			}
+			std::string list;
+			for (uint32_t i = 0; i < Count; i++)
+				if ((mask >> i) & 1u) list += std::string(list.empty() ? "" : ",") + Registry[i].id;
+			ok = SetOnce("KYTY_MSL_XF", list.empty() ? "none" : list, error);
+		} else {
+			error = "unknown mode token '" + tok + "'";
+			return false;
+		}
+		if (!ok) return false;
+	}
+	return true;
+}
+
+std::string ModeCatalogue() {
+	std::string t = "base\tthe v1.1.2 / v1.2 text\n"
+	                "fix6\tKK-mimicry chain: KK-exact min/max, NIR re-association + statement split, bcover\n"
+	                "perfr\trelaxed pixel math without KK mimicry (GFX_SPLIT/REASSOC/MINMAX=0)\n"
+	                "vsperf\tvertex fetch transforms + varying narrowing (KYTY_MSL_VS_PERF=1)\n"
+	                "gfxmath=safe|relaxed|fast\tfragment math mode header (KYTY_MSL_GFX_MATH)\n"
+	                "xf=HEX\ttransform bit mask in registry order:\n";
+	for (uint32_t i = 0; i < Count; i++) {
+		char line[96];
+		std::snprintf(line, sizeof line, "  %x\t%s@%u\n", 1u << i, Registry[i].id, Registry[i].version);
+		t += line;
+	}
+	return t;
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Msl::Xf
