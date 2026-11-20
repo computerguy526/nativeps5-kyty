@@ -3030,7 +3030,9 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 
 bool TextureCache::AliasRebuildPartialEnabled() {
 	static const bool enabled = [] {
-		const bool on = AliasBytesEnabled() && EnvNotZero("KYTY_ALIAS_REBUILD_PARTIAL");
+		// Opt-in: only "1" enables it (EnvNotZero would treat an unset variable as on).
+		const char* value = std::getenv("KYTY_ALIAS_REBUILD_PARTIAL");
+		const bool  on    = AliasBytesEnabled() && value != nullptr && std::strcmp(value, "1") == 0;
 		if (on) {
 			std::fprintf(stderr, "[tilerfix] KYTY_ALIAS_REBUILD_PARTIAL=1: partly owned images are "
 			                     "rebuilt only in the blocks they do not own\n");
