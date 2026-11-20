@@ -22,6 +22,8 @@ constexpr Info Registry[Count] = {
      "buffer bounds check in 32 bits (no 64-bit temporary per access)"},
     {"minmax_select", 1, ShaderType::Unknown, "semantic-exact",
      "min/max/med3 helpers with select() instead of ?: (no branch per call)"},
+    {"mipstats_plain_load", 1, ShaderType::Pixel, "semantic-exact",
+     "MipStats record: plain load in the pre-check before atomic_fetch_min"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;

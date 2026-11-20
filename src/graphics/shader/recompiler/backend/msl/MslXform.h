@@ -41,6 +41,9 @@ enum Id : uint32_t {
 	// kyty_fmin/fmax/fmed3 prelude helpers written with select() instead of ?: (no branch per
 	// call). Applies wherever the KK-exact min/max helpers are printed (graphics stages today).
 	MinMaxSelect,
+	// GET_LOD_STATS record: plain load instead of a relaxed atomic load in the pre-check before
+	// atomic_fetch_min (pixel stage; shaders with the MipStats record only).
+	MipStatsPlainLoad,
 	Count
 };
 
