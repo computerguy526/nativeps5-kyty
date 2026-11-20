@@ -31,6 +31,7 @@
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
+#include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
 #include "graphics/host_gpu/renderer/drawPrep/packetClass.h"
@@ -919,15 +920,47 @@ void CommandProcessor::FlushCarry() {
 static Live::Switch         g_cp_lead_max_ms("KYTY_CP_LEAD_MAX_MS", CpLeadBound::ParseMs);
 static CpLeadBound::Tracker g_cp_lead_tracker;
 
+enum class CpLeadWait { Done, NotDispatched, Timeout, Failed };
+
+// The bound's wait (cplreview): never unbounded, never on a tick the host has not handed to the
+// queue yet (the recorder or the submission broker still holds it), never fatal. A timeout or an
+// error returns; the next ordinary wait reports a real hang or device loss as without the switch.
+static CpLeadWait WaitCpLeadTick(CommandScheduler& scheduler, uint64_t tick, uint64_t timeout_ns) {
+	auto& master = scheduler.GetMasterSemaphore();
+	if (const auto& progress = master.GetSubmissionProgress();
+	    progress && progress->dispatched_tick.load(std::memory_order_acquire) < tick) {
+		return CpLeadWait::NotDispatched;
+	}
+	const CpGaps::Scope   gap(CpGaps::Cat::GpuWaitOther);
+	const auto            semaphore = master.Handle();
+	vk::SemaphoreWaitInfo wait_info {};
+	wait_info.semaphoreCount = 1;
+	wait_info.pSemaphores    = &semaphore;
+	wait_info.pValues        = &tick;
+	const auto result        = scheduler.Graphics().device.waitSemaphores(&wait_info, timeout_ns);
+	if (result == vk::Result::eTimeout) {
+		return CpLeadWait::Timeout;
+	}
+	if (result != vk::Result::eSuccess) {
+		return CpLeadWait::Failed;
+	}
+	master.Refresh(); // publish the progress to KnownGpuTick for everyone
+	return CpLeadWait::Done;
+}
+
 static void BoundCpLead(CommandScheduler& scheduler) {
 	const auto limit_ms = g_cp_lead_max_ms.Get();
 	if (limit_ms <= 0) {
-		if (g_cp_lead_tracker.Size() != 0) {
+		if (g_cp_lead_tracker.Size() != 0 || g_cp_lead_tracker.Held()) {
 			g_cp_lead_tracker.Clear(); // switched off in the run
 		}
 		return;
 	}
+	if (!g_gpu_thread) {
+		return; // the tracker is GPU-thread state; every BufferFlush runs there today
+	}
 	static uint64_t waits = 0, wait_ns = 0, wait_max_ns = 0, submits = 0, report_ns = 0;
+	static uint64_t timeouts = 0, failures = 0, undispatched = 0;
 	auto&           master = scheduler.GetMasterSemaphore();
 	auto            now    = CpNowNs();
 	// The recording just submitted is CurrentTick() - 1.
@@ -940,8 +973,18 @@ static void BoundCpLead(CommandScheduler& scheduler) {
 		g_cp_lead_tracker.Completed(master.KnownGpuTick());
 		if (const auto tick = g_cp_lead_tracker.WaitTick(now, limit_ns); tick != 0) {
 			HangWatchdog::Scope blocked("cp-lead-bound", tick, static_cast<uint64_t>(limit_ms));
-			scheduler.Wait(tick);
-			g_cp_lead_tracker.Completed(tick);
+			switch (WaitCpLeadTick(scheduler, tick, CpLeadBound::WaitTimeoutNs(limit_ms))) {
+				case CpLeadWait::Done: g_cp_lead_tracker.Completed(tick); break;
+				case CpLeadWait::NotDispatched: undispatched++; break; // retried at the next submit
+				case CpLeadWait::Timeout:
+					timeouts++;
+					g_cp_lead_tracker.Abandon(tick);
+					break;
+				case CpLeadWait::Failed:
+					failures++;
+					g_cp_lead_tracker.Abandon(tick);
+					break;
+			}
 			const auto waited = CpNowNs() - now;
 			now += waited;
 			waits++;
@@ -953,11 +996,13 @@ static void BoundCpLead(CommandScheduler& scheduler) {
 		report_ns = now;
 	} else if (now - report_ns >= 10'000'000'000ull) {
 		std::printf("CpLead 10s: bound %lld ms, %" PRIu64 " submits, %" PRIu64
-		            " waits, %.1f ms waited (max %.2f ms)\n",
+		            " waits, %.1f ms waited (max %.2f ms), %" PRIu64 " timeouts, %" PRIu64
+		            " failed, %" PRIu64 " undispatched\n",
 		            static_cast<long long>(limit_ms), submits, waits,
-		            static_cast<double>(wait_ns) / 1e6, static_cast<double>(wait_max_ns) / 1e6);
-		waits = wait_ns = wait_max_ns = submits = 0;
-		report_ns                               = now;
+		            static_cast<double>(wait_ns) / 1e6, static_cast<double>(wait_max_ns) / 1e6,
+		            timeouts, failures, undispatched);
+		waits = wait_ns = wait_max_ns = submits = timeouts = failures = undispatched = 0;
+		report_ns = now;
 	}
 }
 

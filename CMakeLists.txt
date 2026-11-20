@@ -669,6 +669,10 @@ target_include_directories(scalar_provenance_tests PRIVATE ${inc_headers})
 add_executable(compile_progress_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CompileProgressTests.cpp")
 target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5 cpusurvey/cplreview: KYTY_CP_LEAD_MAX_MS bookkeeping (cpLeadBound.h, header only), no GPU.
+add_executable(cp_lead_bound_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CpLeadBoundTests.cpp")
+target_include_directories(cp_lead_bound_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5 kprogress2: on-screen compile progress state/animation timing (header only), no GPU.
 add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ProgressOverlayTests.cpp")
 target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
