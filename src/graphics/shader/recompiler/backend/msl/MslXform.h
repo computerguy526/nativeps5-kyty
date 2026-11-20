@@ -59,6 +59,14 @@ enum Id : uint32_t {
 	// base).
 	// movrel_switch wins when both are on. Bit-exact. Any stage.
 	MovrelTree,
+	// foliage2 / xfmine N1: a bounds-checked buffer load `in_range ? *(buf + addr) : 0` is printed as an
+	// UNCONDITIONAL load from `in_range ? buf + addr : <root>` followed by the same select. In range the
+	// same bytes are read; out of range (also a zero-size or unbound buffer: its size is 0, so the check
+	// fails) the read goes to the kk-bda root block, which is bound for every draw and dispatch and is
+	// larger than any loaded type (the entry function itself reads the set pointer from it), and the
+	// value is dropped for 0 exactly as before. Loads only: never a store or an atomic, never the
+	// per-dword partial form, never a formatted (all-or-nothing) element. No-op outside kk-bda. Any stage.
+	LoadSelect,
 	Count
 };
 
@@ -91,6 +99,7 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   perfr         KYTY_MSL_GFX_SPLIT=0 GFX_REASSOC=0 GFX_MINMAX=0 (relaxed pixel math without KK
 //   mimicry) vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
 //   gfxmath=M     KYTY_MSL_GFX_MATH=M (safe | relaxed | fast)
+//   lsel          KYTY_MSL_XF_LSEL=1: adds the load_select transform to the base set (combines with xf=HEX)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,

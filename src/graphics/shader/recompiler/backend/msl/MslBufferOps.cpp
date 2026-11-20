@@ -36,7 +36,30 @@ std::string Mem(const BufferBinding& b, const std::string& addr, const std::stri
 	       BufName(b.id) + " + " + addr + ")";
 }
 
+// load_select (MslXform.h): `type name = load from (ok ? buf + addr : safe)`; `conv` wraps the load
+// ("uint", "uint4", or empty). The select on `ok` is the caller's.
+std::string LoadSelected(MemOut& o, const BufferBinding& b, const std::string& ok,
+                         const std::string& addr, const std::string& type, bool volatile_,
+                         const char* decl, const std::string& conv, const std::string& qual) {
+	const std::string at = o.Def("ulong", ok + " ? (ulong)(" + BufName(b.id) + " + " + addr +
+	                                          ") : " + LoadSelectSafe());
+	std::string load = "*(" + std::string(volatile_ ? "volatile " : "") + qual + " " + type + "*)(" + at + ")";
+	if (!conv.empty()) load = conv + "(" + load + ")";
+	return o.Def(decl, load);
+}
+
 } // namespace
+
+static thread_local std::string g_load_select_safe;
+void SetLoadSelectSafe(const std::string& expr) {
+	g_load_select_safe = expr;
+}
+const std::string& LoadSelectSafe() {
+	return g_load_select_safe;
+}
+bool LoadSelectOn() {
+	return Xf::On(Xf::LoadSelect) && !g_load_select_safe.empty();
+}
 
 std::string BufferByteAddress(MemOut& o, const BufferBinding& b, const BufferAddrIn& in) {
 	const uint32_t stride     = b.packed_stride & 0x3fffu;
@@ -91,6 +114,12 @@ std::string LoadRaw(MemOut& o, const BufferBinding& b, const std::string& addr, 
 		}
 		part += ")";
 		return o.Def(result_type.c_str(), InBounds(b, addr, bytes) + " ? " + load + " : " + part);
+	}
+	if (LoadSelectOn()) {
+		const std::string ok  = o.Def("bool", InBounds(b, addr, bytes));
+		const std::string conv = (bits == 32 && comps > 1) ? result_type : (bits != 32 ? std::string("uint") : std::string());
+		const std::string raw = LoadSelected(o, b, ok, addr, type, vol, result_type.c_str(), conv, PtrQual(b));
+		return o.Def(result_type.c_str(), ok + " ? " + raw + " : " + result_type + "(0u)");
 	}
 	return o.Def(result_type.c_str(),
 	             InBounds(b, addr, bytes) + " ? " + load + " : " + result_type + "(0u)");
@@ -466,6 +495,12 @@ std::string ReadConstBuffer(MemOut& o, const BufferBinding& b, const std::string
 	const std::string load = "*(" + std::string(b.written || b.atomic ? "device" : "const device") +
 	                         " uint*)(" + BufName(b.id) + " + " + byte_offset + ")";
 	if (!Checked(b, opts)) return o.Def("uint", load);
+	if (LoadSelectOn()) {
+		const std::string ok  = o.Def("bool", InBounds(b, byte_offset, 4));
+		const std::string raw = LoadSelected(o, b, ok, byte_offset, "uint", false, "uint", "",
+		                                     b.written || b.atomic ? "device" : "const device");
+		return o.Def("uint", ok + " ? " + raw + " : 0u");
+	}
 	return o.Def("uint", InBounds(b, byte_offset, 4) + " ? " + load + " : 0u");
 }
 

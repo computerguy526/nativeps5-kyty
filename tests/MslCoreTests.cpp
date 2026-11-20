@@ -717,6 +717,60 @@ void TestMovrelChainsPerEmission() {
   }
 }
 
+// foliage2: transform load_select (mode token lsel). Off: the checked load is the old conditional text, byte for byte.
+// On (kk-bda safe address set): the load itself is unconditional and its address falls back to the safe expression when
+// the range check fails, so a failing check never dereferences buf + addr; stores and the per-dword form are untouched.
+void TestLoadSelect() {
+  namespace Mem = Msl::Mem;
+  namespace Xf = Msl::Xf;
+  Mem::BufferBinding b;
+  b.id = 3;
+  b.bounds_check = true;
+  Mem::BufferOpts opts;
+  opts.elide_bounds = false;
+  auto gen = [&](uint32_t bits, uint32_t comps) { Mem::MemOut o; const auto v = Mem::LoadRaw(o, b, "a", bits, comps, opts); return o.code + "=> " + v; };
+  auto genc = [&] { Mem::MemOut o; const auto v = Mem::ReadConstBuffer(o, b, "a", opts); return o.code + "=> " + v; };
+  auto gens = [&] { Mem::MemOut o; Mem::StoreRaw(o, b, "a", 32, {"x0"}, opts); return o.code; };
+  for (const char *v : {"KYTY_MSL_XF", "KYTY_MSL_XF_AUTO", "KYTY_MSL_XF_LSEL", "KYTY_MSL_VS_PERF"}) unsetenv(v);
+  Xf::Begin(ShaderType::Vertex, 0);
+  Mem::SetLoadSelectSafe({});
+  const std::string off1 = gen(32, 1), off4 = gen(32, 4), off16 = gen(16, 1), offc = genc(), offs = gens();
+  Check(!Xf::On(Xf::LoadSelect) && off1.find(" ? *(") != std::string::npos && off1.find("kk_lsafe") == std::string::npos,
+        "load_select off: conditional load text");
+  setenv("KYTY_MSL_XF_LSEL", "1", 1);
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(Xf::On(Xf::LoadSelect), "load_select: on with KYTY_MSL_XF_LSEL (vertex)");
+  Check(gen(32, 1) == off1 && genc() == offc, "load_select: no safe address (not kk-bda) -> text unchanged");
+  Mem::SetLoadSelectSafe("kk_lsafe");
+  const std::string on1 = gen(32, 1), on4 = gen(32, 4), on16 = gen(16, 1), onc = genc();
+  for (const auto &[what, t] : {std::pair<std::string, std::string>{"dword", on1}, {"vec4", on4}, {"ushort", on16}, {"const", onc}}) {
+    Check(t.find(" ? (ulong)(r.b3 + a) : kk_lsafe;") != std::string::npos, "load_select " + what + ": address falls back to the safe address when the check is false");
+    Check(t.find("*)(r.b3 + a)") == std::string::npos, "load_select " + what + ": no dereference of buf + addr outside the selected address");
+    Check(t.find(" ? *(") == std::string::npos, "load_select " + what + ": the load is not inside the conditional");
+    Check(t.find("(0u);\n=> ") != std::string::npos || t.find(" : 0u;\n=> ") != std::string::npos, "load_select " + what + ": out of range still yields 0");
+  }
+  Check(on4.find("uint4(*(") != std::string::npos && on4.find("packed_uint4*)(") != std::string::npos, "load_select vec4: packed vector load kept");
+  Check(gens() == offs, "load_select: stores unchanged");
+  { Mem::BufferOpts pd = opts; pd.per_dword_bounds = true; Mem::MemOut o; (void)Mem::LoadRaw(o, b, "a", 32, 4, pd);
+    Check(o.code.find("kk_lsafe") == std::string::npos, "load_select: per-dword partial form unchanged"); }
+  { Mem::BufferOpts el = opts; el.elide_bounds = true; Mem::MemOut o; (void)Mem::LoadRaw(o, b, "a", 32, 1, el);
+    Check(o.code.find("kk_lsafe") == std::string::npos, "load_select: unchecked load unchanged"); }
+  Xf::Begin(ShaderType::Pixel, 0);
+  Check(Xf::On(Xf::LoadSelect), "load_select: any stage (pixel)");
+  unsetenv("KYTY_MSL_XF_LSEL");
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(gen(32, 1) == off1 && gen(32, 4) == off4 && gen(16, 1) == off16 && genc() == offc, "load_select off again: byte-identical text");
+  Mem::SetLoadSelectSafe({});
+  std::string err;
+  Check(Xf::ApplyMode("fix6+lsel", err) && std::string(std::getenv("KYTY_MSL_XF_LSEL")) == "1", "mode: lsel sets KYTY_MSL_XF_LSEL");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF_LSEL"}) unsetenv(v);
+  Check(Xf::ApplyMode("fix6+xf=7+lsel", err) && std::string(std::getenv("KYTY_MSL_XF")) == "vs_root_int,vs_fetch_select,vs_no_barrier", "mode: lsel combines with xf=HEX");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF", "KYTY_MSL_XF_LSEL"}) unsetenv(v);
+  setenv("KYTY_MSL_XF_LSEL", "1", 1);
+  Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_LSEL");
+  unsetenv("KYTY_MSL_XF_LSEL");
+}
+
 // xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs
 // last: it sets env vars.
 void TestEmitterModes() {
@@ -805,6 +859,7 @@ int main() {
   TestKkMinMax();
   TestXfCatalogue();
   TestMovrelChainsPerEmission();
+  TestLoadSelect();
   TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

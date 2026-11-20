@@ -17,8 +17,10 @@
 // Z entry main_entrypoint math safe".
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/msl/MslBinding.h"
+#include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 
 #include <algorithm>
@@ -157,6 +159,10 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	const auto  bad     = [&](const std::string& why) { ctx.unsupported["kk-bda: " + why]++; };
 
 	b.Line("constant uchar* kk_root = (constant uchar*)&kkroot;");
+	if (Xf::On(Xf::LoadSelect)) { // the root block is bound for every draw/dispatch and holds the set pointer read below
+		b.Line("const ulong kk_lsafe = (ulong)&kkroot.contents[0];");
+		SetLoadSelectSafe("kk_lsafe");
+	}
 	b.Line("const ulong kk_set0 = *(constant ulong*)(kk_root + " + KU(KkRootSets) + ");");
 	const bool gfx = program.stage != ShaderType::Compute;
 	if (!gfx)

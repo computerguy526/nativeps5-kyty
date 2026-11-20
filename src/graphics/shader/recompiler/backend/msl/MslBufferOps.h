@@ -121,4 +121,11 @@ std::string AddressHelpersPrelude();
 std::string AddressLoad(MemOut& o, const std::string& a, uint32_t bits);
 void        AddressStore(MemOut& o, const std::string& a, uint32_t bits, const std::string& value);
 
+// load_select (MslXform.h): integer-address expression of memory that is mapped for every draw and
+// dispatch and at least 16 bytes long (kk-bda: the root block). Empty = the transform prints nothing.
+// Reset by the emitter per program; KkBdaLocals sets it when the transform is active.
+void               SetLoadSelectSafe(const std::string& expr);
+const std::string& LoadSelectSafe();
+bool               LoadSelectOn();
+
 } // namespace Libs::Graphics::ShaderRecompiler::Msl::Mem

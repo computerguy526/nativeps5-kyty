@@ -32,6 +32,8 @@ constexpr Info Registry[Count] = {
      "V_MOVRELS select chain (>= 4 links on one M0) as one switch on M0"},
     {"movrel_tree", 1, ShaderType::Unknown, "semantic-exact",
      "V_MOVRELS select chain (>= 4 links on one M0) as a balanced compare tree"},
+    {"load_select", 1, ShaderType::Unknown, "structural",
+     "checked buffer load: unconditional load from (in range ? address : root), then the select"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
@@ -133,6 +135,8 @@ const Info& InfoOf(Id id) {
 void Begin(ShaderType stage, uint64_t shader_hash) {
 	g_stage       = stage;
 	g_active      = BaseMask();
+	if (EnvOn("KYTY_MSL_XF_LSEL")) // mode token `lsel`; read per call
+		g_active |= 1u << LoadSelect;
 	const auto& t = Table();
 	if (const auto it = t.find({StageChar(stage), shader_hash}); it != t.end())
 		g_active = it->second;
@@ -199,7 +203,7 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	// review L1: every switch that changes the emitted text, whether this mode sets it or not
 	for (const char* v:
 	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
-	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
+	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF", "KYTY_MSL_XF_LSEL",
 	      "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
@@ -240,6 +244,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_FIX6", "1", error);
 		} else if (key == "vsperf" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_VS_PERF", "1", error);
+		} else if (key == "lsel" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_XF_LSEL", "1", error);
 		} else if (key == "perfr" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) &&
 			     SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
@@ -273,6 +279,7 @@ std::string ModeCatalogue() {
 	    "perfr\trelaxed pixel math without KK mimicry (GFX_SPLIT/REASSOC/MINMAX=0)\n"
 	    "vsperf\tvertex fetch transforms + varying narrowing (KYTY_MSL_VS_PERF=1)\n"
 	    "gfxmath=safe|relaxed|fast\tfragment math mode header (KYTY_MSL_GFX_MATH)\n"
+	    "lsel\tchecked buffer loads as unconditional load + select (KYTY_MSL_XF_LSEL=1 = transform load_select)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];

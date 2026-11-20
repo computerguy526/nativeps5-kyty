@@ -1398,6 +1398,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	ctx.kk_bda =
 	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
+	Mem::SetLoadSelectSafe({});   // KkBdaLocals: load_select fallback address (kk-bda root)
 	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
 	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
