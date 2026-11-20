@@ -493,6 +493,8 @@ void TestFusedRelaxedPixelPrelude() {
   Check(msl.find("math relaxed") != std::string::npos &&
             msl.find("contract(off)") == std::string::npos,
         "fused + relaxed pixel: relaxed header, no contract(off)");
+}
+
 // bcover: kk-bda VS liveness of an exported vector shared by two parameter
 // exports (e.g. the same uint4 goes to loc 1 .xyz and loc 2 .w). A
 // component is dead only when no user reads it; the old rule unioned the
