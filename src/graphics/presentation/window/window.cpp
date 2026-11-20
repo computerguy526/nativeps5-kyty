@@ -1297,6 +1297,37 @@ void PlaceWindow(SDL_Window* window, int w, int h) {
 	if (const char* t = std::getenv("NPS5_WINDOW_TOP"); t != nullptr && std::atoi(t) != 0) SDL_SetWindowAlwaysOnTop(window, true);
 	std::fprintf(stderr, "[window] display %d (%s) at %d,%d size %dx%d slot %d\n", display_no, kind, x, y, ww, wh, g_window_slot);
 }
+
+// Fullscreen: the same NPS5_WINDOW_SCREEN choice (builtin / main / index; default builtin), centred on that display so SDL's
+// fullscreen lands there instead of on the primary display. Logs '[window] fullscreen on display N (kind)'.
+void PlaceFullscreenWindow(SDL_Window* window) {
+	std::string screen = "builtin";
+	if (const char* v = std::getenv("NPS5_WINDOW_SCREEN"); v != nullptr && *v != '\0') screen = v;
+	if (const auto colon = screen.find(':'); colon != std::string::npos) screen = screen.substr(0, colon);
+	int n                   = 0;
+	SDL_DisplayID* displays = SDL_GetDisplays(&n);
+	SDL_DisplayID id        = 0;
+	const char* kind        = "main";
+	if (screen == "builtin") {
+		id   = BuiltinDisplayId();
+		kind = id != 0 ? "builtin" : "main (no builtin)";
+	} else if (screen != "main") {
+		char* end        = nullptr;
+		const auto index = std::strtol(screen.c_str(), &end, 10);
+		if (end != screen.c_str() && *end == '\0' && index >= 0 && index < n && displays != nullptr) {
+			id   = displays[index];
+			kind = "index";
+		}
+	}
+	if (id == 0) id = SDL_GetPrimaryDisplay();
+	int display_no = 0;
+	for (int d = 0; d < n && displays != nullptr; ++d) {
+		if (displays[d] == id) display_no = d;
+	}
+	SDL_free(displays);
+	SDL_SetWindowPosition(window, static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)), static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)));
+	std::fprintf(stderr, "[window] fullscreen on display %d (%s)\n", display_no, kind);
+}
 } // namespace
 
 static void WindowCreate(WindowContext& context) {
@@ -1352,7 +1383,7 @@ static void WindowCreate(WindowContext& context) {
 	}
 
 	if (Config::FullscreenEnabled()) {
-		SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+		PlaceFullscreenWindow(context.window);
 	} else {
 		PlaceWindow(context.window, width, height);
 	}
