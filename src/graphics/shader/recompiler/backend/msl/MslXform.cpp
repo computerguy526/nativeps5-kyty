@@ -198,8 +198,34 @@ bool SetOnce(const char* name, const std::string& value, std::string& error) {
 }
 } // namespace
 
+bool EnvOn(const char* name) {
+	return Truthy(std::getenv(name));
+}
+
 bool ApplyMode(std::string_view mode, std::string& error) {
+	// review L1: every switch that changes the emitted text, whether this mode sets it or not
+	for (const char* v: {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC", "KYTY_MSL_GFX_MINMAX",
+	                     "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP",
+	                     "KYTY_MSL_LOADGROUP_MUTANT"}) {
+		if (std::getenv(v) != nullptr) {
+			error = std::string(v) + " is set in the environment; --mode does not mix with hand-set switches";
+			return false;
+		}
+	}
 	if (mode.empty() || mode == "base") return true;
+	{ // review L2: perfr only switches off parts of fix6
+		bool fix6 = false, perfr = false;
+		for (size_t a = 0; a <= mode.size();) {
+			const size_t e = std::min(mode.find('+', a), mode.size());
+			fix6 |= mode.substr(a, e - a) == "fix6";
+			perfr |= mode.substr(a, e - a) == "perfr";
+			a = e + 1;
+		}
+		if (perfr && !fix6) {
+			error = "perfr needs fix6 (it switches off parts of the fix6 chain; alone it is the base text)";
+			return false;
+		}
+	}
 	std::map<std::string, bool> seen;
 	size_t                      at = 0;
 	while (at <= mode.size()) {

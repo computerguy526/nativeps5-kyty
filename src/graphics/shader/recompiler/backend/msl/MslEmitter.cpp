@@ -489,10 +489,13 @@ const IR::Inst* MovrelPrev(const IR::Inst& s, const IR::Value& m) {
 	if (p == nullptr || p->UseCount() != 1 || !MovrelLink(*p, pm, pk) || !(pm == m)) return nullptr;
 	return p;
 }
-const MovrelChains& MovrelOf(const IR::Program& program) {
-	static thread_local MovrelChains g;
-	if (g.program == &program && g.hash == program.shader_hash) return g;
-	g          = MovrelChains {};
+const MovrelChains& MovrelOf(const MslCtx& ctx) {
+	// Per emission (MslCtx::movrel_chains): never shared between two programs, see mslEmitterInternal.h.
+	if (ctx.movrel_chains != nullptr) return *std::static_pointer_cast<const MovrelChains>(ctx.movrel_chains);
+	const IR::Program& program = ctx.program;
+	auto               gp      = std::make_shared<MovrelChains>();
+	ctx.movrel_chains          = gp;
+	auto& g                    = *gp;
 	g.program  = &program;
 	g.hash     = program.shader_hash;
 	std::vector<const IR::Inst*> links;
@@ -711,7 +714,7 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			default: break;
 		}
 		if (op == O::SelectU32 && (Xf::On(Xf::MovrelSwitch) || Xf::On(Xf::MovrelTree))) {
-			const auto& mc = MovrelOf(ctx.program);
+			const auto& mc = MovrelOf(ctx);
 			if (mc.interior.count(&inst) != 0) continue;
 			if (mc.heads.count(&inst) != 0 && !Xf::On(Xf::MovrelSwitch)) {
 				// movrel_tree: balanced compare tree over the sorted distinct constants; the leaf
@@ -1288,9 +1291,12 @@ uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info
 	return lanes;
 }
 
+size_t MovrelChainHeads(const MslCtx& ctx) { // tests (xfclass review M1)
+	return MovrelOf(ctx).heads.size();
+}
+
 bool ModeFix6() { // read per call: the unit tests switch it inside one process
-	const char* e = std::getenv("KYTY_MSL_FIX6");
-	return e != nullptr && std::strcmp(e, "0") != 0;
+	return Xf::EnvOn("KYTY_MSL_FIX6");
 }
 
 MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,

@@ -183,13 +183,15 @@ bool LgCandidate(const MslCtx& ctx, const BindingModel& model, const IR::Inst& i
 	return true;
 }
 const LgInfo& LgOf(const MslCtx& ctx, const BindingModel& model) {
-	static thread_local std::unordered_map<const IR::Program*, LgInfo> cache;
-	auto& g = cache[&ctx.program];
+	// Per emission (MslCtx::lg_info): never shared between two programs, see mslEmitterInternal.h.
+	if (ctx.lg_info != nullptr) return *std::static_pointer_cast<const LgInfo>(ctx.lg_info);
+	auto gp = std::make_shared<LgInfo>();
+	ctx.lg_info = gp;
+	auto& g = *gp;
 	// perfauto transform load_group (MslXform.h): the same grouping for the current program in any stage, dynamic
-	// bases only (mode-1 rule), independent of KYTY_MSL_LOADGROUP.
+	// bases only (mode-1 rule), independent of KYTY_MSL_LOADGROUP. The transform set is fixed per emission (Xf::Begin).
 	const bool xf = Xf::On(Xf::LoadGroup);
-	if (g.hash == ctx.program.shader_hash && g.hash != 0 && g.xf == xf) return g;
-	g = LgInfo{}; g.hash = ctx.program.shader_hash; g.xf = xf;
+	g.hash = ctx.program.shader_hash; g.xf = xf;
 	const int mode = LoadGroupMode();
 	const bool stage_ok = xf || mode >= 2 || (mode == 1 && (ctx.program.stage == ShaderType::Vertex || ctx.program.stage == ShaderType::Pixel));
 	if (!stage_ok) return g;

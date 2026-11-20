@@ -352,8 +352,7 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
       // storage image the float class: "invalid binding class", so every VS
       // linked to such a PS failed).
       // xfclass: part of mode fix6 (bcover); without it the v1.1.2 defaults, byte for byte.
-      if (link_perm && !link_perm->spec.empty() && std::getenv("KYTY_MSL_FIX6") != nullptr &&
-          std::strcmp(std::getenv("KYTY_MSL_FIX6"), "0") != 0) {
+      if (link_perm && !link_perm->spec.empty() && SR::Msl::Xf::EnvOn("KYTY_MSL_FIX6")) {
         SR::IR::ResourceSpecialization ds;
         if (SR::IR::DecodeSpecialization(link_perm->spec, ds))
           pspec = ds;

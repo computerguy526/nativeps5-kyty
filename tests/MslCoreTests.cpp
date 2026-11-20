@@ -650,6 +650,37 @@ void TestXfCatalogue() {
   }
 }
 
+// xfclass review M1: the movrel_switch/tree analysis belongs to one emission (MslCtx), like the
+// binding model (TestBindingModelPerEmission): the same IR::Program object with the same shader hash
+// but other instructions (the next specialization at the same address) gets its own chains.
+void TestMovrelChainsPerEmission() {
+  SR::IR::Program p;
+  p.shader_hash = 0x5151u;
+  p.block_storage.push_back(std::make_unique<SR::IR::Block>());
+  auto *blk = p.block_storage.back().get();
+  p.blocks.push_back(blk);
+  using SR::IR::Value;
+  auto chain = [&](uint32_t seed) {
+    auto &m = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value::F32(float(seed))});
+    const SR::IR::Inst *prev = &blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value::F32(1.0f)});
+    for (uint32_t k = 0; k < 4; k++) {
+      auto &c = blk->AppendNewInst(ValueOpcode::IEqual32, {Value(&m), Value(k)});
+      prev = &blk->AppendNewInst(ValueOpcode::SelectU32, {Value(&c), Value(100u + k), Value(const_cast<SR::IR::Inst *>(prev))});
+    }
+    blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(const_cast<SR::IR::Inst *>(prev))});
+  };
+  chain(3u);
+  {
+    Msl::MslCtx ctx(p, {});
+    Check(Msl::MovrelChainHeads(ctx) == 1u, "movrel per emission: one chain");
+  }
+  chain(5u); // same object, same hash, one more chain
+  {
+    Msl::MslCtx ctx(p, {});
+    Check(Msl::MovrelChainHeads(ctx) == 2u, "movrel per emission: a new emission of the same program object sees its own chains");
+  }
+}
+
 // xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs last: it sets env vars.
 void TestEmitterModes() {
   namespace Xf = Msl::Xf;
@@ -673,13 +704,24 @@ void TestEmitterModes() {
   clear();
   Check(Xf::ApplyMode("gfxmath=fast", err) && env("KYTY_MSL_GFX_MATH") == "fast", "mode: gfxmath");
   clear();
-  for (const char *bad : {"fix7", "fix6+fix6", "xf=zz", "xf=fffff", "gfxmath=turbo", "fix6++vsperf", "vsperf=1", "FIX6"}) {
+  for (const char *bad : {"fix7", "fix6+fix6", "xf=zz", "xf=fffff", "gfxmath=turbo", "fix6++vsperf", "vsperf=1", "FIX6",
+                          "perfr", "perfr+vsperf"}) {
     err.clear();
     Check(!Xf::ApplyMode(bad, err) && !err.empty(), std::string("mode: refused ") + bad);
     clear();
   }
   setenv("KYTY_MSL_VS_PERF", "0", 1);
   Check(!Xf::ApplyMode("vsperf", err), "mode: never mixes with a hand-set switch");
+  clear();
+  for (const char *left : {"KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_GFX_MATH"}) { // review L1
+    setenv(left, "1", 1);
+    err.clear();
+    Check(!Xf::ApplyMode("fix6", err) && err.find(left) != std::string::npos && !Xf::ApplyMode("base", err),
+          std::string("mode: refuses a leftover ") + left);
+    unsetenv(left);
+  }
+  setenv("KYTY_MSL_FIX6", "", 1); // review L3: one truthiness rule
+  Check(!Msl::ModeFix6() && !Xf::EnvOn("KYTY_MSL_FIX6"), "mode: an empty value is off");
   clear();
   Check(Xf::ModeCatalogue().find("fix6") != std::string::npos && Xf::ModeCatalogue().find("movrel_tree@1") != std::string::npos,
         "mode: catalogue");
@@ -700,6 +742,7 @@ int main() {
   TestReassocFnegChain();
   TestKkMinMax();
   TestXfCatalogue();
+  TestMovrelChainsPerEmission();
   TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

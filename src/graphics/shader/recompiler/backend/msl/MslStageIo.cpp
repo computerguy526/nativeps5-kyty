@@ -140,10 +140,7 @@ bool KkVertexFormat(uint32_t vk, KkVtxFmt& f) {
 // out-of-range select happens afterwards (KK: load, then `oob ? 0 : v`); `oob ? 0 : *(p)` makes
 // the load conditional. Same values: the vertex buffer is bound with KK's robustness padding.
 bool VsPerfFetch() {
-	static const bool on = [] {
-		const char* e = std::getenv("KYTY_MSL_VS_PERF");
-		return e != nullptr && std::strcmp(e, "0") != 0;
-	}();
+	static const bool on = Xf::EnvOn("KYTY_MSL_VS_PERF"); // the Xf rule (review L3): "" is off, as for the vs_* transforms
 	return on;
 }
 

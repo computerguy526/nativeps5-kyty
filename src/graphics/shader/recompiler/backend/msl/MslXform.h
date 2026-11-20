@@ -87,9 +87,12 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
 //   gfxmath=M     KYTY_MSL_GFX_MATH=M (safe | relaxed | fast)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
-// false + error for an unknown or repeated token, a bad value, or a variable already set to
-// something else in the environment (a mode never mixes with hand-set switches).
+// false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes nothing
+// there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6, VS_PERF,
+// GFX_*, XF, XF_TABLE, LOADGROUP*): a mode never mixes with hand-set switches.
 [[nodiscard]] bool ApplyMode(std::string_view mode, std::string& error);
+// The one truthiness rule of the emitter switches (review L3): set, non-empty and not "0".
+[[nodiscard]] bool EnvOn(const char* name);
 // "token  meaning" per line (kyty_msl_dump --mode-list).
 [[nodiscard]] std::string ModeCatalogue();
 
