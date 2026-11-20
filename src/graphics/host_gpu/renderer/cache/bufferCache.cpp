@@ -3438,6 +3438,8 @@ void BufferCache::CompleteAllSideReadbacks() {
 }
 
 void BufferCache::NoteBufferContentWrite(uint64_t vaddr, uint64_t size) {
+	// KYTY_ALIAS_REBUILD_PARTIAL: images whose native bytes equalled the old canonical ones.
+	m_texture_cache.NoteCanonicalWrite(vaddr, size);
 	if (m_side == nullptr) {
 		return;
 	}

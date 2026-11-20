@@ -2228,6 +2228,7 @@ bool TextureCache::CopyImage(ImageId destination_id, ImageId source_id, const ch
 		EXIT("TextureCache: cannot issue an unequal-sample image copy\n");
 	}
 	PrepareImageCopy(destination);
+	destination.coherence.Clear(); // KYTY_ALIAS_REBUILD_PARTIAL: native bytes replaced
 	if (source.IsBufferModified()) {
 		if (source.info.data == destination.info.data) {
 			destination.MarkBufferModified();
@@ -2313,6 +2314,7 @@ void TextureCache::CopyImageMip(ImageId destination_id, ImageId source_id, uint3
 		EXIT("TextureCache: invalid mip-copy ownership or sample count\n");
 	}
 	destination.CopyMip(source, mip, layer);
+	destination.coherence.Clear(); // KYTY_ALIAS_REBUILD_PARTIAL: native bytes replaced
 	if (source.IsGpuModified()) {
 		MarkImageGpuModified(destination);
 		TakeOverOwnedBytes(destination, source);
@@ -2955,6 +2957,16 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 			}
 		}
 		image.ClearBufferModified();
+		if (AliasRebuildPartialEnabled() && !owned_partial.done) {
+			// Native = canonical everywhere after a whole refresh, except the bytes it still owns
+			// (those it could not move out); a partial refresh says nothing.
+			if (partial.done || !image.FullyResident() || image.depth_id) {
+				image.coherence.Clear();
+			} else {
+				image.coherence.SetAllExcept(image.info.data.address, image.info.data.size,
+				                             image.OwnedSet(), image.OwnsAllBytes());
+			}
+		}
 		if (m_exact_range_mode == 1) {
 			// KYTY_IMAGE_EXACT_RANGE_INVALIDATE: a refresh from memory also covers kept bytes.
 			NoteExactRangeRewrite(image);
@@ -3100,9 +3112,15 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 	const bool         planned = OwnedRebuild::Build(
 	    surface,
 	    [&](uint64_t address, uint64_t size) {
-		    return image.OwnsBytes(address, size)      ? OwnedRebuild::BlockState::Owned
-			       : !image.OwnsBytesIn(address, size) ? OwnedRebuild::BlockState::NotOwned
-			                                           : OwnedRebuild::BlockState::Mixed;
+		    // Owned, or owned/coherent throughout: native already holds what a rebuild
+		    // would write.
+		    if (image.OwnsBytes(address, size) ||
+			    image.coherence.CoveredWith(image.OwnedSet(), image.OwnsAllBytes(), address,
+			                                size)) {
+			    return OwnedRebuild::BlockState::Owned;
+		    }
+		    return image.OwnsBytesIn(address, size) ? OwnedRebuild::BlockState::Mixed
+			                                        : OwnedRebuild::BlockState::NotOwned;
 	    },
 	    plan, OwnedRebuild::RowAlign(tile0.bytes_per_element),
 	    OwnedRebuild::ColumnAlign(tile0.bytes_per_element));
@@ -3182,7 +3200,34 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		}
 		current.Upload(regions, linear.buffer, linear.offset, linear.size);
 	}
+	// The segments now hold the canonical bytes (minus any byte still owned: never coherent).
+	within.ForEach([&](uint64_t begin, uint64_t end) {
+		RangeSet piece;
+		piece.Add(begin, end - begin);
+		current.ForEachOwnedRange(begin, end - begin,
+		                          [&](uint64_t b, uint64_t e) { piece.Subtract(b, e - b); });
+		piece.ForEach([&](uint64_t b, uint64_t e) { current.coherence.Add(b, e - b); });
+	});
 	return result;
+}
+
+void TextureCache::NoteCanonicalWrite(uint64_t address, uint64_t size) {
+	if (!AliasRebuildPartialEnabled() || size == 0 || !MayOverlapImages(address, size)) {
+		return;
+	}
+	const auto subtract = [&] {
+		for (const auto id: FindImagesInRegion(address, size, true)) {
+			if (auto* image = m_slot_images.try_get(id); image != nullptr) {
+				image->coherence.Subtract(address, size);
+			}
+		}
+	};
+	if (m_lock.HeldByCurrentThread()) {
+		subtract();
+	} else {
+		std::scoped_lock lock {m_lock};
+		subtract();
+	}
 }
 
 TextureCache::PartialUploadResult TextureCache::TryPartialUpload(Image& image) {
@@ -4985,7 +5030,7 @@ vk::ImageView TextureCache::FindRenderTarget(ImageId id, const ImageDesc& desc,
 	}
 	RequireFullResidency(id);
 	TouchImage(image);
-	MarkImageGpuModified(image);
+	MarkImageGpuModified(image, true); // the scissor claim below covers the written bytes
 	image.usage.render_target = true;
 	RefreshImage(id, RefreshIntent::Write);
 	// KYTY_ALIAS_BYTES: the draw can write only inside its scissor. The target owns the 64 KiB
@@ -5235,6 +5280,15 @@ void TextureCache::CommitGpuWrite(Image& image, const WriteClaim& claim) {
 					continue;
 				}
 				other->alias_owner = false;
+				// KYTY_ALIAS_REBUILD_PARTIAL: this write makes the claimed bytes differ from
+				// other's native and (until materialized) from the canonical bytes.
+				if (whole) {
+					other->coherence.Subtract(image.info.data.address, image.info.data.size);
+				} else {
+					claim.ranges->ForEach([&](uint64_t begin, uint64_t end) {
+						other->coherence.Subtract(begin, end - begin);
+					});
+				}
 				if (!other->IsGpuModified()) {
 					continue;
 				}
@@ -5255,14 +5309,17 @@ void TextureCache::CommitGpuWrite(Image& image, const WriteClaim& claim) {
 			}
 			image.alias_owner = true;
 		}
-		MarkImageGpuModified(image);
+		MarkImageGpuModified(image, true);
 		if (whole) {
+			image.coherence.Clear(); // all owned: none coherent
 			image.OwnAllBytes();
 			image.claimed_rect       = {{0, 0}, {image.info.extent.width, image.info.extent.height}};
 			image.claimed_rect_valid = true;
 		} else {
-			claim.ranges->ForEach(
-			    [&](uint64_t begin, uint64_t end) { image.OwnBytes(begin, end - begin); });
+			claim.ranges->ForEach([&](uint64_t begin, uint64_t end) {
+				image.OwnBytes(begin, end - begin);
+				image.coherence.Subtract(begin, end - begin);
+			});
 			if (claim.rect && (!image.claimed_rect_valid ||
 			                   RectContains(*claim.rect, image.claimed_rect))) {
 				image.claimed_rect       = *claim.rect;
@@ -5773,6 +5830,7 @@ void TextureCache::TakeOverOwnedBytes(Image& destination, Image& source) {
 	                         });
 	for (const auto& range: taken) {
 		destination.OwnBytes(range.address, range.size);
+		destination.coherence.Subtract(range.address, range.size); // owned: never coherent
 		(void)source.DisownBytes(range.address, range.size);
 	}
 	if (!source.IsGpuModified()) {
@@ -5965,6 +6023,12 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
 		owner.ranges.ForEach([&](uint64_t begin, uint64_t end) {
 			(void)image.DisownBytes(begin, end - begin);
 		});
+		if (AliasRebuildPartialEnabled()) {
+			// The canonical bytes are this image's native ones now (CommitImageBytes above
+			// removed them from every image's coherent bytes first).
+			owner.ranges.ForEach(
+			    [&](uint64_t begin, uint64_t end) { image.coherence.Add(begin, end - begin); });
+		}
 		if (!image.IsGpuModified()) {
 			InvalidateCleanImageProofs(image.live.address, image.live.size,
 			                           Coherence::Source::ImageGpuClear);
@@ -6284,6 +6348,7 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 	destination.Flush(offset, range.size);
 
 	DownloadImage(image, destination, offset, range.size, std::move(transfer));
+	NoteCanonicalWrite(range.address, range.size); // guest memory gets this image's bytes
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::TextureDownloadBytes, range.size);
 	vk::BufferMemoryBarrier barrier {};
 	barrier.srcAccessMask = vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eTransferWrite |
@@ -6507,6 +6572,7 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 		if (!image.Overlaps(address, size)) {
 			continue;
 		}
+		image.coherence.Subtract(address, size); // KYTY_ALIAS_REBUILD_PARTIAL
 		if (image.IsGpuModified()) {
 			// The buffer cache takes ownership of these bytes; its Add bumps as well.
 			// KYTY_ALIAS_BYTES: only of these bytes; the image keeps its others (rebuilds and
@@ -6623,7 +6689,11 @@ void TextureCache::InvalidateCleanImageProofs(uint64_t address, uint64_t size,
 	}
 }
 
-void TextureCache::MarkImageGpuModified(Image& image) {
+void TextureCache::MarkImageGpuModified(Image& image, bool keep_coherence) {
+	if (!keep_coherence) {
+		// KYTY_ALIAS_REBUILD_PARTIAL: an unbounded write changes native bytes anywhere.
+		image.coherence.Clear();
+	}
 	if (HangTrace::CpWatch(image.info.data.address, image.info.data.size)) {
 		HangTrace::CpEvent event;
 		event.event   = "gpuwrite-image";

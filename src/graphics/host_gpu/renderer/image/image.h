@@ -6,6 +6,7 @@
 #include "common/slotVector.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/rangeSet.h"
+#include "graphics/host_gpu/renderer/image/imageCoherence.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/image/keptRanges.h"
 
@@ -144,6 +145,9 @@ public:
 	[[nodiscard]] static uint64_t NextContentSerial() noexcept;
 
 	void InvalidateCpuWrite(uint64_t vaddr, uint64_t size) {
+		if (ImagePageRangesOverlap(live.address, live.size, vaddr, size)) {
+			coherence.Clear(); // KYTY_ALIAS_REBUILD_PARTIAL: guest bytes changed
+		}
 		if (ImageRangeOverlaps(live.address, live.size, vaddr, size)) {
 			m_cpu_dirty        = true;
 			m_maybe_cpu_dirty  = false;
@@ -169,6 +173,7 @@ public:
 	[[nodiscard]] bool FullyResident() const noexcept { return resident_first == 0; }
 	// Every resident level must be refreshed from guest memory (newly resident levels).
 	void MarkResidencyDirty() noexcept {
+		coherence.Clear();
 		m_cpu_dirty        = true;
 		m_maybe_cpu_dirty  = false;
 		m_maybe_hash_valid = false;
@@ -183,6 +188,7 @@ public:
 	// (TextureCache::UploadKeptRanges). Any whole-image invalidation clears kept_dirty again.
 	// Refused (false) while the whole image is CPU-dirty: that refresh uploads everything anyway.
 	bool NoteKeptCpuWrite(uint64_t begin, uint64_t end) {
+		coherence.Clear();
 		if (m_maybe_cpu_dirty || (m_cpu_dirty && kept_dirty.empty())) {
 			return false;
 		}
@@ -258,6 +264,7 @@ public:
 	}
 	// A CPU write to guest bytes of this chunk-tracked image: the image needs a refresh.
 	void NoteChunkWrite(uint64_t vaddr, uint64_t size) noexcept {
+		coherence.Clear();
 		m_cpu_dirty        = true;
 		m_maybe_cpu_dirty  = false;
 		m_maybe_hash_valid = false;
@@ -320,6 +327,7 @@ public:
 	[[nodiscard]] bool IsDefinitelyCpuDirty() const { return m_cpu_dirty; }
 	[[nodiscard]] bool IsMaybeCpuDirty() const { return m_maybe_cpu_dirty; }
 	void               MarkMaybeCpuDirty() {
+		coherence.Clear();
 		if (!m_cpu_dirty) {
 			m_maybe_cpu_dirty = true;
 		}
@@ -374,6 +382,7 @@ public:
 		m_partial_valid = false;
 	}
 	void ClearGpuModified() noexcept {
+		coherence.Clear();
 		m_gpu_modified = false;
 		m_owned.reset();
 		claimed_rect_valid = false;
@@ -496,6 +505,10 @@ public:
 	[[nodiscard]] uint64_t HashGuestEdges() const;
 
 	ImageInfo        info;
+	// KYTY_ALIAS_REBUILD_PARTIAL: bytes whose native contents equal the canonical ones
+	// (imageCoherence.h). Cleared by every CPU-dirty transition and loss of GPU ownership above;
+	// TextureCache keeps the rest.
+	ImageCoherence coherence;
 	// The guest bytes of the resident levels: info.data, or its prefix when resident_first > 0.
 	// Changed only while the image is unregistered.
 	GuestRange       live;

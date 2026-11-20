@@ -53,6 +53,10 @@ public:
 		}
 		m_owner.store(thread, std::memory_order_relaxed);
 	}
+	// Whether this thread holds the lock (the owner is published only by the holder).
+	[[nodiscard]] bool HeldByCurrentThread() const noexcept {
+		return m_owner.load(std::memory_order_relaxed) == CurrentThread();
+	}
 	void unlock() noexcept {
 		if (m_owner.load(std::memory_order_relaxed) != CurrentThread()) {
 			EXIT("region tracking lock released by non-owner\n");

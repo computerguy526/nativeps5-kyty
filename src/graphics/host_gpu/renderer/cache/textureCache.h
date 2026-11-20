@@ -358,7 +358,9 @@ private:
 	void                      UntrackImageTail(ImageId id);
 	void                      MarkAsMaybeDirty(ImageId id, Image& image);
 	// All callers hold m_lock; negative ownership proofs contain no guest values.
-	void                      MarkImageGpuModified(Image& image);
+	// keep_coherence: the writer claims the bytes it writes (FindRenderTarget's scissor claim), so
+	// the image's coherent bytes (KYTY_ALIAS_REBUILD_PARTIAL) outside the claim stay valid.
+	void MarkImageGpuModified(Image& image, bool keep_coherence = false);
 	// Logs [address, address + size) to the coherence log (all memory by default).
 	void InvalidateCleanImageProofs(uint64_t address = 0, uint64_t size = UINT64_MAX,
 	                                Coherence::Source source = Coherence::Source::Universe);
@@ -444,6 +446,10 @@ private:
 	// done = false: not applicable, nothing changed (the caller takes the old rebuild).
 	[[nodiscard]] static bool         AliasRebuildPartialEnabled();
 	[[nodiscard]] PartialUploadResult TryOwnedPartialRebuild(ImageId id, RefreshIntent intent);
+	// KYTY_ALIAS_REBUILD_PARTIAL: the canonical bytes of [address, address + size) changed (a
+	// buffer or guest-memory write not made from an image's own native contents): no image is
+	// coherent there any more. Takes m_lock unless this thread holds it.
+	void NoteCanonicalWrite(uint64_t address, uint64_t size);
 	// Whether any GPU-modified image other than `except` owns a byte of `range`.
 	[[nodiscard]] bool OtherImagesOwnBytes(GuestRange range, ImageId except);
 	// False when no image is registered on the 1 MiB pages of the range (lock-free, any thread).

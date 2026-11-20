@@ -1,5 +1,6 @@
 // KYTY_ALIAS_REBUILD_PARTIAL plan
 // (graphics/host_gpu/renderer/image/ownedRebuildPlan.h).
+#include "graphics/host_gpu/renderer/image/imageCoherence.h"
 #include "graphics/host_gpu/renderer/image/ownedRebuildPlan.h"
 
 #include <cstdio>
@@ -315,6 +316,101 @@ void TestSubSurfaceAddressing() {
     }
   }
 }
+
+// ImageCoherence (KYTY_ALIAS_REBUILD_PARTIAL): the events TextureCache maps
+// onto it, in the order a Sky Garden frame produces them, and the block
+// decision the rebuild takes from it.
+namespace C = Libs::Graphics;
+constexpr uint64_t kBase = 0x5397e0000ull, kBlock = 65536,
+                   kSize = 19ull * 22 * kBlock;
+
+void TestCoherenceAlgebra() {
+  C::ImageCoherence c;
+  Check(c.Empty() && !c.Contains(kBase, 1) && c.Contains(kBase, 0),
+        "starts empty");
+  // Whole refresh of an image owning blocks 0..9 (InitializeImage).
+  C::RangeSet owned;
+  owned.Add(kBase, 10 * kBlock);
+  c.SetAllExcept(kBase, kSize, &owned, false);
+  Check(!c.Contains(kBase, kBlock) &&
+            c.Contains(kBase + 10 * kBlock, kSize - 10 * kBlock),
+        "refresh: all but the owned bytes");
+  c.SetAllExcept(kBase, kSize, nullptr, true);
+  Check(c.Empty(), "refresh while owning everything: nothing coherent");
+  c.SetAllExcept(kBase, kSize, nullptr, false);
+  Check(c.Contains(kBase, kSize),
+        "refresh of an image owning nothing: everything");
+  // CoveredWith: owned or coherent throughout.
+  c.Clear();
+  c.Add(kBase + kBlock, kBlock / 2);
+  owned.Clear();
+  owned.Add(kBase + kBlock + kBlock / 2, kBlock / 2);
+  Check(c.CoveredWith(&owned, false, kBase + kBlock, kBlock),
+        "half coherent + half owned");
+  Check(!c.CoveredWith(nullptr, false, kBase + kBlock, kBlock),
+        "half coherent alone");
+  Check(c.CoveredWith(nullptr, true, kBase, kSize), "owns all");
+  owned.Clear();
+  owned.Add(kBase + kBlock + 100,
+            50); // a hole in the middle, the rest only partly coherent
+  Check(!c.CoveredWith(&owned, false, kBase + kBlock, kBlock),
+        "gap after the owned piece");
+}
+
+// The frame that cost 976 MB/s (the 2432x1368 target over a 1280x720 one at the
+// same address).
+void TestCoherenceFrame() {
+  C::ImageCoherence big;
+  C::RangeSet owned; // the big target's owned bytes (Image::m_owned)
+  const auto covered = [&](uint64_t block) {
+    return big.CoveredWith(&owned, false, kBase + block * kBlock, kBlock);
+  };
+  // 1. Whole refresh, then a draw claims the scissor blocks 100..199
+  // (CommitGpuWrite subtracts
+  //    the claim from coherence: an owned byte is never coherent).
+  big.SetAllExcept(kBase, kSize, nullptr, false);
+  owned.Add(kBase + 100 * kBlock, 100 * kBlock);
+  big.Subtract(kBase + 100 * kBlock, 100 * kBlock);
+  Check(covered(0) && covered(150) && covered(300),
+        "after the draw every block is skippable");
+  // 2. A compute storage write of the 1280x720 surface's bytes (blocks 0..112)
+  // as a buffer
+  //    (InvalidateMemoryFromGPU: subtract + disown).
+  big.Subtract(kBase, 113 * kBlock);
+  owned.Subtract(kBase, 113 * kBlock);
+  Check(!covered(0) && !covered(112) && covered(113) && covered(300),
+        "storage write: its blocks stale");
+  // 3. The 1280x720 image renders over blocks 0..112 (CommitGpuWrite on another
+  // image: subtract).
+  big.Subtract(kBase, 113 * kBlock);
+  Check(!covered(50), "other image write: stale");
+  // 4. The big target's blocks 113..199 move to the buffer
+  // (MaterializeOwnedBytes: the buffer
+  //    write removes coherence from all, then the owner adds what it moved).
+  big.Subtract(kBase + 113 * kBlock, 87 * kBlock);
+  owned.Subtract(kBase + 113 * kBlock, 87 * kBlock);
+  big.Add(kBase + 113 * kBlock, 87 * kBlock);
+  Check(covered(150), "materialized bytes are coherent");
+  // 5. Another image's bytes reach the buffer over blocks 180..189
+  // (NoteBufferContentWrite).
+  big.Subtract(kBase + 180 * kBlock, 10 * kBlock);
+  Check(!covered(185) && covered(179) && covered(190),
+        "foreign bytes in the buffer: stale");
+  // 6. The rebuild refreshes the stale blocks and adds them (segments minus
+  // owned).
+  big.Add(kBase, 113 * kBlock);
+  big.Add(kBase + 180 * kBlock, 10 * kBlock);
+  for (uint64_t b = 0; b < 19 * 22; ++b) {
+    Check(covered(b), "after the rebuild every block is skippable");
+  }
+  // 7. A CPU write, a residency change, an unbounded GPU write
+  // (MarkImageGpuModified without a
+  //    claim), a copy into the image or the loss of GPU ownership: Clear().
+  big.Clear();
+  Check(!covered(300), "cleared: nothing skippable unless owned");
+  Check(big.CoveredWith(&owned, false, kBase + 250 * kBlock, 0),
+        "zero-size range");
+}
 } // namespace
 
 int main() {
@@ -326,6 +422,8 @@ int main() {
   TestNonContiguousRows();
   TestClip();
   TestSubSurfaceAddressing();
+  TestCoherenceAlgebra();
+  TestCoherenceFrame();
   std::puts("OwnedRebuildPlanTests: ok");
   return 0;
 }

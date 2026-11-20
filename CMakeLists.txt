@@ -1072,6 +1072,7 @@ add_executable(audio_diag_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AudioDiagTes
 target_include_directories(audio_diag_tests PRIVATE ${inc_headers})
 
 add_executable(owned_rebuild_plan_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/OwnedRebuildPlanTests.cpp")
+target_link_libraries(owned_rebuild_plan_tests common)
 target_include_directories(owned_rebuild_plan_tests PRIVATE ${inc_headers})
 
 add_executable(astro_tile_grid_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AstroTileGridTests.cpp")
