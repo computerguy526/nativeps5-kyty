@@ -14,7 +14,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
+#include <map>
+#include <functional>
 #include <set>
+#include <unordered_set>
 
 namespace Libs::Graphics::ShaderRecompiler::Msl {
 
@@ -450,6 +453,72 @@ void EmitTerminator(MslCtx& ctx, size_t index) {
 	}
 }
 
+// perfauto transform movrel_switch (MslXform.h; skyall finding 6): V_MOVRELS is lowered (frontend) to
+// sel_k = (M == k) ? r_k : sel_{k-1}. A chain of >= 4 such links on the same M, whose inner links are used only
+// by the next link, is printed at its head as `switch (M) { case k: x = r_k; ... default: x = base; }`. Exact:
+// the compares are of one value against distinct constants, so at most one arm of the chain is taken, and the
+// head-most link wins on a repeated constant (later duplicates are dropped). Inner links print nothing.
+struct MovrelChains {
+	const IR::Program*                  program = nullptr;
+	uint64_t                            hash    = 0;
+	std::unordered_set<const IR::Inst*> interior;
+	std::unordered_set<const IR::Inst*> heads;
+};
+bool MovrelLink(const IR::Inst& s, IR::Value& m, uint32_t& k) {
+	if (s.GetOpcode() != ValueOpcode::SelectU32 || s.NumArgs() != 3) return false;
+	const IR::Inst* c = s.Arg(0).Resolve().TryInstruction();
+	if (c == nullptr || c->GetOpcode() != ValueOpcode::IEqual32) return false;
+	for (uint32_t j = 0; j < 2; j++) {
+		const IR::Value a = c->Arg(j).Resolve(), o = c->Arg(1u - j).Resolve();
+		if (a.IsImmediate() && a.GetType() == IR::Type::U32 && !o.IsImmediate()) {
+			m = o;
+			k = a.U32();
+			return true;
+		}
+	}
+	return false;
+}
+// Inner link of `s` (its false arm) when it continues the chain on the same M and has no other use.
+const IR::Inst* MovrelPrev(const IR::Inst& s, const IR::Value& m) {
+	const IR::Inst* p = s.Arg(2).TryInstruction(); // direct use only: an Identity in between keeps p printed
+	IR::Value       pm;
+	uint32_t        pk = 0;
+	if (p == nullptr || p->UseCount() != 1 || !MovrelLink(*p, pm, pk) || !(pm == m)) return nullptr;
+	return p;
+}
+const MovrelChains& MovrelOf(const IR::Program& program) {
+	static thread_local MovrelChains g;
+	if (g.program == &program && g.hash == program.shader_hash) return g;
+	g          = MovrelChains {};
+	g.program  = &program;
+	g.hash     = program.shader_hash;
+	std::vector<const IR::Inst*> links;
+	for (const auto* blk: program.blocks) {
+		for (const auto& inst: *blk) {
+			IR::Value m;
+			uint32_t  k = 0;
+			if (MovrelLink(inst, m, k)) {
+				links.push_back(&inst);
+				if (const auto* p = MovrelPrev(inst, m)) g.interior.insert(p);
+			}
+		}
+	}
+	for (const auto* l: links) {
+		if (g.interior.count(l) != 0) continue;
+		IR::Value m;
+		uint32_t  k = 0;
+		MovrelLink(*l, m, k);
+		std::vector<const IR::Inst*> chain;
+		for (const IR::Inst* p = MovrelPrev(*l, m); p != nullptr; p = MovrelPrev(*p, m)) chain.push_back(p);
+		if (chain.size() + 1 >= 4) {
+			g.heads.insert(l);
+		} else {
+			for (const auto* p: chain) g.interior.erase(p);
+		}
+	}
+	return g;
+}
+
 void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 	using O              = ValueOpcode;
 	const auto op        = inst.GetOpcode();
@@ -628,6 +697,59 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 				continue;
 			}
 			default: break;
+		}
+		if (op == O::SelectU32 && (Xf::On(Xf::MovrelSwitch) || Xf::On(Xf::MovrelTree))) {
+			const auto& mc = MovrelOf(ctx.program);
+			if (mc.interior.count(&inst) != 0) continue;
+			if (mc.heads.count(&inst) != 0 && !Xf::On(Xf::MovrelSwitch)) {
+				// movrel_tree: balanced compare tree over the sorted distinct constants; the leaf
+				// compares M == k, so an M that is none of them still gives the chain's base.
+				IR::Value m;
+				uint32_t  k = 0;
+				MovrelLink(inst, m, k);
+				std::map<uint32_t, std::string> arms; // head-most link wins on a repeated constant
+				const IR::Inst*                 l = &inst;
+				for (;;) {
+					IR::Value lm;
+					uint32_t  lk = 0;
+					MovrelLink(*l, lm, lk);
+					arms.emplace(lk, ctx.Val(l->Arg(1)));
+					const IR::Inst* p = MovrelPrev(*l, m);
+					if (p == nullptr) break;
+					l = p;
+				}
+				const std::string                                     mv = ctx.Val(m), base = ctx.Val(l->Arg(2));
+				const std::vector<std::pair<uint32_t, std::string>> v(arms.begin(), arms.end());
+				const std::function<std::string(size_t, size_t)> tree = [&](size_t lo, size_t hi) -> std::string {
+					if (hi - lo == 1) return fmt::format("(({} == {}) ? {} : {})", mv, MslU32(v[lo].first), v[lo].second, base);
+					const size_t mid = lo + (hi - lo) / 2;
+					return fmt::format("(({} < {}) ? {} : {})", mv, MslU32(v[mid].first), tree(lo, mid), tree(mid, hi));
+				};
+				assign(h, tree(0, v.size()));
+				continue;
+			}
+			if (mc.heads.count(&inst) != 0) {
+				IR::Value m;
+				uint32_t  k = 0;
+				MovrelLink(inst, m, k);
+				std::set<uint32_t> seen;
+				const auto         name = ctx.Name(inst, h);
+				ctx.b.Line(fmt::format("switch ({}) {{", ctx.Val(m)));
+				const IR::Inst* l = &inst;
+				for (;;) {
+					IR::Value lm;
+					uint32_t  lk = 0;
+					MovrelLink(*l, lm, lk);
+					if (seen.insert(lk).second)
+						ctx.b.Line(fmt::format("    case {}: {} = {}; break;", MslU32(lk), name, ctx.Val(l->Arg(1))));
+					const IR::Inst* p = MovrelPrev(*l, m);
+					if (p == nullptr) break;
+					l = p;
+				}
+				ctx.b.Line(fmt::format("    default: {} = {}; break;", name, ctx.Val(l->Arg(2))));
+				ctx.b.Line("}");
+				continue;
+			}
 		}
 		if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue;
 		if (const auto lines = NirSplitLines(ctx, inst); !lines.empty()) {

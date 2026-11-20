@@ -26,6 +26,10 @@ constexpr Info Registry[Count] = {
      "MipStats record: plain load in the pre-check before atomic_fetch_min"},
     {"load_group", 1, ShaderType::Unknown, "semantic-exact",
      "dword reads with a common dynamic base: one range check + packed vector loads"},
+    {"movrel_switch", 1, ShaderType::Unknown, "semantic-exact",
+     "V_MOVRELS select chain (>= 4 links on one M0) as one switch on M0"},
+    {"movrel_tree", 1, ShaderType::Unknown, "semantic-exact",
+     "V_MOVRELS select chain (>= 4 links on one M0) as a balanced compare tree"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;

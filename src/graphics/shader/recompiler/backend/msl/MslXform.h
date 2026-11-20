@@ -48,6 +48,12 @@ enum Id : uint32_t {
 	// operands in one block (span <= 64 B) share ONE range check and packed vector loads; when the check fails
 	// each member runs its original guarded text. Bit-exact by construction (mslEmitterMem.cpp). Any stage.
 	LoadGroup,
+	// V_MOVRELS select chains (>= 4 links on one M0 value, inner links used once) printed as one switch on M0
+	// at the chain head (skyall finding 6, foliage VS). Bit-exact (integer moves). Any stage.
+	MovrelSwitch,
+	// The same chains as a balanced compare tree over the sorted constants (leaf: M == k ? r_k : base).
+	// movrel_switch wins when both are on. Bit-exact. Any stage.
+	MovrelTree,
 	Count
 };
 
