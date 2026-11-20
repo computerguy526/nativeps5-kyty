@@ -44,7 +44,8 @@ struct Key {
 	uint32_t    flags;
 	uint32_t    vk_format;
 	auto        Tie() const {
-		return std::tie(to_image, reason, address, format, tile, width, height, layers, flags, vk_format);
+		return std::tie(to_image, reason, address, format, tile, width, height, layers, flags,
+		                vk_format);
 	}
 	bool operator<(const Key& other) const { return Tie() < other.Tie(); }
 };
@@ -78,9 +79,10 @@ void FlushLocked(State& state, double seconds) {
 			total_bytes += value.bytes;
 		}
 	}
-	std::fprintf(stderr, "[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
-	     " bytes (passes only; %" PRIu64 " events)\n",
-	     state.index, seconds, state.window.size(), total_count, total_bytes, event_count);
+	std::fprintf(stderr,
+	             "[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
+	             " bytes (passes only; %" PRIu64 " events)\n",
+	             state.index, seconds, state.window.size(), total_count, total_bytes, event_count);
 	for (const auto& [key, value]: state.window) {
 		std::fprintf(stderr,
 		             "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
@@ -139,7 +141,7 @@ void Add(uint8_t kind, std::string reason, const Image& image, uint64_t bytes) n
 	if (state.window.empty() && state.index == 0) {
 		std::fprintf(stderr, "[tilertrace] first pass (window %.1f s)\n", window);
 	}
-	auto&            value = state.window[key];
+	auto& value = state.window[key];
 	value.count++;
 	value.bytes += bytes;
 	const auto   now     = std::chrono::steady_clock::now();

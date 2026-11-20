@@ -2853,7 +2853,8 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 }
 
 void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
-	const TilerTrace::Reason tiler_reason(intent == RefreshIntent::Write ? "upload.refresh_w" : "upload.refresh_r");
+	const TilerTrace::Reason tiler_reason(intent == RefreshIntent::Write ? "upload.refresh_w"
+	                                                                     : "upload.refresh_r");
 	auto& image = m_slot_images[id];
 	if (image.info.data.Empty()) {
 		return;
@@ -3122,13 +3123,13 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 			    return OwnedRebuild::BlockState::Owned;
 		    }
 		    if (image.coherence.CoveredWith(image.OwnedSet(), image.OwnsAllBytes(), address,
-			                                size)) {
+		                                    size)) {
 			    blocks_coherent++;
 			    return OwnedRebuild::BlockState::Owned;
 		    }
 		    blocks_stale++;
 		    return image.OwnsBytesIn(address, size) ? OwnedRebuild::BlockState::Mixed
-			                                        : OwnedRebuild::BlockState::NotOwned;
+		                                            : OwnedRebuild::BlockState::NotOwned;
 	    },
 	    plan, OwnedRebuild::RowAlign(tile0.bytes_per_element),
 	    OwnedRebuild::ColumnAlign(tile0.bytes_per_element));

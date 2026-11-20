@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/image/tiler.h"
-#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -36,6 +35,7 @@
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/vramStats.h"
 
 #include <algorithm>
