@@ -15,6 +15,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
+#include "graphics/guest_gpu/command_processor/cpLeadBound.h"
 #include "graphics/guest_gpu/command_processor/cpOps.h"
 #include "graphics/guest_gpu/command_processor/cpSequencer.h"
 #include "graphics/guest_gpu/command_processor/cpVerify.h"
@@ -911,6 +912,55 @@ void CommandProcessor::FlushCarry() {
 	}
 }
 
+// nps5 cpusurvey: KYTY_CP_LEAD_MAX_MS (cpLeadBound.h; live switch, default 0 = off). After a
+// submit of the command processor, wait until no recording it submitted more than that many ms
+// ago is still incomplete on the GPU. Timing only: the wait a readback drain makes on an earlier
+// tick. GPU thread (every command processor runs there).
+static Live::Switch         g_cp_lead_max_ms("KYTY_CP_LEAD_MAX_MS", CpLeadBound::ParseMs);
+static CpLeadBound::Tracker g_cp_lead_tracker;
+
+static void BoundCpLead(CommandScheduler& scheduler) {
+	const auto limit_ms = g_cp_lead_max_ms.Get();
+	if (limit_ms <= 0) {
+		if (g_cp_lead_tracker.Size() != 0) {
+			g_cp_lead_tracker.Clear(); // switched off in the run
+		}
+		return;
+	}
+	static uint64_t waits = 0, wait_ns = 0, wait_max_ns = 0, submits = 0, report_ns = 0;
+	auto&           master = scheduler.GetMasterSemaphore();
+	auto            now    = CpNowNs();
+	// The recording just submitted is CurrentTick() - 1.
+	g_cp_lead_tracker.Submitted(scheduler.CurrentTick() - 1u, now);
+	submits++;
+	g_cp_lead_tracker.Completed(master.KnownGpuTick());
+	const auto limit_ns = static_cast<uint64_t>(limit_ms) * 1'000'000u;
+	if (g_cp_lead_tracker.WaitTick(now, limit_ns) != 0) {
+		master.Refresh(); // a driver query: only when the cached value says a wait is due
+		g_cp_lead_tracker.Completed(master.KnownGpuTick());
+		if (const auto tick = g_cp_lead_tracker.WaitTick(now, limit_ns); tick != 0) {
+			HangWatchdog::Scope blocked("cp-lead-bound", tick, static_cast<uint64_t>(limit_ms));
+			scheduler.Wait(tick);
+			g_cp_lead_tracker.Completed(tick);
+			const auto waited = CpNowNs() - now;
+			now += waited;
+			waits++;
+			wait_ns += waited;
+			wait_max_ns = std::max(wait_max_ns, waited);
+		}
+	}
+	if (report_ns == 0) {
+		report_ns = now;
+	} else if (now - report_ns >= 10'000'000'000ull) {
+		std::printf("CpLead 10s: bound %lld ms, %" PRIu64 " submits, %" PRIu64
+		            " waits, %.1f ms waited (max %.2f ms)\n",
+		            static_cast<long long>(limit_ms), submits, waits,
+		            static_cast<double>(wait_ns) / 1e6, static_cast<double>(wait_max_ns) / 1e6);
+		waits = wait_ns = wait_max_ns = submits = 0;
+		report_ns                               = now;
+	}
+}
+
 void CommandProcessor::BufferFlush() {
 	KYTY_PROFILER_DETAIL_FUNCTION();
 	SubmitDefer::Submitted(m_submit_defer);
@@ -923,6 +973,7 @@ void CommandProcessor::BufferFlush() {
 	// (KYTY_READBACK_EAGER), published when it completes.
 	m_renderer.GetBufferCache().IssueEagerReadbacks();
 	GetScheduler().Flush();
+	BoundCpLead(GetScheduler());
 }
 
 // KYTY_EOP_FLUSH_PACKETS: packets processed after the first deferred interrupt before the command
