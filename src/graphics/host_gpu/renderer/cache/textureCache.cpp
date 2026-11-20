@@ -3165,11 +3165,24 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		regions.push_back(region);
 	}
 	// Committed from here on: the bytes the segments read must be in the buffer.
-	if (plan.preserve_blocks != 0 && !tiles.empty()) {
+	bool preserve = false;
+	for (const auto& tile: tiles) {
+		preserve =
+		    preserve || image.OwnsBytesIn(info.data.address + tile.tiled_offset, tile.tiled_size);
+	}
+	if (preserve) {
 		// This image's owned bytes inside the segments (blocks it owns only in part, and owned
 		// blocks an aligned segment had to take in): out through the segments' tiles only.
-		download.texture.tiles   = tiles;
-		download.texture.regions = regions;
+		// Only the segments that hold owned bytes (the others need nothing moved).
+		download.texture.tiles.clear();
+		download.texture.regions.clear();
+		for (size_t index = 0; index < tiles.size(); ++index) {
+			if (image.OwnsBytesIn(info.data.address + tiles[index].tiled_offset,
+			                      tiles[index].tiled_size)) {
+				download.texture.tiles.push_back(tiles[index]);
+				download.texture.regions.push_back(regions[index]);
+			}
+		}
 		(void)MaterializeOwnedBytes(info.data, id, {}, "rebuild-own-part", nullptr, &within,
 		                            &download);
 	}
@@ -5280,15 +5293,9 @@ void TextureCache::CommitGpuWrite(Image& image, const WriteClaim& claim) {
 					continue;
 				}
 				other->alias_owner = false;
-				// KYTY_ALIAS_REBUILD_PARTIAL: this write makes the claimed bytes differ from
-				// other's native and (until materialized) from the canonical bytes.
-				if (whole) {
-					other->coherence.Subtract(image.info.data.address, image.info.data.size);
-				} else {
-					claim.ranges->ForEach([&](uint64_t begin, uint64_t end) {
-						other->coherence.Subtract(begin, end - begin);
-					});
-				}
+				// KYTY_ALIAS_REBUILD_PARTIAL: other's coherence is unchanged. This write changes
+				// neither other's native bytes nor the canonical ones (those change when the
+				// bytes are materialized: NoteBufferContentWrite).
 				if (!other->IsGpuModified()) {
 					continue;
 				}

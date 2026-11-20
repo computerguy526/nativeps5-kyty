@@ -12,10 +12,11 @@
 //            to the buffer (the canonical bytes become the native ones);
 //   removed  by any GPU buffer write over the range (InvalidateMemoryFromGPU), any write of
 //            canonical bytes from an image or binding (BufferCache::NoteBufferContentWrite,
-//            CPU readback), a write of another image over the range (CommitGpuWrite), a write of
-//            this image (the claimed bytes; everything for writes that claim the whole image,
-//            copies into it and unbounded writers), and cleared by every CPU-dirty transition,
-//            residency change and loss of GPU ownership (Image).
+//            CPU readback), a write of this image (the claimed bytes; everything for writes that
+//            claim the whole image, copies into it and unbounded writers), and cleared by every
+//            CPU-dirty transition, residency change and loss of GPU ownership (Image).
+//   kept     by a write of ANOTHER image over the range: it changes neither this image's native
+//            bytes nor the canonical ones (until materialized, which is a canonical write).
 // Invariant: no owned byte is coherent (claims remove them), so an owned byte that leaves
 // without materialization (a copy taking it over, another image's write) is never coherent.
 // Header-only; tests/OwnedRebuildPlanTests.cpp covers it.

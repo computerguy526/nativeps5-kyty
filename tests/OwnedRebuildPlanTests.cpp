@@ -380,16 +380,19 @@ void TestCoherenceFrame() {
   owned.Subtract(kBase, 113 * kBlock);
   Check(!covered(0) && !covered(112) && covered(113) && covered(300),
         "storage write: its blocks stale");
-  // 3. The 1280x720 image renders over blocks 0..112 (CommitGpuWrite on another
-  // image: subtract).
-  big.Subtract(kBase, 113 * kBlock);
-  Check(!covered(50), "other image write: stale");
-  // 4. The big target's blocks 113..199 move to the buffer
+  // 3. Another image renders over blocks 113..120 (CommitGpuWrite: takes the
+  // big target's ownership,
+  //    coherence unchanged: neither its native bytes nor the canonical ones
+  //    changed).
+  owned.Subtract(kBase + 113 * kBlock, 8 * kBlock);
+  Check(!covered(115), "taken owned bytes were never coherent: stale");
+  Check(covered(300), "elsewhere still skippable");
+  // 4. The big target's blocks 121..199 move to the buffer
   // (MaterializeOwnedBytes: the buffer
   //    write removes coherence from all, then the owner adds what it moved).
-  big.Subtract(kBase + 113 * kBlock, 87 * kBlock);
-  owned.Subtract(kBase + 113 * kBlock, 87 * kBlock);
-  big.Add(kBase + 113 * kBlock, 87 * kBlock);
+  big.Subtract(kBase + 121 * kBlock, 79 * kBlock);
+  owned.Subtract(kBase + 121 * kBlock, 79 * kBlock);
+  big.Add(kBase + 121 * kBlock, 79 * kBlock);
   Check(covered(150), "materialized bytes are coherent");
   // 5. Another image's bytes reach the buffer over blocks 180..189
   // (NoteBufferContentWrite).
@@ -398,7 +401,7 @@ void TestCoherenceFrame() {
         "foreign bytes in the buffer: stale");
   // 6. The rebuild refreshes the stale blocks and adds them (segments minus
   // owned).
-  big.Add(kBase, 113 * kBlock);
+  big.Add(kBase, 121 * kBlock);
   big.Add(kBase + 180 * kBlock, 10 * kBlock);
   for (uint64_t b = 0; b < 19 * 22; ++b) {
     Check(covered(b), "after the rebuild every block is skippable");
