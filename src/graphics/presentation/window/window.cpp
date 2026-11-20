@@ -1351,6 +1351,8 @@ static void WindowCreate(WindowContext& context) {
 	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
 
 	uint32_t window_flags = WindowContext::InitialWindowFlags(Config::FullscreenEnabled());
+	// Create windowed, move to the chosen display, then go fullscreen there (a window created fullscreen opens on the primary display).
+	window_flags &= ~static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN);
 #if defined(__APPLE__)
 	// SDL loads Vulkan while creating a Vulkan window, so select the bundled
 	// MoltenVK loader before calling SDL_CreateWindow. Keep an explicit user
@@ -1384,6 +1386,14 @@ static void WindowCreate(WindowContext& context) {
 
 	if (Config::FullscreenEnabled()) {
 		PlaceFullscreenWindow(context.window);
+		SDL_SyncWindow(context.window);
+		if (!SDL_SetWindowFullscreen(context.window, true)) {
+			std::fprintf(stderr, "[window] fullscreen failed: %s\n", SDL_GetError());
+		}
+		SDL_SyncWindow(context.window);
+		const SDL_DisplayID now = SDL_GetDisplayForWindow(context.window);
+		std::fprintf(stderr, "[window] fullscreen display id %u (builtin id %u)\n", static_cast<unsigned>(now),
+		             static_cast<unsigned>(BuiltinDisplayId()));
 	} else {
 		PlaceWindow(context.window, width, height);
 	}
