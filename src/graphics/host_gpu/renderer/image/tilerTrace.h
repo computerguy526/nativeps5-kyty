@@ -33,6 +33,8 @@ void Event(const char* what, const Image& image, uint64_t bytes) noexcept;
 // exact / inside / covers / partial relative to the image's range; reason = this thread's
 // Reason, set by the writer: storage, bda, fill, write_data, copy, preserve).
 void BufferWrite(const Image& image, uint64_t address, uint64_t size) noexcept;
+// "event <prefix>.<this thread's Reason>".
+void EventWithReason(const char* prefix, const Image& image, uint64_t bytes) noexcept;
 
 } // namespace TilerTrace
 } // namespace Libs::Graphics

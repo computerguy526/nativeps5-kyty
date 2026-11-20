@@ -3467,7 +3467,10 @@ bool BufferCache::ShaderWriteRetickEnabled() {
 
 void BufferCache::RetagShaderWrite(uint64_t vaddr, uint64_t size, uint64_t preparation_tick) {
 	if (vaddr != 0 && size != 0 && preparation_tick != m_scheduler.CurrentTick()) {
-		NoteBufferContentWrite(vaddr, size);
+		{
+			const TilerTrace::Reason canon_reason("retag");
+			NoteBufferContentWrite(vaddr, size);
+		}
 	}
 }
 
@@ -3926,7 +3929,10 @@ BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
 	}
 	if (joined) {
 		// The joined contents (including GPU-dirty bytes) are copied by this recording.
-		NoteBufferContentWrite(overlap.begin, overlap.end - overlap.begin);
+		{
+			const TilerTrace::Reason canon_reason("create");
+			NoteBufferContentWrite(overlap.begin, overlap.end - overlap.begin);
+		}
 	}
 	FlightRec::Rec(FlightRec::EvBufCreate, vaddr, size,
 	               (static_cast<uint64_t>(id.index) << 32u) | id.generation);
@@ -4736,12 +4742,18 @@ std::pair<Buffer*, uint64_t> BufferCache::ApplyWrittenEpochHit(BufferId id, uint
 	TouchBuffer(buffer);
 	buffer.MarkContentWritten();
 	if (!narrowed) {
-		NoteBufferContentWrite(vaddr, size);
+		{
+			const TilerTrace::Reason canon_reason("epoch");
+			NoteBufferContentWrite(vaddr, size);
+		}
 		ForgetKnownFills(vaddr, size);
 		HangTrace::NoteGpuWrite(vaddr, size);
 	} else {
 		for (const auto& range: written) {
-			NoteBufferContentWrite(range.address, range.size);
+			{
+				const TilerTrace::Reason canon_reason("epoch");
+				NoteBufferContentWrite(range.address, range.size);
+			}
 			ForgetKnownFills(range.address, range.size);
 			HangTrace::NoteGpuWrite(range.address, range.size);
 		}
@@ -5519,7 +5531,10 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferNow(uint64_t vaddr, uint64
 			CleanVerdict::Invalidate(vaddr, size, Coherence::Source::BufferDirtyAdd);
 			m_gpu_modified_ranges.Add(vaddr, size);
 		}
-		NoteBufferContentWrite(vaddr, size);
+		{
+			const TilerTrace::Reason canon_reason("obtain");
+			NoteBufferContentWrite(vaddr, size);
+		}
 		ForgetKnownFills(vaddr, size);
 		HangTrace::NoteGpuWrite(vaddr, size);
 	}
@@ -5571,7 +5586,10 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainWrittenBufferNow(uint64_t vaddr,
 			CleanVerdict::Invalidate(range.address, range.size, Coherence::Source::BufferDirtyAdd);
 			m_gpu_modified_ranges.Add(range.address, range.size);
 		}
-		NoteBufferContentWrite(range.address, range.size);
+		{
+			const TilerTrace::Reason canon_reason("obtain_written");
+			NoteBufferContentWrite(range.address, range.size);
+		}
 		ForgetKnownFills(range.address, range.size);
 		HangTrace::NoteGpuWrite(range.address, range.size);
 	}
@@ -5908,7 +5926,10 @@ void BufferCache::CommitImageBytes(Buffer& buffer, const RangeSet& ranges) {
 			CleanVerdict::Invalidate(begin, size, Coherence::Source::BufferDirtyAdd);
 		}
 		m_gpu_modified_ranges.Add(begin, size);
-		NoteBufferContentWrite(begin, size);
+		{
+			const TilerTrace::Reason canon_reason("commit_image");
+			NoteBufferContentWrite(begin, size);
+		}
 		ForgetKnownFills(begin, size);
 		HangTrace::NoteGpuWrite(begin, size);
 	});
@@ -7178,7 +7199,10 @@ void BufferCache::SettleBdaWrittenRange(uint64_t vaddr, uint64_t size, uint64_t 
 			CleanVerdict::Invalidate(start, bytes, Coherence::Source::BufferDirtyAdd);
 		}
 		m_gpu_modified_ranges.Add(start, bytes);
-		NoteBufferContentWrite(start, bytes);
+		{
+			const TilerTrace::Reason canon_reason("bda");
+			NoteBufferContentWrite(start, bytes);
+		}
 		ForgetKnownFills(start, bytes);
 		HangTrace::NoteGpuWrite(start, bytes);
 		// Overlapping images are rebuilt from the buffer (the Water agent's rule for BDA writes).

@@ -9,6 +9,7 @@
 #include "graphics/host_gpu/renderer/image/imageCoherence.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
 #include "graphics/host_gpu/renderer/image/keptRanges.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 
 #include <algorithm>
 #include <atomic>
@@ -146,7 +147,7 @@ public:
 
 	void InvalidateCpuWrite(uint64_t vaddr, uint64_t size) {
 		if (ImagePageRangesOverlap(live.address, live.size, vaddr, size)) {
-			coherence.Clear(); // KYTY_ALIAS_REBUILD_PARTIAL: guest bytes changed
+			ClearCoherence("coh.clear.cpu-write");
 		}
 		if (ImageRangeOverlaps(live.address, live.size, vaddr, size)) {
 			m_cpu_dirty        = true;
@@ -173,7 +174,7 @@ public:
 	[[nodiscard]] bool FullyResident() const noexcept { return resident_first == 0; }
 	// Every resident level must be refreshed from guest memory (newly resident levels).
 	void MarkResidencyDirty() noexcept {
-		coherence.Clear();
+		ClearCoherence("coh.clear.residency");
 		m_cpu_dirty        = true;
 		m_maybe_cpu_dirty  = false;
 		m_maybe_hash_valid = false;
@@ -188,7 +189,7 @@ public:
 	// (TextureCache::UploadKeptRanges). Any whole-image invalidation clears kept_dirty again.
 	// Refused (false) while the whole image is CPU-dirty: that refresh uploads everything anyway.
 	bool NoteKeptCpuWrite(uint64_t begin, uint64_t end) {
-		coherence.Clear();
+		ClearCoherence("coh.clear.kept-cpu-write");
 		if (m_maybe_cpu_dirty || (m_cpu_dirty && kept_dirty.empty())) {
 			return false;
 		}
@@ -264,7 +265,7 @@ public:
 	}
 	// A CPU write to guest bytes of this chunk-tracked image: the image needs a refresh.
 	void NoteChunkWrite(uint64_t vaddr, uint64_t size) noexcept {
-		coherence.Clear();
+		ClearCoherence("coh.clear.chunk-write");
 		m_cpu_dirty        = true;
 		m_maybe_cpu_dirty  = false;
 		m_maybe_hash_valid = false;
@@ -327,7 +328,7 @@ public:
 	[[nodiscard]] bool IsDefinitelyCpuDirty() const { return m_cpu_dirty; }
 	[[nodiscard]] bool IsMaybeCpuDirty() const { return m_maybe_cpu_dirty; }
 	void               MarkMaybeCpuDirty() {
-		coherence.Clear();
+		ClearCoherence("coh.clear.maybe-cpu-dirty");
 		if (!m_cpu_dirty) {
 			m_maybe_cpu_dirty = true;
 		}
@@ -382,7 +383,7 @@ public:
 		m_partial_valid = false;
 	}
 	void ClearGpuModified() noexcept {
-		coherence.Clear();
+		ClearCoherence("coh.clear.gpu-ownership-lost");
 		m_gpu_modified = false;
 		m_owned.reset();
 		claimed_rect_valid = false;
@@ -509,6 +510,14 @@ public:
 	// (imageCoherence.h). Cleared by every CPU-dirty transition and loss of GPU ownership above;
 	// TextureCache keeps the rest.
 	ImageCoherence coherence;
+	// Clears coherence; KYTY_TILER_TRACE counts the clears that dropped bytes ("event
+	// coh.clear.*").
+	void ClearCoherence(const char* why) noexcept {
+		if (!coherence.Empty()) {
+			TilerTrace::Event(why, *this, info.data.size);
+		}
+		coherence.Clear();
+	}
 	// The guest bytes of the resident levels: info.data, or its prefix when resident_first > 0.
 	// Changed only while the image is unregistered.
 	GuestRange       live;

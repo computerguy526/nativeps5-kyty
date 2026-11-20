@@ -160,6 +160,16 @@ void Event(const char* what, const Image& image, uint64_t bytes) noexcept {
 	Add(2, what, image, bytes);
 }
 
+void EventWithReason(const char* prefix, const Image& image, uint64_t bytes) noexcept {
+	if (WindowSeconds() <= 0.0) {
+		return;
+	}
+	std::string what = prefix;
+	what += '.';
+	what += t_reason != nullptr ? t_reason : "?";
+	Add(2, std::move(what), image, bytes);
+}
+
 void BufferWrite(const Image& image, uint64_t address, uint64_t size) noexcept {
 	if (WindowSeconds() <= 0.0) {
 		return;
