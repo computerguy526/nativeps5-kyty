@@ -13393,3 +13393,185 @@ bool TextureCache::DownloadQueuedImages() {
 }
 
 } // namespace Libs::Graphics
+
+namespace Libs::Graphics {
+// rtimage KYTY_COMPUTE_IMAGE_COPY (computeImageCopy.h).
+void TextureCache::VerifyBufferRanges(const char* operation, uint64_t guest_address,
+                                      vk::Buffer expected, uint64_t expected_offset,
+                                      vk::Buffer actual, uint64_t actual_offset, uint64_t size) {
+	std::vector<std::pair<uint64_t, uint64_t>> whole;
+	whole.emplace_back(0, size);
+	m_tiler.VerifyRanges(operation, guest_address, {expected, expected_offset, size},
+	                     {actual, actual_offset, size}, size, std::move(whole));
+}
+
+bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_address,
+                                        uint64_t destination_address, uint64_t size, bool verify) {
+	KYTY_GPU_OP_SITE("texcache.copy_from_buffers");
+	if (command.IsInvalid() || !GuestRange {source_address, size}.Valid() ||
+	    !GuestRange {destination_address, size}.Valid()) {
+		return false;
+	}
+	const auto reject = [](const char* why) {
+		TilerTrace::Count(why, 1, 0);
+		return false;
+	};
+	std::scoped_lock lock {m_lock};
+	// The image the buffer path's texel read would copy into the buffer cache first
+	// (BufferCache::SynchronizeBufferFromImage), and only when it is the whole range.
+	const auto source_id = FindImageFromRangeLocked(source_address, size, size, true, true);
+	if (!source_id) {
+		return reject("imgcopy.reject.no-source");
+	}
+	{
+		const auto& source = m_slot_images[source_id];
+		const auto& info   = source.info;
+		if (source.depth_id || info.data.address != source_address || info.data.size != size ||
+		    !source.registered || source.backing.image == nullptr || !SafeToSyncIntoBuffer(source)) {
+			return reject("imgcopy.reject.source-range");
+		}
+		if (info.IsDepth() || info.HasStencil() || info.HasMetadata() || info.IsVolume() ||
+		    info.IsBlock() || info.samples != 1 || source.backing.samples != 1 ||
+		    info.resources.levels == 0 || info.resources.levels > info.mip_layout.size() ||
+		    source.backing.mip_levels != info.resources.levels || source.native_first != 0) {
+			return reject("imgcopy.reject.source-kind");
+		}
+		// The source owns every byte of its range (SafeToDownload), and a byte has one owner: no
+		// other image holds bytes the buffer path would move into the range as well.
+	}
+	ImageId destination_id {};
+	{
+		const auto& source = m_slot_images[source_id];
+		for (const auto id: FindImagesInRegion(destination_address, size, false)) {
+			const auto* other = m_slot_images.try_get(id);
+			if (other == nullptr || id == source_id || other->depth_id || !other->registered ||
+			    other->backing.image == nullptr || other->info.data.address != destination_address ||
+			    other->info.data.size != size) {
+				continue;
+			}
+			const auto& a = source.info;
+			const auto& b = other->info;
+			bool same = a.guest_format == b.guest_format && a.pixel_format == b.pixel_format &&
+			            a.type == b.type && a.extent == b.extent && a.pitch == b.pitch &&
+			            a.bytes_per_block == b.bytes_per_block && a.samples == b.samples &&
+			            a.tile_mode == b.tile_mode && a.bgra16 == b.bgra16 &&
+			            a.resources.levels == b.resources.levels &&
+			            a.resources.layers == b.resources.layers && !b.HasStencil() &&
+			            !b.HasMetadata() && source.backing.format == other->backing.format &&
+			            source.backing.mip_levels == other->backing.mip_levels &&
+			            source.backing.layers == other->backing.layers &&
+			            source.backing.extent == other->backing.extent &&
+			            source.backing.image_type == other->backing.image_type &&
+			            other->backing.samples == 1;
+			for (uint32_t level = 0; same && level < a.resources.levels; ++level) {
+				same = a.mip_layout[level] == b.mip_layout[level];
+			}
+			if (!same) {
+				continue;
+			}
+			if (!destination_id || other->alias_owner) {
+				destination_id = id;
+			}
+		}
+	}
+	if (!destination_id) {
+		return reject("imgcopy.reject.no-destination");
+	}
+	// From here on the copy happens. Destination: every level becomes native, GPU-owned content.
+	RequireFullResidency(destination_id);
+	auto& source      = m_slot_images[source_id];
+	auto& destination = m_slot_images[destination_id];
+	if (destination.native_first != 0 || !SafeToSyncIntoBuffer(source)) {
+		return reject("imgcopy.reject.late");
+	}
+	TouchImage(source);
+	TouchImage(destination);
+	TrackImage(destination_id);
+	PrepareImageCopy(destination);
+	destination.CopyImage(source);
+	CommitGpuWrite(destination);
+	TilerTrace::Event("imgcopy.done", destination, size);
+	if (verify) {
+		// Both images through the same tile pass into zeroed scratch buffers: equal bytes mean
+		// equal texels (the tile pass is a bijection between texels and their byte positions).
+		static std::atomic<uint32_t> ordinal {0};
+		const auto                   n = ordinal.fetch_add(1, std::memory_order_relaxed);
+		if (n < 64 || n % 16 == 0) {
+			const TileManager::ScratchHold scratch_hold(m_tiler);
+			const auto expected = m_tiler.GetScratchBuffer(size);
+			const auto actual   = m_tiler.GetScratchBuffer(size);
+			m_scheduler.EndRendering();
+			{
+				const auto sink = m_scheduler.Current().HelperSink();
+				sink.fillBuffer(expected.buffer, expected.offset, Common::AlignUp(size, uint64_t {4}), 0);
+				sink.fillBuffer(actual.buffer, actual.offset, Common::AlignUp(size, uint64_t {4}), 0);
+			}
+			const TilerTrace::Reason tiler_reason("download.verify-imgcopy");
+			DownloadImageTo(source, expected.buffer, expected.offset, expected.size, size,
+			                BuildDownload(source));
+			DownloadImageTo(destination, actual.buffer, actual.offset, actual.size, size,
+			                BuildDownload(destination));
+			std::vector<std::pair<uint64_t, uint64_t>> whole;
+			whole.emplace_back(0, size);
+			m_tiler.VerifyRanges("imgcopy-image", destination_address, expected, actual, size,
+			                     std::move(whole));
+		}
+	}
+	return true;
+}
+} // namespace Libs::Graphics
+
+namespace Libs::Graphics {
+// rtimage probe (diagnostic).
+void TextureCache::RtImageProbe(uint64_t shader_hash, uint32_t stage, uint32_t slot, bool read,
+                                bool written, bool formatted, uint32_t format, uint32_t stride,
+                                uint64_t address, uint64_t size) {
+	static std::mutex                                 mutex;
+	static std::map<std::string, uint64_t>            counts;
+	static std::chrono::steady_clock::time_point      last = std::chrono::steady_clock::now();
+	std::vector<std::string>                          keys;
+	{
+		std::scoped_lock lock {m_lock};
+		for (const auto id: FindImagesInRegion(address, size, false)) {
+			const auto* image = m_slot_images.try_get(id);
+			if (image == nullptr) {
+				continue;
+			}
+			const auto& info  = image->info;
+			const auto  ia    = info.data.address;
+			const auto  is    = info.data.size;
+			const char* cover = (address == ia && size == is)                    ? "exact"
+			                    : (address >= ia && address + size <= ia + is)   ? "inside"
+			                    : (address <= ia && address + size >= ia + is)   ? "covers"
+			                                                                    : "partial";
+			keys.push_back(fmt::format(
+			    "sh={:016x} st={} slot={} acc={}{}{} bfmt={} stride={} bsize={} cover={} doff={} | img "
+			    "fmt={} tile={} {}x{} mips={} layers={} isize={} bpb={} flags={}{}{}{}",
+			    shader_hash, stage, slot, read ? "R" : "", written ? "W" : "", formatted ? "F" : "",
+			    format, stride, size, cover,
+			    static_cast<int64_t>(address) - static_cast<int64_t>(ia),
+			    static_cast<uint32_t>(info.guest_format), static_cast<uint32_t>(info.tile_mode),
+			    info.extent.width, info.extent.height, info.resources.levels, info.resources.layers,
+			    is, info.bytes_per_block, image->IsGpuModified() ? "G" : "-",
+			    image->IsBufferModified() ? "B" : "-", image->IsCpuDirty() ? "C" : "-",
+			    image->alias_owner ? "O" : "-"));
+		}
+	}
+	std::scoped_lock lock {mutex};
+	for (auto& key: keys) {
+		if (counts[key]++ == 0) {
+			std::fprintf(stderr, "[rtimage] bind %s\n", key.c_str());
+		}
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (now - last >= std::chrono::seconds(10)) {
+		last = now;
+		for (const auto& [key, n]: counts) {
+			std::fprintf(stderr, "[rtimage] sum n=%llu %s\n", static_cast<unsigned long long>(n),
+			             key.c_str());
+		}
+		std::fprintf(stderr, "[rtimage] window\n");
+		counts.clear();
+	}
+}
+} // namespace Libs::Graphics

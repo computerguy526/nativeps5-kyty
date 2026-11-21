@@ -33,6 +33,7 @@
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
+#include "graphics/host_gpu/renderer/computeImageCopy.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
@@ -4855,6 +4856,11 @@ struct PipelineCache::ProgramCache {
 			}
 		} else {
 			options.wave_size = input_info.wave_size;
+		}
+		if (stage == ShaderType::Compute && ComputeImageCopy::GetMode() != ComputeImageCopy::Mode::Off)
+		    [[unlikely]] {
+			// rtimage: is this a whole-range copy kernel? (once per shader hash)
+			ComputeImageCopy::Consider(params.hash, translation_code, options);
 		}
 		ProgramCompileTimes               times;
 		ShaderRecompiler::TranslateResult translated;
@@ -13351,3 +13357,96 @@ std::string PipelineCache::TakeEmptyProgramReason(uint64_t* hash) {
 }
 
 } // namespace Libs::Graphics
+
+// rtimage KYTY_COMPUTE_IMAGE_COPY (computeImageCopy.h).
+namespace Libs::Graphics::ComputeImageCopy {
+
+Mode GetMode() noexcept {
+	static const Mode mode = [] {
+		const char* value = std::getenv("KYTY_COMPUTE_IMAGE_COPY");
+		Mode        m     = Mode::Off;
+		if (value != nullptr) {
+			if (std::strcmp(value, "1") == 0) m = Mode::On;
+			if (std::strcmp(value, "verify-kernel") == 0) m = Mode::VerifyKernel;
+			if (std::strcmp(value, "verify") == 0) m = Mode::VerifyImage;
+		}
+		if (m != Mode::Off) {
+			std::fprintf(stderr, "[rtimage] KYTY_COMPUTE_IMAGE_COPY=%s: compute surface copies %s\n",
+			             value,
+			             m == Mode::VerifyKernel ? "run as before and are compared (kernel proof)"
+			                                     : "become native image copies when proven exact");
+		}
+		return m;
+	}();
+	return mode;
+}
+
+namespace {
+struct Entry {
+	uint64_t                             code_hash = 0;
+	ShaderRecompiler::IR::UniformCopy copy;
+};
+std::shared_mutex                    g_mutex;
+std::unordered_map<uint64_t, Entry> g_entries;
+std::atomic<uint32_t>               g_considered {0};
+// Words of guest code up to which a compute program is analyzed (the kernels are tiny).
+constexpr size_t MaxCodeWords = 512;
+} // namespace
+
+void Consider(uint64_t shader_hash, std::span<const uint32_t> code,
+              const ShaderRecompiler::CompileOptions& options) {
+	if (options.stage != ShaderType::Compute || code.empty() || code.size() > MaxCodeWords ||
+	    !options.back_code.empty()) {
+		return;
+	}
+	const auto code_hash = XXH3_64bits(code.data(), code.size_bytes());
+	{
+		std::shared_lock lock(g_mutex);
+		if (const auto found = g_entries.find(shader_hash); found != g_entries.end()) {
+			if (found->second.code_hash == code_hash) return;
+		}
+	}
+	Entry entry;
+	entry.code_hash = code_hash;
+	// Never from a failed speculative read: the code words are the ones the cache key hashed.
+	auto quiet        = options;
+	quiet.dump_ir     = false;
+	quiet.early_dump  = false;
+	quiet.dump_label  = "ComputeImageCopy";
+	const std::vector<uint32_t> owned(code.begin(), code.end());
+	auto translated = ShaderRecompiler::TranslateProgram(owned, quiet);
+	if (!translated.skip_dispatch) {
+		entry.copy = ShaderRecompiler::IR::AnalyzeUniformCopy(translated.program);
+	}
+	const auto considered = g_considered.fetch_add(1, std::memory_order_relaxed) + 1;
+	bool       poisoned   = false;
+	{
+		std::unique_lock lock(g_mutex);
+		const auto [at, inserted] = g_entries.try_emplace(shader_hash, entry);
+		if (!inserted && at->second.code_hash != code_hash) {
+			at->second.copy = {};
+			poisoned        = true;
+		}
+	}
+	if (entry.copy.valid || poisoned) {
+		std::fprintf(stderr,
+		             "[rtimage] kernel sh=%016" PRIx64 " words=%zu copy=%d source=b%u destination=b%u "
+		             "components=%u group=%u%s (%u small compute programs analyzed)\n",
+		             shader_hash, code.size(), entry.copy.valid ? 1 : 0, entry.copy.source,
+		             entry.copy.destination, entry.copy.words, entry.copy.group_stride,
+		             poisoned ? " POISONED: the hash has two codes" : "", considered);
+	} else if (considered % 64 == 0) {
+		std::fprintf(stderr, "[rtimage] %u small compute programs analyzed\n", considered);
+	}
+}
+
+std::optional<ShaderRecompiler::IR::UniformCopy> Find(uint64_t shader_hash) {
+	std::shared_lock lock(g_mutex);
+	const auto       found = g_entries.find(shader_hash);
+	if (found == g_entries.end() || !found->second.copy.valid) {
+		return std::nullopt;
+	}
+	return found->second.copy;
+}
+
+} // namespace Libs::Graphics::ComputeImageCopy

@@ -63,6 +63,24 @@ struct ResourceSpecialization {
 // its values and is independent of the translated shader CFG.
 ResourcePlan ExtractResourcePlan(const Program& program);
 
+// rtimage (KYTY_COMPUTE_IMAGE_COPY): a compute program that is a whole-range element copy between
+// two formatted buffers. Proven on the translated IR: one straight path, the only side effect is
+// one formatted store of `words` components to buffer `destination` at element
+// local + group * group_stride (no offsets, executed by every invocation), and its components are,
+// in order, the components of one formatted load of buffer `source` at the same element under an
+// always-true condition. What a formatted load and store of the element do to the bits depends on
+// the bound descriptors; the dispatch checks those (ResolveComputeBufferCopy).
+struct UniformCopy {
+	bool     valid        = false;
+	uint32_t source       = 0;
+	uint32_t destination  = 0;
+	uint32_t group_stride = 0;
+	uint32_t words        = 0;
+
+	bool operator==(const UniformCopy&) const = default;
+};
+[[nodiscard]] UniformCopy AnalyzeUniformCopy(const Program& program);
+
 // Refreshes cached resources and specialization in place. A failed refresh must not be used.
 // Threads may refresh one sealed plan concurrently when each supplies its own scratch.
 bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime,
