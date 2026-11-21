@@ -2605,6 +2605,13 @@ uint64_t KYTY_SYSV_ABI AgcDcbSetShRegistersIndirectGetSize() {
 	return RegIndirectPacketSizeDw * sizeof(uint32_t);
 }
 
+// nps5-kyty-saros: same packet as the Sh/Cx indirect forms (PPSA07631 imports it).
+uint64_t KYTY_SYSV_ABI AgcDcbSetUcRegistersIndirectGetSize() {
+	PRINT_NAME();
+
+	return RegIndirectPacketSizeDw * sizeof(uint32_t);
+}
+
 uint32_t* KYTY_SYSV_ABI AgcDcbSetUcRegistersIndirect(CommandBuffer*                 buf,
                                                      const volatile ShaderRegister* regs,
                                                      uint32_t                       num_regs) {

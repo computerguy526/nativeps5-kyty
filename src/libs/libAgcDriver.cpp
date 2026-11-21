@@ -103,6 +103,7 @@ LIB_DEFINE(InitAgcDriver_1) {
 	LIB_FUNC("GBCh3zCihoU", Gen5::AgcDcbSetCxRegistersIndirectGetSize);
 	LIB_FUNC("-HOOCn0JY48", Gen5::AgcDcbSetShRegistersIndirect);
 	LIB_FUNC("nNlUtdDDvZ0", Gen5::AgcDcbSetShRegistersIndirectGetSize);
+	LIB_FUNC("UQGTw4xRlcM", Gen5::AgcDcbSetUcRegistersIndirectGetSize);
 	LIB_FUNC("hvUfkUIQcOE", Gen5::AgcDcbSetUcRegistersIndirect);
 	LIB_FUNC("GIIW2J37e70", Gen5::AgcDcbSetIndexSize);
 	LIB_FUNC("l4fM9K-Lyks", Gen5::AgcDcbSetIndexBuffer);
