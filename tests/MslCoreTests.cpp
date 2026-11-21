@@ -7,6 +7,8 @@
 #include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
+#include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include <cstdio>
@@ -345,6 +347,9 @@ void TestMathSafeAndVoteMerge() {
     Check(result.msl.rfind("// kk-mslinject v1 local_size", 0) == 0 &&
               result.msl.find(" math safe\n") != std::string::npos,
           tag + ": kk-bda header asks for math safe");
+    Check(result.msl.find("stage fragment") == std::string::npos &&
+              result.msl.find("math relaxed") == std::string::npos,
+          tag + ": compute header is not the fragment header (dangling else, 7f9ba790)");
     Check(CountOutsideComments(result.msl, "math_mode(fast)") == 0 &&
               CountOutsideComments(result.msl, "fast::") == 0,
           tag + ": no fast-math scope in compute");
@@ -490,7 +495,237 @@ void TestFusedRelaxedPixelPrelude() {
         "fused + relaxed pixel: relaxed header, no contract(off)");
 }
 
+// bcover: kk-bda VS liveness of an exported vector shared by two parameter
+// exports (e.g. the same uint4 goes to loc 1 .xyz and loc 2 .w). A
+// component is dead only when no user reads it; the old rule unioned the
+// DROPPED components of both exports and zeroed a live UV (and dropped its
+// vertex attribute load, so B's slots no longer matched KosmicKrisp's).
+void TestKkLiveComponents() {
+  SR::IR::Inst v(ValueOpcode::CompositeConstructU32x4);
+  SR::IR::Inst e1(ValueOpcode::SetAttribute), e2(ValueOpcode::SetAttribute),
+      other(ValueOpcode::IAdd32);
+  e1.SetArg(0, SR::IR::Value(&v));
+  e2.SetArg(0, SR::IR::Value(&v));
+  auto mask = [&](uint32_t m1, uint32_t m2) {
+    return [&, m1, m2](const SR::IR::Inst &u) -> uint32_t {
+      return &u == &e1 ? m1 : &u == &e2 ? m2 : 0xfu;
+    };
+  };
+  Check(Msl::KkLiveComponents(v, mask(0x7u, 0x8u)) == 0xfu,
+        "live components: .xyz + .w of one vector = all four");
+  Check(Msl::KkLiveComponents(v, mask(0x3u, 0x1u)) == 0x3u,
+        "live components: .xy + .x = .xy (z, w dead)");
+  Check(Msl::KkLiveComponents(v, mask(0x0u, 0x4u)) == 0x4u,
+        "live components: a dropped export keeps nothing alive");
+  other.SetArg(0, SR::IR::Value(&v));
+  Check(Msl::KkLiveComponents(v, mask(0x1u, 0x1u)) == 0xfu,
+        "live components: a non-export user reads the whole vector");
+}
+
+// fmafix: KosmicKrisp prints every NIR ALU op as its own statement (each in its
+// own math_mode(relaxed) block), so Metal's front end never forms an fmuladd
+// from Kyty's split V_MAD/V_FMA (ffma_weak(contract) -> fadd(fmul)). Relaxed
+// pixel text gives every multiply its own statement too; with the split off the
+// mslfix5 one-expression text is kept.
+void TestKkStatementSplit() {
+  SR::IR::Program p;
+  p.block_storage.push_back(std::make_unique<SR::IR::Block>());
+  auto *blk = p.block_storage.back().get();
+  p.blocks.push_back(blk);
+  using SR::IR::Value;
+  auto &x = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(1u)});
+  auto &y = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(2u)});
+  auto &z = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(3u)});
+  auto &mad = blk->AppendNewInst(ValueOpcode::FPMad32,
+                                 {Value(&x), Value(&y), Value(&z)});
+  auto &fma = blk->AppendNewInst(ValueOpcode::FPFma32,
+                                 {Value(&x), Value(&y), Value(&z)});
+  auto &mul = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&x), Value(&y)});
+  auto &mulc = blk->AppendNewInst(
+      ValueOpcode::FPMul32, {Value(&mul), Value::F32(0.5f)});
+  auto &add = blk->AppendNewInst(ValueOpcode::FPAdd32, {Value(&x), Value(&z)});
+  for (auto *i : {&mad, &fma, &mulc, &add}) {
+    auto &u = blk->AppendNewInst(ValueOpcode::FPMax32, {Value(i), Value(i)}); // a use
+    auto &bits = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&u)});
+    blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits)}); // keeps it live
+  }
+  Msl::MslCtx ctx(p, {});
+  uint32_t id = 0;
+  for (auto &i : *blk) ctx.ids[&i] = id++;
+  Msl::NirReassocBuild(p, true, true);
+  Check(Msl::NirSplitLines(ctx, mad) ==
+            "{ const float v3_0 = (v0 * v1); v3 = (v3_0 + v2); }",
+        "split: V_MAD = fmul statement then fadd: " +
+            Msl::NirSplitLines(ctx, mad));
+  Check(Msl::NirSplitLines(ctx, fma) ==
+            "{ const float v4_0 = (v0 * v1); v4 = (v4_0 + v2); }",
+        "split: V_FMA is ffma_weak(contract) in KK too: " +
+            Msl::NirSplitLines(ctx, fma));
+  Check(Msl::NirSplitLines(ctx, mulc) ==
+            "{ const float v6_0 = (v0 * 0.5f); v6 = (v6_0 * v1); }",
+        "split: re-associated (x*y)*c -> (x*c)*y one op per statement: " +
+            Msl::NirSplitLines(ctx, mulc));
+  Check(Msl::NirSplitLines(ctx, add).empty() &&
+            Msl::NirReassocText(ctx, add).empty(),
+        "split: a plain fadd keeps its usual text");
+  Msl::NirReassocBuild(p, true, false);
+  Check(Msl::NirSplitLines(ctx, mad).empty() &&
+            Msl::NirReassocText(ctx, mulc) == "((v0 * 0.5f) * v1)",
+        "split off: mslfix5 one-expression text: " + Msl::NirReassocText(ctx, mulc));
+  Msl::NirReassocBuild(p, false, true);
+  Check(Msl::NirSplitLines(ctx, mad) ==
+                "{ const float v3_0 = (v0 * v1); v3 = (v3_0 + v2); }" &&
+            Msl::NirSplitLines(ctx, mulc).empty(),
+        "split without re-association: only V_MAD/V_FMA split");
+  Msl::NirReassocBuild(p, false, false);
+}
+
+// mslfix6: graphics min/max/med3 use the KK-exact helpers (NaN -> other operand,
+// -0 < +0, med3 with a NaN operand = min3); compute keeps Metal's builtins.
+void TestKkMinMax() {
+  const std::vector<std::string> a2 {"a", "b"}, a3 {"a", "b", "c"};
+  Msl::SetKkMinMax(true);
+  Check(Msl::AluExpression(ValueOpcode::FPMin32, a2) == "kyty_fmin(a, b)" &&
+            Msl::AluExpression(ValueOpcode::FPMax32, a2) == "kyty_fmax(a, b)" &&
+            Msl::AluExpression(ValueOpcode::FPMinTri32, a3) == "kyty_fmin(kyty_fmin(a, b), c)" &&
+            Msl::AluExpression(ValueOpcode::FPMaxTri32, a3) == "kyty_fmax(kyty_fmax(a, b), c)" &&
+            Msl::AluExpression(ValueOpcode::FPMedTri32, a3) == "kyty_fmed3(a, b, c)",
+        "kk min/max: graphics spellings");
+  Check(Msl::AluExpression(ValueOpcode::FPMax32, std::vector<std::string>{"-32767.0f", "x"}) == "fmax(-32767.0f, x)" &&
+            Msl::AluExpression(ValueOpcode::FPMin32, std::vector<std::string>{"x", "1.13097346f"}) == "fmin(x, 1.13097346f)" &&
+            Msl::AluExpression(ValueOpcode::FPMax32, std::vector<std::string>{"0.0f", "x"}) == "kyty_fmax(0.0f, x)" &&
+            Msl::AluExpression(ValueOpcode::FPMax32, std::vector<std::string>{"-0.0f", "x"}) == "kyty_fmax(-0.0f, x)",
+        "kk min/max: a non-zero finite constant operand keeps Metal fmin/fmax (pair 70e345eb), zero uses the helper");
+  Msl::SetKkMinMax(false);
+  Check(Msl::AluExpression(ValueOpcode::FPMin32, a2) == "fmin(a, b)" &&
+            Msl::AluExpression(ValueOpcode::FPMedTri32, a3) == "fmedian3(a, b, c)",
+        "kk min/max off: Metal builtins (compute text unchanged)");
+}
+
+// mslfix6 (pipe 100/101 rt1): fneg is pulled out of fmul chains before the
+// constant moves: m = fmul(fneg(x), y); r = fmul(m, 0.5) is fneg((x*0.5)*y) in
+// KK's NIR (the inner x*y is used once after the fneg moves), not -((x*y)*0.5).
+void TestReassocFnegChain() {
+  SR::IR::Program p;
+  p.block_storage.push_back(std::make_unique<SR::IR::Block>());
+  auto *blk = p.block_storage.back().get();
+  p.blocks.push_back(blk);
+  using SR::IR::Value;
+  auto &x = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(1u)});
+  auto &y = blk->AppendNewInst(ValueOpcode::BitCastU32F32, {Value(2u)});
+  auto &nx = blk->AppendNewInst(ValueOpcode::FPNeg32, {Value(&x)});
+  auto &m = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&nx), Value(&y)});
+  auto &r = blk->AppendNewInst(ValueOpcode::FPMul32, {Value(&m), Value::F32(0.5f)});
+  auto &bits = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value(&r)});
+  blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(&bits)});
+  Msl::MslCtx ctx(p, {});
+  uint32_t id = 0;
+  for (auto &i : *blk) ctx.ids[&i] = id++;
+  Msl::NirReassocBuild(p, true, true);
+  const auto t = Msl::NirSplitLines(ctx, r);
+  Check(t == "{ const float v4_0 = (v0 * 0.5f); const float v4_1 = (v4_0 * v1); v4 = (-v4_1); }",
+        "reassoc: fneg(fmul) chain then (x*y)*c -> (x*c)*y: " + t);
+  Msl::NirReassocBuild(p, false, false);
+}
+
 } // namespace
+
+// perfauto: every transform is listed in the catalogue with a version, and nothing is active without
+// KYTY_MSL_XF / KYTY_MSL_XF_TABLE (the default text is the base emitter's).
+void TestXfCatalogue() {
+  namespace Xf = Msl::Xf;
+  const std::string cat = Xf::Catalogue();
+  for (uint32_t i = 0; i < Xf::Count; i++) {
+    const auto &info = Xf::InfoOf(static_cast<Xf::Id>(i));
+    Check(cat.find(std::string(info.id) + "@" + std::to_string(info.version)) != std::string::npos,
+          std::string("xf catalogue lists ") + info.id);
+  }
+  Check(cat.find("load_group@1 any semantic-exact") != std::string::npos, "xf load_group registered");
+  if (std::getenv("KYTY_MSL_XF") == nullptr && std::getenv("KYTY_MSL_XF_TABLE") == nullptr &&
+      std::getenv("KYTY_MSL_VS_PERF") == nullptr) {
+    for (const ShaderType st : {ShaderType::Vertex, ShaderType::Pixel, ShaderType::Compute}) {
+      Xf::Begin(st, 0x1234u);
+      Check(Xf::ActiveList().empty(), "xf: nothing active by default");
+    }
+  }
+}
+
+// xfclass review M1: the movrel_switch/tree analysis belongs to one emission (MslCtx), like the
+// binding model (TestBindingModelPerEmission): the same IR::Program object with the same shader hash
+// but other instructions (the next specialization at the same address) gets its own chains.
+void TestMovrelChainsPerEmission() {
+  SR::IR::Program p;
+  p.shader_hash = 0x5151u;
+  p.block_storage.push_back(std::make_unique<SR::IR::Block>());
+  auto *blk = p.block_storage.back().get();
+  p.blocks.push_back(blk);
+  using SR::IR::Value;
+  auto chain = [&](uint32_t seed) {
+    auto &m = blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value::F32(float(seed))});
+    const SR::IR::Inst *prev = &blk->AppendNewInst(ValueOpcode::BitCastF32U32, {Value::F32(1.0f)});
+    for (uint32_t k = 0; k < 4; k++) {
+      auto &c = blk->AppendNewInst(ValueOpcode::IEqual32, {Value(&m), Value(k)});
+      prev = &blk->AppendNewInst(ValueOpcode::SelectU32, {Value(&c), Value(100u + k), Value(const_cast<SR::IR::Inst *>(prev))});
+    }
+    blk->AppendNewInst(ValueOpcode::ReferenceU32, {Value(const_cast<SR::IR::Inst *>(prev))});
+  };
+  chain(3u);
+  {
+    Msl::MslCtx ctx(p, {});
+    Check(Msl::MovrelChainHeads(ctx) == 1u, "movrel per emission: one chain");
+  }
+  chain(5u); // same object, same hash, one more chain
+  {
+    Msl::MslCtx ctx(p, {});
+    Check(Msl::MovrelChainHeads(ctx) == 2u, "movrel per emission: a new emission of the same program object sees its own chains");
+  }
+}
+
+// xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs last: it sets env vars.
+void TestEmitterModes() {
+  namespace Xf = Msl::Xf;
+  const char *vars[] = {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
+                        "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_XF"};
+  auto clear = [&] { for (const char *v : vars) unsetenv(v); };
+  auto env = [](const char *v) { const char *e = std::getenv(v); return std::string(e ? e : "<unset>"); };
+  std::string err;
+  clear();
+  Check(!Msl::ModeFix6(), "mode: fix6 off by default (v1.1.2 text)");
+  Check(Xf::ApplyMode("base", err) && Xf::ApplyMode("", err) && env("KYTY_MSL_FIX6") == "<unset>", "mode: base sets nothing");
+  Check(Xf::ApplyMode("fix6+perfr+vsperf", err) && Msl::ModeFix6() && env("KYTY_MSL_VS_PERF") == "1" &&
+            env("KYTY_MSL_GFX_SPLIT") == "0" && env("KYTY_MSL_GFX_REASSOC") == "0" && env("KYTY_MSL_GFX_MINMAX") == "0",
+        "mode: vspr = fix6+perfr+vsperf");
+  clear();
+  Check(Xf::ApplyMode("fix6+xf=117", err) &&
+            env("KYTY_MSL_XF") == "vs_root_int,vs_fetch_select,vs_no_barrier,minmax_select,movrel_tree",
+        "mode: xf=117 = perfauto pax117");
+  clear();
+  Check(Xf::ApplyMode("xf=0", err) && env("KYTY_MSL_XF") == "none", "mode: xf=0 = pax0 (none)");
+  clear();
+  Check(Xf::ApplyMode("gfxmath=fast", err) && env("KYTY_MSL_GFX_MATH") == "fast", "mode: gfxmath");
+  clear();
+  for (const char *bad : {"fix7", "fix6+fix6", "xf=zz", "xf=fffff", "gfxmath=turbo", "fix6++vsperf", "vsperf=1", "FIX6",
+                          "perfr", "perfr+vsperf"}) {
+    err.clear();
+    Check(!Xf::ApplyMode(bad, err) && !err.empty(), std::string("mode: refused ") + bad);
+    clear();
+  }
+  setenv("KYTY_MSL_VS_PERF", "0", 1);
+  Check(!Xf::ApplyMode("vsperf", err), "mode: never mixes with a hand-set switch");
+  clear();
+  for (const char *left : {"KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_GFX_MATH"}) { // review L1
+    setenv(left, "1", 1);
+    err.clear();
+    Check(!Xf::ApplyMode("fix6", err) && err.find(left) != std::string::npos && !Xf::ApplyMode("base", err),
+          std::string("mode: refuses a leftover ") + left);
+    unsetenv(left);
+  }
+  setenv("KYTY_MSL_FIX6", "", 1); // review L3: one truthiness rule
+  Check(!Msl::ModeFix6() && !Xf::EnvOn("KYTY_MSL_FIX6"), "mode: an empty value is off");
+  clear();
+  Check(Xf::ModeCatalogue().find("fix6") != std::string::npos && Xf::ModeCatalogue().find("movrel_tree@1") != std::string::npos,
+        "mode: catalogue");
+}
 
 int main() {
   TestBuilder();
@@ -502,6 +737,13 @@ int main() {
   TestBindingModelPerEmission();
   TestPerDwordBoundsNoWrap();
   TestFusedRelaxedPixelPrelude();
+  TestKkLiveComponents();
+  TestKkStatementSplit();
+  TestReassocFnegChain();
+  TestKkMinMax();
+  TestXfCatalogue();
+  TestMovrelChainsPerEmission();
+  TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

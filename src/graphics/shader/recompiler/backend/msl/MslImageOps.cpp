@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 
 #include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Msl::Mem {
 
@@ -215,8 +216,14 @@ void MipStatsRecord(MemOut& o, const ImageOp& op, const std::string& lod) {
 	o.Line("if (" + slot + " + 3u < kk_ms_n) {");
 	const std::string ptr =
 	    o.Def("device atomic_uint*", "(device atomic_uint*)(kk_ms_a + ulong(" + slot + "))");
-	o.Line("if (" + fin + " < atomic_load_explicit(" + ptr +
-	       ", memory_order_relaxed)) atomic_fetch_min_explicit(" + ptr + ", " + fin +
+	// perfauto transform mipstats_plain_load (MslXform.h; nxreview #4): the pre-check reads the word
+	// with a plain load. The stored minimum only ever decreases and the update itself stays
+	// atomic_fetch_min, so the final word is the same; only the cost of the pre-check changes.
+	const std::string cur =
+	    Xf::On(Xf::MipStatsPlainLoad)
+	        ? "*(device uint*)(kk_ms_a + ulong(" + slot + "))"
+	        : "atomic_load_explicit(" + ptr + ", memory_order_relaxed)";
+	o.Line("if (" + fin + " < " + cur + ") atomic_fetch_min_explicit(" + ptr + ", " + fin +
 	       ", memory_order_relaxed);");
 	o.Line("}");
 	o.Line("if (" + cnt + " != 0u && " + slot +

@@ -99,6 +99,14 @@ std::string BufferAtomic64(MemOut& o, const BufferBinding& b, const std::string&
 std::string ReadConstBuffer(MemOut& o, const BufferBinding& b, const std::string& byte_offset,
                             const BufferOpts& opts = {});
 
+// bigshader loadgroup: ONE range check + packed vector loads for a group of dword reads of binding b whose byte
+// addresses are lo + 4k (k = 0..ndw-1, uint arithmetic). Declares `uint W[ndw]; bool F;` in the current scope:
+// F = pre && (hi >= lo) && ulong(hi) + 4 <= size (hi = address of the last dword); W[k] = dword at lo + 4k when F.
+// F implies every member's own per-access guard holds and no address wraps between lo and hi (see mslEmitterMem.cpp).
+// mutant: fast-path loads read 4 bytes further (validation only: must change results).
+void GroupLoadWords(MemOut& o, const BufferBinding& b, const std::string& lo, const std::string& hi, const std::string& pre, uint32_t ndw,
+                    const std::string& W, const std::string& F, bool mutant);
+
 // MSL helper functions (ufloat convert etc.). Emit once at file scope before any LoadFormatted use.
 std::string BufferHelpersPrelude();
 

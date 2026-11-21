@@ -5,6 +5,7 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/passes/PrecisionAnalysis.h"
 
@@ -14,7 +15,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
+#include <map>
+#include <functional>
 #include <set>
+#include <unordered_set>
 
 namespace Libs::Graphics::ShaderRecompiler::Msl {
 
@@ -133,9 +137,58 @@ static inline bool kyty_all(bool p, uint l) { return p; }
 #define simd_is_first() true
 )";
 
+// mslfix6: V_MIN/V_MAX_F32 exactly as KosmicKrisp prints Kyty's SPIR-V min/max (NIR fmin/fmax with
+// signed zeros: `!isnan(a) && !isnan(b) && a == b ? bits(a | b) : precise::fmin(a, b)` under
+// math_mode(safe)): a NaN operand gives the other one, min(-0, +0) = -0, max(-0, +0) = +0.
+// V_MED3_F32: any NaN operand gives min3, otherwise max(min(a, b), min(max(a, b), c)) (GCN, as
+// EmitFastMedTri32). Metal's own fmin/fmax/fmedian3 under relaxed math differ on NaN/signed zeros.
+constexpr const char* kKkMinMax = R"(static inline float kyty_fmin(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return !isnan(a) && !isnan(b) && a == b ? as_type<float>(as_type<uint>(a) | as_type<uint>(b)) : precise::fmin(a, b);
+}
+static inline float kyty_fmax(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return !isnan(a) && !isnan(b) && a == b ? as_type<float>(as_type<uint>(a) & as_type<uint>(b)) : precise::fmax(a, b);
+}
+static inline float kyty_fmed3(float a, float b, float c) {
+#pragma METAL fp math_mode(safe)
+  float lo = kyty_fmin(a, b);
+  return (isnan(a) || isnan(b) || isnan(c)) ? kyty_fmin(lo, c) : kyty_fmax(lo, kyty_fmin(kyty_fmax(a, b), c));
+}
+)";
+
+// perfauto transform minmax_select (MslXform.h; skyall finding 1): the same helpers with select()
+// instead of ?: . Same operands and operations (both arms are side-effect free), but Metal keeps
+// the ternary as control flow (one `if` per call) and the select as a conditional move.
+constexpr const char* kKkMinMaxSelect = R"(static inline float kyty_fmin(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return select(precise::fmin(a, b), as_type<float>(as_type<uint>(a) | as_type<uint>(b)), !isnan(a) && !isnan(b) && a == b);
+}
+static inline float kyty_fmax(float a, float b) {
+#pragma METAL fp math_mode(safe)
+  return select(precise::fmax(a, b), as_type<float>(as_type<uint>(a) & as_type<uint>(b)), !isnan(a) && !isnan(b) && a == b);
+}
+static inline float kyty_fmed3(float a, float b, float c) {
+#pragma METAL fp math_mode(safe)
+  float lo = kyty_fmin(a, b);
+  return select(kyty_fmax(lo, kyty_fmin(kyty_fmax(a, b), c)), kyty_fmin(lo, c), isnan(a) || isnan(b) || isnan(c));
+}
+)";
+
+bool KkMinMaxEnabled() {
+	const char* e = std::getenv("KYTY_MSL_GFX_MINMAX");
+	return e == nullptr || std::strcmp(e, "0") != 0;
+}
+
 std::string PreludeText(bool fuse_mad, bool gfx = false, bool contract = false,
-                        bool single_lane = false) {
+                        bool single_lane = false, bool kk_minmax = false) {
 	std::string t(Prelude);
+	if (kk_minmax) {
+		const std::string anchor = "// nps5 gpuguard";
+		const auto        at     = t.find(anchor);
+		t.insert(at == std::string::npos ? t.size() : at,
+		         Xf::On(Xf::MinMaxSelect) ? kKkMinMaxSelect : kKkMinMax);
+	}
 	if (single_lane) {
 		const auto b0 = t.find("static inline uint kyty_ballot(bool p, uint l)");
 		const auto b1 = t.find("static inline bool kyty_all(bool p, uint l)", b0);
@@ -181,14 +234,27 @@ bool GfxPixelRelaxed() {
 	return on;
 }
 
+bool GfxPixelFast() {
+	static const bool on = [] {
+		const char* e = std::getenv("KYTY_MSL_GFX_MATH");
+		return e != nullptr && std::strcmp(e, "fast") == 0;
+	}();
+	return on;
+}
+
 std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	if (!ctx.kk_bda) return {};
 	// mslgfx: graphics stages are swapped as a VS+PS pair inside KK's render pipeline descriptor.
 	if (ctx.program.stage == ShaderType::Vertex)
 		return "// kk-mslinject v1 stage vertex entry main0 math safe\n";
-	if (ctx.program.stage == ShaderType::Pixel)
+	if (ctx.program.stage == ShaderType::Pixel) {
+		// perfmode (heavyshade, opt-in KYTY_MSL_GFX_MATH=fast): KK compiles the injected FS with Metal fast math. Validated
+		// under autoval outprec (stored-output precision), never bit-exact; pair with KYTY_MSL_GFX_SPLIT=0 REASSOC=0 MINMAX=0.
+		if (GfxPixelFast()) return "// kk-mslinject v1 stage fragment entry main0 math fast\n";
 		return GfxPixelRelaxed() ? "// kk-mslinject v1 stage fragment entry main0 math relaxed\n"
 		                         : "// kk-mslinject v1 stage fragment entry main0 math safe\n";
+	}
+	// Compute (litcompute 2026-11-19): 7f9ba790 lost the braces above, so every compute kernel got the fragment header.
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
 	                   r.threadgroup[0], r.threadgroup[1], r.threadgroup[2]);
 }
@@ -390,6 +456,75 @@ void EmitTerminator(MslCtx& ctx, size_t index) {
 	}
 }
 
+// perfauto transform movrel_switch (MslXform.h; skyall finding 6): V_MOVRELS is lowered (frontend) to
+// sel_k = (M == k) ? r_k : sel_{k-1}. A chain of >= 4 such links on the same M, whose inner links are used only
+// by the next link, is printed at its head as `switch (M) { case k: x = r_k; ... default: x = base; }`. Exact:
+// the compares are of one value against distinct constants, so at most one arm of the chain is taken, and the
+// head-most link wins on a repeated constant (later duplicates are dropped). Inner links print nothing.
+struct MovrelChains {
+	const IR::Program*                  program = nullptr;
+	uint64_t                            hash    = 0;
+	std::unordered_set<const IR::Inst*> interior;
+	std::unordered_set<const IR::Inst*> heads;
+};
+bool MovrelLink(const IR::Inst& s, IR::Value& m, uint32_t& k) {
+	if (s.GetOpcode() != ValueOpcode::SelectU32 || s.NumArgs() != 3) return false;
+	const IR::Inst* c = s.Arg(0).Resolve().TryInstruction();
+	if (c == nullptr || c->GetOpcode() != ValueOpcode::IEqual32) return false;
+	for (uint32_t j = 0; j < 2; j++) {
+		const IR::Value a = c->Arg(j).Resolve(), o = c->Arg(1u - j).Resolve();
+		if (a.IsImmediate() && a.GetType() == IR::Type::U32 && !o.IsImmediate()) {
+			m = o;
+			k = a.U32();
+			return true;
+		}
+	}
+	return false;
+}
+// Inner link of `s` (its false arm) when it continues the chain on the same M and has no other use.
+const IR::Inst* MovrelPrev(const IR::Inst& s, const IR::Value& m) {
+	const IR::Inst* p = s.Arg(2).TryInstruction(); // direct use only: an Identity in between keeps p printed
+	IR::Value       pm;
+	uint32_t        pk = 0;
+	if (p == nullptr || p->UseCount() != 1 || !MovrelLink(*p, pm, pk) || !(pm == m)) return nullptr;
+	return p;
+}
+const MovrelChains& MovrelOf(const MslCtx& ctx) {
+	// Per emission (MslCtx::movrel_chains): never shared between two programs, see mslEmitterInternal.h.
+	if (ctx.movrel_chains != nullptr) return *std::static_pointer_cast<const MovrelChains>(ctx.movrel_chains);
+	const IR::Program& program = ctx.program;
+	auto               gp      = std::make_shared<MovrelChains>();
+	ctx.movrel_chains          = gp;
+	auto& g                    = *gp;
+	g.program  = &program;
+	g.hash     = program.shader_hash;
+	std::vector<const IR::Inst*> links;
+	for (const auto* blk: program.blocks) {
+		for (const auto& inst: *blk) {
+			IR::Value m;
+			uint32_t  k = 0;
+			if (MovrelLink(inst, m, k)) {
+				links.push_back(&inst);
+				if (const auto* p = MovrelPrev(inst, m)) g.interior.insert(p);
+			}
+		}
+	}
+	for (const auto* l: links) {
+		if (g.interior.count(l) != 0) continue;
+		IR::Value m;
+		uint32_t  k = 0;
+		MovrelLink(*l, m, k);
+		std::vector<const IR::Inst*> chain;
+		for (const IR::Inst* p = MovrelPrev(*l, m); p != nullptr; p = MovrelPrev(*p, m)) chain.push_back(p);
+		if (chain.size() + 1 >= 4) {
+			g.heads.insert(l);
+		} else {
+			for (const auto* p: chain) g.interior.erase(p);
+		}
+	}
+	return g;
+}
+
 void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 	using O              = ValueOpcode;
 	const auto op        = inst.GetOpcode();
@@ -422,6 +557,16 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			// wave64 at 2 lanes/thread) orders nothing beyond the simdgroup: simdgroup_barrier with
 			// a threadgroup memory fence (KK: Kyty SPIR-V's barrier on a one-wave workgroup ->
 			// simdgroup-scope fence) instead of threadgroup_barrier + device flush.
+			// vsperf / perfauto (transform vs_no_barrier, MslXform.h; KYTY_MSL_VS_PERF=1 still
+			// selects it): a vertex function has no threadgroup and the B vertex
+			// stage is one lane with no LDS; KK (Kyty SPIR-V -> NIR) prints no barrier there. The
+			// device-flush barrier is not free: it pins every later load below it, so Apple's compiler
+			// cannot hoist the uniform constant-buffer reads into the per-draw constant program
+			// (cloud 1548c37d VS: 64 -> 21 device loads per vertex without it).
+			if (Xf::On(Xf::VsNoBarrier) && ctx.program.stage == ShaderType::Vertex) {
+				ctx.b.Line("// S_BARRIER: none in a vertex function (vsperf)");
+				return;
+			}
 			const uint32_t n     = shape.threads[0] * shape.threads[1] * shape.threads[2];
 			const uint32_t metal = ctx.lanes == 2 ? (n + 63u) / 64u * 32u : n;
 			if (ctx.program.stage == ShaderType::Compute && metal <= 32u)
@@ -568,7 +713,68 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 			}
 			default: break;
 		}
+		if (op == O::SelectU32 && (Xf::On(Xf::MovrelSwitch) || Xf::On(Xf::MovrelTree))) {
+			const auto& mc = MovrelOf(ctx);
+			if (mc.interior.count(&inst) != 0) continue;
+			if (mc.heads.count(&inst) != 0 && !Xf::On(Xf::MovrelSwitch)) {
+				// movrel_tree: balanced compare tree over the sorted distinct constants; the leaf
+				// compares M == k, so an M that is none of them still gives the chain's base.
+				IR::Value m;
+				uint32_t  k = 0;
+				MovrelLink(inst, m, k);
+				std::map<uint32_t, std::string> arms; // head-most link wins on a repeated constant
+				const IR::Inst*                 l = &inst;
+				for (;;) {
+					IR::Value lm;
+					uint32_t  lk = 0;
+					MovrelLink(*l, lm, lk);
+					arms.emplace(lk, ctx.Val(l->Arg(1)));
+					const IR::Inst* p = MovrelPrev(*l, m);
+					if (p == nullptr) break;
+					l = p;
+				}
+				const std::string                                     mv = ctx.Val(m), base = ctx.Val(l->Arg(2));
+				const std::vector<std::pair<uint32_t, std::string>> v(arms.begin(), arms.end());
+				const std::function<std::string(size_t, size_t)> tree = [&](size_t lo, size_t hi) -> std::string {
+					if (hi - lo == 1) return fmt::format("(({} == {}) ? {} : {})", mv, MslU32(v[lo].first), v[lo].second, base);
+					const size_t mid = lo + (hi - lo) / 2;
+					return fmt::format("(({} < {}) ? {} : {})", mv, MslU32(v[mid].first), tree(lo, mid), tree(mid, hi));
+				};
+				assign(h, tree(0, v.size()));
+				continue;
+			}
+			if (mc.heads.count(&inst) != 0) {
+				IR::Value m;
+				uint32_t  k = 0;
+				MovrelLink(inst, m, k);
+				std::set<uint32_t> seen;
+				const auto         name = ctx.Name(inst, h);
+				ctx.b.Line(fmt::format("switch ({}) {{", ctx.Val(m)));
+				const IR::Inst* l = &inst;
+				for (;;) {
+					IR::Value lm;
+					uint32_t  lk = 0;
+					MovrelLink(*l, lm, lk);
+					if (seen.insert(lk).second)
+						ctx.b.Line(fmt::format("    case {}: {} = {}; break;", MslU32(lk), name, ctx.Val(l->Arg(1))));
+					const IR::Inst* p = MovrelPrev(*l, m);
+					if (p == nullptr) break;
+					l = p;
+				}
+				ctx.b.Line(fmt::format("    default: {} = {}; break;", name, ctx.Val(l->Arg(2))));
+				ctx.b.Line("}");
+				continue;
+			}
+		}
 		if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue;
+		if (const auto lines = NirSplitLines(ctx, inst); !lines.empty()) {
+			ctx.b.Line(lines);
+			continue;
+		}
+		if (const auto re = NirReassocText(ctx, inst); !re.empty()) {
+			assign(h, re);
+			continue;
+		}
 		std::vector<std::string> args;
 		for (size_t i = 0; i < inst.NumArgs(); i++)
 			args.push_back(ctx.Val(inst.Arg(i)));
@@ -1085,10 +1291,19 @@ uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info
 	return lanes;
 }
 
+size_t MovrelChainHeads(const MslCtx& ctx) { // tests (xfclass review M1)
+	return MovrelOf(ctx).heads.size();
+}
+
+bool ModeFix6() { // read per call: the unit tests switch it inside one process
+	return Xf::EnvOn("KYTY_MSL_FIX6");
+}
+
 MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,
                       const MslOptions& options) {
 	MslResult result;
 	MslCtx    ctx(program, input_info);
+	Xf::Begin(program.stage, program.shader_hash); // perfauto: transform set of this program
 	if (program.stage == ShaderType::Pixel || program.stage == ShaderType::Compute) {
 		const char* stage_name = program.stage == ShaderType::Pixel ? "fs" : "cs";
 		const bool  all_fast =
@@ -1142,6 +1357,27 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		                            return e == nullptr || std::strcmp(e, "0") != 0;
 	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
+	// mslfix6: KYTY_MSL_GFX_MINMAX=0 = old text (Metal fmin/fmax/fmin3/fmax3/fmedian3)
+	const bool kk_minmax =
+	    gfx_stage && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled() && ModeFix6();
+	SetKkMinMax(kk_minmax);
+	// mslfix5: replay KK NIR float re-association on pixel text (MslNirReassoc.cpp);
+	// KYTY_MSL_GFX_REASSOC=0 = old text
+	// fmafix: one statement per NIR op (V_MAD/V_FMA as fmul then fadd) like KK's text, so Metal
+	// contracts B exactly where it contracts KK; KYTY_MSL_GFX_SPLIT=0 = mslfix5 text (one
+	// expression per IR instruction)
+	NirReassocBuild(
+	    program,
+	    gfx_relaxed && ModeFix6() &&
+	        [] {
+		        const char* e = std::getenv("KYTY_MSL_GFX_REASSOC");
+		        return e == nullptr || std::strcmp(e, "0") != 0;
+	        }(),
+	    gfx_relaxed && ModeFix6() &&
+	        [] {
+		        const char* e = std::getenv("KYTY_MSL_GFX_SPLIT");
+		        return e == nullptr || std::strcmp(e, "0") != 0;
+	        }());
 	SetFlushTranscendentalInputs(gfx_stage && (options.kk_bda || KkBdaRequested()) && [] {
 		const char* e = std::getenv("KYTY_MSL_GFX_FTZ");
 		return e == nullptr || std::strcmp(e, "0") != 0;
@@ -1230,7 +1466,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		if (gfx_stage) b.Line(ctx.ret);
 		b.Close(); // kernel
 		result.source      = KkInjectHeader(ctx, result) +
-		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane) +
+		                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane, kk_minmax) +
 		                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
@@ -1264,7 +1500,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	b.Close(); // kernel
 
 	result.source      = KkInjectHeader(ctx, result) +
-	                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane) +
+	                     PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane, kk_minmax) +
 	                     LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 	result.unsupported = ctx.unsupported;
 	result.complete    = ctx.unsupported.empty();

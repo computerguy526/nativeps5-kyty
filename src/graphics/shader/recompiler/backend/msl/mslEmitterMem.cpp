@@ -7,6 +7,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslImageOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslSharedOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslWaveOps.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 
 #include <unordered_map>
@@ -99,7 +100,137 @@ void Guarded(Em& e, const std::string& active, bool has_result, Fn&& body) {
 	e.o.Line("}");
 }
 
-bool BufferOp(Em& e, ValueOpcode op) {
+// ---- bigshader loadgroup (KYTY_MSL_LOADGROUP): grouped bounds check + packed vector loads ----------------------------
+// Members = raw 32-bit buffer reads (ReadConstBuffer / LoadBufferU32[xN], not formatted, linear non-swizzled addressing)
+// in ONE IR block, with the same binding, the same address operand Values (index, offset, soffset / base) and the same
+// exec Value, whose immediates differ by multiples of 4 inside a 64-byte span, with no side-effecting instruction
+// between them. Member k reads dwords at A + imm_k (uint arithmetic, A = the common address without the immediate) and
+// guards itself with `ulong(addr_k) + 4*comps_k <= size`. At the first member we evaluate
+//   F = active && (hi >= lo) && ulong(hi) + 4 <= size,   lo = A + imm_min, hi = A + (imm_end - 4)
+// with the very same uint expressions. If F: no uint wrap between lo and hi (if hi >= lo, A + imm never wraps inside
+// [imm_min, imm_end-4], because the span < 2^32), so addr_k = lo + (imm_k - imm_min) exactly, and
+// addr_k + 4*comps_k <= hi + 4 <= size: every member's own guard is true and its load reads exactly W[...]. Loads are
+// pure moves of bits (no float op is touched), so rounding cannot change. If !F each member runs its original text
+// verbatim (the else branch), so partial / out-of-bounds cases are byte-for-byte the old behaviour.
+// KYTY_MSL_LOADGROUP: unset/0 = off (old text), 1 = vertex+pixel, 2 = all stages; KYTY_MSL_LOADGROUP_MUTANT=1 shifts the
+// fast-path loads by +4 bytes (validation: must change results).
+int LoadGroupMode() {
+	static const int v = [] { const char* e = std::getenv("KYTY_MSL_LOADGROUP"); return e == nullptr ? 0 : std::atoi(e); }();
+	return v;
+}
+bool LoadGroupMutant() {
+	static const bool v = [] { const char* e = std::getenv("KYTY_MSL_LOADGROUP_MUTANT"); return e != nullptr && e[0] == '1'; }();
+	return v;
+}
+struct LgGroup {
+	const IR::Inst* first  = nullptr;
+	uint32_t        lo_imm = 0, end_imm = 0;  // byte immediates: [lo_imm, end_imm)
+	uint32_t        id     = 0;
+	IR::Value       index;  // load_group: common index Value (vindex) the immediates are relative to
+	std::vector<std::pair<const IR::Inst*, uint32_t>> members; // inst, imm
+};
+struct LgInfo {
+	uint64_t                                         hash = 0;
+	bool                                             xf   = false;
+	std::vector<LgGroup>                             groups;
+	std::unordered_map<const IR::Inst*, uint32_t>    at;  // member -> group index
+};
+bool SameVal(const IR::Value& a, const IR::Value& b) { return a.Resolve() == b.Resolve(); }
+// Candidate member: returns false if the instruction cannot join a group.
+bool LgCandidate(const MslCtx& ctx, const BindingModel& model, const IR::Inst& inst, uint32_t& imm, uint32_t& bytes, std::vector<IR::Value>& key, uint32_t& res) {
+	const auto op = inst.GetOpcode();
+	const bool rcb = op == ValueOpcode::ReadConstBuffer;
+	if (!rcb && IR::BufferAccessOf(op) != IR::BufferAccess::Read) return false;
+	const auto& mem = ctx.program.memory_info.at(inst.Flags<IR::MemoryFlags>().index);
+	if (mem.kind != IR::ResourceKind::Buffer && mem.kind != IR::ResourceKind::ScalarBuffer) return false;
+	if (mem.resource >= model.buffers.size()) return false;
+	const auto& b = model.buffers[mem.resource];
+	res = mem.resource; imm = mem.offset;
+	if (rcb) {
+		// constant addresses: AGX already hoists these per-dword selects into the uniform prolog; grouping them
+		// (array + branch) pulls them back into the main program (measured: dload 9 -> 62). Mode 3 groups them too.
+		if (inst.Arg(1).Resolve().IsImmediate() && LoadGroupMode() < 3) return false;
+		bytes = 4; key = {IR::Value(1u), inst.Arg(1)}; return true;
+	}
+	if (mem.kind != IR::ResourceKind::Buffer || mem.formatted) return false;
+	if (inst.GetType() == IR::Type::U8 || inst.GetType() == IR::Type::U16) return false;
+	const uint32_t stride = b.packed_stride & 0x3fffu;
+	const bool swz = stride != 0u && (b.packed_stride & (1u << 14u)) != 0u;
+	if (swz || (b.packed_stride & (1u << 20u)) != 0u) return false;
+	bytes = 4u * std::max(IR::BufferComponentCount(op), 1u);
+	IR::Value index = mem.idxen ? inst.Arg(1) : IR::Value();
+	// load_group@1: an index `c + X` (IAdd32 with an immediate c) is index X with c*stride added to the immediate,
+	// so consecutive structured elements (the rows of a bone matrix) join one group. Same uint value: the member
+	// computes (c + X) * stride + off + imm, the group X * stride + off + (imm + c * stride), equal mod 2^32, and
+	// the no-wrap argument below is about that common value.
+	if (mem.idxen && stride != 0u && Xf::On(Xf::LoadGroup)) {
+		const IR::Value r = index.Resolve();
+		if (!r.IsImmediate()) {
+			if (const IR::Inst* ai = r.TryInstruction(); ai != nullptr && ai->GetOpcode() == ValueOpcode::IAdd32) {
+				for (uint32_t j = 0; j < 2; j++) {
+					const IR::Value c = ai->Arg(j).Resolve();
+					if (!c.IsImmediate() || c.GetType() != IR::Type::U32) continue;
+					const uint64_t add = uint64_t(c.U32()) * stride;
+					if (add > 64u || uint64_t(imm) + add > 0xffffff00ull) break;
+					index = ai->Arg(1u - j);
+					imm += static_cast<uint32_t>(add);
+					break;
+				}
+			}
+		}
+	}
+	key = {IR::Value(2u), index, mem.offen ? inst.Arg(2) : IR::Value(), inst.Arg(3), inst.Arg(inst.NumArgs() - 1)};
+	return true;
+}
+const LgInfo& LgOf(const MslCtx& ctx, const BindingModel& model) {
+	// Per emission (MslCtx::lg_info): never shared between two programs, see mslEmitterInternal.h.
+	if (ctx.lg_info != nullptr) return *std::static_pointer_cast<const LgInfo>(ctx.lg_info);
+	auto gp = std::make_shared<LgInfo>();
+	ctx.lg_info = gp;
+	auto& g = *gp;
+	// perfauto transform load_group (MslXform.h): the same grouping for the current program in any stage, dynamic
+	// bases only (mode-1 rule), independent of KYTY_MSL_LOADGROUP. The transform set is fixed per emission (Xf::Begin).
+	const bool xf = Xf::On(Xf::LoadGroup);
+	g.hash = ctx.program.shader_hash; g.xf = xf;
+	const int mode = LoadGroupMode();
+	const bool stage_ok = xf || mode >= 2 || (mode == 1 && (ctx.program.stage == ShaderType::Vertex || ctx.program.stage == ShaderType::Pixel));
+	if (!stage_ok) return g;
+	struct Open { uint32_t res; std::vector<IR::Value> key; LgGroup grp; };
+	for (const auto* blk : ctx.program.blocks) {
+		std::vector<Open> open;
+		auto close = [&](size_t i) {
+			auto& gr = open[i].grp;
+			if (gr.members.size() >= 2 && gr.end_imm - gr.lo_imm >= 8u) { gr.id = static_cast<uint32_t>(g.groups.size()); for (auto& m : gr.members) g.at[m.first] = gr.id; g.groups.push_back(gr); }
+			open.erase(open.begin() + static_cast<long>(i));
+		};
+		for (const auto& inst : *blk) {
+			uint32_t imm = 0, bytes = 0, res = 0; std::vector<IR::Value> key;
+			if (LgCandidate(ctx, model, inst, imm, bytes, key, res)) {
+				size_t i = 0;
+				for (; i < open.size(); i++) {
+					if (open[i].res != res || open[i].key.size() != key.size()) continue;
+					bool same = true;
+					for (size_t k = 0; k < key.size() && same; k++) same = SameVal(open[i].key[k], key[k]);
+					if (same) break;
+				}
+				if (i < open.size()) {
+					auto& gr = open[i].grp;
+					const uint32_t lo = std::min(gr.lo_imm, imm), end = std::max(gr.end_imm, imm + bytes);
+					const bool fits = imm + bytes > imm && (imm - gr.lo_imm) % 4u == 0u && end - lo <= 64u;
+					if (fits) { gr.lo_imm = lo; gr.end_imm = end; gr.members.emplace_back(&inst, imm); continue; }
+					close(i);
+				}
+				if (imm + bytes > imm) { Open o{res, key, {}}; o.grp.first = &inst; o.grp.index = key.size() > 1 ? key[1] : IR::Value(); o.grp.lo_imm = imm; o.grp.end_imm = imm + bytes; o.grp.members.emplace_back(&inst, imm); open.push_back(std::move(o)); }
+				continue;
+			}
+			if (inst.MayHaveSideEffects()) while (!open.empty()) close(open.size() - 1);
+		}
+		while (!open.empty()) close(open.size() - 1);
+	}
+	return g;
+}
+
+bool BufferOpBody(Em& e, ValueOpcode op) {
 	const auto& mem = e.Mem();
 	if (mem.kind != IR::ResourceKind::Buffer && mem.kind != IR::ResourceKind::ScalarBuffer)
 		return false;
@@ -203,6 +334,53 @@ bool BufferOp(Em& e, ValueOpcode op) {
 		return e.Done();
 	}
 	return false;
+}
+
+// Wraps BufferOpBody with the loadgroup fast path (no-op unless KYTY_MSL_LOADGROUP selects this stage).
+bool BufferOp(Em& e, ValueOpcode op) {
+	const auto& lg = LgOf(e.ctx, e.model);
+	const auto it = lg.at.find(&e.inst);
+	if (it == lg.at.end()) return BufferOpBody(e, op);
+	const auto& g = lg.groups[it->second];
+	const auto& mem = e.Mem();
+	const auto& b = e.model.buffers[mem.resource];
+	const std::string pre = "lg" + std::to_string(g.id) + "h" + std::to_string(e.ctx.half);
+	const std::string W = pre + "_w", F = pre + "_f";
+	const uint32_t ndw = (g.end_imm - g.lo_imm) / 4u;
+	if (&e.inst == g.first) {
+		std::string lo, hi, active;
+		if (op == ValueOpcode::ReadConstBuffer) {
+			lo = e.o.Def("uint", "(" + e.A(1) + " + " + U(g.lo_imm) + ")");
+			hi = e.o.Def("uint", "(" + e.A(1) + " + " + U(g.end_imm - 4u) + ")");
+		} else {
+			BufferAddrIn in;
+			in.index = mem.idxen ? (Xf::On(Xf::LoadGroup) && !g.index.IsEmpty() ? e.ctx.Val(g.index) : e.A(1)) : std::string();
+			in.offset = mem.offen ? e.A(2) : std::string();
+			in.soffset = e.A(3);
+			in.lane = e.ctx.LaneExpr(e.ctx.half);
+			in.imm = g.lo_imm; lo = BufferByteAddress(e.o, b, in);
+			in.imm = g.end_imm - 4u; hi = BufferByteAddress(e.o, b, in);
+			active = e.A(e.inst.NumArgs() - 1);
+		}
+		GroupLoadWords(e.o, b, lo, hi, active, ndw, W, F, LoadGroupMutant());
+	}
+	uint32_t imm = 0;
+	for (const auto& m : g.members) if (m.first == &e.inst) imm = m.second;
+	const uint32_t k = (imm - g.lo_imm) / 4u;
+	const uint32_t comps = op == ValueOpcode::ReadConstBuffer ? 1u : std::max(IR::BufferComponentCount(op), 1u);
+	std::string v;
+	if (comps == 1) v = W + "[" + std::to_string(k) + "]";
+	else {
+		v = "uint" + std::to_string(comps) + "(";
+		for (uint32_t q = 0; q < comps; q++) v += (q ? ", " : "") + W + "[" + std::to_string(k + q) + "]";
+		v += ")";
+	}
+	e.o.Line("if (" + F + ") {");
+	e.o.Line("    " + e.ctx.Name(e.inst) + " = " + e.type + "(" + v + ");");
+	e.o.Line("} else {");
+	if (!BufferOpBody(e, op)) return false;
+	e.ctx.b.Raw("    }\n");
+	return true;
 }
 
 bool SharedOp(Em& e, ValueOpcode op) {

@@ -50,6 +50,12 @@ struct MslCtx {
 	// ModelOf). Per emission: a cache keyed by the program's address and shader hash served a
 	// previous specialization's model (same hash, same stack address) to the next one.
 	mutable std::shared_ptr<const Mem::BindingModel> binding_model;
+	// xfclass review M1: the perfauto load_group grouping (mslEmitterMem.cpp LgOf) and the V_MOVRELS chains
+	// (MslEmitter.cpp MovrelOf) of THIS emission, built on first use. Same reason as binding_model: a cache
+	// keyed by &program + shader_hash served the previous specialization's analysis (stale instruction
+	// pointers, another binding model) to the next one. Opaque here: the types are local to those files.
+	mutable std::shared_ptr<void> lg_info;
+	mutable std::shared_ptr<void> movrel_chains;
 	// fmsel6 KYTY_GPU_ACCURACY=normal (pixel/compute): float results of instructions outside
 	// `precise` (IR::CollectPreciseSet) are assigned inside `{ #pragma METAL fp math_mode(fast) }`
 	// blocks; the rest of the program (and every prelude helper) keeps the library's math mode
@@ -92,6 +98,12 @@ namespace Mem {
 struct BindingModel;
 }
 bool KkBdaRequested();         // env KYTY_MSL_CONVENTION=kk-bda
+// xfclass: emitter mode `fix6` (KYTY_MSL_FIX6=1; kyty_msl_dump --mode fix6): the KK-mimicry text of the
+// mslfix5/6, fmafix and bcover chain (KK-exact min/max helpers, NIR re-association and statement split,
+// union live components of exported vectors). Off = the v1.1.2 text, byte for byte.
+bool ModeFix6();
+// Number of V_MOVRELS select chains (>= 4 links) MovrelOf found for this emission (tests).
+size_t MovrelChainHeads(const MslCtx& ctx);
 bool MipStatsPlainRequested(); // env KYTY_MSL_MIPSTATS_PLAIN=1: feedback-free twin of a MipStats PS
 std::string KkBdaPrelude();
 std::string KkBdaLayoutComment(const IR::Program& program);
@@ -106,4 +118,10 @@ const std::vector<std::string>& GfxParams(const GfxIo& g);
 void                            GfxLocals(MslCtx& ctx, const GfxIo& g); // "VOut out = {};" ...
 std::string GfxBuiltin(MslCtx& ctx, const GfxIo& g, uint32_t kind, uint32_t comp);
 bool        GfxEmitInst(MslCtx& ctx, GfxIo& g, const IR::Inst& inst);
+// --- mslfix5 KK NIR float re-association (MslNirReassoc.cpp) ---
+void NirReassocBuild(const IR::Program& program, bool on, bool split);
+// fmafix: statements in KK's one-NIR-op-per-statement shape for a split/re-associated float op (""
+// = usual text)
+std::string NirSplitLines(MslCtx& ctx, const IR::Inst& inst);
+std::string NirReassocText(MslCtx& ctx, const IR::Inst& inst);
 } // namespace Libs::Graphics::ShaderRecompiler::Msl
