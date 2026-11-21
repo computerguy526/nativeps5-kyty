@@ -1298,23 +1298,26 @@ void PlaceWindow(SDL_Window* window, int w, int h) {
 	std::fprintf(stderr, "[window] display %d (%s) at %d,%d size %dx%d slot %d\n", display_no, kind, x, y, ww, wh, g_window_slot);
 }
 
-// Fullscreen: the same NPS5_WINDOW_SCREEN choice (builtin / main / index; default builtin), centred on that display so SDL's
-// fullscreen lands there instead of on the primary display. Logs '[window] fullscreen on display N (kind)'.
+// Fullscreen: the same NPS5_WINDOW_SCREEN choice (builtin / main / index; unset = main, the primary
+// display as before), centred on that display so SDL's fullscreen lands there. Logs '[window]
+// fullscreen on display N (kind)'.
 void PlaceFullscreenWindow(SDL_Window* window) {
-	std::string screen = "builtin";
+	std::string screen = "main";
 	if (const char* v = std::getenv("NPS5_WINDOW_SCREEN"); v != nullptr && *v != '\0') screen = v;
-	if (const auto colon = screen.find(':'); colon != std::string::npos) screen = screen.substr(0, colon);
-	int n                   = 0;
+	if (const auto colon = screen.find(':'); colon != std::string::npos)
+		screen = screen.substr(0, colon);
+	int            n        = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&n);
-	SDL_DisplayID id        = 0;
-	const char* kind        = "main";
+	SDL_DisplayID  id       = 0;
+	const char*    kind     = "main";
 	if (screen == "builtin") {
 		id   = BuiltinDisplayId();
 		kind = id != 0 ? "builtin" : "main (no builtin)";
 	} else if (screen != "main") {
-		char* end        = nullptr;
+		char*      end   = nullptr;
 		const auto index = std::strtol(screen.c_str(), &end, 10);
-		if (end != screen.c_str() && *end == '\0' && index >= 0 && index < n && displays != nullptr) {
+		if (end != screen.c_str() && *end == '\0' && index >= 0 && index < n &&
+		    displays != nullptr) {
 			id   = displays[index];
 			kind = "index";
 		}
@@ -1325,7 +1328,8 @@ void PlaceFullscreenWindow(SDL_Window* window) {
 		if (displays[d] == id) display_no = d;
 	}
 	SDL_free(displays);
-	SDL_SetWindowPosition(window, static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)), static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)));
+	SDL_SetWindowPosition(window, static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)),
+	                      static_cast<int>(SDL_WINDOWPOS_CENTERED_DISPLAY(id)));
 	std::fprintf(stderr, "[window] fullscreen on display %d (%s)\n", display_no, kind);
 }
 } // namespace
@@ -1351,8 +1355,13 @@ static void WindowCreate(WindowContext& context) {
 	LOGF("WindowCreate(): width = %d, height = %d\n", width, height);
 
 	uint32_t window_flags = WindowContext::InitialWindowFlags(Config::FullscreenEnabled());
-	// Create windowed, move to the chosen display, then go fullscreen there (a window created fullscreen opens on the primary display).
-	window_flags &= ~static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN);
+	// With NPS5_WINDOW_SCREEN set: create windowed, move to the chosen display, then go fullscreen
+	// there (a window created fullscreen opens on the primary display). Unset: the window is
+	// created fullscreen as before (opt-in).
+	const char* screen_env = std::getenv("NPS5_WINDOW_SCREEN");
+	const bool  fs_on_chosen =
+	    Config::FullscreenEnabled() && screen_env != nullptr && *screen_env != '\0';
+	if (fs_on_chosen) window_flags &= ~static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN);
 #if defined(__APPLE__)
 	// SDL loads Vulkan while creating a Vulkan window, so select the bundled
 	// MoltenVK loader before calling SDL_CreateWindow. Keep an explicit user
@@ -1384,7 +1393,9 @@ static void WindowCreate(WindowContext& context) {
 		EXIT("%s\n", SDL_GetError());
 	}
 
-	if (Config::FullscreenEnabled()) {
+	if (Config::FullscreenEnabled() && !fs_on_chosen) {
+		SDL_SetWindowPosition(context.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+	} else if (Config::FullscreenEnabled()) {
 		PlaceFullscreenWindow(context.window);
 		SDL_SyncWindow(context.window);
 		if (!SDL_SetWindowFullscreen(context.window, true)) {
@@ -1392,8 +1403,8 @@ static void WindowCreate(WindowContext& context) {
 		}
 		SDL_SyncWindow(context.window);
 		const SDL_DisplayID now = SDL_GetDisplayForWindow(context.window);
-		std::fprintf(stderr, "[window] fullscreen display id %u (builtin id %u)\n", static_cast<unsigned>(now),
-		             static_cast<unsigned>(BuiltinDisplayId()));
+		std::fprintf(stderr, "[window] fullscreen display id %u (builtin id %u)\n",
+		             static_cast<unsigned>(now), static_cast<unsigned>(BuiltinDisplayId()));
 	} else {
 		PlaceWindow(context.window, width, height);
 	}
