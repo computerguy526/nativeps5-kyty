@@ -972,6 +972,8 @@ private:
 	uint32_t              loop_counter_ = 0;
 	uint32_t              loop_depth_   = 0;     // EmitLoop nesting (dry run: vs_const_load)
 	bool                  writer_in_loop_ = false;
+	// guard_exit: block id -> text appended to that block's exit test
+	std::map<uint32_t, std::string> guard_exit_;
 
 	void FailAt(int line) {
 		failed_ = true;
@@ -1135,7 +1137,41 @@ private:
 		const std::string lg = dry_ ? std::string() : ctx_.LoopGuard(&lg_decl);
 		if (!lg_decl.empty()) Line(lg_decl);
 		Open("for (;;)");
-		if (!lg.empty()) Line(lg);
+		// guard_exit (fsslow, MslXform.h): the budget check joins the loop's first exit test: the
+		// two-way branch with exactly one arm to the merge block that ends the header block or
+		// the straight line of unconditional branches that starts there (Terminator prints it)
+		uint32_t guard_block = UINT32_MAX;
+		if (!lg.empty() && !ctx_.loop_private && Xf::On(Xf::GuardExit) &&
+		    term.merge_block != UINT32_MAX) {
+			size_t at = idx;
+			for (int hop = 0; hop < 8 && at != SIZE_MAX; hop++) {
+				const auto& bi = ctx_.program.block_info[at];
+				const auto& bt = bi.terminator;
+				if (bt.kind == CFG::TerminatorKind::ConditionalBranch) {
+					if (!bi.condition.IsEmpty() && bt.true_block != bt.false_block &&
+					    Index(bt.true_block) != SIZE_MAX && Index(bt.false_block) != SIZE_MAX &&
+					    (bt.true_block == term.merge_block) != (bt.false_block == term.merge_block))
+						guard_block = bi.id;
+					break;
+				}
+				const uint32_t next = bt.true_block;
+				if (bt.kind != CFG::TerminatorKind::Branch || next == info.id ||
+				    next == term.merge_block || next == term.continue_block)
+					break;
+				at = Index(next);
+				// a nested loop starts here: its header is not part of this loop's straight line
+				if (at != SIZE_MAX && ctx_.program.block_info[at].terminator.loop_header) break;
+			}
+		}
+		if (guard_block != UINT32_MAX) {
+			const auto& gt = ctx_.program.block_info[Index(guard_block)].terminator;
+			guard_exit_[guard_block] = gt.true_block == term.merge_block
+			                               ? " || !nps5_lg_step(nps5_lg_n)"
+			                               : " && nps5_lg_step(nps5_lg_n)";
+			Line("// nps5 gpuguard: budget checked in the exit test of this loop");
+		} else if (!lg.empty()) {
+			Line(lg);
+		}
 		Insts(idx);
 		loops_.push_back(L);
 		stops_.push_back(L.trivial_cont ? UINT32_MAX : L.cont);
@@ -1220,7 +1256,12 @@ private:
 					arm_stop = UINT32_MAX;
 				}
 				if (!loop && merge != UINT32_MAX) stops_.push_back(merge);
-				Open(fmt::format("if ({})", dry_ ? std::string("c") : BranchExpr(ctx_, info)));
+				if (const auto g = guard_exit_.find(info.id); !dry_ && g != guard_exit_.end()) {
+					Open(fmt::format("if (({}){})", BranchExpr(ctx_, info), g->second));
+					guard_exit_.erase(g);
+				} else {
+					Open(fmt::format("if ({})", dry_ ? std::string("c") : BranchExpr(ctx_, info)));
+				}
 				Jump(idx, term.true_block, arm_stop);
 				Close();
 				const bool skip_else = term.false_block == arm_stop && arm_stop != UINT32_MAX &&

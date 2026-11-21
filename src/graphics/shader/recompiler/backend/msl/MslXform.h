@@ -107,6 +107,19 @@ enum Id : uint32_t {
 	// a second branch around every load). Wins over bounds_u32 when both are on. Any stage.
 	// Not in `all`.
 	BoundsLim,
+	// fsslow: the nps5 gpuguard loop budget (MslOptions::loop_cap) is checked INSIDE the loop's
+	// own exit test, `if ((exit) || !nps5_lg_step(n))` (or `(stay) && nps5_lg_step(n)`), instead of
+	// a separate `if (!nps5_lg_step(n)) break;` at the top of the body. Applies to a loop whose
+	// header block ends in a two-way branch with exactly one arm to the loop's merge block and
+	// whose counter is the shared one (programs with barriers keep their private counters and
+	// the old form); every other loop keeps the old guard. While the budget lasts the program
+	// computes exactly what it did (the step is not called on the exiting pass, so the budget is
+	// counted in completed iterations). Once it is spent a loop evaluates its header block once
+	// more and leaves through its ordinary exit edge, so every loop still ends. One exit edge
+	// instead of two: the second one made Apple's compiler keep the values of the code after the
+	// loop alive around it (AGX g16, fullscreen lighting FS: spill loads 114 -> 84, 73 without any
+	// guard). Any stage. Not in `all`.
+	GuardExit,
 	Count
 };
 
@@ -144,6 +157,7 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   cload         KYTY_MSL_XF_CLOAD=1: adds vs_const_load to the base set (vertex stage only)
 //   lcont         KYTY_MSL_XF_LCONT=1: adds loop_cont to the base set (any stage)
 //   blim          KYTY_MSL_XF_BLIM=1: adds bounds_lim to the base set (any stage)
+//   gexit         KYTY_MSL_XF_GEXIT=1: adds guard_exit to the base set (any stage)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,

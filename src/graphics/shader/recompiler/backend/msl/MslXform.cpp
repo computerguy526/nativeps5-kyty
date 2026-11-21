@@ -42,13 +42,15 @@ constexpr Info Registry[Count] = {
      "loop with a side-effect-free continue block: no do/flag wrapper, block printed per edge"},
     {"bounds_lim", 1, ShaderType::Unknown, "semantic-exact",
      "buffer bounds check as one compare against a uniform per-buffer limit"},
+    {"guard_exit", 1, ShaderType::Unknown, "preconditioned",
+     "gpuguard loop budget checked inside the loop's own exit test (one exit edge)"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
 // `all` in a KYTY_MSL_XF list / table row: the transforms up to load_select. The foltrans ids are
 // per-key choices (mode tokens vgroup / cload, or their xf= bits) and never part of `all`.
-constexpr uint32_t ListAllMask =
-    AllMask & ~((1u << VsLoadGroup) | (1u << VsConstLoad) | (1u << LoopCont) | (1u << BoundsLim));
+constexpr uint32_t ListAllMask = AllMask & ~((1u << VsLoadGroup) | (1u << VsConstLoad) |
+                                             (1u << LoopCont) | (1u << BoundsLim) | (1u << GuardExit));
 
 thread_local uint32_t   g_active = 0;
 thread_local ShaderType g_stage  = ShaderType::Unknown;
@@ -157,6 +159,8 @@ void Begin(ShaderType stage, uint64_t shader_hash) {
 		g_active |= 1u << LoopCont;
 	if (EnvOn("KYTY_MSL_XF_BLIM")) // mode token `blim`; read per call
 		g_active |= 1u << BoundsLim;
+	if (EnvOn("KYTY_MSL_XF_GEXIT")) // mode token `gexit`; read per call
+		g_active |= 1u << GuardExit;
 	const auto& t = Table();
 	if (const auto it = t.find({StageChar(stage), shader_hash}); it != t.end())
 		g_active = it->second;
@@ -224,7 +228,7 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	for (const char* v:
 	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
 	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF", "KYTY_MSL_XF_LSEL",
-	      "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
+	      "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
 			        " is set in the environment; --mode does not mix with hand-set switches";
@@ -274,6 +278,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_XF_LCONT", "1", error);
 		} else if (key == "blim" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_XF_BLIM", "1", error);
+		} else if (key == "gexit" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_XF_GEXIT", "1", error);
 		} else if (key == "perfr" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) &&
 			     SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
@@ -312,6 +318,7 @@ std::string ModeCatalogue() {
 	    "cload\tvertex: read-only buffer loads from the constant address space (KYTY_MSL_XF_CLOAD=1 = transform vs_const_load)\n"
 	    "lcont\tloops with a side-effect-free continue block without the do/flag wrapper (KYTY_MSL_XF_LCONT=1 = transform loop_cont)\n"
 	    "blim\tbuffer bounds check as one compare against a uniform limit (KYTY_MSL_XF_BLIM=1 = transform bounds_lim)\n"
+	    "gexit\tgpuguard loop budget checked inside the loop's own exit test (KYTY_MSL_XF_GEXIT=1 = transform guard_exit)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];

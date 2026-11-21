@@ -837,7 +837,7 @@ void TestFoltrans() {
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD"}) unsetenv(v);
   Check(Xf::ApplyMode("fix6+xf=c00", err) && std::string(std::getenv("KYTY_MSL_XF")) == "vs_load_group,vs_const_load", "mode: xf=c00 names the two transforms");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
-  Check(!Xf::ApplyMode("fix6+xf=4000", err), "mode: xf bit beyond the registry refused");
+  Check(!Xf::ApplyMode("fix6+xf=8000", err), "mode: xf bit beyond the registry refused");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
   setenv("KYTY_MSL_XF_CLOAD", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_CLOAD");
@@ -966,11 +966,79 @@ void TestBoundsLim() {
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_LCONT"}) unsetenv(v);
   Check(Xf::ApplyMode("fix6+xf=2000", err) && std::string(std::getenv("KYTY_MSL_XF")) == "bounds_lim", "mode: xf=2000 = bounds_lim");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
-  Check(!Xf::ApplyMode("fix6+xf=4000", err), "mode: xf bit beyond the registry refused (14 transforms)");
-  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
   setenv("KYTY_MSL_XF_BLIM", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_BLIM");
   unsetenv("KYTY_MSL_XF_BLIM");
+}
+
+// fsslow: transform guard_exit (mode token gexit): the gpuguard budget check inside the loop's own exit test.
+// Off = the old `if (!nps5_lg_step(..)) break;` first statement; on = no such statement, the step call is part of the
+// header's if; without a loop cap the transform prints nothing.
+void TestGuardExit() {
+  namespace Xf = Msl::Xf;
+  const std::vector<uint32_t> code = {0xbe8a0480, 0x7d8a0080, 0x888a6a0a, 0xbf840004, 0xbf850001,
+                                      0xbe8a0480, 0x800a0a0a, 0xbf82fff9, 0x7e020281, 0xbf810000};
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Compute;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.compute = &info;
+  auto gen = [&](uint32_t cap) {
+    options.msl_loop_cap = cap;
+    auto translated = SR::TranslateProgram(code, options);
+    SR::IR::ResourceSpecialization spec;
+    auto result = SR::CompileProgram(std::move(translated), options, spec, 0);
+    return result.msl_structured ? result.msl : std::string("<dispatcher>");
+  };
+  auto count = [](const std::string &t, const std::string &w) {
+    int n = 0;
+    for (size_t p = t.find(w); p != std::string::npos; p = t.find(w, p + 1)) n++;
+    return n;
+  };
+  for (const char *v : {"KYTY_MSL_XF", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_XF_LCONT", "KYTY_MSL_VS_PERF"}) unsetenv(v);
+  const std::string off = gen(1u << 18u), off0 = gen(0);
+  Check(count(off, "if (!nps5_lg_step(nps5_lg_n)) break; // nps5 gpuguard") == 1, "guard_exit off: guard is the first statement of the loop body");
+  for (const bool lcont : {false, true}) {
+    setenv("KYTY_MSL_XF_GEXIT", "1", 1);
+    if (lcont) setenv("KYTY_MSL_XF_LCONT", "1", 1);
+    const std::string tag = lcont ? "guard_exit+loop_cont" : "guard_exit";
+    const std::string on = gen(1u << 18u);
+    Xf::Begin(ShaderType::Pixel, 0);
+    Check(Xf::On(Xf::GuardExit), tag + ": on with KYTY_MSL_XF_GEXIT, any stage (pixel)");
+    Check(count(on, ")) break;") == 0 && count(on, "nps5_lg_step(nps5_lg_n)") == 1 &&
+              (count(on, ") || !nps5_lg_step(nps5_lg_n)) {") == 1 || count(on, ") && nps5_lg_step(nps5_lg_n)) {") == 1),
+          tag + ": one budget check, inside the loop's exit test");
+    Check(on.find("bool nps5_lg_step(thread uint& n)") != std::string::npos && on.find("uint nps5_lg_n = 0u;") != std::string::npos, tag + ": helper and counter kept");
+    if (!lcont) Check(gen(0) == off0, "guard_exit: nothing printed without a loop cap");
+    if (HaveMetal()) {
+      const std::string f = std::string("/tmp/msl_core_guardexit_") + (lcont ? "1" : "0") + ".metal";
+      std::ofstream(f) << on;
+      Check(std::system(("xcrun -sdk macosx metal -std=metal3.1 -fsyntax-only " + f + " 2>" + f + ".err").c_str()) == 0, tag + ": text compiles (see " + f + ".err)");
+    }
+    unsetenv("KYTY_MSL_XF_GEXIT");
+    unsetenv("KYTY_MSL_XF_LCONT");
+  }
+  Check(gen(1u << 18u) == off, "guard_exit off again: byte-identical text");
+  options.msl_loop_cap = 0;
+  std::string err;
+  Check(Xf::ApplyMode("fix6+lcont+blim+gexit", err) && std::string(std::getenv("KYTY_MSL_XF_GEXIT")) == "1", "mode: gexit sets KYTY_MSL_XF_GEXIT, combines with lcont+blim");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_LCONT", "KYTY_MSL_XF_GEXIT"}) unsetenv(v);
+  Check(Xf::ApplyMode("fix6+xf=4000", err) && std::string(std::getenv("KYTY_MSL_XF")) == "guard_exit", "mode: xf=4000 = guard_exit");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  Check(!Xf::ApplyMode("fix6+xf=8000", err), "mode: xf bit beyond the registry refused (15 transforms)");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  setenv("KYTY_MSL_XF_GEXIT", "1", 1);
+  Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_GEXIT");
+  unsetenv("KYTY_MSL_XF_GEXIT");
 }
 
 // xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs
@@ -1065,6 +1133,7 @@ int main() {
   TestFoltrans();
   TestLoopCont();
   TestBoundsLim();
+  TestGuardExit();
   TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
