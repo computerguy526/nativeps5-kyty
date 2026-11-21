@@ -949,6 +949,7 @@ public:
 		Region(program.block_info[0].id, UINT32_MAX);
 		return !failed_;
 	}
+	[[nodiscard]] bool WriterInLoop() const { return writer_in_loop_; }
 
 private:
 	struct Loop {
@@ -968,6 +969,8 @@ private:
 	std::vector<Loop>     loops_;
 	std::vector<uint32_t> stops_;
 	uint32_t              loop_counter_ = 0;
+	uint32_t              loop_depth_   = 0;     // EmitLoop nesting (dry run: vs_const_load)
+	bool                  writer_in_loop_ = false;
 
 	void FailAt(int line) {
 		failed_ = true;
@@ -1008,7 +1011,16 @@ private:
 	}
 
 	void Insts(size_t idx) {
-		if (dry_) return;
+		if (dry_) {
+			// vs_const_load rule (c): a buffer store/atomic inside a loop
+			if (loop_depth_ != 0u)
+				for (const auto& inst: *ctx_.program.blocks[idx]) {
+					const auto acc = IR::BufferAccessOf(inst.GetOpcode());
+					if (acc == IR::BufferAccess::Write || acc == IR::BufferAccess::Atomic)
+						writer_in_loop_ = true;
+				}
+			return;
+		}
 		if (comments_) ctx_.b.Comment(fmt::format("block {}", ctx_.program.block_info[idx].id));
 		for (const auto& inst: *ctx_.program.blocks[idx]) {
 			if (comments_ && inst.GetOpcode() != ValueOpcode::Phi)
@@ -1084,6 +1096,11 @@ private:
 		const auto& term = info.terminator;
 		const auto* hb   = ctx_.program.blocks[idx];
 		(void)hb;
+		struct Depth {
+			uint32_t& d;
+			explicit Depth(uint32_t& x): d(x) { d++; }
+			~Depth() { d--; }
+		} depth(loop_depth_);
 		const size_t ci = Index(term.continue_block);
 		if (ci == SIZE_MAX) {
 			FailAt(__LINE__);
@@ -1399,6 +1416,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
 	Mem::SetLoadSelectSafe({});   // KkBdaLocals: load_select fallback address (kk-bda root)
+	Mem::SetConstLoad(0, {});     // KkBdaLocals: vs_const_load state
 	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
 	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
@@ -1472,7 +1490,9 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (structured) {
 		Structurer dry(ctx, shape, options.comments, true, need_do);
 		structured = dry.Run();
+		if (dry.WriterInLoop()) Mem::ConstLoadWriter();
 	}
+	if (!structured) Mem::ConstLoadWriter(); // the dispatcher is one loop
 	result.structured = structured;
 	if (structured) {
 		Structurer real(ctx, shape, options.comments, false, need_do);

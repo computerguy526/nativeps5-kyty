@@ -287,6 +287,23 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		else
 			b.Line("r.srt = (const device uint*)(*(constant ulong*)(kk_set0 + " + KU(off) + "));");
 	}
+	// vs_const_load (MslXform.h): on for this program; with a written buffer also the per-draw alias
+	// bool (bound range of a read-only buffer overlaps the bound range of a written one).
+	if (Xf::On(Xf::VsConstLoad) && m.gds_bytes == 0u) {
+		std::string alias;
+		for (const auto& w: m.buffers) {
+			if (!w.written && !w.atomic) continue;
+			for (const auto& rd: m.buffers) {
+				if (rd.written || rd.atomic) continue;
+				const std::string R = std::to_string(rd.id), Wn = std::to_string(w.id);
+				alias += std::string(alias.empty() ? "" : " || ") + "((ulong)r.b" + R +
+				         " < (ulong)r.b" + Wn + " + ulong(r.b" + Wn + "_size) && (ulong)r.b" + Wn +
+				         " < (ulong)r.b" + R + " + ulong(r.b" + R + "_size))";
+			}
+		}
+		if (!alias.empty()) b.Line("const bool kk_calias = " + alias + ";");
+		SetConstLoad(1, "kk_calias");
+	}
 	if (m.gds_bytes != 0u) {
 		const uint32_t off = FirstOf(layout, Kind::Gds);
 		if (off == UINT32_MAX)

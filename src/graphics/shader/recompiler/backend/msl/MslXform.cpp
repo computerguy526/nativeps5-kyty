@@ -34,9 +34,16 @@ constexpr Info Registry[Count] = {
      "V_MOVRELS select chain (>= 4 links on one M0) as a balanced compare tree"},
     {"load_select", 1, ShaderType::Unknown, "structural",
      "checked buffer load: unconditional load from (in range ? address : root), then the select"},
+    {"vs_load_group", 1, ShaderType::Vertex, "semantic-exact",
+     "vertex: dword reads with a common dynamic base: one range check + packed vector loads"},
+    {"vs_const_load", 1, ShaderType::Vertex, "preconditioned",
+     "vertex: read-only buffer loads from the constant address space (alias-guarded after a store/atomic)"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
+// `all` in a KYTY_MSL_XF list / table row: the transforms up to load_select. The foltrans ids are
+// per-key choices (mode tokens vgroup / cload, or their xf= bits) and never part of `all`.
+constexpr uint32_t ListAllMask = AllMask & ~((1u << VsLoadGroup) | (1u << VsConstLoad));
 
 thread_local uint32_t   g_active = 0;
 thread_local ShaderType g_stage  = ShaderType::Unknown;
@@ -60,7 +67,7 @@ uint32_t ParseList(std::string_view s, uint32_t mask) {
 			t = t.substr(0, at); // "id@version" as ActiveList prints it
 		if (t.empty() || t == "none" || t == "-") continue;
 		if (t == "all") {
-			mask |= AllMask;
+			mask |= ListAllMask;
 			continue;
 		}
 		const bool remove = t.front() == '-';
@@ -137,6 +144,10 @@ void Begin(ShaderType stage, uint64_t shader_hash) {
 	g_active      = BaseMask();
 	if (EnvOn("KYTY_MSL_XF_LSEL")) // mode token `lsel`; read per call
 		g_active |= 1u << LoadSelect;
+	if (EnvOn("KYTY_MSL_XF_VGROUP")) // mode token `vgroup`; read per call
+		g_active |= 1u << VsLoadGroup;
+	if (EnvOn("KYTY_MSL_XF_CLOAD")) // mode token `cload`; read per call
+		g_active |= 1u << VsConstLoad;
 	const auto& t = Table();
 	if (const auto it = t.find({StageChar(stage), shader_hash}); it != t.end())
 		g_active = it->second;
@@ -204,7 +215,7 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	for (const char* v:
 	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
 	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF", "KYTY_MSL_XF_LSEL",
-	      "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
+	      "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
 			        " is set in the environment; --mode does not mix with hand-set switches";
@@ -246,6 +257,10 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_VS_PERF", "1", error);
 		} else if (key == "lsel" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_XF_LSEL", "1", error);
+		} else if (key == "vgroup" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_XF_VGROUP", "1", error);
+		} else if (key == "cload" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_XF_CLOAD", "1", error);
 		} else if (key == "perfr" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) &&
 			     SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
@@ -280,6 +295,8 @@ std::string ModeCatalogue() {
 	    "vsperf\tvertex fetch transforms + varying narrowing (KYTY_MSL_VS_PERF=1)\n"
 	    "gfxmath=safe|relaxed|fast\tfragment math mode header (KYTY_MSL_GFX_MATH)\n"
 	    "lsel\tchecked buffer loads as unconditional load + select (KYTY_MSL_XF_LSEL=1 = transform load_select)\n"
+	    "vgroup\tvertex: grouped buffer reads, one range check + packed loads (KYTY_MSL_XF_VGROUP=1 = transform vs_load_group)\n"
+	    "cload\tvertex: read-only buffer loads from the constant address space (KYTY_MSL_XF_CLOAD=1 = transform vs_const_load)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];

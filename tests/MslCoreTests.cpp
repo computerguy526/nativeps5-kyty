@@ -771,6 +771,82 @@ void TestLoadSelect() {
   unsetenv("KYTY_MSL_XF_LSEL");
 }
 
+// foltrans: transforms vs_load_group (mode token vgroup) and vs_const_load (mode token cload). Vertex stage only, not in `all`.
+// cload off: old text byte for byte. On: a read-only buffer's load is `constant` before the first buffer store/atomic of the
+// program, `alias ? device : constant` after it; written buffers, stores and coherent loads are untouched.
+void TestFoltrans() {
+  namespace Mem = Msl::Mem;
+  namespace Xf = Msl::Xf;
+  Mem::BufferBinding b, w;
+  b.id = 3; b.bounds_check = true;
+  w.id = 5; w.bounds_check = true; w.atomic = true;
+  Mem::BufferOpts opts;
+  auto gen = [&](const Mem::BufferBinding &x, uint32_t bits, uint32_t comps) { Mem::MemOut o; const auto v = Mem::LoadRaw(o, x, "a", bits, comps, opts); return o.code + "=> " + v; };
+  auto genc = [&] { Mem::MemOut o; const auto v = Mem::ReadConstBuffer(o, b, "a", opts); return o.code + "=> " + v; };
+  auto gens = [&] { Mem::MemOut o; Mem::StoreRaw(o, w, "a", 32, {"x0"}, opts); return o.code; };
+  auto gena = [&] { Mem::MemOut o; (void)Mem::BufferAtomic32(o, w, "a", Mem::AtomicOp::UMax, "x0", "", opts); return o.code; };
+  for (const char *v : {"KYTY_MSL_XF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_VS_PERF"}) unsetenv(v);
+  Xf::Begin(ShaderType::Vertex, 0);
+  Mem::SetLoadSelectSafe({});
+  Mem::SetConstLoad(0, {});
+  const std::string off1 = gen(b, 32, 1), off4 = gen(b, 32, 4), offc = genc(), offw = gen(w, 32, 1), offs = gens(), offa = gena();
+  Check(!Xf::On(Xf::VsConstLoad) && !Xf::On(Xf::VsLoadGroup), "foltrans: both transforms off by default");
+  Check(off1.find("constant") == std::string::npos && Mem::SrtLoad("4u") == "r.srt[4u]", "cload off: no constant load, SRT indexed");
+  const std::string cat = Xf::Catalogue();
+  Check(cat.find("vs_load_group@1 vs semantic-exact") != std::string::npos && cat.find("vs_const_load@1 vs preconditioned") != std::string::npos, "foltrans: both transforms registered (vertex)");
+  setenv("KYTY_MSL_XF_CLOAD", "1", 1);
+  setenv("KYTY_MSL_XF_VGROUP", "1", 1);
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(Xf::On(Xf::VsConstLoad) && Xf::On(Xf::VsLoadGroup) && !Xf::On(Xf::LoadGroup), "foltrans: tokens switch the vertex transforms on (not load_group)");
+  Check(gen(b, 32, 1) == off1 && genc() == offc, "cload: state 0 (not kk-bda / GDS) -> text unchanged");
+  Xf::Begin(ShaderType::Pixel, 0);
+  Check(!Xf::On(Xf::VsConstLoad) && !Xf::On(Xf::VsLoadGroup), "foltrans: vertex stage only (pixel off)");
+  Xf::Begin(ShaderType::Compute, 0);
+  Check(!Xf::On(Xf::VsConstLoad) && !Xf::On(Xf::VsLoadGroup), "foltrans: vertex stage only (compute off)");
+  Xf::Begin(ShaderType::Vertex, 0);
+  Mem::SetConstLoad(1, "kk_calias");
+  const std::string c1 = gen(b, 32, 1), c4 = gen(b, 32, 4), cc = genc();
+  for (const auto &[what, t] : {std::pair<std::string, std::string>{"dword", c1}, {"vec4", c4}, {"const", cc}}) {
+    Check(t.find("*(constant ") != std::string::npos && t.find("*)((ulong)(r.b3 + a))") != std::string::npos, "cload " + what + ": constant load through the integer address");
+    Check(t.find("device") == std::string::npos && t.find("kk_calias") == std::string::npos, "cload " + what + ": before a store/atomic no device load and no alias select");
+    Check(t.find("(ulong(a) + ") != std::string::npos, "cload " + what + ": range check kept");
+  }
+  Check(gen(w, 32, 1) == offw, "cload: a written/atomic buffer's load unchanged");
+  Check(Mem::SrtLoad("4u") == "(*(constant uint*)((ulong)(r.srt + 4u)))", "cload: SRT read constant");
+  { Mem::BufferOpts co = opts; co.coherent_loads = true; Mem::MemOut o; (void)Mem::LoadRaw(o, b, "a", 32, 1, co);
+    Check(o.code.find("constant") == std::string::npos, "cload: coherent load unchanged"); }
+  Check(Mem::ConstLoadState() == 1, "cload: state 1 before a writer");
+  Check(gena() == offa && Mem::ConstLoadState() == 2, "cload: atomic text unchanged, state 1 -> 2");
+  const std::string g1 = gen(b, 32, 1);
+  Check(g1.find("(kk_calias ? *(const device uint*)((ulong)(r.b3 + a)) : *(constant uint*)((ulong)(r.b3 + a)))") != std::string::npos, "cload: after the atomic the load is alias ? device : constant");
+  Mem::SetConstLoad(1, "kk_calias");
+  Check(gens() == offs && Mem::ConstLoadState() == 2, "cload: store text unchanged, state 1 -> 2");
+  Mem::SetConstLoad(1, "kk_calias");
+  Mem::SetLoadSelectSafe("kk_lsafe");
+  setenv("KYTY_MSL_XF_LSEL", "1", 1);
+  Xf::Begin(ShaderType::Vertex, 0);
+  const std::string l1 = gen(b, 32, 1);
+  Check(l1.find(" ? (ulong)(r.b3 + a) : kk_lsafe;") != std::string::npos && l1.find("= *(constant uint*)(") != std::string::npos && l1.find("device") == std::string::npos, "cload + lsel: unconditional constant load from the selected address");
+  for (const char *v : {"KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD"}) unsetenv(v);
+  Mem::SetLoadSelectSafe({});
+  Mem::SetConstLoad(0, {});
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(gen(b, 32, 1) == off1 && gen(b, 32, 4) == off4 && genc() == offc && gens() == offs && gena() == offa, "foltrans off again: byte-identical text");
+  std::string err;
+  Check(Xf::ApplyMode("fix6+vsperf+vgroup+cload+lsel", err) && std::string(std::getenv("KYTY_MSL_XF_VGROUP")) == "1" && std::string(std::getenv("KYTY_MSL_XF_CLOAD")) == "1", "mode: vgroup / cload set their switches");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD"}) unsetenv(v);
+  Check(Xf::ApplyMode("fix6+xf=c00", err) && std::string(std::getenv("KYTY_MSL_XF")) == "vs_load_group,vs_const_load", "mode: xf=c00 names the two transforms");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  Check(!Xf::ApplyMode("fix6+xf=1000", err), "mode: xf bit beyond the registry refused");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  setenv("KYTY_MSL_XF_CLOAD", "1", 1);
+  Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_CLOAD");
+  unsetenv("KYTY_MSL_XF_CLOAD");
+  setenv("KYTY_MSL_XF_VGROUP", "1", 1);
+  Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_VGROUP");
+  unsetenv("KYTY_MSL_XF_VGROUP");
+}
+
 // xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs
 // last: it sets env vars.
 void TestEmitterModes() {
@@ -860,6 +936,7 @@ int main() {
   TestXfCatalogue();
   TestMovrelChainsPerEmission();
   TestLoadSelect();
+  TestFoltrans();
   TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

@@ -67,6 +67,24 @@ enum Id : uint32_t {
 	// value is dropped for 0 exactly as before. Loads only: never a store or an atomic, never the
 	// per-dword partial form, never a formatted (all-or-nothing) element. No-op outside kk-bda. Any stage.
 	LoadSelect,
+	// foltrans (botvs `vgroup`): load_group in the vertex stage only (the pixel text of the pair keeps
+	// its per-load form). Same grouping, same text as load_group prints for a vertex program:
+	// reads of one binding with a common dynamic base in one block share ONE range check and
+	// packed vector loads; when the check fails each member runs its original guarded text.
+	// Not in `all`.
+	VsLoadGroup,
+	// foltrans (foliage `cload`): loads of buffers the vertex program never writes come from the
+	// `constant` address space (kk-bda only), so the compiler may move loads with uniform
+	// addresses to the per-draw constant program even when the program holds a buffer atomic or
+	// store (a device load cannot be hoisted across one: possible aliasing). Rule, as the
+	// foliagevs rewrite of KosmicKrisp's text: (a) a load printed BEFORE the first buffer
+	// store/atomic of the program is `constant` unconditionally (it can only observe other
+	// invocations' writes, which are unordered with this invocation); (b) a load printed AFTER it
+	// is `kk_calias ? device load : constant load`, kk_calias = some read-only buffer's bound
+	// range overlaps a written buffer's bound range in this draw (uniform; every access is
+	// bounds-checked to its range); (c) a store/atomic inside a loop, or the dispatcher fallback:
+	// every load takes form (b). Programs with GDS counters are left alone. Not in `all`.
+	VsConstLoad,
 	Count
 };
 
@@ -100,6 +118,8 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   mimicry) vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
 //   gfxmath=M     KYTY_MSL_GFX_MATH=M (safe | relaxed | fast)
 //   lsel          KYTY_MSL_XF_LSEL=1: adds the load_select transform to the base set (combines with xf=HEX)
+//   vgroup        KYTY_MSL_XF_VGROUP=1: adds vs_load_group to the base set (vertex stage only)
+//   cload         KYTY_MSL_XF_CLOAD=1: adds vs_const_load to the base set (vertex stage only)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,

@@ -128,4 +128,14 @@ void               SetLoadSelectSafe(const std::string& expr);
 const std::string& LoadSelectSafe();
 bool               LoadSelectOn();
 
+// vs_const_load (MslXform.h). State of the program being emitted: 0 = off, 1 = loads of read-only
+// buffers are `constant` (no buffer store/atomic printed yet), 2 = `<alias> ? device : constant`.
+// Reset by the emitter per program; KkBdaLocals turns it on (and prints the alias bool).
+void SetConstLoad(int state, const std::string& alias);
+int  ConstLoadState();
+// A buffer store / atomic is printed now (or lies in a loop): state 1 -> 2.
+void ConstLoadWriter();
+// ReadConst (flattened SRT, host-owned, never a guest write target): `r.srt[i]` or its constant form.
+std::string SrtLoad(const std::string& index);
+
 } // namespace Libs::Graphics::ShaderRecompiler::Msl::Mem
