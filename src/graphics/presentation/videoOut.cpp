@@ -974,8 +974,8 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 		if (const auto cnt = g_autocap_work_count.exchange(0, std::memory_order_relaxed);
 		    cnt != 0) {
 			const auto ticks = g_autocap_work_ticks.exchange(0, std::memory_order_relaxed);
-			const auto w = static_cast<double>(ticks) / cnt /
-			               static_cast<double>(Common::Timer::QueryPerformanceFrequency());
+			const auto w     = static_cast<double>(ticks) / cnt /
+			                   static_cast<double>(Common::Timer::QueryPerformanceFrequency());
 			r.work.OnWork(w);
 			if (r.promo_on) r.promo.OnWork(now, w);
 		}
@@ -987,16 +987,17 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 			log = r.controller.Changed();
 		}
 	}
-	const auto cap_milli = static_cast<uint32_t>(
-	    (r.promo_on ? r.promo.Cap() : r.controller.Cap()) * 1000.0 + 0.5);
+	const auto cap_milli =
+	    static_cast<uint32_t>((r.promo_on ? r.promo.Cap() : r.controller.Cap()) * 1000.0 + 0.5);
 	st.cap_milli.store(cap_milli, std::memory_order_relaxed);
 	if (log && r.promo_on) {
 		const auto& s = r.controller.Current();
-		std::fprintf(stderr,
-		             "[autocap] %.4g Hz -> %.4g (n=%d, p90 interval %.1f ms, p90 work %.1f ms, screen %s, "
-		             "promotion)\n",
-		             s.refresh_hz, cap_milli / 1000.0, r.promo.N(), r.promo.LastP90Interval() * 1000.0,
-		             r.promo.LastP90Work() * 1000.0, s.name.c_str());
+		std::fprintf(
+		    stderr,
+		    "[autocap] %.4g Hz -> %.4g (n=%d, p90 interval %.1f ms, p90 work %.1f ms, screen %s, "
+		    "promotion)\n",
+		    s.refresh_hz, cap_milli / 1000.0, r.promo.N(), r.promo.LastP90Interval() * 1000.0,
+		    r.promo.LastP90Work() * 1000.0, s.name.c_str());
 	} else if (log) {
 		const auto& s = r.controller.Current();
 		std::fprintf(stderr,
@@ -1280,7 +1281,8 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		}
 		g_pace_interval.store(interval_ticks, std::memory_order_relaxed);
 		g_autocap.estimator.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
-		if (g_autocap.promo_on) g_autocap.promo.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
+		if (g_autocap.promo_on)
+			g_autocap.promo.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
 		UpdateGameStep(game_step, now, frequency, limit);
 		return true;
 	};

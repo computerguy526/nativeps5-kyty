@@ -16,16 +16,16 @@
 //    the presented interval, which saturates at the cap: a probe up needs work-fps >= the next cap.
 // This header is pure (no SDL / no objc) so tests/AutoCapTests.cpp can compile it standalone.
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
 #include <deque>
-#include <vector>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace AutoCap {
 
@@ -205,10 +205,11 @@ private:
 // An adaptive-refresh display (ProMotion, max R = 120 Hz) normally gets no cap. Here the cap is the
 // highest R/n (n = 2..5: 60 / 40 / 30 / 24 at 120 Hz) the scene SUSTAINS, so flips land on whole
 // display refreshes (even pacing) while the game cannot hold 60.
-//  - down (fast): p90 of the presented intervals over the last kDownWindowS (3 s) > kMissRatio (1.15)
+//  - down (fast): p90 of the presented intervals over the last kDownWindowS (3 s) > kMissRatio
+//  (1.15)
 //    x the cap's period; the new cap is the highest R/n whose period x 1.05 covers that p90 (floor
-//    n = 5). A burst of slow frames (loading) has to fill more than 10 % of the window to count, and
-//    the cap is re-probed upwards afterwards, so a spike never pins it.
+//    n = 5). A burst of slow frames (loading) has to fill more than 10 % of the window to count,
+//    and the cap is re-probed upwards afterwards, so a spike never pins it.
 //  - up (slow): p90 of the frame WORK time over the last kUpWindowS (10 s, no change inside it) <
 //    kHeadroom (0.9) x the period of the higher cap, and the intervals held the current cap (p90 <=
 //    1.05 x period). A probe that fails (a step down within kProbeFailS = 30 s of the step up)
@@ -217,28 +218,28 @@ private:
 // Pure: OnPresent / OnWork / Tick take a clock (seconds), so tests drive synthetic traces.
 class PromoCap {
 public:
-	static constexpr int    kMinN         = 2;
-	static constexpr int    kMaxN         = 5;
-	static constexpr int    kStartN       = 4; // 30 at 120 Hz
-	static constexpr double kDownWindowS  = 3.0;
-	static constexpr double kUpWindowS    = 10.0;
-	static constexpr double kMissRatio    = 1.15;
-	static constexpr double kHeadroom     = 0.9;
-	static constexpr double kHoldRatio    = 1.05;
-	static constexpr double kProbeFailS   = 30.0;
-	static constexpr double kMaxGap       = 0.25;
-	static constexpr size_t kMinSamples   = 20;
-	static constexpr int    kMaxBackoff   = 8;
+	static constexpr int    kMinN        = 2;
+	static constexpr int    kMaxN        = 5;
+	static constexpr int    kStartN      = 4; // 30 at 120 Hz
+	static constexpr double kDownWindowS = 3.0;
+	static constexpr double kUpWindowS   = 10.0;
+	static constexpr double kMissRatio   = 1.15;
+	static constexpr double kHeadroom    = 0.9;
+	static constexpr double kHoldRatio   = 1.05;
+	static constexpr double kProbeFailS  = 30.0;
+	static constexpr double kMaxGap      = 0.25;
+	static constexpr size_t kMinSamples  = 20;
+	static constexpr int    kMaxBackoff  = 8;
 
 	explicit PromoCap(double refresh_hz = 120.0) { SetRefresh(refresh_hz, 0.0); }
 
 	void SetRefresh(double refresh_hz, double t) {
-		m_r       = refresh_hz;
-		m_n       = kStartN;
-		m_backoff = 1;
+		m_r            = refresh_hz;
+		m_n            = kStartN;
+		m_backoff      = 1;
 		m_last_up      = -1e9;
 		m_last_change  = t;
-		m_last_present            = -1.0;
+		m_last_present = -1.0;
 		Clear(t);
 		m_changed = false;
 	}
@@ -270,7 +271,8 @@ public:
 		if (m_cnt_d >= kMinSamples && pd > kMissRatio * P) {
 			m_p90_i = pd;
 			int n   = m_n;
-			while (n < kMaxN && (n / m_r) * kHoldRatio < pd) n++;
+			while (n < kMaxN && (n / m_r) * kHoldRatio < pd)
+				n++;
 			if (n != m_n) {
 				if (t - m_last_up < kProbeFailS && m_backoff < kMaxBackoff) m_backoff *= 2;
 				Apply(n, t, false);
@@ -282,7 +284,8 @@ public:
 			const double pw = Pct90(m_wk, t, kUpWindowS, m_cnt_w);
 			if (m_cnt_u >= kMinSamples * 3 && m_cnt_w >= 10 && pi <= kHoldRatio * P) {
 				int n = m_n;
-				while (n > kMinN && pw < kHeadroom * ((n - 1) / m_r)) n--;
+				while (n > kMinN && pw < kHeadroom * ((n - 1) / m_r))
+					n--;
 				if (n != m_n) {
 					m_p90_i = pi;
 					m_p90_w = pw;
@@ -299,11 +302,13 @@ private:
 	};
 	void Push(std::deque<S>& q, double t, double v) {
 		q.push_back({t, v});
-		while (!q.empty() && t - q.front().t > kUpWindowS) q.pop_front();
+		while (!q.empty() && t - q.front().t > kUpWindowS)
+			q.pop_front();
 	}
 	static double Pct90(const std::deque<S>& q, double t, double win, size_t& count) {
 		std::vector<double> v;
-		for (auto it = q.rbegin(); it != q.rend() && t - it->t <= win; ++it) v.push_back(it->v);
+		for (auto it = q.rbegin(); it != q.rend() && t - it->t <= win; ++it)
+			v.push_back(it->v);
 		count = v.size();
 		if (v.empty()) return 0.0;
 		const size_t k = static_cast<size_t>(0.9 * static_cast<double>(v.size() - 1) + 0.5);
@@ -323,14 +328,15 @@ private:
 		Clear(t);
 	}
 
-	double          m_r = 120.0;
-	int             m_n = kStartN;
-	int             m_backoff = 1;
-	double          m_last_up = -1e9, m_last_change = -1e9, m_last_present = -1.0, m_settle = 0.0, m_next_eval = 0.0;
-	double          m_p90_i = 0.0, m_p90_w = 0.0;
-	size_t          m_cnt_d = 0, m_cnt_u = 0, m_cnt_w = 0;
-	bool            m_changed = false;
-	std::deque<S>   m_iv, m_wk;
+	double        m_r       = 120.0;
+	int           m_n       = kStartN;
+	int           m_backoff = 1;
+	double        m_last_up = -1e9, m_last_change = -1e9, m_last_present = -1.0, m_settle = 0.0,
+	              m_next_eval = 0.0;
+	double        m_p90_i = 0.0, m_p90_w = 0.0;
+	size_t        m_cnt_d = 0, m_cnt_u = 0, m_cnt_w = 0;
+	bool          m_changed = false;
+	std::deque<S> m_iv, m_wk;
 };
 
 // KYTY_FPS_AUTOCAP=promotion (or NPS5_AUTOCAP_PROMOTION=1)

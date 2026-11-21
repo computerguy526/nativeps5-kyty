@@ -85,56 +85,128 @@ int main() {
 	e.OnPresent(100.0); // 60 s gap ignored
 	CHECK(std::fabs(e.Fps() - 37.5) < 0.1);
 
-	// ---- PromoCap (ProMotion mode): synthetic frame-time traces ----
-	{
-		struct Sim {
-			PromoCap pc {120.0};
-			double   t = 0.0;
-			uint32_t rng = 12345;
-			int      changes = 0;
-			double   Rand() { rng = rng * 1664525u + 1013904223u; return (rng >> 8) / 16777216.0; }
-			// run `secs` of a game whose frame work time is base*(1 +- jit), plus `spike_every`-th
-			// frame spike_s (0 = none). Present interval = max(cap period, work).
-			void Run(double secs, double base, double jit, int spike_every = 0, double spike_s = 0.0) {
-				const double end = t + secs; int i = 0;
-				while (t < end) {
-					double w = base * (1.0 + jit * (2.0 * Rand() - 1.0));
-					if (spike_every && ++i % spike_every == 0) w = spike_s;
-					const double iv = std::fmax(1.0 / pc.Cap(), w);
-					t += iv;
-					pc.OnPresent(t);
-					pc.OnWork(t, w <= 0.25 ? w : 0.0);
-					const double c0 = pc.Cap(); pc.Tick(t);
-					if (pc.Cap() != c0) changes++;
-				}
-			}
-		};
-		{ Sim s; s.Run(30, 0.042, 0.03); NEAR(s.pc.Cap(), 24.0); }          // Sky Garden 42 ms -> 24
-		{ Sim s; s.Run(40, 0.026, 0.03); NEAR(s.pc.Cap(), 30.0); }          // 26 ms -> 30
-		{ Sim s; s.Run(60, 0.022, 0.02); NEAR(s.pc.Cap(), 40.0); }          // hub 22 ms -> 40
-		{ Sim s; s.Run(60, 0.012, 0.05); NEAR(s.pc.Cap(), 60.0); }          // easy scene -> 60
-		{ Sim s; s.Run(60, 0.060, 0.02); NEAR(s.pc.Cap(), 24.0); }          // below the lowest: floor 24
-		// quick step down: first change within ~5 s of a slow scene
-		{ Sim s; s.Run(5, 0.042, 0.02); NEAR(s.pc.Cap(), 24.0); }
-		// no flip-flop near a boundary: 25 ms of work vs the 40 fps period (25 ms) +-6 %
-		{ Sim s; s.Run(300, 0.025, 0.06); CHECK(s.changes <= 4); CHECK(s.pc.Cap() <= 40.0 + 1e-6); }
-		// 100 ms spikes on every 25th frame (4 %) do not drop the cap
-		{ Sim s; s.Run(20, 0.022, 0.02); NEAR(s.pc.Cap(), 40.0); const int c = s.changes; s.Run(30, 0.022, 0.02, 25, 0.1); CHECK(s.changes == c); NEAR(s.pc.Cap(), 40.0); }
-		// a 3 s loading burst (every frame 150 ms) may drop the cap, but it recovers once stable
-		{ Sim s; s.Run(30, 0.022, 0.02); s.Run(3, 0.15, 0.02); s.Run(80, 0.022, 0.02); NEAR(s.pc.Cap(), 40.0); }
-		// a scene that gets heavier then lighter follows both ways
-		{ Sim s; s.Run(40, 0.022, 0.02); NEAR(s.pc.Cap(), 40.0); s.Run(20, 0.042, 0.02); NEAR(s.pc.Cap(), 24.0); s.Run(120, 0.022, 0.02); NEAR(s.pc.Cap(), 40.0); }
-		// stalls longer than kMaxGap are not samples
-		{ PromoCap p(120.0); p.OnPresent(0.0); p.OnPresent(5.0); p.OnPresent(5.03); CHECK(true); }
-		NEAR(PromoCap(120.0).Cap(), 30.0);
-		NEAR(PromoCap(100.0).Cap(), 25.0);
-	}
+        // ---- PromoCap (ProMotion mode): synthetic frame-time traces ----
+        {
+          struct Sim {
+            PromoCap pc{120.0};
+            double t = 0.0;
+            uint32_t rng = 12345;
+            int changes = 0;
+            double Rand() {
+              rng = rng * 1664525u + 1013904223u;
+              return (rng >> 8) / 16777216.0;
+            }
+            // run `secs` of a game whose frame work time is base*(1 +- jit),
+            // plus `spike_every`-th frame spike_s (0 = none). Present interval
+            // = max(cap period, work).
+            void Run(double secs, double base, double jit, int spike_every = 0,
+                     double spike_s = 0.0) {
+              const double end = t + secs;
+              int i = 0;
+              while (t < end) {
+                double w = base * (1.0 + jit * (2.0 * Rand() - 1.0));
+                if (spike_every && ++i % spike_every == 0)
+                  w = spike_s;
+                const double iv = std::fmax(1.0 / pc.Cap(), w);
+                t += iv;
+                pc.OnPresent(t);
+                pc.OnWork(t, w <= 0.25 ? w : 0.0);
+                const double c0 = pc.Cap();
+                pc.Tick(t);
+                if (pc.Cap() != c0)
+                  changes++;
+              }
+            }
+          };
+          {
+            Sim s;
+            s.Run(30, 0.042, 0.03);
+            NEAR(s.pc.Cap(), 24.0);
+          } // Sky Garden 42 ms -> 24
+          {
+            Sim s;
+            s.Run(40, 0.026, 0.03);
+            NEAR(s.pc.Cap(), 30.0);
+          } // 26 ms -> 30
+          {
+            Sim s;
+            s.Run(60, 0.022, 0.02);
+            NEAR(s.pc.Cap(), 40.0);
+          } // hub 22 ms -> 40
+          {
+            Sim s;
+            s.Run(60, 0.012, 0.05);
+            NEAR(s.pc.Cap(), 60.0);
+          } // easy scene -> 60
+          {
+            Sim s;
+            s.Run(60, 0.060, 0.02);
+            NEAR(s.pc.Cap(), 24.0);
+          } // below the lowest: floor 24
+          // quick step down: first change within ~5 s of a slow scene
+          {
+            Sim s;
+            s.Run(5, 0.042, 0.02);
+            NEAR(s.pc.Cap(), 24.0);
+          }
+          // no flip-flop near a boundary: 25 ms of work vs the 40 fps period
+          // (25 ms) +-6 %
+          {
+            Sim s;
+            s.Run(300, 0.025, 0.06);
+            CHECK(s.changes <= 4);
+            CHECK(s.pc.Cap() <= 40.0 + 1e-6);
+          }
+          // 100 ms spikes on every 25th frame (4 %) do not drop the cap
+          {
+            Sim s;
+            s.Run(20, 0.022, 0.02);
+            NEAR(s.pc.Cap(), 40.0);
+            const int c = s.changes;
+            s.Run(30, 0.022, 0.02, 25, 0.1);
+            CHECK(s.changes == c);
+            NEAR(s.pc.Cap(), 40.0);
+          }
+          // a 3 s loading burst (every frame 150 ms) may drop the cap, but it
+          // recovers once stable
+          {
+            Sim s;
+            s.Run(30, 0.022, 0.02);
+            s.Run(3, 0.15, 0.02);
+            s.Run(80, 0.022, 0.02);
+            NEAR(s.pc.Cap(), 40.0);
+          }
+          // a scene that gets heavier then lighter follows both ways
+          {
+            Sim s;
+            s.Run(40, 0.022, 0.02);
+            NEAR(s.pc.Cap(), 40.0);
+            s.Run(20, 0.042, 0.02);
+            NEAR(s.pc.Cap(), 24.0);
+            s.Run(120, 0.022, 0.02);
+            NEAR(s.pc.Cap(), 40.0);
+          }
+          // stalls longer than kMaxGap are not samples
+          {
+            PromoCap p(120.0);
+            p.OnPresent(0.0);
+            p.OnPresent(5.0);
+            p.OnPresent(5.03);
+            CHECK(true);
+          }
+          NEAR(PromoCap(120.0).Cap(), 30.0);
+          NEAR(PromoCap(100.0).Cap(), 25.0);
+        }
 
-	// publish dedup
-	auto& st = State(); uint32_t s0 = st.seq.load();
-	Publish(mon); Publish(mon); CHECK(st.seq.load() == s0 + 1);
-	Publish(adaptive); CHECK(st.seq.load() == s0 + 2);
-	CHECK(Snapshot().name == "Built-in");
-	std::printf(g_fail ? "FAILED %d\n" : "OK\n", g_fail);
-	return g_fail != 0;
+        // publish dedup
+        auto &st = State();
+        uint32_t s0 = st.seq.load();
+        Publish(mon);
+        Publish(mon);
+        CHECK(st.seq.load() == s0 + 1);
+        Publish(adaptive);
+        CHECK(st.seq.load() == s0 + 2);
+        CHECK(Snapshot().name == "Built-in");
+        std::printf(g_fail ? "FAILED %d\n" : "OK\n", g_fail);
+        return g_fail != 0;
 }

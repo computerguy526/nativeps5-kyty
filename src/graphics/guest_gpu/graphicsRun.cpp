@@ -25,13 +25,13 @@
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/coherenceLog.h"
 #include "graphics/host_gpu/gpuTouchedPages.h"
+#include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/readFaultDiag.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
-#include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
 #include "graphics/host_gpu/renderer/drawPrep/packetClass.h"
@@ -1002,7 +1002,7 @@ static void BoundCpLead(CommandScheduler& scheduler) {
 		            static_cast<double>(wait_ns) / 1e6, static_cast<double>(wait_max_ns) / 1e6,
 		            timeouts, failures, undispatched);
 		waits = wait_ns = wait_max_ns = submits = timeouts = failures = undispatched = 0;
-		report_ns = now;
+		report_ns                                                                    = now;
 	}
 }
 
