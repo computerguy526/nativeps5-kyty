@@ -16,6 +16,12 @@ bool Checked(const BufferBinding& b, const BufferOpts& opts) {
 std::string InBounds(const BufferBinding& b, const std::string& addr, uint32_t bytes) {
 	// perfauto transform bounds_u32 (MslXform.h): the same predicate without a 64-bit sum. For a
 	// 64-bit `addr` the comparison still promotes, so the result is unchanged there too.
+	// fsslow transform bounds_lim (MslXform.h): one compare against the uniform limit
+	if (Xf::On(Xf::BoundsLim) && bytes != 0u) {
+		const std::string size = BufSizeName(b.id);
+		return "((" + addr + ") < (" + size + " >= " + std::to_string(bytes) + "u ? " + size +
+		       " - " + std::to_string(bytes - 1u) + "u : 0u))";
+	}
 	if (Xf::On(Xf::BoundsU32)) {
 		const std::string n = std::to_string(bytes) + "u";
 		return "(" + BufSizeName(b.id) + " >= " + n + " && (" + addr + ") <= " + BufSizeName(b.id) +

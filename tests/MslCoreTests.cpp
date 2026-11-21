@@ -837,7 +837,7 @@ void TestFoltrans() {
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD"}) unsetenv(v);
   Check(Xf::ApplyMode("fix6+xf=c00", err) && std::string(std::getenv("KYTY_MSL_XF")) == "vs_load_group,vs_const_load", "mode: xf=c00 names the two transforms");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
-  Check(!Xf::ApplyMode("fix6+xf=2000", err), "mode: xf bit beyond the registry refused");
+  Check(!Xf::ApplyMode("fix6+xf=4000", err), "mode: xf bit beyond the registry refused");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
   setenv("KYTY_MSL_XF_CLOAD", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_CLOAD");
@@ -851,7 +851,7 @@ void TestFoltrans() {
 // continue block holds phis and one side-effect-free instruction: off = the do { } while (false)
 // wrapper with its exit flag (old text byte for byte); on = no wrapper and no flag, the exit is a
 // plain break and the continue block is printed once per edge into it, followed by `continue;`.
-// Any stage, not in `all`.
+// Any stage. (KYTY_MSL_XF is read once per process, so `all` cannot be exercised here.)
 void TestLoopCont() {
   namespace Xf = Msl::Xf;
   // s_mov s10,0 | L: v_cmp; s_and s10,s10,vcc; s_cbranch_scc0 exit; s_cbranch_scc1 latch;
@@ -889,9 +889,6 @@ void TestLoopCont() {
   Check(off.find("do {") != std::string::npos && off.find("while (false);") != std::string::npos &&
             off.find("bool lf0 = false;") != std::string::npos && off.find("if (lf0) break;") != std::string::npos,
         "loop_cont off: do/while(false) wrapper with the exit flag");
-  setenv("KYTY_MSL_XF", "all", 1);
-  Check(gen() == off, "loop_cont: not part of `all`");
-  unsetenv("KYTY_MSL_XF");
   setenv("KYTY_MSL_XF_LCONT", "1", 1);
   const std::string on = gen();
   if (std::getenv("FSSLOW_DUMP")) std::printf("%s\n", on.c_str());
@@ -924,6 +921,56 @@ void TestLoopCont() {
   setenv("KYTY_MSL_XF_LCONT", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_LCONT");
   unsetenv("KYTY_MSL_XF_LCONT");
+}
+
+// fsslow: transform bounds_lim (mode token blim): the checked-load predicate as one compare against a per-buffer limit.
+// Off = old text; on = `(addr) < (size >= N ? size - (N-1) : 0)`; same truth table as the base form on the edge grid.
+void TestBoundsLim() {
+  namespace Mem = Msl::Mem;
+  namespace Xf = Msl::Xf;
+  Mem::BufferBinding b;
+  b.id = 3;
+  b.bounds_check = true;
+  Mem::BufferOpts opts;
+  opts.elide_bounds = false;
+  auto gen = [&](uint32_t bits, uint32_t comps) { Mem::MemOut o; const auto v = Mem::LoadRaw(o, b, "a", bits, comps, opts); return o.code + "=> " + v; };
+  for (const char *v : {"KYTY_MSL_XF", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_LSEL", "KYTY_MSL_VS_PERF"}) unsetenv(v);
+  Xf::Begin(ShaderType::Pixel, 0);
+  Mem::SetLoadSelectSafe({});
+  const std::string off1 = gen(32, 1), off4 = gen(32, 4);
+  Check(!Xf::On(Xf::BoundsLim) && off1.find("(ulong(a) + 4ul <= ulong(r.b3_size))") != std::string::npos, "bounds_lim off: base 64-bit predicate");
+  setenv("KYTY_MSL_XF_BLIM", "1", 1);
+  for (const ShaderType st : {ShaderType::Vertex, ShaderType::Pixel, ShaderType::Compute}) {
+    Xf::Begin(st, 0);
+    Check(Xf::On(Xf::BoundsLim), "bounds_lim: on with KYTY_MSL_XF_BLIM, any stage");
+  }
+  const std::string on1 = gen(32, 1), on4 = gen(32, 4), on16 = gen(16, 1);
+  Check(on1.find("((a) < (r.b3_size >= 4u ? r.b3_size - 3u : 0u))") != std::string::npos && on1.find("ulong(a)") == std::string::npos, "bounds_lim dword: one compare, no 64-bit sum");
+  Check(on4.find("((a) < (r.b3_size >= 16u ? r.b3_size - 15u : 0u))") != std::string::npos, "bounds_lim vec4: 16-byte limit");
+  Check(on16.find("((a) < (r.b3_size >= 2u ? r.b3_size - 1u : 0u))") != std::string::npos, "bounds_lim ushort: 2-byte limit");
+  unsetenv("KYTY_MSL_XF_BLIM");
+  Xf::Begin(ShaderType::Pixel, 0);
+  Check(gen(32, 1) == off1 && gen(32, 4) == off4, "bounds_lim off again: byte-identical text");
+  bool same = true;
+  const uint32_t edge[] = {0u, 1u, 2u, 3u, 4u, 5u, 15u, 16u, 17u, 0x7fffffffu, 0x80000000u, 0xfffffff0u, 0xfffffffbu, 0xfffffffcu, 0xfffffffdu, 0xfffffffeu, 0xffffffffu};
+  for (const uint32_t n : {1u, 2u, 4u, 8u, 12u, 16u})
+    for (const uint32_t size : edge)
+      for (const uint32_t a : edge) {
+        const bool base = uint64_t(a) + n <= uint64_t(size);
+        const bool lim = a < (size >= n ? size - (n - 1u) : 0u);
+        same = same && base == lim;
+      }
+  Check(same, "bounds_lim: same truth table as the base predicate on the 32-bit edge grid");
+  std::string err;
+  Check(Xf::ApplyMode("fix6+lcont+blim", err) && std::string(std::getenv("KYTY_MSL_XF_BLIM")) == "1" && std::string(std::getenv("KYTY_MSL_XF_LCONT")) == "1", "mode: blim sets KYTY_MSL_XF_BLIM, combines with lcont");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_LCONT"}) unsetenv(v);
+  Check(Xf::ApplyMode("fix6+xf=2000", err) && std::string(std::getenv("KYTY_MSL_XF")) == "bounds_lim", "mode: xf=2000 = bounds_lim");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  Check(!Xf::ApplyMode("fix6+xf=4000", err), "mode: xf bit beyond the registry refused (14 transforms)");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  setenv("KYTY_MSL_XF_BLIM", "1", 1);
+  Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_BLIM");
+  unsetenv("KYTY_MSL_XF_BLIM");
 }
 
 // xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs
@@ -1017,6 +1064,7 @@ int main() {
   TestLoadSelect();
   TestFoltrans();
   TestLoopCont();
+  TestBoundsLim();
   TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

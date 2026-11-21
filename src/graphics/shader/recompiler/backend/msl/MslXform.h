@@ -97,6 +97,16 @@ enum Id : uint32_t {
 	// value on each iteration (the early-out iterations of a light walk are little else).
 	// Any stage. Not in `all`.
 	LoopCont,
+	// fsslow: the per-access buffer bounds check as ONE unsigned compare against a per-buffer
+	// limit, `addr < (size >= N ? size - (N - 1) : 0)`. Same truth table as the base form
+	// `ulong(addr) + N <= ulong(size)` for a 32-bit size (size >= N: addr <= size - N <=> addr <
+	// size - N + 1, which cannot wrap; size < N: false) and for a 64-bit addr (the compare
+	// promotes). The limit is uniform, so it moves to the constant program and a checked load in
+	// a loop costs add + compare + the guarded load (the base form: a 64-bit sum and compare, a
+	// register pair on AGX; bounds_u32 prints `size >= N && ...`, which Apple's compiler keeps as
+	// a second branch around every load). Wins over bounds_u32 when both are on. Any stage.
+	// Not in `all`.
+	BoundsLim,
 	Count
 };
 
@@ -133,6 +143,7 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   vgroup        KYTY_MSL_XF_VGROUP=1: adds vs_load_group to the base set (vertex stage only)
 //   cload         KYTY_MSL_XF_CLOAD=1: adds vs_const_load to the base set (vertex stage only)
 //   lcont         KYTY_MSL_XF_LCONT=1: adds loop_cont to the base set (any stage)
+//   blim          KYTY_MSL_XF_BLIM=1: adds bounds_lim to the base set (any stage)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,
