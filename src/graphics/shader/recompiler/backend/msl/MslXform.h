@@ -11,8 +11,8 @@
 //                                       <vs|ps|cs> <guest shader hash, 16 hex> <list or "-">
 //                                   A matching row REPLACES the base set, so the text of a listed
 //                                   shader does not depend on the environment defaults: this is
-//                                   how the measured/verified choice (offline optimisation loop,
-//                                   work/mslnative/perfauto) reaches translation deterministically.
+//                                   how the measured/verified choice (offline optimisation loop)
+//                                   reaches translation deterministically.
 // Nothing about the active set is printed into the text: the full vs_* set is byte-identical to
 // vsperf's KYTY_MSL_VS_PERF=1 text and the empty set to the base emitter's.
 #include "graphics/shader/shader.h"
