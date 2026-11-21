@@ -1134,6 +1134,108 @@ static UniformFillPlan AnalyzeUniformFill(const Program& program) {
 	return result;
 }
 
+UniformCopy AnalyzeUniformCopy(const Program& program) {
+	if (program.stage != ShaderType::Compute || program.blocks.empty() ||
+	    program.blocks.size() != program.block_info.size() || program.info.uses_dma ||
+	    !program.info.samplers.empty() || !program.info.images.empty() ||
+	    program.info.buffers.size() != 2) {
+		return {};
+	}
+	// One straight path through every block, with exactly one side effect: a buffer store.
+	std::unordered_set<uint32_t> visited;
+	uint32_t                     index = 0;
+	const Inst*                  store = nullptr;
+	for (;;) {
+		if (!visited.insert(index).second) return {};
+		for (const auto& inst: *program.blocks[index]) {
+			if (AddressOpcodeInfoOf(inst.GetOpcode()).access != AddressAccess::None) return {};
+			if (!inst.MayHaveSideEffects()) continue;
+			if (store != nullptr || BufferAccessOf(inst.GetOpcode()) != BufferAccess::Write) return {};
+			store = &inst;
+		}
+		const auto& term = program.block_info[index].terminator;
+		if (term.kind == CFG::TerminatorKind::Return) break;
+		if (term.kind != CFG::TerminatorKind::Branch) return {};
+		const auto next = std::ranges::find(program.block_info, term.true_block, &BlockInfo::id);
+		if (next == program.block_info.end()) return {};
+		index = static_cast<uint32_t>(next - program.block_info.begin());
+	}
+	if (store == nullptr || visited.size() != program.blocks.size()) return {};
+	constexpr std::array stores {ValueOpcode::StoreBufferU32, ValueOpcode::StoreBufferU32x2,
+	                             ValueOpcode::StoreBufferU32x3, ValueOpcode::StoreBufferU32x4};
+	constexpr std::array loads {ValueOpcode::LoadBufferU32, ValueOpcode::LoadBufferU32x2,
+	                            ValueOpcode::LoadBufferU32x3, ValueOpcode::LoadBufferU32x4};
+	const auto store_op = std::ranges::find(stores, store->GetOpcode());
+	if (store_op == stores.end() || store->NumArgs() != 6 ||
+	    store->Arg(2).Resolve() != Value(0u) || store->Arg(3).Resolve() != Value(0u)) {
+		return {};
+	}
+	const auto words = static_cast<uint32_t>(store_op - stores.begin() + 1);
+	const auto guard = store->Arg(5).Resolve();
+	if (!IsFullDispatchPredicate(guard)) return {};
+	const auto plain_element = [words](const MemoryInfo& memory) {
+		return memory.kind == ResourceKind::Buffer && memory.formatted && !memory.typed &&
+		       memory.idxen && !memory.offen && memory.offset == 0 && memory.data_bits == 32 &&
+		       memory.data_dwords == words;
+	};
+	const auto& written = program.memory_info.at(store->Flags<MemoryFlags>().index);
+	if (!plain_element(written) || written.resource >= 2) return {};
+	const auto element = FillIndex(store->Arg(1), 0, guard);
+	if (!element || (*element)[0] != 0 || (*element)[1] != 1 || (*element)[2] == 0) return {};
+	// The stored components: component i of one load, in order.
+	const Inst* load = nullptr;
+	const auto  data = ResolveActiveU32(store->Arg(4), guard);
+	if (words == 1) {
+		load = data.TryInstruction();
+	} else {
+		constexpr std::array composites {ValueOpcode::CompositeConstructU32x2,
+		                                 ValueOpcode::CompositeConstructU32x3,
+		                                 ValueOpcode::CompositeConstructU32x4};
+		constexpr std::array extracts {ValueOpcode::CompositeExtractU32x2,
+		                               ValueOpcode::CompositeExtractU32x3,
+		                               ValueOpcode::CompositeExtractU32x4};
+		const auto* vector = data.TryInstruction();
+		if (vector == nullptr || vector->GetOpcode() != composites[words - 2] ||
+		    vector->NumArgs() != words) {
+			return {};
+		}
+		for (uint32_t i = 0; i < words; ++i) {
+			const auto* part = ResolveActiveU32(vector->Arg(i), guard).TryInstruction();
+			if (part == nullptr || part->GetOpcode() != extracts[words - 2] ||
+			    part->Arg(1).Resolve() != Value(i)) {
+				return {};
+			}
+			const auto* from = part->Arg(0).Resolve().TryInstruction();
+			if (from == nullptr || (load != nullptr && from != load)) return {};
+			load = from;
+		}
+	}
+	if (load == nullptr || load->GetOpcode() != loads[words - 1] || load->NumArgs() != 5 ||
+	    load->Arg(2).Resolve() != Value(0u) || load->Arg(3).Resolve() != Value(0u) ||
+	    !IsFullDispatchPredicate(load->Arg(4).Resolve())) {
+		return {};
+	}
+	const auto& read = program.memory_info.at(load->Flags<MemoryFlags>().index);
+	if (!plain_element(read) || read.resource >= 2 || read.resource == written.resource) return {};
+	const auto source_element = FillIndex(load->Arg(1), 0, Value(true));
+	if (!source_element || *source_element != *element) return {};
+	const auto& source      = program.info.buffers[read.resource];
+	const auto& destination = program.info.buffers[written.resource];
+	if (!source.read || source.written || source.atomic || !source.formatted ||
+	    !destination.written || destination.read || destination.atomic || !destination.formatted ||
+	    source.indirect_root != BufferResource::NoIndirectBuffer ||
+	    destination.indirect_root != BufferResource::NoIndirectBuffer) {
+		return {};
+	}
+	UniformCopy result;
+	result.valid        = true;
+	result.source       = read.resource;
+	result.destination  = written.resource;
+	result.group_stride = static_cast<uint32_t>((*element)[2]);
+	result.words        = words;
+	return result;
+}
+
 ResourcePlan ExtractResourcePlan(const Program& program) {
 	ResourcePlan plan;
 	plan.stage                      = program.stage;

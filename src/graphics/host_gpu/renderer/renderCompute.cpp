@@ -14,11 +14,13 @@
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+#include "graphics/host_gpu/renderer/computeImageCopy.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageInfo.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -38,6 +40,7 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
+#include <set>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -306,6 +309,57 @@ bool ResolveComputeBufferFill(const ShaderComputeInputInfo& input, uint32_t grou
 	resolved_descriptor = descriptor;
 	resolved_clear      = fill.value;
 	resolved_size       = size;
+	return true;
+}
+
+// rtimage KYTY_COMPUTE_IMAGE_COPY (computeImageCopy.h): the dispatch of a proven copy kernel
+// (IR::AnalyzeUniformCopy: destination element i = source element i for every invocation) copies
+// the bytes [source, source + size) to [destination, destination + size) exactly when
+//  - both descriptors are 32UInt elements of 4 bytes without swizzle, index stride or thread-id
+//    addressing: the formatted load returns the element's dword and the formatted store writes it;
+//  - the dispatch runs one invocation per element of both buffers (complete workgroups, as
+//    ResolveComputeBufferFill requires), so no load is out of range and no element is left out;
+//  - the two ranges do not overlap.
+static bool ResolveComputeBufferCopy(const ShaderComputeInputInfo& input, uint32_t group_x,
+                                     uint32_t group_y, uint32_t group_z, uint32_t mode,
+                                     const ShaderRecompiler::IR::UniformCopy& copy,
+                                     uint64_t& source, uint64_t& destination, uint64_t& size) {
+	const auto& resources = *input.stage.resources;
+	if (!copy.valid || resources.buffers.size() != 2 || copy.source >= 2 || copy.destination >= 2 ||
+	    copy.source == copy.destination || !resources.images.empty()) {
+		return false;
+	}
+	const auto from = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[copy.source]);
+	const auto to   = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[copy.destination]);
+	for (const auto* descriptor: {&from, &to}) {
+		if (descriptor->Format() != Prospero::BufferFormat::k32UInt || descriptor->Stride() != 4 ||
+		    descriptor->SwizzleEnabled() || descriptor->IndexStride() != 0 || descriptor->AddTid() ||
+		    descriptor->Base48() == 0) {
+			return false;
+		}
+	}
+	if (input.threads_num[0] == 0 || input.threads_num[0] != copy.group_stride ||
+	    input.threads_num[1] != 1 || input.threads_num[2] != 1 || group_x == 0 || group_y != 1 ||
+	    group_z != 1 || mode != (input.dispatch_thread_dimensions ? 0x61u : 0x41u)) {
+		return false;
+	}
+	const uint64_t invocations = input.dispatch_thread_dimensions
+	                                 ? group_x
+	                                 : static_cast<uint64_t>(group_x) * input.threads_num[0];
+	const auto     bytes       = from.GetSize();
+	if (invocations != from.NumRecords() || invocations != to.NumRecords() || bytes == 0 ||
+	    bytes != to.GetSize() || bytes != invocations * 4u || bytes > UINT32_MAX ||
+	    (input.dispatch_thread_dimensions &&
+	     (group_x % input.threads_num[0] != 0 || input.dispatch_threads_num[0] != group_x ||
+	      input.dispatch_threads_num[1] != 1 || input.dispatch_threads_num[2] != 1))) {
+		return false;
+	}
+	if (from.Base48() < to.Base48() + bytes && to.Base48() < from.Base48() + bytes) {
+		return false;
+	}
+	source      = from.Base48();
+	destination = to.Base48();
+	size        = bytes;
 	return true;
 }
 
@@ -587,6 +641,29 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		ResetBindings();
 		return;
 	}
+	// rtimage KYTY_COMPUTE_IMAGE_COPY: a surface copy through two buffers as a native image copy.
+	bool     copy_verify_kernel = false;
+	uint32_t copy_slots[2]      = {0, 0};
+	uint64_t copy_source = 0, copy_destination = 0, copy_size = 0;
+	if (const auto copy_mode = ComputeImageCopy::GetMode(); copy_mode != ComputeImageCopy::Mode::Off)
+	    [[unlikely]] {
+		if (const auto copy = ComputeImageCopy::Find(program.shader_hash);
+		    copy && ResolveComputeBufferCopy(input_info, thread_group_x, thread_group_y,
+		                                     thread_group_z, mode, *copy, copy_source,
+		                                     copy_destination, copy_size)) {
+			TilerTrace::Count("imgcopy.kernel-dispatch", 1, copy_size);
+			if (copy_mode == ComputeImageCopy::Mode::VerifyKernel) {
+				copy_verify_kernel = true;
+				copy_slots[0]      = copy->source;
+				copy_slots[1]      = copy->destination;
+			} else if (m_context.GetTextureCache().CopyImageFromBuffers(
+			               buffer, copy_source, copy_destination, copy_size,
+			               copy_mode == ComputeImageCopy::Mode::VerifyImage)) {
+				ResetBindings();
+				return;
+			}
+		}
+	}
 
 	if (use_thread_dimensions) {
 		const uint32_t old_x = thread_group_x;
@@ -773,6 +850,45 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			     static_cast<int32_t>(r.LodBias()));
 		}
 	}
+	{ // rtimage KYTY_RTIMAGE_PROBE=1 (diagnostic): dispatch shape of shaders with a formatted or
+	  // written buffer, first 3 distinct shapes per shader.
+		static const bool probe = [] {
+			const char* value = std::getenv("KYTY_RTIMAGE_PROBE");
+			return value != nullptr && value[0] == '1';
+		}();
+		if (probe) [[unlikely]] {
+			bool any = false;
+			for (const auto& resource: program.info.buffers) {
+				any = any || resource.formatted || resource.written;
+			}
+			if (any) {
+				static std::mutex                                   mutex;
+				static std::unordered_map<uint64_t, std::set<std::string>> seen;
+				auto text = fmt::format(
+				    "groups={}x{}x{} threads={}x{}x{} mode={:#x} tdim={} fill={} nbuf={} nimg={}",
+				    thread_group_x, thread_group_y, thread_group_z, input_info.threads_num[0],
+				    input_info.threads_num[1], input_info.threads_num[2], mode,
+				    input_info.dispatch_thread_dimensions ? 1 : 0,
+				    static_cast<uint32_t>(input_info.stage.resources->uniform_fill.kind),
+				    program.info.buffers.size(), program.info.images.size());
+				for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
+					const auto d = DecodeNativeDescriptor<ShaderBufferResource>(
+					    input_info.stage.resources->buffers[i]);
+					text += fmt::format(" b{}[{}{}{} f{} s{} n{}]", i,
+					                    program.info.buffers[i].read ? "R" : "",
+					                    program.info.buffers[i].written ? "W" : "",
+					                    program.info.buffers[i].formatted ? "F" : "",
+					                    static_cast<uint32_t>(d.Format()), d.Stride(), d.NumRecords());
+				}
+				std::scoped_lock lock {mutex};
+				auto&            shapes = seen[program.shader_hash];
+				if (shapes.size() < 3 && shapes.insert(text).second) {
+					std::fprintf(stderr, "[rtimage] dispatch sh=%016" PRIx64 " %s\n",
+					             program.shader_hash, text.c_str());
+				}
+			}
+		}
+	}
 	buffer.BindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	constexpr uint32_t DispatchInitiatorOrderedAppendEnable = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
@@ -805,6 +921,24 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	// The removed host fence also ordered read-only dispatches before later writers.
 	ShaderAccessBarrier(buffer, vk::PipelineStageFlagBits::eComputeShader);
 	buffer.NoteGuestDispatch(no_overlap);
+	if (copy_verify_kernel) [[unlikely]] {
+		// rtimage KYTY_COMPUTE_IMAGE_COPY=verify-kernel: the guest shader ran; the destination
+		// range must now hold the source range's bytes.
+		static std::atomic<uint32_t> ordinal {0};
+		const auto                   n = ordinal.fetch_add(1, std::memory_order_relaxed);
+		if ((n < 64 || n % 16 == 0) && bindings.buffers.size() == 2) {
+			const auto& layout = program.bindings;
+			const auto  start  = [&](uint32_t slot) {
+				const auto dword = layout.memory_offset_dword + slot / 4u;
+				return bindings.buffers[slot].offset +
+				       ((bindings.shader_data[dword] >> ((slot % 4u) * 8u)) & 0xffu);
+			};
+			m_context.GetTextureCache().VerifyBufferRanges(
+			    "imgcopy-kernel", copy_destination, bindings.buffers[copy_slots[0]].buffer,
+			    start(copy_slots[0]), bindings.buffers[copy_slots[1]].buffer, start(copy_slots[1]),
+			    copy_size);
+		}
+	}
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}

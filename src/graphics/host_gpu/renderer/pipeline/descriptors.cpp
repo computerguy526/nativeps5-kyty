@@ -2267,6 +2267,26 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		                                               buffer_offset, written, uniform_view));
 		pack_memory_offset(i, buffer_offset);
 	}
+	{ // rtimage KYTY_RTIMAGE_PROBE=1 (diagnostic)
+		static const bool probe = [] {
+			const char* value = std::getenv("KYTY_RTIMAGE_PROBE");
+			return value != nullptr && value[0] == '1';
+		}();
+		if (probe) [[unlikely]] {
+			for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
+				const auto& source   = prepared.buffer_sources[i];
+				const auto& resource = program.info.buffers[i];
+				if (source.address != 0 && source.size != 0 &&
+				    (resource.formatted || resource.written)) {
+					m_context.GetTextureCache().RtImageProbe(
+					    program.shader_hash, static_cast<uint32_t>(program.stage), i, resource.read,
+					    resource.written, resource.formatted,
+					    static_cast<uint32_t>(resource.descriptor_format), resource.packed_stride,
+					    source.address, source.size);
+				}
+			}
+		}
+	}
 	CommitStats::StepMark(CommitStats::Step::RbBindings);
 	prepared.mip_stats_canary = false;
 	BufferLookupStats::PartScope mip_scope(BufferLookupStats::Part::MipStats);

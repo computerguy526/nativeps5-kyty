@@ -199,6 +199,28 @@ public:
 	[[nodiscard]] uint32_t CountImagesOutsideGpuWrite(uint64_t address, uint64_t size,
 	                                                  std::span<const GuestRange> written);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t address, uint64_t size);
+	// rtimage KYTY_COMPUTE_IMAGE_COPY (computeImageCopy.h): the native form of a guest compute pass
+	// that copies the bytes [source, source + size) to [destination, destination + size) through
+	// buffers. True when it was done as an image copy (the caller then skips the dispatch): the
+	// source range is exactly one cached colour image that a texel read would be synchronized
+	// from (it owns every byte, is neither buffer-modified nor CPU-dirty), and the destination
+	// range is exactly one cached image with the same format, extent, tiling and mip layout. The
+	// tile and detile passes the buffer path would run are bit copies between the same texel
+	// positions, so the destination's texels are the same either way; it becomes GPU-owned as
+	// after a render. False changes nothing. verify: also tile both images out and compare.
+	[[nodiscard]] bool CopyImageFromBuffers(CommandBuffer& command, uint64_t source,
+	                                        uint64_t destination, uint64_t size, bool verify);
+	// Diagnostic: compares two device buffer ranges once the tick completed
+	// (KYTY_TILER_TRACE "count verify.<operation>", bytes = mismatching ranges).
+	void VerifyBufferRanges(const char* operation, uint64_t guest_address, vk::Buffer expected,
+	                        uint64_t expected_offset, vk::Buffer actual, uint64_t actual_offset,
+	                        uint64_t size);
+	// rtimage KYTY_RTIMAGE_PROBE=1 (diagnostic, changes nothing): which shader binds a formatted
+	// or written buffer over which cached image. One "[rtimage] bind" line per new key, and all
+	// keys with their counts every 10 s.
+	void RtImageProbe(uint64_t shader_hash, uint32_t stage, uint32_t slot, bool read, bool written,
+	                  bool formatted, uint32_t format, uint32_t stride, uint64_t address,
+	                  uint64_t size);
 	// Whether any cached image overlaps the range (RenderContext::UnmapMemory: CPU-only unmaps skip
 	// the GPU drain).
 	[[nodiscard]] bool IsRegionRegistered(uint64_t address, uint64_t size);
