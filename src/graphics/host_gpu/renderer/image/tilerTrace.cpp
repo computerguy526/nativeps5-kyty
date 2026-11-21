@@ -96,8 +96,8 @@ void FlushLocked(State& state, double seconds) {
 		             key.vk_format, value.count, value.bytes);
 	}
 	for (const auto& [what, value]: state.counters) {
-		std::fprintf(stderr, "[tilertrace] count %s n=%" PRIu64 " bytes=%" PRIu64 "\n", what.c_str(),
-		             value.count, value.bytes);
+		std::fprintf(stderr, "[tilertrace] count %s n=%" PRIu64 " bytes=%" PRIu64 "\n",
+		             what.c_str(), value.count, value.bytes);
 	}
 	std::fflush(stderr);
 	state.window.clear();

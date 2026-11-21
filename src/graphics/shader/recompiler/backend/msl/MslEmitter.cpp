@@ -970,7 +970,7 @@ private:
 	std::vector<Loop>     loops_;
 	std::vector<uint32_t> stops_;
 	uint32_t              loop_counter_ = 0;
-	uint32_t              loop_depth_   = 0;     // EmitLoop nesting (dry run: vs_const_load)
+	uint32_t              loop_depth_     = 0; // EmitLoop nesting (dry run: vs_const_load)
 	bool                  writer_in_loop_ = false;
 	// guard_exit: block id -> text appended to that block's exit test
 	std::map<uint32_t, std::string> guard_exit_;
@@ -1164,7 +1164,7 @@ private:
 			}
 		}
 		if (guard_block != UINT32_MAX) {
-			const auto& gt = ctx_.program.block_info[Index(guard_block)].terminator;
+			const auto& gt           = ctx_.program.block_info[Index(guard_block)].terminator;
 			guard_exit_[guard_block] = gt.true_block == term.merge_block
 			                               ? " || !nps5_lg_step(nps5_lg_n)"
 			                               : " && nps5_lg_step(nps5_lg_n)";

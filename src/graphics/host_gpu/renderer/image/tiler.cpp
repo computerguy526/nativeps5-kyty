@@ -1165,7 +1165,8 @@ void TileManager::RecordImage(Image& image, bool load, vk::Buffer tiled, uint64_
 		command.dispatch((dispatch.push.width + 7u) / 8u, (dispatch.push.height + 7u) / 8u,
 		                 dispatch.push.depth);
 		TilerTrace::Count(load ? "dispatch.load" : "dispatch.store", 1,
-		                  uint64_t {dispatch.push.width} * dispatch.push.height * dispatch.push.depth);
+		                  uint64_t {dispatch.push.width} * dispatch.push.height *
+		                      dispatch.push.depth);
 	}
 
 	if (load) {

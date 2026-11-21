@@ -2587,8 +2587,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		    SubresShort(cached.info.resources, requested.resources) &&
 		    (requested.data.size > cached.info.data.size ||
 		     (requested.data.size == cached.info.data.size &&
-		      requested.extent == cached.info.extent &&
-		      cached.info.resources.levels > 1 &&
+		      requested.extent == cached.info.extent && cached.info.resources.levels > 1 &&
 		      requested.resources.layers == cached.info.resources.layers))) {
 			return {ExpandImage(requested, cached_id)};
 		}
@@ -3087,23 +3086,24 @@ bool TextureCache::AliasRebuildPartialEnabled() {
 	return enabled;
 }
 
-// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1 (opt-in, default off; needs KYTY_ALIAS_REBUILD_PARTIAL=1): the
-// partial rebuild moves this image's owned bytes inside its segments to the buffer by tiling only
-// the blocks that hold owned bytes (OwnedRebuild::PreserveSegments), not every whole segment that
-// holds one. The bytes that reach the buffer are the same; the tile pass is smaller.
-// =verify (diagnostic, slow): as =1, and every such move also tiles the whole segments into a
-// second scratch and compares the owned ranges of the two once the tick completed
+// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1 (opt-in, default off; needs KYTY_ALIAS_REBUILD_PARTIAL=1):
+// the partial rebuild moves this image's owned bytes inside its segments to the buffer by tiling
+// only the blocks that hold owned bytes (OwnedRebuild::PreserveSegments), not every whole segment
+// that holds one. The bytes that reach the buffer are the same; the tile pass is smaller. =verify
+// (diagnostic, slow): as =1, and every such move also tiles the whole segments into a second
+// scratch and compares the owned ranges of the two once the tick completed
 // (TileManager::VerifyRanges; KYTY_TILER_TRACE prints "count verify.preserve-tight").
 static int AliasRebuildPreserveTightMode() {
 	static const int mode = [] {
 		const char* value = std::getenv("KYTY_ALIAS_REBUILD_PRESERVE_TIGHT");
-		const int   m     = value == nullptr                   ? 0
+		const int   m     = value == nullptr                    ? 0
 		                    : std::strcmp(value, "1") == 0      ? 1
 		                    : std::strcmp(value, "verify") == 0 ? 2
 		                                                        : 0;
 		if (m != 0) {
-			std::fprintf(stderr, "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=%s: partial rebuilds "
-			                     "tile out only the blocks that hold owned bytes%s\n",
+			std::fprintf(stderr,
+			             "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=%s: partial rebuilds "
+			             "tile out only the blocks that hold owned bytes%s\n",
 			             value, m == 2 ? " (verified against the whole segments)" : "");
 		}
 		return m;
@@ -3133,10 +3133,10 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		if (TilerTrace::Enabled() && AliasBytesEnabled() && !image.depth_id &&
 		    image.IsBufferModified()) {
 			// KYTY_TILER_TRACE: why a buffer-modified image is refreshed whole instead.
-			const char* why = image.IsCpuDirty()                 ? "rp.skip.cpu-dirty"
-			                  : image.HasKeptDirty()             ? "rp.skip.kept"
-			                  : !image.IsGpuModified()           ? "rp.skip.not-gpu-modified"
-			                  : image.OwnsAllBytes()             ? "rp.skip.owns-all"
+			const char* why = image.IsCpuDirty()       ? "rp.skip.cpu-dirty"
+			                  : image.HasKeptDirty()   ? "rp.skip.kept"
+			                  : !image.IsGpuModified() ? "rp.skip.not-gpu-modified"
+			                  : image.OwnsAllBytes()   ? "rp.skip.owns-all"
 			                  : image.OwnsNoBytes()
 			                      ? (image.coherence.Empty() ? "rp.skip.owns-none.coherent-none"
 			                                                 : "rp.skip.owns-none.coherent-some")
@@ -3316,7 +3316,9 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 				parts.clear();
 				OwnedRebuild::PreserveSegments(
 				    surface, segment,
-				    [&](uint64_t address, uint64_t size) { return image.OwnsBytesIn(address, size); },
+				    [&](uint64_t address, uint64_t size) {
+					    return image.OwnsBytesIn(address, size);
+				    },
 				    OwnedRebuild::RowAlign(tile0.bytes_per_element),
 				    OwnedRebuild::ColumnAlign(tile0.bytes_per_element), parts);
 				for (const auto& part: parts) {
@@ -6155,8 +6157,8 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
 			reference = m_tiler.GetScratchBuffer(data.size);
 			std::vector<vk::BufferCopy> to_reference;
 			owner.ranges.ForEach([&](uint64_t begin, uint64_t end) {
-				to_reference.push_back({buffer.Offset(begin),
-				                        reference.offset + (begin - data.address), end - begin});
+				to_reference.push_back(
+				    {buffer.Offset(begin), reference.offset + (begin - data.address), end - begin});
 			});
 			m_scheduler.EndRendering();
 			const auto              command = m_scheduler.Current().HelperSink();
@@ -7939,7 +7941,8 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		const auto& source = m_slot_images[source_id];
 		const auto& info   = source.info;
 		if (source.depth_id || info.data.address != source_address || info.data.size != size ||
-		    !source.registered || source.backing.image == nullptr || !SafeToSyncIntoBuffer(source)) {
+		    !source.registered || source.backing.image == nullptr ||
+		    !SafeToSyncIntoBuffer(source)) {
 			return reject("imgcopy.reject.source-range");
 		}
 		// A colour surface with DCC metadata is allowed: the native image always holds the
@@ -7965,25 +7968,25 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		for (const auto id: FindImagesInRegion(destination_address, size, false)) {
 			const auto* other = m_slot_images.try_get(id);
 			if (other == nullptr || id == source_id || other->depth_id || !other->registered ||
-			    other->backing.image == nullptr || other->info.data.address != destination_address ||
-			    other->info.data.size != size) {
+			    other->backing.image == nullptr ||
+			    other->info.data.address != destination_address || other->info.data.size != size) {
 				continue;
 			}
 			const auto& a = source.info;
 			const auto& b = other->info;
-			bool same = a.guest_format == b.guest_format && a.pixel_format == b.pixel_format &&
-			            a.type == b.type && a.extent == b.extent && a.pitch == b.pitch &&
-			            a.bytes_per_block == b.bytes_per_block && a.samples == b.samples &&
-			            a.tile_mode == b.tile_mode && a.bgra16 == b.bgra16 &&
-			            a.resources.levels == b.resources.levels &&
-			            a.resources.layers == b.resources.layers && !b.HasStencil() &&
-			            b.metadata.kind != ImageMetadataKind::Htile &&
-			            source.backing.format == other->backing.format &&
-			            source.backing.mip_levels == other->backing.mip_levels &&
-			            source.backing.layers == other->backing.layers &&
-			            source.backing.extent == other->backing.extent &&
-			            source.backing.image_type == other->backing.image_type &&
-			            other->backing.samples == 1;
+			bool same     = a.guest_format == b.guest_format && a.pixel_format == b.pixel_format &&
+			                a.type == b.type && a.extent == b.extent && a.pitch == b.pitch &&
+			                a.bytes_per_block == b.bytes_per_block && a.samples == b.samples &&
+			                a.tile_mode == b.tile_mode && a.bgra16 == b.bgra16 &&
+			                a.resources.levels == b.resources.levels &&
+			                a.resources.layers == b.resources.layers && !b.HasStencil() &&
+			                b.metadata.kind != ImageMetadataKind::Htile &&
+			                source.backing.format == other->backing.format &&
+			                source.backing.mip_levels == other->backing.mip_levels &&
+			                source.backing.layers == other->backing.layers &&
+			                source.backing.extent == other->backing.extent &&
+			                source.backing.image_type == other->backing.image_type &&
+			                other->backing.samples == 1;
 			for (uint32_t level = 0; same && level < a.resources.levels; ++level) {
 				same = a.mip_layout[level] == b.mip_layout[level];
 			}
@@ -8019,13 +8022,15 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		const auto                   n = ordinal.fetch_add(1, std::memory_order_relaxed);
 		if (n < 64 || n % 16 == 0) {
 			const TileManager::ScratchHold scratch_hold(m_tiler);
-			const auto expected = m_tiler.GetScratchBuffer(size);
-			const auto actual   = m_tiler.GetScratchBuffer(size);
+			const auto                     expected = m_tiler.GetScratchBuffer(size);
+			const auto                     actual   = m_tiler.GetScratchBuffer(size);
 			m_scheduler.EndRendering();
 			{
 				const auto sink = m_scheduler.Current().HelperSink();
-				sink.fillBuffer(expected.buffer, expected.offset, Common::AlignUp(size, uint64_t {4}), 0);
-				sink.fillBuffer(actual.buffer, actual.offset, Common::AlignUp(size, uint64_t {4}), 0);
+				sink.fillBuffer(expected.buffer, expected.offset,
+				                Common::AlignUp(size, uint64_t {4}), 0);
+				sink.fillBuffer(actual.buffer, actual.offset, Common::AlignUp(size, uint64_t {4}),
+				                0);
 			}
 			const TilerTrace::Reason tiler_reason("download.verify-imgcopy");
 			DownloadImageTo(source, expected.buffer, expected.offset, expected.size, size,
@@ -8047,10 +8052,10 @@ namespace Libs::Graphics {
 void TextureCache::RtImageProbe(uint64_t shader_hash, uint32_t stage, uint32_t slot, bool read,
                                 bool written, bool formatted, uint32_t format, uint32_t stride,
                                 uint64_t address, uint64_t size) {
-	static std::mutex                                 mutex;
-	static std::map<std::string, uint64_t>            counts;
-	static std::chrono::steady_clock::time_point      last = std::chrono::steady_clock::now();
-	std::vector<std::string>                          keys;
+	static std::mutex                            mutex;
+	static std::map<std::string, uint64_t>       counts;
+	static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	std::vector<std::string>                     keys;
 	{
 		std::scoped_lock lock {m_lock};
 		for (const auto id: FindImagesInRegion(address, size, false)) {
@@ -8061,12 +8066,13 @@ void TextureCache::RtImageProbe(uint64_t shader_hash, uint32_t stage, uint32_t s
 			const auto& info  = image->info;
 			const auto  ia    = info.data.address;
 			const auto  is    = info.data.size;
-			const char* cover = (address == ia && size == is)                    ? "exact"
-			                    : (address >= ia && address + size <= ia + is)   ? "inside"
-			                    : (address <= ia && address + size >= ia + is)   ? "covers"
-			                                                                    : "partial";
+			const char* cover = (address == ia && size == is)                  ? "exact"
+			                    : (address >= ia && address + size <= ia + is) ? "inside"
+			                    : (address <= ia && address + size >= ia + is) ? "covers"
+			                                                                   : "partial";
 			keys.push_back(fmt::format(
-			    "sh={:016x} st={} slot={} acc={}{}{} bfmt={} stride={} bsize={} cover={} doff={} | img "
+			    "sh={:016x} st={} slot={} acc={}{}{} bfmt={} stride={} bsize={} cover={} doff={} | "
+			    "img "
 			    "fmt={} tile={} {}x{} mips={} layers={} isize={} bpb={} flags={}{}{}{}",
 			    shader_hash, stage, slot, read ? "R" : "", written ? "W" : "", formatted ? "F" : "",
 			    format, stride, size, cover,

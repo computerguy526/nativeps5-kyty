@@ -159,7 +159,8 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	const auto  bad     = [&](const std::string& why) { ctx.unsupported["kk-bda: " + why]++; };
 
 	b.Line("constant uchar* kk_root = (constant uchar*)&kkroot;");
-	if (Xf::On(Xf::LoadSelect)) { // the root block is bound for every draw/dispatch and holds the set pointer read below
+	if (Xf::On(Xf::LoadSelect)) { // the root block is bound for every draw/dispatch and holds the
+		                          // set pointer read below
 		b.Line("const ulong kk_lsafe = (ulong)&kkroot.contents[0];");
 		SetLoadSelectSafe("kk_lsafe");
 	}
@@ -287,8 +288,8 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		else
 			b.Line("r.srt = (const device uint*)(*(constant ulong*)(kk_set0 + " + KU(off) + "));");
 	}
-	// vs_const_load (MslXform.h): on for this program; with a written buffer also the per-draw alias
-	// bool (bound range of a read-only buffer overlaps the bound range of a written one).
+	// vs_const_load (MslXform.h): on for this program; with a written buffer also the per-draw
+	// alias bool (bound range of a read-only buffer overlaps the bound range of a written one).
 	if (Xf::On(Xf::VsConstLoad) && m.gds_bytes == 0u) {
 		std::string alias;
 		for (const auto& w: m.buffers) {

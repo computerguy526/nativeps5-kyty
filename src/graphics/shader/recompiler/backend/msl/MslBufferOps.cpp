@@ -53,7 +53,8 @@ std::string ConstDeref(const std::string& type, const std::string& at) {
 // `*(T*)(base + addr)` with T an alignment-1 friendly type.
 std::string Mem(const BufferBinding& b, const std::string& addr, const std::string& type,
                 bool volatile_) {
-	if (ConstB(b, volatile_)) return ConstDeref(type, "(ulong)(" + BufName(b.id) + " + " + addr + ")");
+	if (ConstB(b, volatile_))
+		return ConstDeref(type, "(ulong)(" + BufName(b.id) + " + " + addr + ")");
 	return "*(" + std::string(volatile_ ? "volatile " : "") + PtrQual(b) + " " + type + "*)(" +
 	       BufName(b.id) + " + " + addr + ")";
 }
@@ -65,7 +66,8 @@ std::string LoadSelected(MemOut& o, const BufferBinding& b, const std::string& o
                          const char* decl, const std::string& conv, const std::string& qual) {
 	const std::string at = o.Def("ulong", ok + " ? (ulong)(" + BufName(b.id) + " + " + addr +
 	                                          ") : " + LoadSelectSafe());
-	std::string load = "*(" + std::string(volatile_ ? "volatile " : "") + qual + " " + type + "*)(" + at + ")";
+	std::string       load =
+	    "*(" + std::string(volatile_ ? "volatile " : "") + qual + " " + type + "*)(" + at + ")";
 	if (ConstB(b, volatile_)) load = ConstDeref(type, at);
 	if (!conv.empty()) load = conv + "(" + load + ")";
 	return o.Def(decl, load);
@@ -74,7 +76,7 @@ std::string LoadSelected(MemOut& o, const BufferBinding& b, const std::string& o
 } // namespace
 
 static thread_local std::string g_load_select_safe;
-void SetLoadSelectSafe(const std::string& expr) {
+void                            SetLoadSelectSafe(const std::string& expr) {
 	g_load_select_safe = expr;
 }
 const std::string& LoadSelectSafe() {
@@ -154,9 +156,12 @@ std::string LoadRaw(MemOut& o, const BufferBinding& b, const std::string& addr, 
 		return o.Def(result_type.c_str(), InBounds(b, addr, bytes) + " ? " + load + " : " + part);
 	}
 	if (LoadSelectOn()) {
-		const std::string ok  = o.Def("bool", InBounds(b, addr, bytes));
-		const std::string conv = (bits == 32 && comps > 1) ? result_type : (bits != 32 ? std::string("uint") : std::string());
-		const std::string raw = LoadSelected(o, b, ok, addr, type, vol, result_type.c_str(), conv, PtrQual(b));
+		const std::string ok   = o.Def("bool", InBounds(b, addr, bytes));
+		const std::string conv = (bits == 32 && comps > 1)
+		                             ? result_type
+		                             : (bits != 32 ? std::string("uint") : std::string());
+		const std::string raw =
+		    LoadSelected(o, b, ok, addr, type, vol, result_type.c_str(), conv, PtrQual(b));
 		return o.Def(result_type.c_str(), ok + " ? " + raw + " : " + result_type + "(0u)");
 	}
 	return o.Def(result_type.c_str(),

@@ -122,8 +122,8 @@ std::string AddressLoad(MemOut& o, const std::string& a, uint32_t bits);
 void        AddressStore(MemOut& o, const std::string& a, uint32_t bits, const std::string& value);
 
 // load_select (MslXform.h): integer-address expression of memory that is mapped for every draw and
-// dispatch and at least 16 bytes long (kk-bda: the root block). Empty = the transform prints nothing.
-// Reset by the emitter per program; KkBdaLocals sets it when the transform is active.
+// dispatch and at least 16 bytes long (kk-bda: the root block). Empty = the transform prints
+// nothing. Reset by the emitter per program; KkBdaLocals sets it when the transform is active.
 void               SetLoadSelectSafe(const std::string& expr);
 const std::string& LoadSelectSafe();
 bool               LoadSelectOn();
@@ -135,7 +135,8 @@ void SetConstLoad(int state, const std::string& alias);
 int  ConstLoadState();
 // A buffer store / atomic is printed now (or lies in a loop): state 1 -> 2.
 void ConstLoadWriter();
-// ReadConst (flattened SRT, host-owned, never a guest write target): `r.srt[i]` or its constant form.
+// ReadConst (flattened SRT, host-owned, never a guest write target): `r.srt[i]` or its constant
+// form.
 std::string SrtLoad(const std::string& index);
 
 } // namespace Libs::Graphics::ShaderRecompiler::Msl::Mem

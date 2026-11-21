@@ -412,9 +412,8 @@ bool BufferOp(Em& e, ValueOpcode op) {
 			hi = e.o.Def("uint", "(" + e.A(1) + " + " + U(g.end_imm - 4u) + ")");
 		} else {
 			BufferAddrIn in;
-			in.index = mem.idxen ? (LgXf() && !g.index.IsEmpty() ? e.ctx.Val(g.index)
-			                                                                    : e.A(1))
-			                     : std::string();
+			in.index   = mem.idxen ? (LgXf() && !g.index.IsEmpty() ? e.ctx.Val(g.index) : e.A(1))
+			                       : std::string();
 			in.offset  = mem.offen ? e.A(2) : std::string();
 			in.soffset = e.A(3);
 			in.lane    = e.ctx.LaneExpr(e.ctx.half);

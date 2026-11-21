@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 
 #include "common/assert.h"
@@ -10,6 +9,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 

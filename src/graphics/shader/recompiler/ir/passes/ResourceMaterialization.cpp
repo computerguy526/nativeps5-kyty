@@ -1150,7 +1150,8 @@ UniformCopy AnalyzeUniformCopy(const Program& program) {
 		for (const auto& inst: *program.blocks[index]) {
 			if (AddressOpcodeInfoOf(inst.GetOpcode()).access != AddressAccess::None) return {};
 			if (!inst.MayHaveSideEffects()) continue;
-			if (store != nullptr || BufferAccessOf(inst.GetOpcode()) != BufferAccess::Write) return {};
+			if (store != nullptr || BufferAccessOf(inst.GetOpcode()) != BufferAccess::Write)
+				return {};
 			store = &inst;
 		}
 		const auto& term = program.block_info[index].terminator;
@@ -1165,9 +1166,9 @@ UniformCopy AnalyzeUniformCopy(const Program& program) {
 	                             ValueOpcode::StoreBufferU32x3, ValueOpcode::StoreBufferU32x4};
 	constexpr std::array loads {ValueOpcode::LoadBufferU32, ValueOpcode::LoadBufferU32x2,
 	                            ValueOpcode::LoadBufferU32x3, ValueOpcode::LoadBufferU32x4};
-	const auto store_op = std::ranges::find(stores, store->GetOpcode());
-	if (store_op == stores.end() || store->NumArgs() != 6 ||
-	    store->Arg(2).Resolve() != Value(0u) || store->Arg(3).Resolve() != Value(0u)) {
+	const auto           store_op = std::ranges::find(stores, store->GetOpcode());
+	if (store_op == stores.end() || store->NumArgs() != 6 || store->Arg(2).Resolve() != Value(0u) ||
+	    store->Arg(3).Resolve() != Value(0u)) {
 		return {};
 	}
 	const auto words = static_cast<uint32_t>(store_op - stores.begin() + 1);
@@ -1194,7 +1195,7 @@ UniformCopy AnalyzeUniformCopy(const Program& program) {
 		constexpr std::array extracts {ValueOpcode::CompositeExtractU32x2,
 		                               ValueOpcode::CompositeExtractU32x3,
 		                               ValueOpcode::CompositeExtractU32x4};
-		const auto* vector = data.TryInstruction();
+		const auto*          vector = data.TryInstruction();
 		if (vector == nullptr || vector->GetOpcode() != composites[words - 2] ||
 		    vector->NumArgs() != words) {
 			return {};

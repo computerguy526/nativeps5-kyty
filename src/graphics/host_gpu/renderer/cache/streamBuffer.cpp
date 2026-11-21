@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include "common/alignment.h"
@@ -9,6 +8,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/vramStats.h"
 
 #include <array>
@@ -16,8 +16,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
-#include <string>
 #include <numeric>
+#include <string>
 #include <vk_mem_alloc.h>
 
 namespace Libs::Graphics {
@@ -325,8 +325,9 @@ void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value) {
 	                       vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
 	                       0, nullptr, 1, &before, 0, nullptr);
 	native.fillBuffer(Handle(), offset, size, value);
-	TilerTrace::Count(size <= 64 ? "fill.buffer.le64" : size <= 65536 ? "fill.buffer.le64k"
-	                                                                  : "fill.buffer.gt64k",
+	TilerTrace::Count(size <= 64      ? "fill.buffer.le64"
+	                  : size <= 65536 ? "fill.buffer.le64k"
+	                                  : "fill.buffer.gt64k",
 	                  1, size);
 	MarkContentWritten();
 	const auto after = Barrier(offset, size, vk::AccessFlagBits::eTransferWrite,

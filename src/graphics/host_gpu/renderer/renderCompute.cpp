@@ -40,7 +40,6 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
-#include <set>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -52,6 +51,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <span>
 #include <tuple>
 #include <unordered_map>
@@ -330,11 +330,12 @@ static bool ResolveComputeBufferCopy(const ShaderComputeInputInfo& input, uint32
 		return false;
 	}
 	const auto from = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[copy.source]);
-	const auto to   = DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[copy.destination]);
+	const auto to =
+	    DecodeNativeDescriptor<ShaderBufferResource>(resources.buffers[copy.destination]);
 	for (const auto* descriptor: {&from, &to}) {
 		if (descriptor->Format() != Prospero::BufferFormat::k32UInt || descriptor->Stride() != 4 ||
-		    descriptor->SwizzleEnabled() || descriptor->IndexStride() != 0 || descriptor->AddTid() ||
-		    descriptor->Base48() == 0) {
+		    descriptor->SwizzleEnabled() || descriptor->IndexStride() != 0 ||
+		    descriptor->AddTid() || descriptor->Base48() == 0) {
 			return false;
 		}
 	}
@@ -645,12 +646,12 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	bool     copy_verify_kernel = false;
 	uint32_t copy_slots[2]      = {0, 0};
 	uint64_t copy_source = 0, copy_destination = 0, copy_size = 0;
-	if (const auto copy_mode = ComputeImageCopy::GetMode(); copy_mode != ComputeImageCopy::Mode::Off)
-	    [[unlikely]] {
+	if (const auto copy_mode = ComputeImageCopy::GetMode();
+	    copy_mode != ComputeImageCopy::Mode::Off) [[unlikely]] {
 		if (const auto copy = ComputeImageCopy::Find(program.shader_hash);
-		    copy && ResolveComputeBufferCopy(input_info, thread_group_x, thread_group_y,
-		                                     thread_group_z, mode, *copy, copy_source,
-		                                     copy_destination, copy_size)) {
+		    copy &&
+		    ResolveComputeBufferCopy(input_info, thread_group_x, thread_group_y, thread_group_z,
+		                             mode, *copy, copy_source, copy_destination, copy_size)) {
 			TilerTrace::Count("imgcopy.kernel-dispatch", 1, copy_size);
 			if (copy_mode == ComputeImageCopy::Mode::VerifyKernel) {
 				copy_verify_kernel = true;
@@ -862,9 +863,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 				any = any || resource.formatted || resource.written;
 			}
 			if (any) {
-				static std::mutex                                   mutex;
+				static std::mutex                                          mutex;
 				static std::unordered_map<uint64_t, std::set<std::string>> seen;
-				auto text = fmt::format(
+				auto                                                       text = fmt::format(
 				    "groups={}x{}x{} threads={}x{}x{} mode={:#x} tdim={} fill={} nbuf={} nimg={}",
 				    thread_group_x, thread_group_y, thread_group_z, input_info.threads_num[0],
 				    input_info.threads_num[1], input_info.threads_num[2], mode,
@@ -874,11 +875,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 				for (uint32_t i = 0; i < program.info.buffers.size(); i++) {
 					const auto d = DecodeNativeDescriptor<ShaderBufferResource>(
 					    input_info.stage.resources->buffers[i]);
-					text += fmt::format(" b{}[{}{}{} f{} s{} n{}]", i,
-					                    program.info.buffers[i].read ? "R" : "",
-					                    program.info.buffers[i].written ? "W" : "",
-					                    program.info.buffers[i].formatted ? "F" : "",
-					                    static_cast<uint32_t>(d.Format()), d.Stride(), d.NumRecords());
+					text += fmt::format(
+					    " b{}[{}{}{} f{} s{} n{}]", i, program.info.buffers[i].read ? "R" : "",
+					    program.info.buffers[i].written ? "W" : "",
+					    program.info.buffers[i].formatted ? "F" : "",
+					    static_cast<uint32_t>(d.Format()), d.Stride(), d.NumRecords());
 				}
 				std::scoped_lock lock {mutex};
 				auto&            shapes = seen[program.shader_hash];

@@ -119,8 +119,8 @@ public:
 	// KYTY_TILER_TRACE prints "count verify.<operation> n=<checks> bytes=<mismatching ranges>".
 	void VerifyRanges(const char* operation, uint64_t guest_address, Result expected, Result actual,
 	                  uint64_t size, std::vector<std::pair<uint64_t, uint64_t>> ranges) {
-		VerifyOnCompletion(operation, guest_address, expected.buffer, expected.offset, actual.buffer,
-		                   actual.offset, size, std::move(ranges));
+		VerifyOnCompletion(operation, guest_address, expected.buffer, expected.offset,
+		                   actual.buffer, actual.offset, size, std::move(ranges));
 	}
 	// KYTY_VRAM_STATS: idle pooled scratch bytes and their limit.
 	[[nodiscard]] std::pair<uint64_t, uint64_t> ScratchPoolBytes();

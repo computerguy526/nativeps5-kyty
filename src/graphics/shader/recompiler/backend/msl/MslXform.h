@@ -59,15 +59,22 @@ enum Id : uint32_t {
 	// base).
 	// movrel_switch wins when both are on. Bit-exact. Any stage.
 	MovrelTree,
-	// foliage2 / xfmine N1: a bounds-checked buffer load `in_range ? *(buf + addr) : 0` is printed as an
-	// UNCONDITIONAL load from `in_range ? buf + addr : <root>` followed by the same select. In range the
-	// same bytes are read; out of range (also a zero-size or unbound buffer: its size is 0, so the check
-	// fails) the read goes to the kk-bda root block, which is bound for every draw and dispatch and is
-	// larger than any loaded type (the entry function itself reads the set pointer from it), and the
+	// foliage2 / xfmine N1: a bounds-checked buffer load `in_range ? *(buf + addr) : 0` is printed
+	// as an
+	// UNCONDITIONAL load from `in_range ? buf + addr : <root>` followed by the same select. In
+	// range the
+	// same bytes are read; out of range (also a zero-size or unbound buffer: its size is 0, so the
+	// check
+	// fails) the read goes to the kk-bda root block, which is bound for every draw and dispatch and
+	// is
+	// larger than any loaded type (the entry function itself reads the set pointer from it), and
+	// the
 	// value is dropped for 0 exactly as before. Loads only: never a store or an atomic, never the
-	// per-dword partial form, never a formatted (all-or-nothing) element. No-op outside kk-bda. Any stage.
+	// per-dword partial form, never a formatted (all-or-nothing) element. No-op outside kk-bda. Any
+	// stage.
 	LoadSelect,
-	// foltrans (botvs `vgroup`): load_group in the vertex stage only (the pixel text of the pair keeps
+	// foltrans (botvs `vgroup`): load_group in the vertex stage only (the pixel text of the pair
+	// keeps
 	// its per-load form). Same grouping, same text as load_group prints for a vertex program:
 	// reads of one binding with a common dynamic base in one block share ONE range check and
 	// packed vector loads; when the check fails each member runs its original guarded text.
@@ -152,9 +159,9 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   perfr         KYTY_MSL_GFX_SPLIT=0 GFX_REASSOC=0 GFX_MINMAX=0 (relaxed pixel math without KK
 //   mimicry) vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
 //   gfxmath=M     KYTY_MSL_GFX_MATH=M (safe | relaxed | fast)
-//   lsel          KYTY_MSL_XF_LSEL=1: adds the load_select transform to the base set (combines with xf=HEX)
-//   vgroup        KYTY_MSL_XF_VGROUP=1: adds vs_load_group to the base set (vertex stage only)
-//   cload         KYTY_MSL_XF_CLOAD=1: adds vs_const_load to the base set (vertex stage only)
+//   lsel          KYTY_MSL_XF_LSEL=1: adds the load_select transform to the base set (combines with
+//   xf=HEX) vgroup        KYTY_MSL_XF_VGROUP=1: adds vs_load_group to the base set (vertex stage
+//   only) cload         KYTY_MSL_XF_CLOAD=1: adds vs_const_load to the base set (vertex stage only)
 //   lcont         KYTY_MSL_XF_LCONT=1: adds loop_cont to the base set (any stage)
 //   blim          KYTY_MSL_XF_BLIM=1: adds bounds_lim to the base set (any stage)
 //   gexit         KYTY_MSL_XF_GEXIT=1: adds guard_exit to the base set (any stage)

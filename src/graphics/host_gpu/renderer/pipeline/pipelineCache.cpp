@@ -2966,8 +2966,8 @@ struct PipelineCache::ProgramCache {
 		} else {
 			options.wave_size = input_info.wave_size;
 		}
-		if (stage == ShaderType::Compute && ComputeImageCopy::GetMode() != ComputeImageCopy::Mode::Off)
-		    [[unlikely]] {
+		if (stage == ShaderType::Compute &&
+		    ComputeImageCopy::GetMode() != ComputeImageCopy::Mode::Off) [[unlikely]] {
 			// rtimage: is this a whole-range copy kernel? (once per shader hash)
 			ComputeImageCopy::Consider(params.hash, translation_code, options);
 		}
@@ -8618,8 +8618,8 @@ Mode GetMode() noexcept {
 			if (std::strcmp(value, "verify") == 0) m = Mode::VerifyImage;
 		}
 		if (m != Mode::Off) {
-			std::fprintf(stderr, "[rtimage] KYTY_COMPUTE_IMAGE_COPY=%s: compute surface copies %s\n",
-			             value,
+			std::fprintf(stderr,
+			             "[rtimage] KYTY_COMPUTE_IMAGE_COPY=%s: compute surface copies %s\n", value,
 			             m == Mode::VerifyKernel ? "run as before and are compared (kernel proof)"
 			                                     : "become native image copies when proven exact");
 		}
@@ -8630,10 +8630,10 @@ Mode GetMode() noexcept {
 
 namespace {
 struct Entry {
-	uint64_t                             code_hash = 0;
+	uint64_t                          code_hash = 0;
 	ShaderRecompiler::IR::UniformCopy copy;
 };
-std::shared_mutex                    g_mutex;
+std::shared_mutex                   g_mutex;
 std::unordered_map<uint64_t, Entry> g_entries;
 std::atomic<uint32_t>               g_considered {0};
 // Words of guest code up to which a compute program is analyzed (the kernels are tiny).
@@ -8656,12 +8656,12 @@ void Consider(uint64_t shader_hash, std::span<const uint32_t> code,
 	Entry entry;
 	entry.code_hash = code_hash;
 	// Never from a failed speculative read: the code words are the ones the cache key hashed.
-	auto quiet        = options;
-	quiet.dump_ir     = false;
-	quiet.early_dump  = false;
-	quiet.dump_label  = "ComputeImageCopy";
+	auto quiet       = options;
+	quiet.dump_ir    = false;
+	quiet.early_dump = false;
+	quiet.dump_label = "ComputeImageCopy";
 	const std::vector<uint32_t> owned(code.begin(), code.end());
-	auto translated = ShaderRecompiler::TranslateProgram(owned, quiet);
+	auto                        translated = ShaderRecompiler::TranslateProgram(owned, quiet);
 	if (!translated.skip_dispatch) {
 		entry.copy = ShaderRecompiler::IR::AnalyzeUniformCopy(translated.program);
 	}
@@ -8677,7 +8677,8 @@ void Consider(uint64_t shader_hash, std::span<const uint32_t> code,
 	}
 	if (entry.copy.valid || poisoned) {
 		std::fprintf(stderr,
-		             "[rtimage] kernel sh=%016" PRIx64 " words=%zu copy=%d source=b%u destination=b%u "
+		             "[rtimage] kernel sh=%016" PRIx64
+		             " words=%zu copy=%d source=b%u destination=b%u "
 		             "components=%u group=%u%s (%u small compute programs analyzed)\n",
 		             shader_hash, code.size(), entry.copy.valid ? 1 : 0, entry.copy.source,
 		             entry.copy.destination, entry.copy.words, entry.copy.group_stride,
