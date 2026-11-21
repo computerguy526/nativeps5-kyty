@@ -2098,6 +2098,149 @@ void TestUniformScalarBufferImage() {
         "unavailable nested image table was accepted");
 }
 
+// rtimage KYTY_COMPUTE_IMAGE_COPY: AnalyzeUniformCopy accepts only a whole-range element copy.
+void TestComputeBufferCopy() {
+  struct Options {
+    uint32_t words = 4;
+    bool store_shifted = false;
+    bool load_shifted = false;
+    bool swapped = false;
+    bool changed = false;
+    bool conditional = false;
+    bool conditional_load = false;
+    bool extra_store = false;
+    bool same_buffer = false;
+    bool raw_store = false;
+    bool raw_load = false;
+    bool load_offset = false;
+    bool store_offset = false;
+    bool branch = false;
+    bool narrow_load = false;
+  };
+  uint32_t accepted = 0;
+  uint32_t rejected = 0;
+  const auto Run = [&](Options options, const char *name) {
+    Fixture fixture;
+    fixture.program.block_info[0].terminator.kind =
+        options.branch ? Libs::Graphics::ShaderRecompiler::CFG::TerminatorKind::ConditionalBranch
+                       : Libs::Graphics::ShaderRecompiler::CFG::TerminatorKind::Return;
+    const auto source = fixture.Buffer({fixture.UserData(0), fixture.UserData(1),
+                                        fixture.UserData(2), fixture.UserData(3)});
+    const auto destination =
+        options.same_buffer ? source
+                            : fixture.Buffer({fixture.UserData(4), fixture.UserData(5),
+                                              fixture.UserData(6), fixture.UserData(7)});
+    const auto local = fixture.Emit(
+        ValueOpcode::GetBuiltin,
+        {Value(static_cast<uint32_t>(StageInputKind::LocalInvocationId)), Value(0u)});
+    const auto group = fixture.Emit(
+        ValueOpcode::GetBuiltin,
+        {Value(static_cast<uint32_t>(StageInputKind::WorkgroupId)), Value(0u)});
+    const auto index = fixture.Emit(
+        ValueOpcode::IAdd32,
+        {local, fixture.Emit(ValueOpcode::ShiftLeftLogical32, {group, Value(6u)})});
+    const auto shifted = fixture.Emit(ValueOpcode::IAdd32, {index, Value(1u)});
+    const auto half = fixture.Emit(ValueOpcode::ULessThan32, {local, Value(32u)});
+    constexpr std::array loads{ValueOpcode::LoadBufferU32, ValueOpcode::LoadBufferU32x2,
+                               ValueOpcode::LoadBufferU32x3, ValueOpcode::LoadBufferU32x4};
+    constexpr std::array stores{ValueOpcode::StoreBufferU32, ValueOpcode::StoreBufferU32x2,
+                                ValueOpcode::StoreBufferU32x3, ValueOpcode::StoreBufferU32x4};
+    constexpr std::array extracts{ValueOpcode::CompositeExtractU32x2,
+                                  ValueOpcode::CompositeExtractU32x3,
+                                  ValueOpcode::CompositeExtractU32x4};
+    constexpr std::array composites{ValueOpcode::CompositeConstructU32x2,
+                                    ValueOpcode::CompositeConstructU32x3,
+                                    ValueOpcode::CompositeConstructU32x4};
+    const auto words = options.words;
+    MemoryInfo load;
+    load.kind = ResourceKind::Buffer;
+    load.formatted = !options.raw_load;
+    load.idxen = true;
+    load.data_dwords = options.narrow_load ? words - 1 : words;
+    const auto loaded = fixture.Emit(
+        loads[words - 1],
+        {source, options.load_shifted ? shifted : index,
+         Value(options.load_offset ? 4u : 0u), Value(0u),
+         options.conditional_load ? half : Value(true)},
+        fixture.AddMemory(load, 8));
+    Value data = loaded;
+    if (words > 1) {
+      std::array<Value, 4> parts{};
+      for (uint32_t i = 0; i < words; ++i) {
+        const uint32_t from = options.swapped ? (i == 0 ? 1u : i == 1 ? 0u : i) : i;
+        parts[i] = fixture.Emit(extracts[words - 2], {loaded, Value(from)});
+      }
+      if (options.changed)
+        parts[0] = fixture.Emit(ValueOpcode::IAdd32, {parts[0], Value(1u)});
+      data = words == 2   ? fixture.Emit(composites[0], {parts[0], parts[1]})
+             : words == 3 ? fixture.Emit(composites[1], {parts[0], parts[1], parts[2]})
+                          : fixture.Emit(composites[2],
+                                         {parts[0], parts[1], parts[2], parts[3]});
+    } else if (options.changed) {
+      data = fixture.Emit(ValueOpcode::IAdd32, {loaded, Value(1u)});
+    }
+    MemoryInfo store;
+    store.kind = ResourceKind::Buffer;
+    store.formatted = !options.raw_store;
+    store.idxen = true;
+    store.data_dwords = words;
+    const auto flags = fixture.AddMemory(store, 16);
+    const auto EmitStore = [&] {
+      fixture.Emit(stores[words - 1],
+                   {destination, options.store_shifted ? shifted : index,
+                    Value(options.store_offset ? 4u : 0u), Value(0u), data,
+                    options.conditional ? half : Value(true)},
+                   flags);
+    };
+    EmitStore();
+    if (options.extra_store)
+      EmitStore();
+    fixture.PlanAndTrack();
+    const auto copy = AnalyzeUniformCopy(fixture.program);
+    const bool expected =
+        !options.store_shifted && !options.load_shifted && !options.swapped &&
+        !options.changed && !options.conditional && !options.conditional_load &&
+        !options.extra_store && !options.same_buffer && !options.raw_store &&
+        !options.raw_load && !options.load_offset && !options.store_offset &&
+        !options.branch && !options.narrow_load;
+    if (copy.valid != expected) {
+      throw std::runtime_error(std::string("copy proof wrong for case: ") + name +
+                               " words=" + std::to_string(words));
+    }
+    (expected ? accepted : rejected)++;
+    if (expected) {
+      Check(copy.words == words && copy.group_stride == 64 &&
+                copy.source != copy.destination && copy.source < 2 && copy.destination < 2 &&
+                fixture.program.info.buffers[copy.source].read &&
+                !fixture.program.info.buffers[copy.source].written &&
+                fixture.program.info.buffers[copy.destination].written,
+            "copy proof lost the element coverage or the buffer roles");
+    }
+  };
+  for (uint32_t words = 1; words <= 4; ++words) {
+    Run({.words = words}, "plain copy");
+    Run({.words = words, .store_shifted = true}, "store one element further");
+    Run({.words = words, .load_shifted = true}, "load one element further");
+    Run({.words = words, .store_shifted = true, .load_shifted = true}, "both shifted");
+    Run({.words = words, .changed = true}, "stored value changed");
+    Run({.words = words, .conditional = true}, "store on half the lanes");
+    Run({.words = words, .conditional_load = true}, "load on half the lanes");
+    Run({.words = words, .extra_store = true}, "second store");
+    Run({.words = words, .same_buffer = true}, "one buffer");
+    Run({.words = words, .raw_store = true}, "raw store");
+    Run({.words = words, .raw_load = true}, "raw load");
+    Run({.words = words, .load_offset = true}, "load offset");
+    Run({.words = words, .store_offset = true}, "store offset");
+    Run({.words = words, .branch = true}, "conditional branch");
+    if (words > 1) {
+      Run({.words = words, .swapped = true}, "components swapped");
+      Run({.words = words, .narrow_load = true}, "load of fewer components");
+    }
+  }
+  std::cout << "compute buffer copy: " << accepted << " accepted, " << rejected
+            << " rejected\n";
+}
+
 void TestComputeBufferFill() {
   struct Options {
     bool scalar = false;
@@ -4474,6 +4617,7 @@ int main() {
     Run("R128 table image", TestR128TableImage);
     Run("graphics BDA write", TestGraphicsBdaWrite);
     Run("compute buffer fill", TestComputeBufferFill);
+    Run("compute buffer copy", TestComputeBufferCopy);
     Run("scalar/vector alias", TestScalarAndVectorBufferAlias);
     Run("runtime unsigned min", TestRuntimeUnsignedMinDescriptor);
     Run("images and samplers", TestImagesSamplersAndAliases);
