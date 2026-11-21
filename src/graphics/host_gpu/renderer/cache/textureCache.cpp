@@ -3130,6 +3130,21 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 	    image.HasKeptDirty() || image.OwnedSet() == nullptr || image.OwnsNoBytes() ||
 	    !image.FullyResident() || image.residency_refresh || image.backing.image == nullptr ||
 	    (image.ChunkTracked() && image.chunks.dirty_count != 0)) {
+		if (TilerTrace::Enabled() && AliasBytesEnabled() && !image.depth_id &&
+		    image.IsBufferModified()) {
+			// KYTY_TILER_TRACE: why a buffer-modified image is refreshed whole instead.
+			const char* why = image.IsCpuDirty()                 ? "rp.skip.cpu-dirty"
+			                  : image.HasKeptDirty()             ? "rp.skip.kept"
+			                  : !image.IsGpuModified()           ? "rp.skip.not-gpu-modified"
+			                  : image.OwnsAllBytes()             ? "rp.skip.owns-all"
+			                  : image.OwnsNoBytes()
+			                      ? (image.coherence.Empty() ? "rp.skip.owns-none.coherent-none"
+			                                                 : "rp.skip.owns-none.coherent-some")
+			                  : !image.FullyResident() || image.residency_refresh
+			                      ? "rp.skip.residency"
+			                      : "rp.skip.other";
+			TilerTrace::Event(why, image, info.data.size);
+		}
 		return result;
 	}
 	const auto fallback = [&](const char* why) {
