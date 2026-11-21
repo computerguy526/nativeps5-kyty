@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 
 #include "common/assert.h"
@@ -304,6 +305,7 @@ FaultManager::BdaWrites FaultManager::CollectBdaWrites() {
 	dependency.pBufferMemoryBarriers = &cleared;
 	command.pipelineBarrier2(dependency);
 	command.fillBuffer(m_fault_buffer.Handle(), dropped_offset, counters_size, 0);
+	TilerTrace::Count("fill.who.bda_writes_counters", 1, counters_size);
 	// The next BDA writer sees the cleared bitmap and counter; the host sees the list.
 	std::array<vk::BufferMemoryBarrier2, 2> after {};
 	after[0].srcStageMask =

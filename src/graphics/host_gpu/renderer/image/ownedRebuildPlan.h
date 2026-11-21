@@ -172,4 +172,64 @@ template <typename StateFn>
 	return true;
 }
 
+// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT: the parts of segment g whose owned bytes must reach the buffer
+// before the segment is read back. owned(address, size) -> true when the image owns any byte of
+// that block. The caller used to tile the whole segment out for them; the result covers every
+// block of g with owned bytes by valid segments inside g (same shape and alignment rules as
+// Build's: an aligned row group with owned bytes only in its first row gives one column run from
+// an aligned column, any other gives its whole rows; adjacent whole-row runs merge), so the
+// tiled bytes written for those blocks are the ones the whole segment's pass wrote there.
+template <typename OwnedFn>
+inline void PreserveSegments(const Surface& s, const Segment& g, OwnedFn&& owned,
+                             uint32_t row_align, uint32_t column_align, std::vector<Segment>& out) {
+	if (row_align == 0 || column_align == 0 || g.row_count == 0 || g.column_count == 0) {
+		return;
+	}
+	const auto block_owned = [&](uint32_t row, uint32_t column) {
+		return owned(s.base + (uint64_t {row} * s.columns + column) * s.block_size, s.block_size);
+	};
+	const size_t   first_out = out.size();
+	const uint32_t end_row   = g.first_row + g.row_count;
+	const uint32_t end_col   = g.first_column + g.column_count;
+	for (uint32_t group = g.first_row; group < end_row; group += row_align) {
+		const uint32_t count = end_row - group < row_align ? end_row - group : row_align;
+		bool           any = false, later_row = false;
+		uint32_t       first = 0, last = 0;
+		for (uint32_t r = 0; r < count; ++r) {
+			for (uint32_t c = g.first_column; c < end_col; ++c) {
+				if (!block_owned(group + r, c)) {
+					continue;
+				}
+				if (r == 0) {
+					first = any ? first : c;
+					last  = c;
+				} else {
+					later_row = true;
+				}
+				any = true;
+			}
+		}
+		if (!any) {
+			continue;
+		}
+		if (!later_row) {
+			// One aligned row: the run of columns from the first to the last block with owned
+			// bytes, started on an aligned column (g's first column is one).
+			first -= (first - g.first_column) % column_align;
+			out.push_back({group, 1, first, last + 1 - first});
+			continue;
+		}
+		// More than one row: only a segment of whole rows may hold them (g is one, then).
+		if (out.size() > first_out) {
+			auto& prev = out.back();
+			if (prev.row_count > 1 && prev.first_row + prev.row_count == group &&
+			    prev.first_column == g.first_column && prev.column_count == g.column_count) {
+				prev.row_count += count;
+				continue;
+			}
+		}
+		out.push_back({group, count, g.first_column, g.column_count});
+	}
+}
+
 } // namespace Libs::Graphics::OwnedRebuild

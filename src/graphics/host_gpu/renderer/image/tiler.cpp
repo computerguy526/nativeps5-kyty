@@ -627,6 +627,7 @@ void TileManager::Record(vk::Buffer source, uint64_t source_offset,
 	    nullptr, 3, barriers, 0, nullptr);
 	if (clear_target) {
 		command.fillBuffer(target, target_offset, target_capacity, 0);
+		TilerTrace::Count("fill.tiler_scratch", 1, target_capacity);
 		barriers[1].srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 		barriers[1].dstAccessMask =
 		    vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
@@ -1162,6 +1163,8 @@ void TileManager::RecordImage(Image& image, bool load, vk::Buffer tiled, uint64_
 		m_scheduler.Current().BindPipeline(vk::PipelineBindPoint::eCompute, pipelines[index]);
 		command.dispatch((dispatch.push.width + 7u) / 8u, (dispatch.push.height + 7u) / 8u,
 		                 dispatch.push.depth);
+		TilerTrace::Count(load ? "dispatch.load" : "dispatch.store", 1,
+		                  uint64_t {dispatch.push.width} * dispatch.push.height * dispatch.push.depth);
 	}
 
 	if (load) {

@@ -1642,6 +1642,7 @@ void BufferCache::ChangeRegister(BufferId id) {
 		m_lru_cache.Free(buffer.lru_id);
 		if (const auto covered = memtrim::BdaCovered(pages.first, size_pages, BdaTableEntries());
 		    covered != 0) {
+			TilerTrace::Count("fill.who.bda_pagetable", 1, covered * sizeof(vk::DeviceAddress));
 			m_bda_pagetable_buffer.Fill(pages.first * sizeof(vk::DeviceAddress),
 			                            covered * sizeof(vk::DeviceAddress), 0);
 		}
@@ -5646,6 +5647,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 		if (vaddr > m_gds_buffer.Size() || size > m_gds_buffer.Size() - vaddr) {
 			EXIT("BufferCache: GDS fill range is out of bounds\n");
 		}
+		TilerTrace::Count("fill.who.gds", 1, size);
 		m_gds_buffer.Fill(vaddr, size, value);
 		return;
 	}
@@ -5656,6 +5658,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	if (!IsRegionGpuModified(vaddr, size)) {
 		// Access the guest mapping so write faults invalidate cached buffers and images.
 		FlightRec::Rec(FlightRec::EvCpWrite, FlightRec::CpDmaFillCpu, vaddr, size, value);
+		TilerTrace::Count("fill.who.guest_cpu(no-gpu-fill)", 1, size);
 		auto* destination = Guest::Ptr<uint32_t>(vaddr);
 		std::fill(destination, destination + size / sizeof(uint32_t), value);
 		return;
@@ -5678,6 +5681,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
 		}
 	}
+	TilerTrace::Count("fill.who.guest_gpu", 1, size);
 	dst->Fill(dst_offset, size, value);
 	RecordKnownFill(vaddr, size, value);
 }

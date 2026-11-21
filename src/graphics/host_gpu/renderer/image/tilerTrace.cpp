@@ -58,6 +58,7 @@ struct Value {
 struct State {
 	std::mutex                            mutex;
 	std::map<Key, Value>                  window;
+	std::map<std::string, Value>          counters;
 	std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 	uint64_t                              index = 0;
 };
@@ -94,8 +95,13 @@ void FlushLocked(State& state, double seconds) {
 		             (key.flags & 8u) != 0 ? 'K' : '-', (key.flags & 16u) != 0 ? 'O' : '-',
 		             key.vk_format, value.count, value.bytes);
 	}
+	for (const auto& [what, value]: state.counters) {
+		std::fprintf(stderr, "[tilertrace] count %s n=%" PRIu64 " bytes=%" PRIu64 "\n", what.c_str(),
+		             value.count, value.bytes);
+	}
 	std::fflush(stderr);
 	state.window.clear();
+	state.counters.clear();
 	state.index++;
 }
 
@@ -158,6 +164,18 @@ void Note(bool to_image, const Image& image, uint64_t bytes) noexcept {
 		return;
 	}
 	Add(to_image ? 1 : 0, t_reason != nullptr ? t_reason : "?", image, bytes);
+}
+
+void Count(const char* what, uint64_t n, uint64_t bytes) noexcept {
+	if (WindowSeconds() <= 0.0) {
+		return;
+	}
+	// Flushed with the next image pass's window (Add).
+	auto&            state = GetState();
+	std::scoped_lock lock(state.mutex);
+	auto&            value = state.counters[what];
+	value.count += n;
+	value.bytes += bytes;
 }
 
 void Event(const char* what, const Image& image, uint64_t bytes) noexcept {

@@ -35,6 +35,10 @@ void Event(const char* what, const Image& image, uint64_t bytes) noexcept;
 void BufferWrite(const Image& image, uint64_t address, uint64_t size) noexcept;
 // "event <prefix>.<this thread's Reason>".
 void EventWithReason(const char* prefix, const Image& image, uint64_t bytes) noexcept;
+// A named counter without an image ("count <what> n=<n> bytes=<bytes>" lines per window): GPU
+// buffer fills by caller (fill.<who>) and the tiler's image-pass dispatches (dispatch.store /
+// dispatch.load, bytes = threads).
+void Count(const char* what, uint64_t n, uint64_t bytes) noexcept;
 
 } // namespace TilerTrace
 } // namespace Libs::Graphics

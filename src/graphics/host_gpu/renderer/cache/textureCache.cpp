@@ -3087,6 +3087,23 @@ bool TextureCache::AliasRebuildPartialEnabled() {
 	return enabled;
 }
 
+// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1 (opt-in, default off; needs KYTY_ALIAS_REBUILD_PARTIAL=1): the
+// partial rebuild moves this image's owned bytes inside its segments to the buffer by tiling only
+// the blocks that hold owned bytes (OwnedRebuild::PreserveSegments), not every whole segment that
+// holds one. The bytes that reach the buffer are the same; the tile pass is smaller.
+static bool AliasRebuildPreserveTightEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_ALIAS_REBUILD_PRESERVE_TIGHT");
+		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
+		if (on) {
+			std::fprintf(stderr, "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1: partial rebuilds "
+			                     "tile out only the blocks that hold owned bytes\n");
+		}
+		return on;
+	}();
+	return enabled;
+}
+
 TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId       id,
                                                                        RefreshIntent intent) {
 	const TilerTrace::Reason       tiler_reason("upload.rebuild_partial");
@@ -3190,12 +3207,14 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 	RangeSet                         within;
 	uint64_t                         linear_total = 0;
 	uint64_t                         tiled_bytes  = 0;
-	for (const auto& segment: plan.segments) {
-		within.Add(surface.base + OwnedRebuild::SegmentOffset(surface, segment),
-		           OwnedRebuild::SegmentBytes(surface, segment));
+	// One segment as a tiler sub-surface appended to (out_tiles, out_regions); false when its
+	// blocks are all padding (no texel reads them).
+	const auto add_segment = [&](const OwnedRebuild::Segment& segment, uint64_t& linear,
+	                             std::vector<GpuTileInfo>&         out_tiles,
+	                             std::vector<vk::BufferImageCopy>& out_regions) {
 		const auto rect = OwnedRebuild::SegmentRect(surface, segment);
 		if (rect.width == 0 || rect.height == 0) {
-			continue; // padding blocks only: no texel reads them
+			return false;
 		}
 		GpuTileInfo tile         = tile0;
 		tile.width               = rect.width;
@@ -3206,11 +3225,10 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		tile.tiled_offset        = OwnedRebuild::SegmentOffset(surface, segment);
 		tile.tiled_size          = OwnedRebuild::SegmentBytes(surface, segment);
 		tile.linear_slice_stride = 0;
-		linear_total             = Common::AlignUp(linear_total, uint64_t {256});
-		tile.linear_offset       = linear_total;
+		linear                   = Common::AlignUp(linear, uint64_t {256});
+		tile.linear_offset       = linear;
 		tile.linear_size         = uint64_t {rect.width} * rect.height * tile0.bytes_per_element;
-		linear_total += tile.linear_size;
-		tiled_bytes += tile.tiled_size;
+		linear += tile.linear_size;
 		auto region              = region0;
 		region.bufferOffset      = tile.linear_offset;
 		region.bufferRowLength   = rect.width;
@@ -3218,8 +3236,16 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		region.imageOffset =
 		    vk::Offset3D {static_cast<int32_t>(rect.x), static_cast<int32_t>(rect.y), 0};
 		region.imageExtent = vk::Extent3D {rect.width, rect.height, 1};
-		tiles.push_back(tile);
-		regions.push_back(region);
+		out_tiles.push_back(tile);
+		out_regions.push_back(region);
+		return true;
+	};
+	for (const auto& segment: plan.segments) {
+		within.Add(surface.base + OwnedRebuild::SegmentOffset(surface, segment),
+		           OwnedRebuild::SegmentBytes(surface, segment));
+		if (add_segment(segment, linear_total, tiles, regions)) {
+			tiled_bytes += tiles.back().tiled_size;
+		}
 	}
 	// Committed from here on: the bytes the segments read must be in the buffer.
 	bool preserve = false;
@@ -3233,11 +3259,49 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		// Only the segments that hold owned bytes (the others need nothing moved).
 		download.texture.tiles.clear();
 		download.texture.regions.clear();
+		uint64_t preserve_full = 0;
 		for (size_t index = 0; index < tiles.size(); ++index) {
 			if (image.OwnsBytesIn(info.data.address + tiles[index].tiled_offset,
 			                      tiles[index].tiled_size)) {
 				download.texture.tiles.push_back(tiles[index]);
 				download.texture.regions.push_back(regions[index]);
+				preserve_full += tiles[index].tiled_size;
+			}
+		}
+		TilerTrace::Event("rp.preserve.full", image, preserve_full);
+		if (AliasRebuildPreserveTightEnabled()) {
+			// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT: of those segments, only the blocks that hold
+			// owned bytes (every owned byte inside the segments is in one of them).
+			std::vector<GpuTileInfo>           tight_tiles;
+			std::vector<vk::BufferImageCopy>   tight_regions;
+			std::vector<OwnedRebuild::Segment> parts;
+			uint64_t                           tight_linear = 0;
+			uint64_t                           tight_bytes  = 0;
+			for (const auto& segment: plan.segments) {
+				const auto rect = OwnedRebuild::SegmentRect(surface, segment);
+				if (rect.width == 0 || rect.height == 0 ||
+				    !image.OwnsBytesIn(surface.base + OwnedRebuild::SegmentOffset(surface, segment),
+				                       OwnedRebuild::SegmentBytes(surface, segment))) {
+					continue;
+				}
+				parts.clear();
+				OwnedRebuild::PreserveSegments(
+				    surface, segment,
+				    [&](uint64_t address, uint64_t size) { return image.OwnsBytesIn(address, size); },
+				    OwnedRebuild::RowAlign(tile0.bytes_per_element),
+				    OwnedRebuild::ColumnAlign(tile0.bytes_per_element), parts);
+				for (const auto& part: parts) {
+					if (add_segment(part, tight_linear, tight_tiles, tight_regions)) {
+						tight_bytes += tight_tiles.back().tiled_size;
+					}
+				}
+			}
+			// Owned bytes only in padding blocks: no texel covers them, the whole-segment tiles
+			// stay (the pass writes nothing there either way).
+			if (!tight_tiles.empty()) {
+				download.texture.tiles   = std::move(tight_tiles);
+				download.texture.regions = std::move(tight_regions);
+				TilerTrace::Event("rp.preserve.tight", image, tight_bytes);
 			}
 		}
 		(void)MaterializeOwnedBytes(info.data, id, {}, "rebuild-own-part", nullptr, &within,

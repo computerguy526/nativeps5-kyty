@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <set>
 #include <utility>
+#include <vector>
 
 namespace {
 namespace R = Libs::Graphics::OwnedRebuild;
@@ -317,6 +318,123 @@ void TestSubSurfaceAddressing() {
   }
 }
 
+// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT (PreserveSegments): for random ownership, the parts
+// are valid segments inside their segment (aligned, non-overlapping, multi-row
+// ones spanning it), they cover every block of the segment that holds owned
+// bytes, and tiling the image through the parts writes, in every such block,
+// exactly the bytes tiling it through the whole segment writes (simulated on
+// element indices: tiled byte -> the texel it receives).
+void TestPreserveSegments() {
+  uint64_t seed = 0x9e3779b97f4a7c15ull;
+  const auto rnd = [&]() {
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
+    return seed;
+  };
+  uint64_t parts_total = 0, saved_blocks = 0, kept_blocks = 0;
+  for (uint32_t e : {1u, 2u, 4u, 8u, 16u}) {
+    for (int round = 0; round < 60; ++round) {
+      R::Surface s;
+      s.base = 0x5397e0000ull;
+      s.block_size = 65536;
+      s.block_width = e <= 2 ? 256u : (e <= 8 ? 128u : 64u);
+      s.block_height = 65536u / (s.block_width * e);
+      s.columns = 1 + rnd() % 7;
+      s.rows = 1 + rnd() % 9;
+      s.width = s.columns * s.block_width - rnd() % s.block_width;
+      s.height = s.rows * s.block_height - rnd() % s.block_height;
+      // 0 not owned, 1 mixed (owns some bytes), 2 owned; density varies by round.
+      std::vector<uint8_t> own(size_t{s.columns} * s.rows);
+      const uint32_t mode = round % 4;
+      for (auto &o : own) {
+        const uint32_t v = rnd() % 100;
+        o = mode == 0   ? (v < 6 ? 1 : v < 12 ? 2 : 0)
+            : mode == 1 ? (v < 30 ? 2 : v < 40 ? 1 : 0)
+            : mode == 2 ? (v < 3 ? 1 : 0)
+                        : (v < 70 ? 2 : v < 80 ? 1 : 0);
+      }
+      const auto at = [&](uint64_t address) {
+        return own[(address - s.base) / 65536];
+      };
+      R::Plan p;
+      Check(R::Build(
+                s,
+                [&](uint64_t a, uint64_t) {
+                  return at(a) == 2   ? R::BlockState::Owned
+                         : at(a) == 1 ? R::BlockState::Mixed
+                                      : R::BlockState::NotOwned;
+                },
+                p, R::RowAlign(e), R::ColumnAlign(e), 1u << 20),
+            "preserve plan");
+      for (const auto &g : p.segments) {
+        std::vector<R::Segment> parts;
+        R::PreserveSegments(
+            s, g, [&](uint64_t a, uint64_t) { return at(a) != 0; },
+            R::RowAlign(e), R::ColumnAlign(e), parts);
+        std::set<std::pair<uint32_t, uint32_t>> in_parts;
+        for (const auto &q : parts) {
+          parts_total++;
+          Check(q.row_count != 0 && q.column_count != 0, "non-empty part");
+          Check(q.first_row % R::RowAlign(e) == 0 &&
+                    q.first_column % R::ColumnAlign(e) == 0,
+                "aligned part");
+          Check(q.row_count == 1 || q.column_count == s.columns,
+                "multi-row parts span all columns");
+          Check(q.first_row >= g.first_row &&
+                    q.first_row + q.row_count <= g.first_row + g.row_count &&
+                    q.first_column >= g.first_column &&
+                    q.first_column + q.column_count <=
+                        g.first_column + g.column_count,
+                "part inside its segment");
+          for (uint32_t r = 0; r < q.row_count; ++r) {
+            for (uint32_t c = 0; c < q.column_count; ++c) {
+              Check(in_parts.insert({q.first_row + r, q.first_column + c})
+                        .second,
+                    "parts do not overlap");
+            }
+          }
+          // Every texel of the part: same tiled byte as through the segment
+          // (both equal the whole surface's, TestSubSurfaceAddressing).
+          const auto r = R::SegmentRect(s, q);
+          const auto gr = R::SegmentRect(s, g);
+          const uint64_t qb = R::SegmentOffset(s, q), gb = R::SegmentOffset(s, g);
+          for (uint32_t y = 0; y < r.height; y += 1 + rnd() % 3) {
+            for (uint32_t x = 0; x < r.width; x += 1 + rnd() % 5) {
+              const uint32_t sx = r.x + x, sy = r.y + y;
+              const uint32_t gx = sx - gr.x, gy = sy - gr.y;
+              const uint64_t via_part =
+                  qb + (uint64_t{y / s.block_height} * q.column_count +
+                        x / s.block_width) * 65536 + RtOffset(e, x, y);
+              const uint64_t via_segment =
+                  gb + (uint64_t{gy / s.block_height} * g.column_count +
+                        gx / s.block_width) * 65536 + RtOffset(e, gx, gy);
+              Check(via_part == via_segment,
+                    "part texel maps to the segment's tiled byte");
+            }
+          }
+        }
+        for (uint32_t r = 0; r < g.row_count; ++r) {
+          for (uint32_t c = 0; c < g.column_count; ++c) {
+            const uint32_t row = g.first_row + r, col = g.first_column + c;
+            const bool held = own[size_t{row} * s.columns + col] != 0;
+            const bool in = in_parts.count({row, col}) != 0;
+            Check(!held || in, "every block with owned bytes is in a part");
+            saved_blocks += !in;
+            kept_blocks += in;
+          }
+        }
+      }
+    }
+  }
+  std::printf("PreserveSegments: %llu parts, blocks kept %llu, not tiled %llu\n",
+              static_cast<unsigned long long>(parts_total),
+              static_cast<unsigned long long>(kept_blocks),
+              static_cast<unsigned long long>(saved_blocks));
+  Check(parts_total > 300 && saved_blocks > 300 && kept_blocks > 300,
+        "the random cases exercise the parts");
+}
+
 // ImageCoherence (KYTY_ALIAS_REBUILD_PARTIAL): the events TextureCache maps
 // onto it, in the order a Sky Garden frame produces them, and the block
 // decision the rebuild takes from it.
@@ -425,6 +543,7 @@ int main() {
   TestNonContiguousRows();
   TestClip();
   TestSubSurfaceAddressing();
+  TestPreserveSegments();
   TestCoherenceAlgebra();
   TestCoherenceFrame();
   std::puts("OwnedRebuildPlanTests: ok");
