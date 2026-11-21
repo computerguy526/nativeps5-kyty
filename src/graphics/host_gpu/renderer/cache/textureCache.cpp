@@ -110,6 +110,39 @@ static bool AliasAgeByFrames() {
 	return value == nullptr || std::strcmp(value, "0") != 0;
 }
 
+// KYTY_SUBRES_CONTAINS=1 (upstream KytyPS5 #2410 7719e97d, default off): an image covers a request
+// only when BOTH its level and its layer counts do. The default compares {levels, layers}
+// lexicographically (operator<=>), so 11 levels x 1 layer counts as covering 9 levels x 2 layers
+// and a backing that lacks a requested layer is kept; 1 level x 2 layers counts as smaller than
+// 2 levels x 1 layer. Single-level single-layer images compare the same either way.
+static bool SubresContainsEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_SUBRES_CONTAINS");
+		return value != nullptr && value[0] == '1';
+	}();
+	return enabled;
+}
+
+// True when `have` does not cover `want` (the default: have < want).
+static bool SubresShort(const ImageSubresources& have, const ImageSubresources& want) {
+	if (SubresContainsEnabled()) {
+		return have.levels < want.levels || have.layers < want.layers;
+	}
+	return have < want;
+}
+
+// KYTY_DEPTH_GROW_RECREATE=1 (upstream KytyPS5 #2417 63816442 + 5daf007b, default off): a depth
+// TARGET request wider or taller than the cached depth image (same address, pitch and footprint)
+// recreates the image instead of drawing past it; the grown replacement loads the guest bytes
+// first, then the copy fills the overlap.
+static bool DepthGrowRecreateEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_DEPTH_GROW_RECREATE");
+		return value != nullptr && value[0] == '1';
+	}();
+	return enabled;
+}
+
 // KYTY_DIRECT_IMAGE_COPY=0 restores the image->buffer->image copy for every depth<->color
 // reinterpretation. KYTY_DIRECT_IMAGE_COPY_SHADER=0 disables only the one-pass shader
 // reinterpretation; KYTY_DIRECT_IMAGE_COPY_M8=0 (read at device creation) only the
@@ -2363,7 +2396,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    !requested.HasStencil() && !cached.info.HasStencil() && !requested.HasMetadata() &&
 	    (cached.info.metadata.kind == ImageMetadataKind::None ||
 	     cached.info.metadata.kind == ImageMetadataKind::Htile);
-	bool recreate = cached.info.resources < requested.resources ||
+	bool recreate = SubresShort(cached.info.resources, requested.resources) ||
 	                requested.IsVolume() != cached.info.IsVolume();
 	switch (binding) {
 		case BindingType::Texture:
@@ -2382,6 +2415,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		case BindingType::DepthTarget:
 			recreate |= !cached.info.IsDepth();
 			recreate |= cached.info.IsDepth() && !(stencil_match && bpp_match);
+			if (DepthGrowRecreateEnabled()) {
+				recreate |= requested.extent.width > cached.info.extent.width ||
+				            requested.extent.height > cached.info.extent.height;
+			}
 			break;
 		case BindingType::VideoOut: recreate |= cached.info.IsDepth(); break;
 	}
@@ -2399,7 +2436,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		info.resources  = cached.info.resources;
 		info.mip_layout = cached.info.mip_layout;
 	}
-	const bool keep_aliases = AliasAgeByFrames() && !(cached.info.resources < requested.resources);
+	const bool keep_aliases =
+	    AliasAgeByFrames() && !SubresShort(cached.info.resources, requested.resources);
 	if (keep_aliases) {
 		for (const auto other_id: FindImagesInRegion(requested.data.address, requested.data.size, false)) {
 			const auto* other = m_slot_images.try_get(other_id);
@@ -2430,6 +2468,11 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		    (!cached.info.IsDepth() && !replacement.info.IsDepth() &&
 		     ImageViewOps::FormatsCompatible(cached.backing.format, replacement.backing.format));
 		if (copy_supported) {
+			if (DepthGrowRecreateEnabled() &&
+			    (replacement.info.extent.width > cached.info.extent.width ||
+			     replacement.info.extent.height > cached.info.extent.height)) {
+				InitializeImage(replacement_id);
+			}
 			(void)CopyImage(replacement_id, cached_id, "depth-overlap");
 		} else {
 			LOGF_COLOR(Log::Color::BrightYellow,
@@ -2540,7 +2583,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		}
 		// PS5 mip tails can expose more levels without increasing the guest allocation.
 		if (requested.pixel_format == cached.info.pixel_format &&
-		    requested.type == cached.info.type && requested.resources > cached.info.resources &&
+		    requested.type == cached.info.type &&
+		    SubresShort(cached.info.resources, requested.resources) &&
 		    (requested.data.size > cached.info.data.size ||
 		     (requested.data.size == cached.info.data.size &&
 		      requested.extent == cached.info.extent &&
@@ -4622,7 +4666,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, RepeatLookup
 			auto& resolved = m_slot_images[result];
 			if (exact_format && resolved.info.pixel_format != desc.info.pixel_format) {
 				result = {};
-			} else if (resolved.info.resources < desc.info.resources) {
+			} else if (SubresShort(resolved.info.resources, desc.info.resources)) {
 				FreeImage(result, HangTrace::ImageFreeReason::SmallerResources);
 				result = {};
 			}
