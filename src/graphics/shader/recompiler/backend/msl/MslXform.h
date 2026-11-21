@@ -85,6 +85,18 @@ enum Id : uint32_t {
 	// bounds-checked to its range); (c) a store/atomic inside a loop, or the dispatcher fallback:
 	// every load takes form (b). Programs with GDS counters are left alone. Not in `all`.
 	VsConstLoad,
+	// fsslow (fullscreen lighting FS, light-list loops): a loop whose continue block only branches
+	// back to the header and holds nothing but phis and instructions without side effects is
+	// printed WITHOUT the `do { } while (false)` wrapper and its exit flag: every jump to the
+	// continue block prints the phi copies into it, its instructions, the phi copies into the
+	// header and `continue;`; a jump to the merge block is a plain `break;`. Every path runs the
+	// same blocks, edges and copies in the same order: only the statement nesting changes (the
+	// continue block's text is repeated once per edge into it). With the wrapper every exit
+	// passes the join after the `do`, which keeps the header phis live across the continue
+	// block: Apple's compiler then cannot share their registers and copies every loop-carried
+	// value on each iteration (the early-out iterations of a light walk are little else).
+	// Any stage. Not in `all`.
+	LoopCont,
 	Count
 };
 
@@ -120,10 +132,11 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   lsel          KYTY_MSL_XF_LSEL=1: adds the load_select transform to the base set (combines with xf=HEX)
 //   vgroup        KYTY_MSL_XF_VGROUP=1: adds vs_load_group to the base set (vertex stage only)
 //   cload         KYTY_MSL_XF_CLOAD=1: adds vs_const_load to the base set (vertex stage only)
+//   lcont         KYTY_MSL_XF_LCONT=1: adds loop_cont to the base set (any stage)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,
-// VS_PERF, GFX_*, XF, XF_TABLE, LOADGROUP*): a mode never mixes with hand-set switches.
+// VS_PERF, GFX_*, XF, XF_*, XF_TABLE, LOADGROUP*): a mode never mixes with hand-set switches.
 [[nodiscard]] bool ApplyMode(std::string_view mode, std::string& error);
 // The one truthiness rule of the emitter switches (review L3): set, non-empty and not "0".
 [[nodiscard]] bool EnvOn(const char* name);

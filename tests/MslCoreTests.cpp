@@ -837,7 +837,7 @@ void TestFoltrans() {
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD"}) unsetenv(v);
   Check(Xf::ApplyMode("fix6+xf=c00", err) && std::string(std::getenv("KYTY_MSL_XF")) == "vs_load_group,vs_const_load", "mode: xf=c00 names the two transforms");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
-  Check(!Xf::ApplyMode("fix6+xf=1000", err), "mode: xf bit beyond the registry refused");
+  Check(!Xf::ApplyMode("fix6+xf=2000", err), "mode: xf bit beyond the registry refused");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
   setenv("KYTY_MSL_XF_CLOAD", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_CLOAD");
@@ -845,6 +845,85 @@ void TestFoltrans() {
   setenv("KYTY_MSL_XF_VGROUP", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_VGROUP");
   unsetenv("KYTY_MSL_XF_VGROUP");
+}
+
+// fsslow: transform loop_cont (mode token lcont). A while-style loop (exit at the header) whose
+// continue block holds phis and one side-effect-free instruction: off = the do { } while (false)
+// wrapper with its exit flag (old text byte for byte); on = no wrapper and no flag, the exit is a
+// plain break and the continue block is printed once per edge into it, followed by `continue;`.
+// Any stage, not in `all`.
+void TestLoopCont() {
+  namespace Xf = Msl::Xf;
+  // s_mov s10,0 | L: v_cmp; s_and s10,s10,vcc; s_cbranch_scc0 exit; s_cbranch_scc1 latch;
+  // s_mov s10,0 | latch: s_add_u32 s10,s10,s10; s_branch L | exit: v_mov; s_endpgm
+  const std::vector<uint32_t> code = {0xbe8a0480, 0x7d8a0080, 0x888a6a0a, 0xbf840004, 0xbf850001,
+                                      0xbe8a0480, 0x800a0a0a, 0xbf82fff9, 0x7e020281, 0xbf810000};
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Compute;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.compute = &info;
+  auto gen = [&] {
+    auto translated = SR::TranslateProgram(code, options);
+    SR::IR::ResourceSpecialization spec;
+    auto result = SR::CompileProgram(std::move(translated), options, spec, 0);
+    return result.msl_structured ? result.msl : std::string("<dispatcher>");
+  };
+  auto count = [](const std::string &t, const std::string &w) {
+    int n = 0;
+    for (size_t p = t.find(w); p != std::string::npos; p = t.find(w, p + 1)) n++;
+    return n;
+  };
+  for (const char *v : {"KYTY_MSL_XF", "KYTY_MSL_XF_LCONT", "KYTY_MSL_VS_PERF"}) unsetenv(v);
+  const std::string off = gen();
+  if (std::getenv("FSSLOW_DUMP")) std::printf("%s\n", off.c_str());
+  Check(off.find("do {") != std::string::npos && off.find("while (false);") != std::string::npos &&
+            off.find("bool lf0 = false;") != std::string::npos && off.find("if (lf0) break;") != std::string::npos,
+        "loop_cont off: do/while(false) wrapper with the exit flag");
+  setenv("KYTY_MSL_XF", "all", 1);
+  Check(gen() == off, "loop_cont: not part of `all`");
+  unsetenv("KYTY_MSL_XF");
+  setenv("KYTY_MSL_XF_LCONT", "1", 1);
+  const std::string on = gen();
+  if (std::getenv("FSSLOW_DUMP")) std::printf("%s\n", on.c_str());
+  Xf::Begin(ShaderType::Pixel, 0);
+  Check(Xf::On(Xf::LoopCont), "loop_cont: on with KYTY_MSL_XF_LCONT, any stage (pixel)");
+  Check(on.find("do {") == std::string::npos && on.find("while (false)") == std::string::npos &&
+            on.find("lf0") == std::string::npos,
+        "loop_cont on: no wrapper, no flag");
+  Check(on.find("for (;;)") != std::string::npos && count(on, "break;") == count(off, "break;") - 1 - count(on, "continue;") + count(off, "continue;"),
+        "loop_cont on: each continue edge is `continue;`, the exit a plain break");
+  // the continue block's instructions (s_add_u32 = the IAddCarry32 pair) once per edge into it
+  Check(count(off, "// IAddCarry32") == 2 && count(on, "// IAddCarry32") == 2 * count(on, "continue;") && count(on, "continue;") == 2,
+        "loop_cont on: the continue block is printed at every edge into it");
+  if (HaveMetal()) {
+    int i = 0;
+    for (const std::string *t : {&off, &on}) {
+      const std::string f = "/tmp/msl_core_loopcont_" + std::to_string(i++) + ".metal";
+      std::ofstream(f) << *t;
+      Check(std::system(("xcrun -sdk macosx metal -std=metal3.1 -fsyntax-only " + f + " 2>" + f + ".err").c_str()) == 0,
+            "loop_cont: text compiles (see " + f + ".err)");
+    }
+  }
+  unsetenv("KYTY_MSL_XF_LCONT");
+  Check(gen() == off, "loop_cont off again: byte-identical text");
+  std::string err;
+  Check(Xf::ApplyMode("fix6+lcont", err) && std::string(std::getenv("KYTY_MSL_XF_LCONT")) == "1", "mode: lcont sets KYTY_MSL_XF_LCONT");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF_LCONT"}) unsetenv(v);
+  Check(Xf::ApplyMode("fix6+xf=1000", err) && std::string(std::getenv("KYTY_MSL_XF")) == "loop_cont", "mode: xf=1000 = loop_cont");
+  for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
+  setenv("KYTY_MSL_XF_LCONT", "1", 1);
+  Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_LCONT");
+  unsetenv("KYTY_MSL_XF_LCONT");
 }
 
 // xfclass: emitter modes of the Metal list rows (kyty_msl_dump --mode). Runs
@@ -937,6 +1016,7 @@ int main() {
   TestMovrelChainsPerEmission();
   TestLoadSelect();
   TestFoltrans();
+  TestLoopCont();
   TestEmitterModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

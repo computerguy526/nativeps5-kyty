@@ -957,6 +957,7 @@ private:
 		bool        trivial_cont; // continue target needs no code: `continue` directly
 		bool        in_do     = false;
 		bool        flag_used = false;
+		bool        cont_insts = false; // loop_cont: the continue block is printed per edge
 		std::string flag;
 	};
 
@@ -1002,6 +1003,15 @@ private:
 				continue;
 			}
 			return false;
+		}
+		return true;
+	}
+	// loop_cont: only phis and instructions without side effects (printing the block once per
+	// incoming edge must not depend on any emission-order state: no store, atomic, LDS fence)
+	bool PureBlock(size_t idx) const {
+		for (const auto& inst: *ctx_.program.blocks[idx]) {
+			if (inst.GetOpcode() == ValueOpcode::Phi) continue;
+			if (inst.MayHaveSideEffects() || ctx_.lds_fence.count(&inst) != 0) return false;
 		}
 		return true;
 	}
@@ -1052,6 +1062,7 @@ private:
 						Edge(fb, tb);
 					else {
 						Edge(fb, tb);
+						if (L.cont_insts) Insts(ti);
 						Edge(tb, BlockOf(L.header));
 					}
 					Line("continue;");
@@ -1108,10 +1119,15 @@ private:
 		}
 		Loop       L {info.id, term.merge_block, term.continue_block, false};
 		const bool single = term.continue_block == info.id;
-		L.trivial_cont =
-		    single || (OnlyEmptyAndPhi(ci, false) &&
-		               ctx_.program.block_info[ci].terminator.kind == CFG::TerminatorKind::Branch &&
-		               ctx_.program.block_info[ci].terminator.true_block == info.id);
+		const auto& ct     = ctx_.program.block_info[ci].terminator;
+		const bool  back   = ct.kind == CFG::TerminatorKind::Branch && ct.true_block == info.id;
+		L.trivial_cont     = single || (back && OnlyEmptyAndPhi(ci, false));
+		// loop_cont (fsslow): a continue block of phis and side-effect-free instructions needs no
+		// place of its own either: Jump/Region print it at every edge into it (see MslXform.h)
+		if (!L.trivial_cont && back && Xf::On(Xf::LoopCont) && PureBlock(ci)) {
+			L.trivial_cont = true;
+			L.cont_insts   = true;
+		}
 		L.flag            = fmt::format("lf{}", loop_counter_++);
 		const bool use_do = !L.trivial_cont && (dry_ || need_do_.count(info.id) != 0);
 		if (use_do) Line(fmt::format("bool {} = false;", L.flag));
@@ -1229,8 +1245,10 @@ private:
 			if (!loops_.empty()) {
 				auto& L = loops_.back();
 				if (id == L.cont && L.trivial_cont) {
-					if (L.cont != L.header)
+					if (L.cont != L.header) {
+						if (L.cont_insts) Insts(Index(L.cont));
 						Edge(ctx_.program.blocks[Index(L.cont)], BlockOf(L.header));
+					}
 					Line("continue;");
 					return;
 				}
