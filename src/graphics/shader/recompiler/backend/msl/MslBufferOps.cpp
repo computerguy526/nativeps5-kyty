@@ -29,9 +29,25 @@ const char* PtrQual(const BufferBinding& b) {
 	return (b.written || b.atomic) ? "device" : "const device";
 }
 
+thread_local int         g_const_load = 0;
+thread_local std::string g_const_alias;
+
+// vs_const_load applies to this load: a buffer the program never writes, not a coherent load.
+bool ConstB(const BufferBinding& b, bool volatile_) {
+	return g_const_load != 0 && !volatile_ && !b.written && !b.atomic;
+}
+
+// The load of `type` at the integer address expression `at` (see MslXform.h vs_const_load).
+std::string ConstDeref(const std::string& type, const std::string& at) {
+	const std::string c = "*(constant " + type + "*)(" + at + ")";
+	if (g_const_load == 1) return c;
+	return "(" + g_const_alias + " ? *(const device " + type + "*)(" + at + ") : " + c + ")";
+}
+
 // `*(T*)(base + addr)` with T an alignment-1 friendly type.
 std::string Mem(const BufferBinding& b, const std::string& addr, const std::string& type,
                 bool volatile_) {
+	if (ConstB(b, volatile_)) return ConstDeref(type, "(ulong)(" + BufName(b.id) + " + " + addr + ")");
 	return "*(" + std::string(volatile_ ? "volatile " : "") + PtrQual(b) + " " + type + "*)(" +
 	       BufName(b.id) + " + " + addr + ")";
 }
@@ -44,6 +60,7 @@ std::string LoadSelected(MemOut& o, const BufferBinding& b, const std::string& o
 	const std::string at = o.Def("ulong", ok + " ? (ulong)(" + BufName(b.id) + " + " + addr +
 	                                          ") : " + LoadSelectSafe());
 	std::string load = "*(" + std::string(volatile_ ? "volatile " : "") + qual + " " + type + "*)(" + at + ")";
+	if (ConstB(b, volatile_)) load = ConstDeref(type, at);
 	if (!conv.empty()) load = conv + "(" + load + ")";
 	return o.Def(decl, load);
 }
@@ -56,6 +73,21 @@ void SetLoadSelectSafe(const std::string& expr) {
 }
 const std::string& LoadSelectSafe() {
 	return g_load_select_safe;
+}
+
+void SetConstLoad(int state, const std::string& alias) {
+	g_const_load  = state;
+	g_const_alias = alias;
+}
+int ConstLoadState() {
+	return g_const_load;
+}
+void ConstLoadWriter() {
+	if (g_const_load == 1) g_const_load = 2;
+}
+std::string SrtLoad(const std::string& index) {
+	if (g_const_load == 0) return "r.srt[" + index + "]";
+	return "(*(constant uint*)((ulong)(r.srt + " + index + ")))";
 }
 bool LoadSelectOn() {
 	return Xf::On(Xf::LoadSelect) && !g_load_select_safe.empty();
@@ -127,6 +159,7 @@ std::string LoadRaw(MemOut& o, const BufferBinding& b, const std::string& addr, 
 
 void StoreRaw(MemOut& o, const BufferBinding& b, const std::string& addr, uint32_t bits,
               const std::vector<std::string>& v, const BufferOpts& opts) {
+	ConstLoadWriter();
 	const uint32_t comps = static_cast<uint32_t>(v.size());
 	const uint32_t bytes = bits == 32 ? 4u * comps : bits / 8u;
 	std::string    stmt;
@@ -278,6 +311,7 @@ void StoreFormatted(MemOut& o, const BufferBinding& b, const std::string& addr, 
 		o.Fail("StoreFormatted: unsupported buffer format " + std::to_string(format));
 		return;
 	}
+	ConstLoadWriter();
 	const std::string ok =
 	    Checked(b, opts) ? InBounds(b, addr, info.byte_size) : std::string("true");
 	o.Line("if (" + ok + ") {");
@@ -404,6 +438,7 @@ std::string AtomicRmw32(MemOut& o, const std::string& p, const char* space, Atom
 std::string BufferAtomic32(MemOut& o, const BufferBinding& b, const std::string& addr, AtomicOp op,
                            const std::string& value, const std::string& cmp,
                            const BufferOpts& opts) {
+	ConstLoadWriter();
 	const std::string guard = Checked(b, opts) ? InBounds(b, addr, 4) : std::string("true");
 	const std::string res   = o.Tmp();
 	o.Line("uint " + res + " = 0u;");
@@ -419,6 +454,7 @@ std::string BufferAtomic64(MemOut& o, const BufferBinding& b, const std::string&
                            const std::string& value, const std::string& cmp,
                            const BufferOpts& opts) {
 	(void)cmp;
+	ConstLoadWriter();
 	const std::string old = o.Tmp();
 	o.Line("ulong " + old + " = 0ul;");
 	const std::string guard = Checked(b, opts) ? InBounds(b, addr, 8) : std::string("true");
@@ -492,8 +528,10 @@ std::string ReadConstBuffer(MemOut& o, const BufferBinding& b, const std::string
                             const BufferOpts& opts) {
 	// S_BUFFER_LOAD reads go through `constant` when the buffer is never written, which engages
 	// Apple's constant/uniform cache path (KK emitted device+coherent here).
-	const std::string load = "*(" + std::string(b.written || b.atomic ? "device" : "const device") +
-	                         " uint*)(" + BufName(b.id) + " + " + byte_offset + ")";
+	const std::string load =
+	    ConstB(b, false) ? Mem(b, byte_offset, "uint", false)
+	                     : "*(" + std::string(b.written || b.atomic ? "device" : "const device") +
+	                           " uint*)(" + BufName(b.id) + " + " + byte_offset + ")";
 	if (!Checked(b, opts)) return o.Def("uint", load);
 	if (LoadSelectOn()) {
 		const std::string ok  = o.Def("bool", InBounds(b, byte_offset, 4));

@@ -117,6 +117,10 @@ void Guarded(Em& e, const std::string& active, bool has_result, Fn&& body) {
 // out-of-bounds cases are byte-for-byte the old behaviour. KYTY_MSL_LOADGROUP: unset/0 = off (old
 // text), 1 = vertex+pixel, 2 = all stages; KYTY_MSL_LOADGROUP_MUTANT=1 shifts the fast-path loads
 // by +4 bytes (validation: must change results).
+// The load_group transform or its vertex-only twin vs_load_group (mode token vgroup).
+bool LgXf() {
+	return Xf::On(Xf::LoadGroup) || Xf::On(Xf::VsLoadGroup);
+}
 int LoadGroupMode() {
 	static const int v = [] {
 		const char* e = std::getenv("KYTY_MSL_LOADGROUP");
@@ -181,7 +185,7 @@ bool LgCandidate(const MslCtx& ctx, const BindingModel& model, const IR::Inst& i
 	// Same uint value: the member computes (c + X) * stride + off + imm, the group X * stride + off
 	// + (imm + c * stride), equal mod 2^32, and the no-wrap argument below is about that common
 	// value.
-	if (mem.idxen && stride != 0u && Xf::On(Xf::LoadGroup)) {
+	if (mem.idxen && stride != 0u && LgXf()) {
 		const IR::Value r = index.Resolve();
 		if (!r.IsImmediate()) {
 			if (const IR::Inst* ai = r.TryInstruction();
@@ -211,7 +215,7 @@ const LgInfo& LgOf(const MslCtx& ctx, const BindingModel& model) {
 	// perfauto transform load_group (MslXform.h): the same grouping for the current program in any
 	// stage, dynamic bases only (mode-1 rule), independent of KYTY_MSL_LOADGROUP. The transform set
 	// is fixed per emission (Xf::Begin).
-	const bool xf       = Xf::On(Xf::LoadGroup);
+	const bool xf       = LgXf();
 	g.hash              = ctx.program.shader_hash;
 	g.xf                = xf;
 	const int  mode     = LoadGroupMode();
@@ -408,7 +412,7 @@ bool BufferOp(Em& e, ValueOpcode op) {
 			hi = e.o.Def("uint", "(" + e.A(1) + " + " + U(g.end_imm - 4u) + ")");
 		} else {
 			BufferAddrIn in;
-			in.index = mem.idxen ? (Xf::On(Xf::LoadGroup) && !g.index.IsEmpty() ? e.ctx.Val(g.index)
+			in.index = mem.idxen ? (LgXf() && !g.index.IsEmpty() ? e.ctx.Val(g.index)
 			                                                                    : e.A(1))
 			                     : std::string();
 			in.offset  = mem.offen ? e.A(2) : std::string();
@@ -739,7 +743,7 @@ bool EmitMemoryInst(MslCtx& ctx, const IR::Inst& inst) {
 		case ValueOpcode::DataConsume: return AppendConsume(e, op);
 		case ValueOpcode::ReadConst:
 			if (e.model.srt_bytes == 0u) return false;
-			e.Result("r.srt[" + e.A(1) + "]");
+			e.Result(SrtLoad(e.A(1)));
 			return e.Done();
 		case ValueOpcode::WriteLane:
 		case ValueOpcode::DppMoveU32:
