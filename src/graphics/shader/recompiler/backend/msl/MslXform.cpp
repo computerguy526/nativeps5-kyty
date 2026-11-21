@@ -36,8 +36,8 @@ constexpr Info Registry[Count] = {
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
 
-thread_local uint32_t  g_active = 0;
-thread_local ShaderType g_stage = ShaderType::Unknown;
+thread_local uint32_t   g_active = 0;
+thread_local ShaderType g_stage  = ShaderType::Unknown;
 
 bool Truthy(const char* e) {
 	return e != nullptr && *e != 0 && std::strcmp(e, "0") != 0;
@@ -56,15 +56,13 @@ uint32_t ParseList(std::string_view s, uint32_t mask) {
 			t.remove_suffix(1);
 		if (const size_t at = t.find('@'); at != std::string_view::npos)
 			t = t.substr(0, at); // "id@version" as ActiveList prints it
-		if (t.empty() || t == "none" || t == "-")
-			continue;
+		if (t.empty() || t == "none" || t == "-") continue;
 		if (t == "all") {
 			mask |= AllMask;
 			continue;
 		}
 		const bool remove = t.front() == '-';
-		if (remove)
-			t.remove_prefix(1);
+		if (remove) t.remove_prefix(1);
 		bool found = false;
 		for (uint32_t i = 0; i < Count; i++) {
 			if (t == Registry[i].id) {
@@ -82,8 +80,7 @@ uint32_t ParseList(std::string_view s, uint32_t mask) {
 uint32_t BaseMask() {
 	static const uint32_t base = [] {
 		uint32_t m = 0;
-		if (const char* e = std::getenv("KYTY_MSL_XF"); e != nullptr)
-			m = ParseList(e, m);
+		if (const char* e = std::getenv("KYTY_MSL_XF"); e != nullptr) m = ParseList(e, m);
 		if (Truthy(std::getenv("KYTY_MSL_VS_PERF")))
 			m |= (1u << VsRootInt) | (1u << VsFetchSelect) | (1u << VsNoBarrier);
 		return m;
@@ -105,8 +102,7 @@ const std::map<std::pair<char, uint64_t>, uint32_t>& Table() {
 	static const std::map<std::pair<char, uint64_t>, uint32_t> table = [] {
 		std::map<std::pair<char, uint64_t>, uint32_t> t;
 		const char*                                   path = std::getenv("KYTY_MSL_XF_TABLE");
-		if (path == nullptr || *path == 0)
-			return t;
+		if (path == nullptr || *path == 0) return t;
 		std::FILE* fp = std::fopen(path, "r");
 		if (fp == nullptr) {
 			std::fprintf(stderr, "kyty msl xf: cannot read table %s\n", path);
@@ -119,8 +115,7 @@ const std::map<std::pair<char, uint64_t>, uint32_t>& Table() {
 				continue;
 			char*          end = nullptr;
 			const uint64_t h   = std::strtoull(hash, &end, 16);
-			if (end == hash || *end != 0)
-				continue;
+			if (end == hash || *end != 0) continue;
 			t[{stage[0], h}] = ParseList(list, 0);
 		}
 		std::fclose(fp);
@@ -136,8 +131,8 @@ const Info& InfoOf(Id id) {
 }
 
 void Begin(ShaderType stage, uint64_t shader_hash) {
-	g_stage  = stage;
-	g_active = BaseMask();
+	g_stage       = stage;
+	g_active      = BaseMask();
 	const auto& t = Table();
 	if (const auto it = t.find({StageChar(stage), shader_hash}); it != t.end())
 		g_active = it->second;
@@ -154,10 +149,8 @@ bool On(Id id) {
 std::string ActiveList() {
 	std::string s;
 	for (uint32_t i = 0; i < Count; i++) {
-		if ((g_active & (1u << i)) == 0)
-			continue;
-		if (!s.empty())
-			s += ',';
+		if ((g_active & (1u << i)) == 0) continue;
+		if (!s.empty()) s += ',';
 		s += Registry[i].id;
 		s += '@';
 		s += std::to_string(Registry[i].version);
@@ -204,11 +197,13 @@ bool EnvOn(const char* name) {
 
 bool ApplyMode(std::string_view mode, std::string& error) {
 	// review L1: every switch that changes the emitted text, whether this mode sets it or not
-	for (const char* v: {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC", "KYTY_MSL_GFX_MINMAX",
-	                     "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP",
-	                     "KYTY_MSL_LOADGROUP_MUTANT"}) {
+	for (const char* v:
+	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
+	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
+	      "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
 		if (std::getenv(v) != nullptr) {
-			error = std::string(v) + " is set in the environment; --mode does not mix with hand-set switches";
+			error = std::string(v) +
+			        " is set in the environment; --mode does not mix with hand-set switches";
 			return false;
 		}
 	}
@@ -222,18 +217,20 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			a = e + 1;
 		}
 		if (perfr && !fix6) {
-			error = "perfr needs fix6 (it switches off parts of the fix6 chain; alone it is the base text)";
+			error = "perfr needs fix6 (it switches off parts of the fix6 chain; alone it is the "
+			        "base text)";
 			return false;
 		}
 	}
 	std::map<std::string, bool> seen;
 	size_t                      at = 0;
 	while (at <= mode.size()) {
-		const size_t     end = std::min(mode.find('+', at), mode.size());
+		const size_t      end = std::min(mode.find('+', at), mode.size());
 		const std::string tok(mode.substr(at, end - at));
-		at                = end + 1;
-		const auto   eq   = tok.find('=');
-		const std::string key = tok.substr(0, eq), val = eq == std::string::npos ? "" : tok.substr(eq + 1);
+		at                    = end + 1;
+		const auto        eq  = tok.find('=');
+		const std::string key = tok.substr(0, eq),
+		                  val = eq == std::string::npos ? "" : tok.substr(eq + 1);
 		if (!seen.emplace(key, true).second) {
 			error = "mode token '" + key + "' given twice";
 			return false;
@@ -244,7 +241,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 		} else if (key == "vsperf" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_VS_PERF", "1", error);
 		} else if (key == "perfr" && val.empty()) {
-			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) && SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
+			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) &&
+			     SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
 			     SetOnce("KYTY_MSL_GFX_MINMAX", "0", error);
 		} else if (key == "gfxmath" && (val == "safe" || val == "relaxed" || val == "fast")) {
 			ok = SetOnce("KYTY_MSL_GFX_MATH", val, error);
@@ -269,15 +267,17 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 }
 
 std::string ModeCatalogue() {
-	std::string t = "base\tthe v1.1.2 / v1.2 text\n"
-	                "fix6\tKK-mimicry chain: KK-exact min/max, NIR re-association + statement split, bcover\n"
-	                "perfr\trelaxed pixel math without KK mimicry (GFX_SPLIT/REASSOC/MINMAX=0)\n"
-	                "vsperf\tvertex fetch transforms + varying narrowing (KYTY_MSL_VS_PERF=1)\n"
-	                "gfxmath=safe|relaxed|fast\tfragment math mode header (KYTY_MSL_GFX_MATH)\n"
-	                "xf=HEX\ttransform bit mask in registry order:\n";
+	std::string t =
+	    "base\tthe v1.1.2 / v1.2 text\n"
+	    "fix6\tKK-mimicry chain: KK-exact min/max, NIR re-association + statement split, bcover\n"
+	    "perfr\trelaxed pixel math without KK mimicry (GFX_SPLIT/REASSOC/MINMAX=0)\n"
+	    "vsperf\tvertex fetch transforms + varying narrowing (KYTY_MSL_VS_PERF=1)\n"
+	    "gfxmath=safe|relaxed|fast\tfragment math mode header (KYTY_MSL_GFX_MATH)\n"
+	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];
-		std::snprintf(line, sizeof line, "  %x\t%s@%u\n", 1u << i, Registry[i].id, Registry[i].version);
+		std::snprintf(line, sizeof line, "  %x\t%s@%u\n", 1u << i, Registry[i].id,
+		              Registry[i].version);
 		t += line;
 	}
 	return t;

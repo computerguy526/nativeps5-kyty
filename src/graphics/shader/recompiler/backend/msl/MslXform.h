@@ -44,14 +44,19 @@ enum Id : uint32_t {
 	// GET_LOD_STATS record: plain load instead of a relaxed atomic load in the pre-check before
 	// atomic_fetch_min (pixel stage; shaders with the MipStats record only).
 	MipStatsPlainLoad,
-	// bigshader loadgroup (skyall finding 5): raw dword reads of one binding with the same dynamic address
-	// operands in one block (span <= 64 B) share ONE range check and packed vector loads; when the check fails
-	// each member runs its original guarded text. Bit-exact by construction (mslEmitterMem.cpp). Any stage.
+	// bigshader loadgroup (skyall finding 5): raw dword reads of one binding with the same dynamic
+	// address
+	// operands in one block (span <= 64 B) share ONE range check and packed vector loads; when the
+	// check fails
+	// each member runs its original guarded text. Bit-exact by construction (mslEmitterMem.cpp).
+	// Any stage.
 	LoadGroup,
-	// V_MOVRELS select chains (>= 4 links on one M0 value, inner links used once) printed as one switch on M0
+	// V_MOVRELS select chains (>= 4 links on one M0 value, inner links used once) printed as one
+	// switch on M0
 	// at the chain head (skyall finding 6, foliage VS). Bit-exact (integer moves). Any stage.
 	MovrelSwitch,
-	// The same chains as a balanced compare tree over the sorted constants (leaf: M == k ? r_k : base).
+	// The same chains as a balanced compare tree over the sorted constants (leaf: M == k ? r_k :
+	// base).
 	// movrel_switch wins when both are on. Bit-exact. Any stage.
 	MovrelTree,
 	Count
@@ -77,19 +82,19 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 // "id@version stage class" per line: the catalogue (kyty_msl_dump --xf-list).
 [[nodiscard]] std::string Catalogue();
 
-// xfclass: emitter MODES. A shipped Metal list row (nativeps5 games/<id>/metal-*.tsv, keys format 2 /
-// pairs format 3) names the mode its text was verified and timed with; the public generator
-// (kyty_msl_dump --mode <mode>) sets exactly these switches for that one translation, so every listed
-// text is a function of (emitter commit, mode) and is reproducible. Tokens joined by '+':
+// xfclass: emitter MODES. A shipped Metal list row (nativeps5 games/<id>/metal-*.tsv, keys format 2
+// / pairs format 3) names the mode its text was verified and timed with; the public generator
+// (kyty_msl_dump --mode <mode>) sets exactly these switches for that one translation, so every
+// listed text is a function of (emitter commit, mode) and is reproducible. Tokens joined by '+':
 //   base          nothing (the v1.1.2 / v1.2 text)
 //   fix6          KYTY_MSL_FIX6=1: the KK-mimicry chain (mslfix5/6, fmafix, bcover)
-//   perfr         KYTY_MSL_GFX_SPLIT=0 GFX_REASSOC=0 GFX_MINMAX=0 (relaxed pixel math without KK mimicry)
-//   vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
+//   perfr         KYTY_MSL_GFX_SPLIT=0 GFX_REASSOC=0 GFX_MINMAX=0 (relaxed pixel math without KK
+//   mimicry) vsperf        KYTY_MSL_VS_PERF=1 (vertex fetch transforms + varying narrowing)
 //   gfxmath=M     KYTY_MSL_GFX_MATH=M (safe | relaxed | fast)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
-// false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes nothing
-// there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6, VS_PERF,
-// GFX_*, XF, XF_TABLE, LOADGROUP*): a mode never mixes with hand-set switches.
+// false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
+// nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,
+// VS_PERF, GFX_*, XF, XF_TABLE, LOADGROUP*): a mode never mixes with hand-set switches.
 [[nodiscard]] bool ApplyMode(std::string_view mode, std::string& error);
 // The one truthiness rule of the emitter switches (review L3): set, non-empty and not "0".
 [[nodiscard]] bool EnvOn(const char* name);

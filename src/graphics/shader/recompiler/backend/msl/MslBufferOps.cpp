@@ -1,7 +1,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
-#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 
 #include "graphics/shader/recompiler/BufferFormat.h"
+#include "graphics/shader/recompiler/backend/msl/MslXform.h"
 
 #include <algorithm>
 
@@ -469,23 +469,30 @@ std::string ReadConstBuffer(MemOut& o, const BufferBinding& b, const std::string
 	return o.Def("uint", InBounds(b, byte_offset, 4) + " ? " + load + " : 0u");
 }
 
-void GroupLoadWords(MemOut& o, const BufferBinding& b, const std::string& lo, const std::string& hi, const std::string& pre, uint32_t ndw,
-                    const std::string& W, const std::string& F, bool mutant) {
+void GroupLoadWords(MemOut& o, const BufferBinding& b, const std::string& lo, const std::string& hi,
+                    const std::string& pre, uint32_t ndw, const std::string& W,
+                    const std::string& F, bool mutant) {
 	const BufferOpts opts;
 	o.Line("uint " + W + "[" + std::to_string(ndw) + "];");
 	std::string cond = "(" + hi + " >= " + lo + ")";
-	if (Checked(b, opts)) cond += " && " + InBounds(b, hi, 4); // bounds_u32 form when that transform is on
+	if (Checked(b, opts))
+		cond += " && " + InBounds(b, hi, 4); // bounds_u32 form when that transform is on
 	if (!pre.empty()) cond = "(" + pre + ") && " + cond;
 	o.Line("bool " + F + " = " + cond + ";");
 	o.Line("if (" + F + ") {");
 	for (uint32_t k = 0; k < ndw;) {
-		const uint32_t n = std::min(4u, ndw - k);
-		const std::string at = "(" + lo + " + " + std::to_string(4u * k + (mutant ? 4u : 0u)) + "u)";
-		if (n == 1) o.Line("    " + W + "[" + std::to_string(k) + "] = " + Mem(b, at, "uint", false) + ";");
+		const uint32_t    n = std::min(4u, ndw - k);
+		const std::string at =
+		    "(" + lo + " + " + std::to_string(4u * k + (mutant ? 4u : 0u)) + "u)";
+		if (n == 1)
+			o.Line("    " + W + "[" + std::to_string(k) + "] = " + Mem(b, at, "uint", false) + ";");
 		else {
 			const std::string v = W + "_v" + std::to_string(k);
-			o.Line("    uint" + std::to_string(n) + " " + v + " = uint" + std::to_string(n) + "(" + Mem(b, at, "packed_uint" + std::to_string(n), false) + ");");
-			for (uint32_t q = 0; q < n; q++) o.Line("    " + W + "[" + std::to_string(k + q) + "] = " + v + "." + "xyzw"[q] + ";");
+			o.Line("    uint" + std::to_string(n) + " " + v + " = uint" + std::to_string(n) + "(" +
+			       Mem(b, at, "packed_uint" + std::to_string(n), false) + ");");
+			for (uint32_t q = 0; q < n; q++)
+				o.Line("    " + W + "[" + std::to_string(k + q) + "] = " + v + "." + "xyzw"[q] +
+				       ";");
 		}
 		k += n;
 	}

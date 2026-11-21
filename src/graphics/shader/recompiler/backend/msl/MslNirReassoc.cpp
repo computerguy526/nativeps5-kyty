@@ -163,8 +163,8 @@ bool Same(const Node* x, const Node* y) {
 		return std::memcmp(&x->c, &y->c, sizeof(float)) == 0;
 	if (x->kind == Node::Leaf && y->kind == Node::Leaf) {
 		if (x->leaf == y->leaf) return true;
-		// heavyshade: NIR has no u32<->f32 bitcasts, so two BitCast instructions of one IR value are
-		// ONE NIR SSA def. Kyty's IR keeps a separate BitCastF32U32 per use; without this the
+		// heavyshade: NIR has no u32<->f32 bitcasts, so two BitCast instructions of one IR value
+		// are ONE NIR SSA def. Kyty's IR keeps a separate BitCastF32U32 per use; without this the
 		// factoring rule a*b + a*c -> a*(b+c) missed every operand read through two casts
 		// (isatest nir_rule_assoc lane 0/1: 2614 words 1 ulp A != B).
 		const IR::Inst* rx = SkipCast(x->leaf);

@@ -50,10 +50,11 @@ struct MslCtx {
 	// ModelOf). Per emission: a cache keyed by the program's address and shader hash served a
 	// previous specialization's model (same hash, same stack address) to the next one.
 	mutable std::shared_ptr<const Mem::BindingModel> binding_model;
-	// xfclass review M1: the perfauto load_group grouping (mslEmitterMem.cpp LgOf) and the V_MOVRELS chains
-	// (MslEmitter.cpp MovrelOf) of THIS emission, built on first use. Same reason as binding_model: a cache
-	// keyed by &program + shader_hash served the previous specialization's analysis (stale instruction
-	// pointers, another binding model) to the next one. Opaque here: the types are local to those files.
+	// xfclass review M1: the perfauto load_group grouping (mslEmitterMem.cpp LgOf) and the
+	// V_MOVRELS chains (MslEmitter.cpp MovrelOf) of THIS emission, built on first use. Same reason
+	// as binding_model: a cache keyed by &program + shader_hash served the previous
+	// specialization's analysis (stale instruction pointers, another binding model) to the next
+	// one. Opaque here: the types are local to those files.
 	mutable std::shared_ptr<void> lg_info;
 	mutable std::shared_ptr<void> movrel_chains;
 	// fmsel6 KYTY_GPU_ACCURACY=normal (pixel/compute): float results of instructions outside
@@ -98,9 +99,10 @@ namespace Mem {
 struct BindingModel;
 }
 bool KkBdaRequested();         // env KYTY_MSL_CONVENTION=kk-bda
-// xfclass: emitter mode `fix6` (KYTY_MSL_FIX6=1; kyty_msl_dump --mode fix6): the KK-mimicry text of the
-// mslfix5/6, fmafix and bcover chain (KK-exact min/max helpers, NIR re-association and statement split,
-// union live components of exported vectors). Off = the v1.1.2 text, byte for byte.
+// xfclass: emitter mode `fix6` (KYTY_MSL_FIX6=1; kyty_msl_dump --mode fix6): the KK-mimicry text of
+// the mslfix5/6, fmafix and bcover chain (KK-exact min/max helpers, NIR re-association and
+// statement split, union live components of exported vectors). Off = the v1.1.2 text, byte for
+// byte.
 bool ModeFix6();
 // Number of V_MOVRELS select chains (>= 4 links) MovrelOf found for this emission (tests).
 size_t MovrelChainHeads(const MslCtx& ctx);

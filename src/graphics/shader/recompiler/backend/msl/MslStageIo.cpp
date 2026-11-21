@@ -140,14 +140,15 @@ bool KkVertexFormat(uint32_t vk, KkVtxFmt& f) {
 // out-of-range select happens afterwards (KK: load, then `oob ? 0 : v`); `oob ? 0 : *(p)` makes
 // the load conditional. Same values: the vertex buffer is bound with KK's robustness padding.
 bool VsPerfFetch() {
-	static const bool on = Xf::EnvOn("KYTY_MSL_VS_PERF"); // the Xf rule (review L3): "" is off, as for the vs_* transforms
+	static const bool on = Xf::EnvOn(
+	    "KYTY_MSL_VS_PERF"); // the Xf rule (review L3): "" is off, as for the vs_* transforms
 	return on;
 }
 
-// vsperf: varying width for a read mask (KYTY_MSL_KK_PS_READS / "// kk-bda ps_reads"): floatN with N =
-// highest read component + 1, at least 2 (component indexing). Metal stores every component of a VS
-// output the FS declares, read or not (G-buffer 9d2710dd: 53 -> 43 vertex_store per vertex; KK: 41).
-// VS and FS derive N from the same mask, so the interface types agree.
+// vsperf: varying width for a read mask (KYTY_MSL_KK_PS_READS / "// kk-bda ps_reads"): floatN with
+// N = highest read component + 1, at least 2 (component indexing). Metal stores every component of
+// a VS output the FS declares, read or not (G-buffer 9d2710dd: 53 -> 43 vertex_store per vertex;
+// KK: 41). VS and FS derive N from the same mask, so the interface types agree.
 uint32_t NarrowWidth(uint32_t mask) {
 	uint32_t n = 0;
 	for (uint32_t m = mask & 0xfu; m != 0u; m >>= 1u)
@@ -160,8 +161,8 @@ std::string KkVertexFetch(const std::string& name, const KkVtxFmt& f, uint32_t s
                           uint32_t binding) {
 	const bool root_int = Xf::On(Xf::VsRootInt);
 	const auto rt       = [&](const char* type, uint32_t off) {
-        return root_int ? fmt::format("*(constant {}*)(kk_rtu + ulong({}u))", type, off)
-                      : fmt::format("*(constant {}*)(kk_rt + {}u)", type, off);
+		return root_int ? fmt::format("*(constant {}*)(kk_rtu + ulong({}u))", type, off)
+		                : fmt::format("*(constant {}*)(kk_rt + {}u)", type, off);
 	};
 	const std::string vt = f.comps == 1 ? f.elem : fmt::format("{}{}", f.elem, f.comps);
 	const std::string load =
@@ -399,7 +400,8 @@ struct GfxIo {
 	std::set<uint32_t>           kk_drop_exports; // parameter exports KK's linked VS does not write
 	std::map<uint32_t, uint32_t> kk_export_mask; // parameter export -> component mask kept (!= 0xf)
 	std::map<uint32_t, uint32_t> narrow_p; // vsperf VS: parameter export -> floatN width (< 4)
-	std::map<uint32_t, uint32_t> narrow_l, narrow_f; // vsperf PS: L<loc> / F<loc> input -> floatN width
+	std::map<uint32_t, uint32_t> narrow_l,
+	    narrow_f; // vsperf PS: L<loc> / F<loc> input -> floatN width
 	uint32_t                     kk_guard_plane = UINT32_MAX;
 	std::set<uint32_t>
 	    kk_drop_mrt; // PS MRT exports to no colour attachment (KYTY_MSL_KK_COLOR_MASK)
@@ -650,7 +652,8 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 						    v->GetOpcode() != IR::ValueOpcode::CompositeConstructU32x4)
 							continue;
 						// v1.1.2 text (mode fix6 off): the per-export rule
-						const uint32_t live = ModeFix6() ? KkLiveComponents(*v, export_mask) : nc->second;
+						const uint32_t live =
+						    ModeFix6() ? KkLiveComponents(*v, export_mask) : nc->second;
 						for (size_t i = 0; i < v->NumArgs(); i++)
 							if (((live >> i) & 1u) == 0u) dead_use.insert({v, i});
 					}
@@ -759,10 +762,12 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 					if (seen_p.insert(o.index).second) {
 						uint32_t   n = 4;
 						const auto m = g->kk_export_mask.find(o.index);
-						if (c.kk_bda && VsPerfFetch() && m != g->kk_export_mask.end() && m->second != 0u)
+						if (c.kk_bda && VsPerfFetch() && m != g->kk_export_mask.end() &&
+						    m->second != 0u)
 							n = NarrowWidth(m->second);
 						if (n < 4u) g->narrow_p[o.index] = n;
-						b.Line(fmt::format("float{} p{} [[user(locn{})]];", n, o.index, o.location));
+						b.Line(
+						    fmt::format("float{} p{} [[user(locn{})]];", n, o.index, o.location));
 					}
 					break;
 				case IR::StageOutputKind::ClipDistance:
@@ -1192,7 +1197,7 @@ void GfxLocals(MslCtx& c, const GfxIo& g) {
 		         "answers lane 0 too)");
 	if (g.vs && !g.kk_fetch.empty()) {
 		c.b.Line(Xf::On(Xf::VsRootInt) ? "const ulong kk_rtu = (ulong)&kkroot.contents[0];"
-		                       : "constant uchar* kk_rt = (constant uchar*)&kkroot;");
+		                               : "constant uchar* kk_rt = (constant uchar*)&kkroot;");
 		for (const auto& [loc, code]: g.kk_fetch) {
 			const auto k = g.vkind.at(loc);
 			c.b.Line(fmt::format("{} vin_a{};", k == VKind::Uint ? "uint4" : "float4", loc));
@@ -1295,7 +1300,8 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 			}
 			if (const auto nf = g.narrow_f.find(f->second.first);
 			    nf != g.narrow_f.end() && f->second.second >= nf->second) {
-				b.Line(fmt::format("{} = 0.0f; // vsperf: component not read (narrowed)", c.Name(inst)));
+				b.Line(fmt::format("{} = 0.0f; // vsperf: component not read (narrowed)",
+				                   c.Name(inst)));
 				return true;
 			}
 			b.Line(
@@ -1325,11 +1331,12 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 			}
 			if (const auto nl = g.narrow_l.find(l->second); nl != g.narrow_l.end()) {
 				if (inst.Arg(1).IsImmediate() && (inst.Arg(1).U32() & 3u) >= nl->second) {
-					b.Line(fmt::format("{} = 0u; // vsperf: component not read (narrowed)", c.Name(inst)));
+					b.Line(fmt::format("{} = 0u; // vsperf: component not read (narrowed)",
+					                   c.Name(inst)));
 					return true;
 				}
-				b.Line(fmt::format("{} = as_type<uint>(fin.L{}[min({}, {}u)]);", c.Name(inst), l->second,
-				                   chan, nl->second - 1u));
+				b.Line(fmt::format("{} = as_type<uint>(fin.L{}[min({}, {}u)]);", c.Name(inst),
+				                   l->second, chan, nl->second - 1u));
 				return true;
 			}
 			b.Line(fmt::format("{} = as_type<uint>(fin.L{}[{}]);", c.Name(inst), l->second, chan));
@@ -1397,8 +1404,10 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 					for (uint32_t i = 0; i < 4; i++)
 						if ((nc->second >> i) & 1u)
 							b.Line(fmt::format("out.p{}[{}] = xe[{}];", exp.index, i, i));
-				} else if (const auto np = g.narrow_p.find(exp.index); has && np != g.narrow_p.end())
-					b.Line(fmt::format("out.p{} = ({}).{};", exp.index, ExportExpr(g, "xd", exp, false),
+				} else if (const auto np = g.narrow_p.find(exp.index);
+				           has && np != g.narrow_p.end())
+					b.Line(fmt::format("out.p{} = ({}).{};", exp.index,
+					                   ExportExpr(g, "xd", exp, false),
 					                   std::string("xyzw").substr(0, np->second)));
 				else if (has)
 					b.Line(
