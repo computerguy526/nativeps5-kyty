@@ -13430,11 +13430,19 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		    !source.registered || source.backing.image == nullptr || !SafeToSyncIntoBuffer(source)) {
 			return reject("imgcopy.reject.source-range");
 		}
-		if (info.IsDepth() || info.HasStencil() || info.HasMetadata() || info.IsVolume() ||
-		    info.IsBlock() || info.samples != 1 || source.backing.samples != 1 ||
-		    info.resources.levels == 0 || info.resources.levels > info.mip_layout.size() ||
+		// A colour surface with DCC metadata is allowed: the native image always holds the
+		// resolved texels (MaterializeDccClear turns a metadata clear into a native clear when
+		// the surface is bound), both paths read and write those texels, and neither touches the
+		// metadata range.
+		if (info.IsDepth() || info.HasStencil() || info.metadata.kind == ImageMetadataKind::Htile) {
+			return reject("imgcopy.reject.source-depth");
+		}
+		if (info.IsVolume() || info.IsBlock() || info.samples != 1 || source.backing.samples != 1) {
+			return reject("imgcopy.reject.source-shape");
+		}
+		if (info.resources.levels == 0 || info.resources.levels > info.mip_layout.size() ||
 		    source.backing.mip_levels != info.resources.levels || source.native_first != 0) {
-			return reject("imgcopy.reject.source-kind");
+			return reject("imgcopy.reject.source-mips");
 		}
 		// The source owns every byte of its range (SafeToDownload), and a byte has one owner: no
 		// other image holds bytes the buffer path would move into the range as well.
@@ -13457,7 +13465,8 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 			            a.tile_mode == b.tile_mode && a.bgra16 == b.bgra16 &&
 			            a.resources.levels == b.resources.levels &&
 			            a.resources.layers == b.resources.layers && !b.HasStencil() &&
-			            !b.HasMetadata() && source.backing.format == other->backing.format &&
+			            b.metadata.kind != ImageMetadataKind::Htile &&
+			            source.backing.format == other->backing.format &&
 			            source.backing.mip_levels == other->backing.mip_levels &&
 			            source.backing.layers == other->backing.layers &&
 			            source.backing.extent == other->backing.extent &&
