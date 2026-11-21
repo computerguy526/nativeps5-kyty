@@ -3091,18 +3091,31 @@ bool TextureCache::AliasRebuildPartialEnabled() {
 // partial rebuild moves this image's owned bytes inside its segments to the buffer by tiling only
 // the blocks that hold owned bytes (OwnedRebuild::PreserveSegments), not every whole segment that
 // holds one. The bytes that reach the buffer are the same; the tile pass is smaller.
-static bool AliasRebuildPreserveTightEnabled() {
-	static const bool enabled = [] {
+// =verify (diagnostic, slow): as =1, and every such move also tiles the whole segments into a
+// second scratch and compares the owned ranges of the two once the tick completed
+// (TileManager::VerifyRanges; KYTY_TILER_TRACE prints "count verify.preserve-tight").
+static int AliasRebuildPreserveTightMode() {
+	static const int mode = [] {
 		const char* value = std::getenv("KYTY_ALIAS_REBUILD_PRESERVE_TIGHT");
-		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
-		if (on) {
-			std::fprintf(stderr, "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1: partial rebuilds "
-			                     "tile out only the blocks that hold owned bytes\n");
+		const int   m     = value == nullptr                   ? 0
+		                    : std::strcmp(value, "1") == 0      ? 1
+		                    : std::strcmp(value, "verify") == 0 ? 2
+		                                                        : 0;
+		if (m != 0) {
+			std::fprintf(stderr, "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=%s: partial rebuilds "
+			                     "tile out only the blocks that hold owned bytes%s\n",
+			             value, m == 2 ? " (verified against the whole segments)" : "");
 		}
-		return on;
+		return m;
 	}();
-	return enabled;
+	return mode;
 }
+static bool AliasRebuildPreserveTightEnabled() {
+	return AliasRebuildPreserveTightMode() != 0;
+}
+// =verify: the whole-segment download of the rebuild in progress on this thread (an
+// ImageDownload; MaterializeOwnedBytes tiles it into a reference scratch).
+static thread_local const void* t_preserve_verify_full = nullptr;
 
 TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId       id,
                                                                        RefreshIntent intent) {
@@ -3259,7 +3272,8 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		// Only the segments that hold owned bytes (the others need nothing moved).
 		download.texture.tiles.clear();
 		download.texture.regions.clear();
-		uint64_t preserve_full = 0;
+		uint64_t      preserve_full = 0;
+		ImageDownload verify_full;
 		for (size_t index = 0; index < tiles.size(); ++index) {
 			if (image.OwnsBytesIn(info.data.address + tiles[index].tiled_offset,
 			                      tiles[index].tiled_size)) {
@@ -3299,6 +3313,10 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 			// Owned bytes only in padding blocks: no texel covers them, the whole-segment tiles
 			// stay (the pass writes nothing there either way).
 			if (!tight_tiles.empty()) {
+				if (AliasRebuildPreserveTightMode() == 2) {
+					verify_full            = download;
+					t_preserve_verify_full = &verify_full;
+				}
 				download.texture.tiles   = std::move(tight_tiles);
 				download.texture.regions = std::move(tight_regions);
 				TilerTrace::Event("rp.preserve.tight", image, tight_bytes);
@@ -3306,6 +3324,7 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 		}
 		(void)MaterializeOwnedBytes(info.data, id, {}, "rebuild-own-part", nullptr, &within,
 		                            &download);
+		t_preserve_verify_full = nullptr;
 	}
 	if (intent == RefreshIntent::Read) {
 		// As the old rebuild: a read also takes the bytes other images own here.
@@ -6111,8 +6130,54 @@ uint64_t TextureCache::MaterializeOwnedBytes(GuestRange range, ImageId only, Ima
 			command.copyBuffer(buffer.Handle(), scratch.buffer,
 			                   static_cast<uint32_t>(to_scratch.size()), to_scratch.data());
 		}
+		const auto* verify_full = owner.id == only && download != nullptr
+		                              ? static_cast<const ImageDownload*>(t_preserve_verify_full)
+		                              : nullptr;
+		TileManager::Result reference {};
+		if (verify_full != nullptr) {
+			// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=verify: the same move through the whole segments,
+			// into a reference scratch prepared like the scratch.
+			reference = m_tiler.GetScratchBuffer(data.size);
+			std::vector<vk::BufferCopy> to_reference;
+			owner.ranges.ForEach([&](uint64_t begin, uint64_t end) {
+				to_reference.push_back({buffer.Offset(begin),
+				                        reference.offset + (begin - data.address), end - begin});
+			});
+			m_scheduler.EndRendering();
+			const auto              command = m_scheduler.Current().HelperSink();
+			vk::BufferMemoryBarrier before[2] {};
+			before[0].srcAccessMask       = vk::AccessFlagBits::eMemoryWrite;
+			before[0].dstAccessMask       = vk::AccessFlagBits::eTransferRead;
+			before[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			before[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			before[0].buffer              = buffer.Handle();
+			before[0].offset              = 0;
+			before[0].size                = VK_WHOLE_SIZE;
+			before[1]                     = before[0];
+			before[1].srcAccessMask =
+			    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+			before[1].dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+			before[1].buffer        = reference.buffer;
+			before[1].offset        = reference.offset;
+			before[1].size          = reference.size;
+			command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+			                        vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 2, before,
+			                        0, nullptr);
+			command.copyBuffer(buffer.Handle(), reference.buffer,
+			                   static_cast<uint32_t>(to_reference.size()), to_reference.data());
+			DownloadImageTo(image, reference.buffer, reference.offset, reference.size, data.size,
+			                *verify_full);
+		}
 		DownloadImageTo(image, scratch.buffer, scratch.offset, scratch.size, data.size,
 		                std::move(transfer));
+		if (verify_full != nullptr) {
+			std::vector<std::pair<uint64_t, uint64_t>> compare;
+			owner.ranges.ForEach([&](uint64_t begin, uint64_t end) {
+				compare.emplace_back(begin - data.address, end - begin);
+			});
+			m_tiler.VerifyRanges("preserve-tight", data.address, reference, scratch, data.size,
+			                     std::move(compare));
+		}
 		{
 			// Again: the tile pass may have begun a new command buffer.
 			m_scheduler.EndRendering();
