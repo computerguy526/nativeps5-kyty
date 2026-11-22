@@ -1449,6 +1449,14 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	result.threadgroup[0] = total;
 
 	const bool gfx_stage   = GfxIsStage(program.stage);
+	// meshpath: a mesh program is KK-lowered graphics code (NIR from Kyty's graphics SPIR-V, FLOAT_MODE
+	// 0xC0): the graphics float rules (KK min/max, transcendental input flush, graphics f16 helpers)
+	// apply to it as to a vertex shader. KYTY_MSL_MESH_FLOAT=0 = compute rules (meshpath v2 text).
+	const bool mesh_float = program.stage == ShaderType::Mesh && MeshEnabled() && [] {
+		const char* e = std::getenv("KYTY_MSL_MESH_FLOAT");
+		return e == nullptr || std::strcmp(e, "0") != 0;
+	}();
+	const bool gfx_float = gfx_stage || mesh_float;
 	const bool gfx_relaxed = program.stage == ShaderType::Pixel && GfxPixelRelaxed() &&
 	                         (options.kk_bda || KkBdaRequested());
 	// mslfix4: KYTY_MSL_VS_SINGLE_LANE=0 = old (real simdgroup ops in the VS with lid 0)
@@ -1461,7 +1469,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	SetPreciseTranscendentals(gfx_relaxed);
 	// mslfix6: KYTY_MSL_GFX_MINMAX=0 = old text (Metal fmin/fmax/fmin3/fmax3/fmedian3)
 	const bool kk_minmax =
-	    gfx_stage && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled() && ModeFix6();
+	    gfx_float && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled() && ModeFix6();
 	SetKkMinMax(kk_minmax);
 	// mslfix5: replay KK NIR float re-association on pixel text (MslNirReassoc.cpp);
 	// KYTY_MSL_GFX_REASSOC=0 = old text
@@ -1480,7 +1488,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		        const char* e = std::getenv("KYTY_MSL_GFX_SPLIT");
 		        return e == nullptr || std::strcmp(e, "0") != 0;
 	        }());
-	SetFlushTranscendentalInputs(gfx_stage && (options.kk_bda || KkBdaRequested()) && [] {
+	SetFlushTranscendentalInputs(gfx_float && (options.kk_bda || KkBdaRequested()) && [] {
 		const char* e = std::getenv("KYTY_MSL_GFX_FTZ");
 		return e == nullptr || std::strcmp(e, "0") != 0;
 	}());
@@ -1586,7 +1594,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		if (mesh_stage) MeshEpilogue(ctx);
 		b.Close(); // kernel
 		result.source = KkInjectHeader(ctx, result) +
-		                PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane, kk_minmax) +
+		                PreludeText(fuse_mad, gfx_float, gfx_relaxed, vs_single_lane, kk_minmax) +
 		                LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		if (mesh_stage) {
 			size_t n = 0;
