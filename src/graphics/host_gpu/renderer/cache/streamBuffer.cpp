@@ -253,7 +253,7 @@ void Buffer::Invalidate(uint64_t offset, uint64_t size) {
 
 bool Buffer::ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&             ranges,
                             const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const {
-	if (m_buffer == nullptr || m_allocation == nullptr || m_sparse || m_range_import || m_zero_copy) {
+	if (m_buffer == nullptr || m_allocation == nullptr || m_sparse) {
 		return false;
 	}
 	for (const auto& [offset, size]: ranges) {
