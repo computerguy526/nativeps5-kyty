@@ -92,6 +92,7 @@ LIB_DEFINE(InitAgcDriver_1) {
 	LIB_FUNC("6mFxkVqdmbQ", Gen5::AgcAcbPopMarker);
 	LIB_FUNC("TRO721eVt4g", Gen5::AgcDcbResetQueue);
 	LIB_FUNC("MWiElSNE8j8", Gen5::AgcDcbWaitUntilSafeForRendering);
+	LIB_FUNC("GPbUp9jXQa8", Gen5::AgcAcbWaitUntilSafeForRendering);
 	LIB_FUNC("LFSPFmGc9Hg", Gen5::AgcDcbSetWorkloadsActive);
 	LIB_FUNC("hEK26Wdny6s", Gen5::AgcDcbSetWorkloadComplete);
 	LIB_FUNC("QhCbS4X9Rl8", Gen5::AgcDcbSetMarker);
