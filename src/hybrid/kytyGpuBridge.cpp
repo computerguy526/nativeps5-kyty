@@ -883,6 +883,13 @@ void RendererEnd() {
 		}
 		Log(0, "renderer: window loop ended, shutting the subsystems down");
 	}
+	if (Libs::Graphics::WindowCloseSaveAbandoned()) {
+		// mainhang: a stuck close-time save still runs on a helper thread and uses the pipeline cache;
+		// tearing the renderer down under it would crash. The process is ending: leave it.
+		Log(1, "[mainhang] renderer: teardown skipped, the close-time pipeline cache save is stuck");
+		Log(0, "renderer: stopped");
+		return;
+	}
 	delete g_subsystems;
 	g_subsystems = nullptr;
 	Log(0, "renderer: stopped");
