@@ -251,6 +251,44 @@ void Buffer::Invalidate(uint64_t offset, uint64_t size) {
 	}
 }
 
+bool Buffer::ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&             ranges,
+                            const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const {
+	if (m_buffer == nullptr || m_allocation == nullptr || m_sparse || m_range_import || m_zero_copy) {
+		return false;
+	}
+	for (const auto& [offset, size]: ranges) {
+		if (offset > Size() || size > Size() - offset) {
+			return false;
+		}
+	}
+	VkMemoryPropertyFlags properties = 0;
+	vmaGetAllocationMemoryProperties(m_graphics->allocator, m_allocation, &properties);
+	if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+		return false;
+	}
+	if (!m_mapped.empty()) {
+		for (const auto& [offset, size]: ranges) {
+			if ((properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+				(void)vmaInvalidateAllocation(m_graphics->allocator, m_allocation, offset, size);
+			}
+			sink(offset, m_mapped.data() + offset, size);
+		}
+		return true;
+	}
+	void* data = nullptr;
+	if (vmaMapMemory(m_graphics->allocator, m_allocation, &data) != VK_SUCCESS || data == nullptr) {
+		return false;
+	}
+	for (const auto& [offset, size]: ranges) {
+		if ((properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
+			(void)vmaInvalidateAllocation(m_graphics->allocator, m_allocation, offset, size);
+		}
+		sink(offset, static_cast<const uint8_t*>(data) + offset, size);
+	}
+	vmaUnmapMemory(m_graphics->allocator, m_allocation);
+	return true;
+}
+
 vk::BufferMemoryBarrier Buffer::Barrier(uint64_t offset, uint64_t size, vk::AccessFlags source,
                                         vk::AccessFlags destination) const {
 	if (Handle() == nullptr || size == 0 || offset > Size() || size > Size() - offset) {

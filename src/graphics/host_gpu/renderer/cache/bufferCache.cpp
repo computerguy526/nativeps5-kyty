@@ -389,6 +389,38 @@ Live::Switch g_readback_side_writes("KYTY_READBACK_SIDE_WRITES", Live::ParseDefa
 Live::Switch          g_readback_eager_writes("KYTY_READBACK_EAGER_WRITES", Live::ParseDefaultOff);
 std::atomic<uint64_t> g_readback_side_writes_copies {0};
 
+// nps5 faultcost: KYTY_FAULT_HOST_READBACK (live, default off; =1 on, =2 counts only). A guest
+// write fault on a GPU-owned page that drains on the command processor (fault-noretry) records a
+// GPU copy of the window's GPU-written bytes into the CURRENT recording and waits for that
+// recording, i.e. for the whole queued GPU backlog (~12 ms in Snowy Canyon), even when every
+// writer of those bytes completed long ago (the guest rewrites per-frame ring buffers the GPU
+// wrote frames before). KosmicKrisp has one memory type (host-visible, coherent, device-local),
+// so when every writer of the window's GPU-dirty bytes has completed (newest write tick and the
+// newest address-writing shader both known done), with no pending publication, side readback or
+// GPU-written image over the window, those bytes are copied on the command processor from the
+// mapped device buffer straight into the guest backing: the same bytes the download would
+// publish, without the GPU copy and without the wait. Anything not eligible drains as before.
+// =2 evaluates eligibility and counts it but always drains (stats for the off arm).
+Live::Switch g_fault_host_readback("KYTY_FAULT_HOST_READBACK", [](const char* value) -> int64_t {
+	return value != nullptr && value[0] == '1' ? 1 : value != nullptr && value[0] == '2' ? 2 : 0;
+});
+struct FaultHostReadbackStats {
+	std::atomic<uint64_t> attempts {0};
+	std::atomic<uint64_t> eligible {0};
+	std::atomic<uint64_t> done {0};
+	std::atomic<uint64_t> bytes {0};
+	std::atomic<uint64_t> ranges {0};
+	std::atomic<uint64_t> done_ns {0};
+	// refusals: 0 unbounded writer pending, 1 publication/side readback pending, 2 GPU-written image,
+	// 3 no dirty bytes, 4 writer in the current recording, 5 writer queued (not complete), 6 map failed
+	std::atomic<uint64_t> refused[7] {};
+	std::atomic<uint64_t> queued_ticks {0}; // sum of (newest writer - known GPU tick) for refusal 5
+};
+FaultHostReadbackStats& FaultHostReadback() {
+	static FaultHostReadbackStats stats;
+	return stats;
+}
+
 // KYTY_READ_FAULT_PUBLISHED (live, default off; =1 on, =verify): a guest thread's read fault on a
 // page whose bytes the GPU owns does not wait for the GPU. When the faulting instruction is a
 // plain load (common/guestLoad.h) of bytes within one page, no image owns the page, and a side or
@@ -749,6 +781,23 @@ void ReportReadFaultPublished(uint32_t frame) {
 	    take(state.write_drains[1]), static_cast<double>(take(state.write_drain_ns[1])) / 1e6,
 	    take(state.write_drains[2]), static_cast<double>(take(state.write_drain_ns[2])) / 1e6,
 	    take(state.write_drains[3]), static_cast<double>(take(state.write_drain_ns[3])) / 1e6);
+	if (g_fault_host_readback.On()) {
+		auto&      hr       = FaultHostReadback();
+		const auto attempts = take(hr.attempts);
+		const auto refused5 = take(hr.refused[5]);
+		const auto ticks5   = take(hr.queued_ticks);
+		const auto done     = take(hr.done);
+		std::printf("Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64 ", done %" PRIu64
+		            " (%.1f KiB, %" PRIu64 " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
+		            ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64 ", queued writer %" PRIu64
+		            " (%.1f ticks ahead avg), map %" PRIu64 "\n",
+		            static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
+		            static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
+		            static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]), take(hr.refused[1]),
+		            take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]), refused5,
+		            refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
+		            take(hr.refused[6]));
+	}
 }
 
 struct WriteDrainTimer {
@@ -2893,6 +2942,84 @@ void BufferCache::ReadMemoryDrain(uint64_t vaddr, uint64_t size, bool is_write,
 
 	trace.begin = window_begin;
 	trace.size  = window_end - window_begin;
+	// nps5 faultcost: KYTY_FAULT_HOST_READBACK (see its definition).
+	if (const auto host_mode = g_fault_host_readback.Get(); is_write && host_mode != 0) {
+		auto&      hr    = FaultHostReadback();
+		const auto start = ReadFaultDiag::NowNs();
+		const auto bytes_in_window = window_end - window_begin;
+		hr.attempts.fetch_add(1, std::memory_order_relaxed);
+		bool done = false;
+		do {
+			if (m_unbounded_write_tick != 0 && !m_scheduler.IsFree(m_unbounded_write_tick)) {
+				hr.refused[0].fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			if (HasPendingBackingPublication(window_begin, bytes_in_window) ||
+			    OverlapsPendingSideReadback(window_begin, window_end)) {
+				hr.refused[1].fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			if (m_texture_cache.IsRegionGpuModified(window_begin, bytes_in_window)) {
+				hr.refused[2].fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			std::vector<std::pair<uint64_t, uint64_t>> ranges; // (buffer offset, size)
+			uint64_t                                   newest = m_write_tick_floor;
+			uint64_t                                   bytes  = 0;
+			m_memory_tracker.ForEachDownloadRange<false>(
+			    window_begin, bytes_in_window, [&](uint64_t address, uint64_t size_in) noexcept {
+				    m_gpu_modified_ranges.ForEachInRange(address, size_in, [&](uint64_t start_in, uint64_t end_in) {
+					    ranges.emplace_back(start_in - buffer_begin, end_in - start_in);
+					    newest = std::max(newest, m_write_ticks.MaxTick(start_in, end_in - start_in));
+					    bytes += end_in - start_in;
+				    });
+			    });
+			if (ranges.empty()) {
+				hr.refused[3].fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			if (!m_scheduler.IsFree(newest)) {
+				if (newest >= m_scheduler.CurrentTick()) {
+					hr.refused[4].fetch_add(1, std::memory_order_relaxed);
+				} else {
+					hr.refused[5].fetch_add(1, std::memory_order_relaxed);
+					const auto known = m_scheduler.GetMasterSemaphore().KnownGpuTick();
+					hr.queued_ticks.fetch_add(newest > known ? newest - known : 0, std::memory_order_relaxed);
+				}
+				break;
+			}
+			hr.eligible.fetch_add(1, std::memory_order_relaxed);
+			if (host_mode != 1) {
+				break;
+			}
+			const bool copied = buffer.ReadHostRanges(
+			    ranges, [&](uint64_t offset, const uint8_t* data, uint64_t size_in) {
+				    Libs::LibKernel::Memory::WriteBacking(buffer_begin + offset, data, size_in);
+			    });
+			if (!copied) {
+				hr.refused[6].fetch_add(1, std::memory_order_relaxed);
+				break;
+			}
+			// The bytes are in the backing now: the GPU no longer owns them (as after a download's
+			// publication).
+			for (const auto& [offset, size_in]: ranges) {
+				CleanVerdict::Invalidate(buffer_begin + offset, size_in, Coherence::Source::BufferDirtySubtract);
+				m_gpu_range_removals.fetch_add(1, std::memory_order_acq_rel);
+				m_gpu_modified_ranges.Subtract(buffer_begin + offset, size_in);
+			}
+			m_memory_tracker.UnmarkRegionAsGpuModified(window_begin, bytes_in_window);
+			hr.done.fetch_add(1, std::memory_order_relaxed);
+			hr.bytes.fetch_add(bytes, std::memory_order_relaxed);
+			hr.ranges.fetch_add(ranges.size(), std::memory_order_relaxed);
+			done = true;
+		} while (false);
+		if (done) {
+			hr.done_ns.fetch_add(ReadFaultDiag::NowNs() - start, std::memory_order_relaxed);
+			trace.downloaded = true;
+			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+			return;
+		}
+	}
 	if (DownloadBufferMemory(buffer, window_begin, window_end - window_begin)) {
 		trace.downloaded = true;
 		const auto                    tick = m_scheduler.CurrentTick();
