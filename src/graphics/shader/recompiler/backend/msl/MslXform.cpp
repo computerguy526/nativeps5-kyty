@@ -231,7 +231,7 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
 	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
 	      "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT",
-	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP",
+	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_VS_MODES", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP",
 	      "KYTY_MSL_LOADGROUP_MUTANT"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
@@ -284,6 +284,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_XF_BLIM", "1", error);
 		} else if (key == "gexit" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_XF_GEXIT", "1", error);
+		} else if (key == "vsmodes" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_VS_MODES", "1", error);
 		} else if (key == "perfr" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) &&
 			     SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
@@ -329,6 +331,7 @@ std::string ModeCatalogue() {
 	    "transform bounds_lim)\n"
 	    "gexit\tgpuguard loop budget checked inside the loop's own exit test (KYTY_MSL_XF_GEXIT=1 "
 	    "= transform guard_exit)\n"
+	    "vsmodes\tvertex: KK's per-op float modes (position slice safe, rest relaxed, MAD as two statements; KYTY_MSL_VS_MODES=1)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];
