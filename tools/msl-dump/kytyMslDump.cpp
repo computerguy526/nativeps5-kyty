@@ -56,6 +56,7 @@ struct Src {
   uint32_t stage = 0, wave = 64, user_data_count = 0, user_data_base = 0;
   uint64_t hash = 0;
   std::vector<uint32_t> statics, code;
+  std::vector<uint32_t> back_code; // meshpath: merged GS back half (key tail)
   std::string digest;
 };
 struct Perm {
@@ -124,6 +125,17 @@ std::vector<Src> LoadPrograms(const char *path,
       k += 4;
       s.code.resize(nc);
       std::memcpy(s.code.data(), key + k, 4ull * nc);
+      k += 4ull * nc;
+      // meshpath: BuildSourceKey ends with PutWords(back_code) (count 0 for
+      // every stage without a separately compiled back half).
+      if (k + 4 <= kl) {
+        uint32_t nb;
+        std::memcpy(&nb, key + k, 4);
+        if (k + 4 + 4ull * nb <= kl) {
+          s.back_code.resize(nb);
+          std::memcpy(s.back_code.data(), key + k + 4, 4ull * nb);
+        }
+      }
       out.push_back(std::move(s));
     }
     if (kind != 1) {
@@ -171,7 +183,7 @@ void ComputeInfoFromKey(const std::vector<uint32_t> &k,
 // Inverse of BuildStageStaticKey(ShaderVertexInputInfo) /
 // (ShaderPixelInputInfo). Mesh/tessellation vertex shaders are not decoded.
 bool VertexInfoFromKey(const std::vector<uint32_t> &k,
-                       ShaderVertexInputInfo &v) {
+                       ShaderVertexInputInfo &v, bool mesh_ok = false) {
   if (k.size() < 10)
     return false;
   size_t i = 0;
@@ -204,8 +216,28 @@ bool VertexInfoFromKey(const std::vector<uint32_t> &k,
       v.clip_space.half_extent[j] = std::bit_cast<float>(k[i++]);
   }
   v.mesh.threads_num[0] = k[i++];
-  if (v.mesh.threads_num[0] != 0)
-    return false;
+  if (v.mesh.threads_num[0] != 0) {
+    // meshpath: Kyty's NGG/merged-GS mesh program (ShaderType::Mesh, 5)
+    if (!mesh_ok || k.size() < i + 13)
+      return false;
+    auto &m = v.mesh;
+    m.threads_num[1] = k[i++];
+    m.threads_num[2] = k[i++];
+    m.wave_size = k[i++];
+    m.host_subgroup_size = k[i++];
+    m.lds_size_dwords = k[i++];
+    m.scratch_size_dwords = k[i++];
+    m.input_primitive = k[i++];
+    m.primitives_per_group = k[i++];
+    m.vertices_per_group = k[i++];
+    m.max_vertices = k[i++];
+    m.max_primitives = k[i++];
+    m.provoking_vertex = k[i++];
+    m.split_groups = k[i++];
+    v.logical_stage = ShaderType::Mesh;
+  } else if (mesh_ok) {
+    return false; // a mesh source with a plain vertex key
+  }
   v.tess.input_control_points = k[i++];
   if (v.tess.input_control_points != 0)
     return false;
@@ -369,6 +401,14 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
       link_pinfo.stage.program = &link_program;
       ShaderLinkVertexPixelParameters(vinfo, link_pinfo);
     }
+  } else if (s.stage == static_cast<uint32_t>(ShaderType::Mesh)) {
+    // meshpath: the mesh program keeps the vertex input info (mesh part).
+    if (!VertexInfoFromKey(s.statics, vinfo, true)) {
+      std::fprintf(stderr, "cannot decode mesh static key\n");
+      return 5;
+    }
+    // Apple simdgroup, not the recorded host's value (as compute).
+    vinfo.mesh.host_subgroup_size = 32;
   } else if (s.stage == static_cast<uint32_t>(ShaderType::Pixel)) {
     if (!PixelInfoFromKey(s.statics, pinfo)) {
       std::fprintf(stderr, "cannot decode pixel static key\n");
@@ -386,7 +426,9 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   options.msl_loop_cap = g_loop_cap;
   std::vector<uint32_t> user_data(std::max(s.user_data_count, 16u), 0u);
   options.user_data = user_data;
-  if (s.stage == static_cast<uint32_t>(ShaderType::Vertex))
+  options.back_code = s.back_code; // meshpath: merged GS back half
+  if (s.stage == static_cast<uint32_t>(ShaderType::Vertex) ||
+      s.stage == static_cast<uint32_t>(ShaderType::Mesh))
     options.input_info.vertex = &vinfo;
   else if (s.stage == static_cast<uint32_t>(ShaderType::Pixel))
     options.input_info.pixel = &pinfo;
