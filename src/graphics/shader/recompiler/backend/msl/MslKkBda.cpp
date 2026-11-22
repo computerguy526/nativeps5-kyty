@@ -165,12 +165,18 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		SetLoadSelectSafe("kk_lsafe");
 	}
 	b.Line("const ulong kk_set0 = *(constant ulong*)(kk_root + " + KU(KkRootSets) + ");");
-	const bool gfx = program.stage != ShaderType::Compute;
+	// meshpath: a mesh program is a graphics-pipeline stage (buffer addressing as VS/PS, `gfx`)
+	// with a real workgroup (threadgroup LDS and workgroup id as compute, `gfx_lane`). KK 0007:
+	// the mesh workgroup id has no base (the root words alias the vertex strides).
+	const bool gfx      = program.stage != ShaderType::Compute;
+	const bool mesh     = program.stage == ShaderType::Mesh;
+	const bool gfx_lane = gfx && !mesh;
 	if (!gfx)
 		b.Line("const uint3 tgpig = kk_tgpig + uint3(*(constant packed_uint3*)(kk_root + " +
 		       KU(KkRootBaseGroup) + "));");
+	if (mesh) b.Line("const uint3 tgpig = kk_tgpig; // KK 0007: mesh workgroup id without base");
 	SetLdsThread(0u);
-	if (gfx) {
+	if (gfx_lane) {
 		// mslrest4: Kyty gives stages without a workgroup a per-invocation Function LDS array
 		// (spirvEmitterMemoryHelpers.cpp LdsDwordCount: pixel max(lds_size_dwords,1), vertex
 		// max(lds_size_dwords,1)), bounds-checked like workgroup LDS.
@@ -235,7 +241,9 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		}
 	}
 	const uint32_t lds_dev = FirstOf(layout, Kind::SharedMemory);
-	if (gfx) {
+	if (gfx_lane) {
+	} else if (mesh && m.lds_bytes != 0u && lds_dev != UINT32_MAX) {
+		bad("mesh LDS in device memory (lds_storage)");
 	} else if (m.lds_bytes != 0u && lds_dev != UINT32_MAX) {
 		// Kyty lds_storage (LDS larger than the host's threadgroup memory, e.g. 48 KB > Metal's 32
 		// KB): the workgroup's LDS is region x + nx * (y + ny * z) of the SharedMemory device

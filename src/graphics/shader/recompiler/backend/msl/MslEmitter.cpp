@@ -1388,6 +1388,14 @@ bool ModeFix6() { // read per call: the unit tests switch it inside one process
 	return Xf::EnvOn("KYTY_MSL_FIX6");
 }
 
+// meshpath: KYTY_MSL_MESH=1 sends Kyty's mesh programs (ShaderType::Mesh) through the
+// workgroup (compute) path with a [[mesh]] entry. v0 = probe: the outputs, MeshAllocate and the
+// epilogue are not emitted yet (reported unsupported), so no mesh text is complete or shippable.
+// Default off: mesh programs keep the stage stub.
+bool MeshEnabled() {
+	return Xf::EnvOn("KYTY_MSL_MESH");
+}
+
 MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,
                       const MslOptions& options) {
 	MslResult result;
@@ -1471,15 +1479,17 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		const char* e = std::getenv("KYTY_MSL_GFX_FTZ");
 		return e == nullptr || std::strcmp(e, "0") != 0;
 	}());
-	ctx.kk_bda =
-	    (program.stage == ShaderType::Compute || gfx_stage) && (options.kk_bda || KkBdaRequested());
+	const bool mesh_stage = program.stage == ShaderType::Mesh && MeshEnabled();
+	ctx.kk_bda = (program.stage == ShaderType::Compute || gfx_stage || mesh_stage) &&
+	             (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
 	Mem::SetLoadSelectSafe({});   // KkBdaLocals: load_select fallback address (kk-bda root)
 	Mem::SetConstLoad(0, {});     // KkBdaLocals: vs_const_load state
 	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
 	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
-	if (program.stage != ShaderType::Compute && !gfx_stage) {
+	if (mesh_stage) ctx.unsupported["mesh: v0 probe (outputs, MeshAllocate, epilogue)"]++;
+	if (program.stage != ShaderType::Compute && !gfx_stage && !mesh_stage) {
 		ctx.unsupported[fmt::format("stage:{}", static_cast<int>(program.stage))]++;
 		result.source = PreludeText(fuse_mad) + "// stage not supported by the MSL backend yet\n";
 		result.unsupported = ctx.unsupported;
@@ -1522,9 +1532,10 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	}
 	EmitResourceParams(ctx, params);
 	std::string header =
-	    gfx_stage ? GfxEntryPrefix(*ctx.gfx) + "main0("
-	              : fmt::format("[[max_total_threads_per_threadgroup({})]]\nkernel void {}(",
-	                            std::max(total, 1u), ctx.kk_bda ? "main_entrypoint" : "main0");
+	    gfx_stage    ? GfxEntryPrefix(*ctx.gfx) + "main0("
+	    : mesh_stage ? std::string("[[mesh]] void main_entrypoint(")
+	                 : fmt::format("[[max_total_threads_per_threadgroup({})]]\nkernel void {}(",
+	                               std::max(total, 1u), ctx.kk_bda ? "main_entrypoint" : "main0");
 	for (size_t i = 0; i < params.size(); i++)
 		header += (i ? ",\n    " : "") + params[i];
 	header += ")";
