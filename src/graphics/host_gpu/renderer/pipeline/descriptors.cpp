@@ -554,6 +554,70 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	return false;
 }
 
+// nps5 decalfix: KYTY_GBCOPY_REMAP="<W>x<H>=<w>x<h>,..." (default unset = off; STOPGAP). The game's G-buffer
+// copy (an A2B10G10R10 texture written texel for texel by a compute from C1/C2 and sampled by the G-buffer decals,
+// wet decal PS 665a7b15 among them, with the UV fragcoord / depth size) is allocated at the game's NATIVE DRS level
+// size (1920x1080 level 0, 2432x1368 level 1), while our render-scale patch makes the G-buffer and depth smaller
+// (1280x720 / 960x540). The decals then read the copy at 1.5x / 2.53x the right position (the yellow/red tint on
+// wet Astro). This remaps the extent of every A2B10G10R10 2D single-level texture/storage T# of size W x H to
+// w x h (pitch and footprint follow), so writer and readers see a G-buffer-sized image as on PS5. Only that format:
+// the post chain at 2432x1368 (RGBA16F) is untouched. The proper fix is the copy's allocation in the recomp
+// render_scale profile.
+struct GbCopyRemap {
+	uint32_t from_w = 0, from_h = 0, to_w = 0, to_h = 0;
+};
+static const std::vector<GbCopyRemap>& GbCopyRemaps() {
+	static const std::vector<GbCopyRemap> remaps = [] {
+		std::vector<GbCopyRemap> out;
+		const char* value = std::getenv("KYTY_GBCOPY_REMAP");
+		if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
+			return out;
+		}
+		const char* p = value;
+		while (*p != '\0') {
+			GbCopyRemap r {};
+			int         used = 0;
+			if (std::sscanf(p, "%ux%u=%ux%u%n", &r.from_w, &r.from_h, &r.to_w, &r.to_h, &used) == 4 &&
+			    used > 0 && r.to_w != 0 && r.to_h != 0 && r.to_w <= r.from_w && r.to_h <= r.from_h) {
+				out.push_back(r);
+				p += used;
+			} else {
+				std::printf("[decalfix] KYTY_GBCOPY_REMAP: cannot parse '%s', ignored from there\n", p);
+				break;
+			}
+			if (*p == ',') {
+				p++;
+			}
+		}
+		for (const auto& r: out) {
+			std::printf("[decalfix] KYTY_GBCOPY_REMAP on: A2B10G10R10 textures %ux%u -> %ux%u (G-buffer copy, stopgap)\n",
+			            r.from_w, r.from_h, r.to_w, r.to_h);
+		}
+		return out;
+	}();
+	return remaps;
+}
+static void GbCopyRemapExtent(Prospero::BufferFormat format, bool plain_2d, uint64_t address,
+                              uint32_t& width, uint32_t& height) {
+	const auto& remaps = GbCopyRemaps();
+	if (remaps.empty() || !plain_2d || !TextureSurfaceFormatKnown(format) ||
+	    TextureGetSurfaceFormatInfo(format).vk_format != vk::Format::eA2B10G10R10UnormPack32) {
+		return;
+	}
+	for (const auto& r: remaps) {
+		if (width == r.from_w && height == r.from_h) {
+			static std::atomic_uint32_t logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+				std::printf("[decalfix] remap A2B10G10R10 addr=0x%010" PRIx64 " %ux%u -> %ux%u\n", address,
+				            width, height, r.to_w, r.to_h);
+			}
+			width  = r.to_w;
+			height = r.to_h;
+			return;
+		}
+	}
+}
+
 TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::ImageResource& resource,
                                                TextureCache::BindingType                  binding) {
 	TextureCache::ImageDesc desc {};
@@ -786,8 +850,8 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	const bool storage = resource.written;
 	const bool skip    = Common::SkipInvalidEnabled();
 	const auto address         = descriptor.Base40();
-	const auto width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
-	const auto height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
+	auto       width           = static_cast<uint32_t>(descriptor.Width5()) + 1u;
+	auto       height          = static_cast<uint32_t>(descriptor.Height5()) + 1u;
 	const auto base_level      = descriptor.BaseLevel();
 	const auto last_level      = descriptor.LastLevel();
 	const auto type            = TextureType(descriptor);
@@ -830,6 +894,9 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	const auto samples = multisampled ? 1u << last_level : 1u;
 	const auto depth          = static_cast<uint32_t>(descriptor.Depth()) + 1u;
 	const auto format         = descriptor.Format();
+	// nps5 decalfix (KYTY_GBCOPY_REMAP, off by default): before pitch / footprint / view are derived.
+	GbCopyRemapExtent(format, !multisampled && type == Prospero::ImageType::kColor2D && max_mip == 0, address,
+	                  width, height);
 	if (skip) {
 		// (TextureGetSurfaceFormatInfo exits over it; a format without a texel layout leaves
 		// TileGetTextureSize's size 0, the invalid-footprint path below.)
