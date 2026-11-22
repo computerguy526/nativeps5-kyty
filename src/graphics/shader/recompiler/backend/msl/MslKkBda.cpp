@@ -301,7 +301,7 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		b.Line("atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);");
 		b.Line("const uint kk_lds_bytes = " + KU(m.lds_bytes) + ";");
 		b.Line("KK_COHERENT device uint* lds = (KK_COHERENT device uint*)(kk_scr + " + KU(KkMeshScratchHead) +
-		       " + ulong(kk_slot) * " + KU(KkMeshScratchStride) + "ul);");
+		       " + ulong(kk_slot) * " + std::to_string(KkMeshScratchStride) + "ul);");
 		SetLdsDevice(true);
 	} else if (mesh && m.lds_bytes != 0u && lds_dev != UINT32_MAX) {
 		bad("mesh LDS in device memory (lds_storage)");
