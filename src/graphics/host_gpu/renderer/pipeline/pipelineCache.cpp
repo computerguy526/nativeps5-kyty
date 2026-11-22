@@ -4603,6 +4603,17 @@ struct PipelineCache::PrefetchState {
 		    [this, key, vertex, pixel_copy = pixel != nullptr ? std::optional(*pixel) : std::nullopt,
 		     programs] {
 			    Profiler::SetThreadName("PipelineCompiler");
+			    if (keyed) {
+				    // mainhang test hook (KYTY_TEST_SKIP_BUILD_STALL_MS, default 0): the first skip build
+				    // stalls that long, like the 2026-11-22 build that never left the driver.
+				    static const uint64_t stall_ms = EnvU64("KYTY_TEST_SKIP_BUILD_STALL_MS", 0);
+				    static std::atomic<bool> stalled {false};
+				    if (stall_ms != 0 && !stalled.exchange(true)) {
+					    std::fprintf(stderr, "[mainhang] test: this skip build stalls %llu ms (KYTY_TEST_SKIP_BUILD_STALL_MS)\n",
+					                 static_cast<unsigned long long>(stall_ms));
+					    std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms));
+				    }
+			    }
 			    Result result {std::make_unique<Pipeline>()};
 			    const auto begin = CompileClockNs();
 			    GraphicsPipelineCreateHook keyed_hook;
