@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
+#include <dlfcn.h> // nps5 decalfix: KYTY_GBCOPY_REMAP=auto reads the recomp patch choices
+
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -554,18 +556,105 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	return false;
 }
 
-// nps5 decalfix: KYTY_GBCOPY_REMAP="<W>x<H>=<w>x<h>,..." (default unset = off; STOPGAP). The game's G-buffer
-// copy (an A2B10G10R10 texture written texel for texel by a compute from C1/C2 and sampled by the G-buffer decals,
-// wet decal PS 665a7b15 among them, with the UV fragcoord / depth size) is allocated at the game's NATIVE DRS level
-// size (1920x1080 level 0, 2432x1368 level 1), while our render-scale patch makes the G-buffer and depth smaller
-// (1280x720 / 960x540). The decals then read the copy at 1.5x / 2.53x the right position (the yellow/red tint on
-// wet Astro). This remaps the extent of every A2B10G10R10 2D single-level texture/storage T# of size W x H to
-// w x h (pitch and footprint follow), so writer and readers see a G-buffer-sized image as on PS5. Only that format:
-// the post chain at 2432x1368 (RGBA16F) is untouched. The proper fix is the copy's allocation in the recomp
-// render_scale profile.
+// nps5 decalfix: KYTY_GBCOPY_REMAP (default unset = off; on for ASTRO BOT through its profile / the RC launcher).
+// The game's G-buffer copy (an A2B10G10R10 texture written texel for texel by a compute from C1/C2 and sampled by the
+// G-buffer decals, wet decal PS 665a7b15 among them, with the UV fragcoord / depth size) is allocated at the game's
+// NATIVE dynamic-resolution level size (1920x1080 level 0, 2432x1368 level 1), while the recomp patch profile's
+// "upscaling" / "render_scale" choices make the G-buffer and depth smaller (1280x720 / 960x540). The decals then read
+// the copy at 1.5x / 2.53x the right position (the yellow/red tint and stripes on wet Astro). This remaps the extent of
+// every A2B10G10R10 2D single-level texture/storage T# of a native level size to the scaled size (pitch and
+// footprint follow), so writer and readers see a G-buffer-sized image as on PS5. Only that format: the post chain
+// at 2432x1368 (RGBA16F) is untouched. Values:
+//   auto                  pairs from the running program's patch choices (nps5_choices_*, exported by the recomp
+//                         runtime): for each {width,height} value site of "upscaling" and "render_scale", native =
+//                         the game's own (largest) option value, scaled = the chosen option; no pair when the chosen
+//                         option is the native size (Upscaling off, Render scale 720p) or the choices are not found.
+//   <W>x<H>=<w>x<h>,...   explicit pairs (override).
+//   0 / unset             off.
+// The proper fix is the copy's allocation in the recomp render_scale profile. Runtime only (no codegen change).
 struct GbCopyRemap {
 	uint32_t from_w = 0, from_h = 0, to_w = 0, to_h = 0;
 };
+namespace GbCopyChoices {
+// Mirrors Nps5ChoiceValue / Nps5ChoiceDesc of the recomp runtime (pkg/runtime/core/nps5_patches.h, NPS5_CHOICE_ABI 1).
+struct Value {
+	uint32_t        slot, f32;
+	uint64_t        site;
+	const uint64_t* values;
+};
+struct Desc {
+	const char *        key, *title, *description, *env;
+	uint32_t            noptions, def, nvalues;
+	const char* const * names;
+	const char* const * labels;
+	const char* const * setenv;
+	const Value*        values;
+};
+using CountFn = int (*)();
+using DescFn  = const Desc* (*)(int);
+using GetFn   = int (*)(int);
+static bool SizeOf(uint64_t v, uint32_t& w, uint32_t& h) {
+	w = static_cast<uint32_t>(v & 0xffffffffu);
+	h = static_cast<uint32_t>(v >> 32u);
+	return w >= 64 && w <= 16384 && h >= 64 && h <= 16384;
+}
+static void Derive(std::vector<GbCopyRemap>& out) {
+	auto count = reinterpret_cast<CountFn>(dlsym(RTLD_DEFAULT, "nps5_choices_count"));
+	auto desc  = reinterpret_cast<DescFn>(dlsym(RTLD_DEFAULT, "nps5_choices_desc"));
+	auto get   = reinterpret_cast<GetFn>(dlsym(RTLD_DEFAULT, "nps5_choices_get"));
+	if (count == nullptr || desc == nullptr || get == nullptr) {
+		std::printf("[decalfix] KYTY_GBCOPY_REMAP=auto: no patch choices in this program (nps5_choices_* not found): off\n");
+		return;
+	}
+	int seen = 0;
+	for (int i = 0; i < count(); i++) {
+		const Desc* d = desc(i);
+		if (d == nullptr || d->key == nullptr || d->values == nullptr || d->noptions == 0 || d->noptions > 16 ||
+		    (std::strcmp(d->key, "upscaling") != 0 && std::strcmp(d->key, "render_scale") != 0)) {
+			continue;
+		}
+		seen++;
+		const int o = get(i);
+		if (o < 0 || static_cast<uint32_t>(o) >= d->noptions) {
+			continue;
+		}
+		for (uint32_t k = 0; k < d->nvalues; k++) {
+			const Value& v = d->values[k];
+			if (v.f32 != 0 || v.values == nullptr) {
+				continue;
+			}
+			GbCopyRemap r {};
+			bool        sizes = true;
+			for (uint32_t n = 0; n < d->noptions && sizes; n++) {
+				uint32_t w = 0, h = 0;
+				sizes = SizeOf(v.values[n], w, h);
+				if (sizes && static_cast<uint64_t>(w) * h > static_cast<uint64_t>(r.from_w) * r.from_h) {
+					r.from_w = w;
+					r.from_h = h;
+				}
+			}
+			if (!sizes || !SizeOf(v.values[o], r.to_w, r.to_h) ||
+			    (r.to_w == r.from_w && r.to_h == r.from_h) || r.to_w > r.from_w || r.to_h > r.from_h) {
+				continue;
+			}
+			bool dup = false;
+			for (const auto& e: out) {
+				dup = dup || (e.from_w == r.from_w && e.from_h == r.from_h);
+			}
+			if (!dup) {
+				out.push_back(r);
+				std::printf("[decalfix] KYTY_GBCOPY_REMAP=auto: patch %s = %s: native %ux%u -> %ux%u\n", d->key,
+				            d->names != nullptr && d->names[o] != nullptr ? d->names[o] : "?", r.from_w, r.from_h,
+				            r.to_w, r.to_h);
+			}
+		}
+	}
+	if (out.empty()) {
+		std::printf("[decalfix] KYTY_GBCOPY_REMAP=auto: %d render-size choice%s, none smaller than native: off\n", seen,
+		            seen == 1 ? "" : "s");
+	}
+}
+} // namespace GbCopyChoices
 static const std::vector<GbCopyRemap>& GbCopyRemaps() {
 	static const std::vector<GbCopyRemap> remaps = [] {
 		std::vector<GbCopyRemap> out;
@@ -573,24 +662,28 @@ static const std::vector<GbCopyRemap>& GbCopyRemaps() {
 		if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
 			return out;
 		}
-		const char* p = value;
-		while (*p != '\0') {
-			GbCopyRemap r {};
-			int         used = 0;
-			if (std::sscanf(p, "%ux%u=%ux%u%n", &r.from_w, &r.from_h, &r.to_w, &r.to_h, &used) == 4 &&
-			    used > 0 && r.to_w != 0 && r.to_h != 0 && r.to_w <= r.from_w && r.to_h <= r.from_h) {
-				out.push_back(r);
-				p += used;
-			} else {
-				std::printf("[decalfix] KYTY_GBCOPY_REMAP: cannot parse '%s', ignored from there\n", p);
-				break;
-			}
-			if (*p == ',') {
-				p++;
+		if (std::strcmp(value, "auto") == 0) {
+			GbCopyChoices::Derive(out);
+		} else {
+			const char* p = value;
+			while (*p != '\0') {
+				GbCopyRemap r {};
+				int         used = 0;
+				if (std::sscanf(p, "%ux%u=%ux%u%n", &r.from_w, &r.from_h, &r.to_w, &r.to_h, &used) == 4 &&
+				    used > 0 && r.to_w != 0 && r.to_h != 0 && r.to_w <= r.from_w && r.to_h <= r.from_h) {
+					out.push_back(r);
+					p += used;
+				} else {
+					std::printf("[decalfix] KYTY_GBCOPY_REMAP: cannot parse '%s', ignored from there\n", p);
+					break;
+				}
+				if (*p == ',') {
+					p++;
+				}
 			}
 		}
 		for (const auto& r: out) {
-			std::printf("[decalfix] KYTY_GBCOPY_REMAP on: A2B10G10R10 textures %ux%u -> %ux%u (G-buffer copy, stopgap)\n",
+			std::printf("[decalfix] KYTY_GBCOPY_REMAP on: A2B10G10R10 textures %ux%u -> %ux%u (G-buffer copy)\n",
 			            r.from_w, r.from_h, r.to_w, r.to_h);
 		}
 		return out;
