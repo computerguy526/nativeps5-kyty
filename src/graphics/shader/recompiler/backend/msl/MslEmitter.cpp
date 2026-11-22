@@ -255,6 +255,10 @@ std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 		return GfxPixelRelaxed() ? "// kk-mslinject v1 stage fragment entry main0 math relaxed\n"
 		                         : "// kk-mslinject v1 stage fragment entry main0 math safe\n";
 	}
+	// meshpath: KK dispatches its own mesh threadgroup size; the replacement declares it.
+	if (ctx.program.stage == ShaderType::Mesh)
+		return fmt::format("// kk-mslinject v1 stage mesh entry main_entrypoint math safe threads {}\n",
+		                   r.threadgroup[0]);
 	// Compute (litcompute 2026-11-19): 7f9ba790 lost the braces above, so every compute kernel got
 	// the fragment header.
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
@@ -779,6 +783,7 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 				continue;
 			}
 		}
+		if (ctx.mesh && MeshEmitInst(ctx, inst)) continue;
 		if (ctx.gfx && GfxEmitInst(ctx, *ctx.gfx, inst)) continue;
 		if (const auto lines = NirSplitLines(ctx, inst); !lines.empty()) {
 			ctx.b.Line(lines);
@@ -1488,7 +1493,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
 	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
-	if (mesh_stage) ctx.unsupported["mesh: v0 probe (outputs, MeshAllocate, epilogue)"]++;
+	ctx.mesh = mesh_stage;
+	if (mesh_stage && !ctx.kk_bda) ctx.unsupported["mesh: needs the kk-bda convention"]++;
 	if (program.stage != ShaderType::Compute && !gfx_stage && !mesh_stage) {
 		ctx.unsupported[fmt::format("stage:{}", static_cast<int>(program.stage))]++;
 		result.source = PreludeText(fuse_mad) + "// stage not supported by the MSL backend yet\n";
@@ -1529,6 +1535,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		params.push_back("uint3 nwg [[threadgroups_per_grid]]");
 		params.push_back("uint tid [[thread_index_in_threadgroup]]");
 		params.push_back("uint lid [[thread_index_in_simdgroup]]");
+		if (mesh_stage) params.push_back("NpsMesh mesh_out");
 	}
 	EmitResourceParams(ctx, params);
 	std::string header =
@@ -1543,11 +1550,18 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	                      program.shader_hash, program.wave_size, lanes, shape.threads[0],
 	                      shape.threads[1], shape.threads[2], total));
 	if (ctx.kk_bda) b.Raw(KkBdaLayoutComment(program));
+	if (mesh_stage) b.Raw(MeshTypes(ctx));
 	b.Open(header);
 	if (ctx.loop_cap != 0u)
 		b.Line("uint nps5_lg_n = 0u; // nps5 gpuguard loop budget (MslOptions::loop_cap)");
 	if (gfx_stage) GfxLocals(ctx, *ctx.gfx);
 	EmitResourceLocals(ctx);
+	// meshpath: the guest's end of program falls through to the epilogue (all lanes must reach
+	// its barrier); an end of program anywhere else is refused below.
+	if (mesh_stage) {
+		MeshLocals(ctx);
+		ctx.ret = "/*nps5-mesh-end*/";
+	}
 	for (const auto* inst: declared) {
 		const auto type = MslTypeName(inst->GetType());
 		for (uint32_t h = 0; h < lanes; h++)
@@ -1568,14 +1582,22 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		Structurer real(ctx, shape, options.comments, false, need_do);
 		real.Run();
 		if (gfx_stage) b.Line(ctx.ret);
+		if (mesh_stage) MeshEpilogue(ctx);
 		b.Close(); // kernel
 		result.source = KkInjectHeader(ctx, result) +
 		                PreludeText(fuse_mad, gfx_stage, gfx_relaxed, vs_single_lane, kk_minmax) +
 		                LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
+		if (mesh_stage) {
+			size_t n = 0;
+			for (size_t at = 0; (at = result.source.find("/*nps5-mesh-end*/", at)) != std::string::npos; at++)
+				n++;
+			if (n > 1) ctx.unsupported["mesh: end of program before the last block"]++;
+		}
 		result.unsupported = ctx.unsupported;
 		result.complete    = ctx.unsupported.empty();
 		return result;
 	}
+	if (mesh_stage) ctx.unsupported["mesh: dispatcher (unstructured) control flow"]++;
 	b.Line(fmt::format("uint blk = {}u;", entry));
 	{
 		std::string lg_decl;

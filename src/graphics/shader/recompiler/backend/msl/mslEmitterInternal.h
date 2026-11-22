@@ -35,6 +35,7 @@ struct MslCtx {
 	bool                                          options_comments = true;
 	std::string            ret = "return;";      // statement that leaves the entry point
 	std::shared_ptr<GfxIo> gfx;                  // set for vertex/pixel programs
+	bool                   mesh = false;         // meshpath: [[mesh]] program (MslMesh.cpp)
 	uint32_t               loop_cap     = 0;     // MslOptions::loop_cap (0 = no loop guard)
 	bool                   loop_private = false; // per-loop counters (program has barriers)
 	uint32_t               loop_guards  = 0;     // private counters handed out
@@ -120,6 +121,11 @@ const std::vector<std::string>& GfxParams(const GfxIo& g);
 void                            GfxLocals(MslCtx& ctx, const GfxIo& g); // "VOut out = {};" ...
 std::string GfxBuiltin(MslCtx& ctx, const GfxIo& g, uint32_t kind, uint32_t comp);
 bool        GfxEmitInst(MslCtx& ctx, GfxIo& g, const IR::Inst& inst);
+// --- meshpath: mesh programs as [[mesh]] functions (MslMesh.cpp) ---
+std::string MeshTypes(MslCtx& ctx);  // MeshVertexOut / MeshPrimitiveOut / NpsMesh before the entry
+void        MeshLocals(MslCtx& ctx); // per-lane outputs + counts (after the resource locals)
+bool        MeshEmitInst(MslCtx& ctx, const IR::Inst& inst);
+void        MeshEpilogue(MslCtx& ctx); // barrier + direct mesh_out writes
 // --- mslfix5 KK NIR float re-association (MslNirReassoc.cpp) ---
 void NirReassocBuild(const IR::Program& program, bool on, bool split);
 // fmafix: statements in KK's one-NIR-op-per-statement shape for a split/re-associated float op (""
