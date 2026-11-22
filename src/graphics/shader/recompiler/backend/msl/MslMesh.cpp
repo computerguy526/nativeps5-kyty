@@ -89,7 +89,11 @@ uint32_t LocationOf(const MslCtx& c, uint32_t index) {
 
 std::string MeshTypes(MslCtx& c) {
 	const auto& m = MeshOf(c);
-	std::string s = "struct MeshVertexOut {\n  float4 pos [[position]];\n";
+	// KK's ffract (NIR lowering of Kyty's V_FRACT / the V_SIN/V_COS range reduction, SetKkTrig)
+	std::string s = "static inline float kyty_kk_fract(float x) {\n  const uint a = as_type<uint>(x) & 0x7fffffffu;\n"
+	                "  const float f = (a < 0x7f800000u && a >= 0x4b000000u) ? 0.0f : x - floor(x);\n"
+	                "  return a == 0u ? x : f;\n}\n";
+	s += "struct MeshVertexOut {\n  float4 pos [[position]];\n";
 	for (const auto& o: c.program.info.outputs) {
 		switch (o.kind) {
 			case IR::StageOutputKind::Position:

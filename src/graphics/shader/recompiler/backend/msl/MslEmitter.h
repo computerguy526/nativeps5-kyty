@@ -52,6 +52,7 @@ uint32_t ChooseLanes(const IR::Program& program, ShaderStageInputInfo input_info
 // EmitProgram from KYTY_MAD_MODE.
 void SetFuseMad(bool fuse);
 void SetPreciseTranscendentals(bool on); // mslfix: precise:: exp2/log2 (relaxed pixel text)
+void SetKkTrig(bool on); // meshpath: V_SIN/V_COS/V_FRACT as KK prints them (mesh text)
 void SetFlushTranscendentalInputs(
     bool on); // mslfix2: denormal inputs of rcp/rsq/sqrt/exp/log -> signed zero (graphics)
 void SetKkMinMax(bool on); // mslfix6: KK-exact f32 min/max/med3 helpers (graphics)

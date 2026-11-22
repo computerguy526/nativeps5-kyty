@@ -1467,6 +1467,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		                            return e == nullptr || std::strcmp(e, "0") != 0;
 	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
+	SetKkTrig(mesh_float);
 	// mslfix6: KYTY_MSL_GFX_MINMAX=0 = old text (Metal fmin/fmax/fmin3/fmax3/fmedian3)
 	const bool kk_minmax =
 	    gfx_float && (options.kk_bda || KkBdaRequested()) && KkMinMaxEnabled() && ModeFix6();

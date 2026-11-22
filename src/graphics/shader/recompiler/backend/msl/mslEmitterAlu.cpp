@@ -52,6 +52,17 @@ static thread_local bool g_precise_tr = false;
 void                     SetPreciseTranscendentals(bool on) {
 	g_precise_tr = on;
 }
+// meshpath: KK prints Kyty's V_SIN/V_COS as precise::sin/cos(fract(x) * 2pi) with NIR's ffract
+// lowering x - floor(x) (0 for finite |x| >= 2^23, x itself for +-0), each op its own statement.
+// Metal's fract() clamps to 0x1.fffffep-1 and the injected library compiles sin()/cos() as fast::
+// (MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST): 1 ulp on a 2b157b7b position (rebased real input).
+static thread_local bool g_kk_trig = false;
+void                     SetKkTrig(bool on) {
+	g_kk_trig = on;
+}
+static std::string KkFract(const std::string& x) {
+	return fmt::format("kyty_kk_fract({})", x);
+}
 // mslfix2: graphics text flushes f32 denormal inputs of V_RCP/RSQ/SQRT/EXP/LOG to zeros of the same
 // sign, as Kyty's SPIR-V (FlushTranscendentalInput, FLOAT_MODE 0xC0) that KK runs in game
 // (rcp(-denorm) = -inf). Compute text is unchanged.
@@ -269,8 +280,12 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 			return fmt::format("kyty_rsqrt({})",
 			                   FtzIn(a[0])); // precise::rsqrt as KK (mslrest2: perm 395)
 		case O::FPSqrt: return fmt::format("kyty_sqrt({})", FtzIn(a[0]));
-		case O::FPSin: return fmt::format("sin(fract({}) * 6.28318548f)", a[0]);
-		case O::FPCos: return fmt::format("cos(fract({}) * 6.28318548f)", a[0]);
+		case O::FPSin:
+			if (g_kk_trig) return fmt::format("precise::sin({} * 6.28318548f)", KkFract(a[0]));
+			return fmt::format("sin(fract({}) * 6.28318548f)", a[0]);
+		case O::FPCos:
+			if (g_kk_trig) return fmt::format("precise::cos({} * 6.28318548f)", KkFract(a[0]));
+			return fmt::format("cos(fract({}) * 6.28318548f)", a[0]);
 		case O::FPExp2: return (g_precise_tr ? "precise::exp2(" : "exp2(") + FtzIn(a[0]) + ")";
 		case O::FPLog2: return (g_precise_tr ? "precise::log2(" : "log2(") + FtzIn(a[0]) + ")";
 		case O::FPLdexp: return fmt::format("ldexp({}, {})", a[0], Si(a[1]));
@@ -278,7 +293,7 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPFloor32: return fmt::format("floor({})", a[0]);
 		case O::FPCeil32: return fmt::format("ceil({})", a[0]);
 		case O::FPTrunc32: return fmt::format("trunc({})", a[0]);
-		case O::FPFract32: return fmt::format("fract({})", a[0]);
+		case O::FPFract32: return g_kk_trig ? KkFract(a[0]) : fmt::format("fract({})", a[0]);
 		default: return {};
 	}
 }
