@@ -183,7 +183,14 @@ void MeshEpilogue(MslCtx& c) {
 	auto&       b = c.b;
 	const auto& m = MeshOf(c);
 	b.Line("// mesh epilogue (spirvEmitterMesh.cpp EmitMeshEntryPoint): every guest wave is done");
-	b.Line("threadgroup_barrier(mem_flags::mem_threadgroup);");
+	if (c.mesh_spill) {
+		// every lane's last LDS access is before this barrier: free the slot (MslKkBda.cpp claim)
+		b.Line("threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
+		b.Line("if (tid == 0u) { atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device); "
+		       "atomic_store_explicit((device atomic_uint*)kk_scr + 16u + kk_slot, 0u, memory_order_relaxed); }");
+	} else {
+		b.Line("threadgroup_barrier(mem_flags::mem_threadgroup);");
+	}
 	b.Line(fmt::format("const uint ms_nv = min(ms_cnt[0], {}u); const uint ms_np = min(ms_cnt[1], {}u);",
 	                   m.max_vertices, m.max_primitives));
 	b.Line("if (tid == 0u) mesh_out.set_primitive_count(ms_np);");

@@ -257,8 +257,8 @@ std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	}
 	// meshpath: KK dispatches its own mesh threadgroup size; the replacement declares it.
 	if (ctx.program.stage == ShaderType::Mesh)
-		return fmt::format("// kk-mslinject v1 stage mesh entry main_entrypoint math safe threads {}\n",
-		                   r.threadgroup[0]);
+		return fmt::format("// kk-mslinject v1 stage mesh entry main_entrypoint math safe threads {}{}\n",
+		                   r.threadgroup[0], ctx.mesh_spill ? " scratch 16384" : "");
 	// Compute (litcompute 2026-11-19): 7f9ba790 lost the braces above, so every compute kernel got
 	// the fragment header.
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
