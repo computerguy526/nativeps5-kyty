@@ -286,6 +286,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_XF_GEXIT", "1", error);
 		} else if (key == "vsmodes" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_VS_MODES", "1", error);
+		} else if (key == "meshspill" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_MESH_SPILL", "1", error);
 		} else if (key == "perfr" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_GFX_SPLIT", "0", error) &&
 			     SetOnce("KYTY_MSL_GFX_REASSOC", "0", error) &&
@@ -332,6 +334,7 @@ std::string ModeCatalogue() {
 	    "gexit\tgpuguard loop budget checked inside the loop's own exit test (KYTY_MSL_XF_GEXIT=1 "
 	    "= transform guard_exit)\n"
 	    "vsmodes\tvertex: KK's per-op float modes (position slice safe, rest relaxed, MAD as two statements; KYTY_MSL_VS_MODES=1)\n"
+	    "meshspill\tmesh: guest LDS of 6-16 KB in a claimed slice of KosmicKrisp's mesh scratch (KYTY_MSL_MESH_SPILL=1; KK patch 0030)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];
