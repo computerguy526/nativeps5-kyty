@@ -543,6 +543,21 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 	const auto type_name = MslTypeName(inst.GetType());
 	const auto assign    = [&](uint32_t h, const std::string& expr) {
 		const auto t = inst.GetType();
+		if (ctx.mesh_modes && (t == IR::Type::F32 || t == IR::Type::F32x2)) {
+			const bool relaxed = !ctx.precise.contains(&inst);
+			ctx.b.Line("{");
+			ctx.b.Line(relaxed ? "#pragma METAL fp math_mode(relaxed)" : "#pragma METAL fp math_mode(safe)");
+			if (op == O::FPMad32 && t == IR::Type::F32 && inst.NumArgs() == 3) {
+				// KK prints Kyty's V_MAD (fmul + fadd) as two statements
+				ctx.b.Line(fmt::format("const float {0}_m = ({1} * {2});", ctx.Name(inst, h),
+				                       ctx.Val(inst.Arg(0)), ctx.Val(inst.Arg(1))));
+				ctx.b.Line(fmt::format("{0} = ({0}_m + {1});", ctx.Name(inst, h), ctx.Val(inst.Arg(2))));
+			} else {
+				ctx.b.Line(fmt::format("{} = {};", ctx.Name(inst, h), expr));
+			}
+			ctx.b.Line("}");
+			return;
+		}
 		if (ctx.selective_precision && (t == IR::Type::F32 || t == IR::Type::F32x2) &&
 		    !ctx.precise.contains(&inst)) {
 			ctx.b.Line("{");
@@ -1508,6 +1523,31 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
 	ctx.mesh = mesh_stage;
+	if (mesh_float && [] {
+		    const char* e = std::getenv("KYTY_MSL_MESH_MODES");
+		    return e == nullptr || std::strcmp(e, "0") != 0;
+	    }()) {
+		// Kyty's SPIR-V position slice (spirvEmitterAlu.cpp CollectPositionSlice): IR producers of the
+		// Position exports, transitively.
+		ctx.mesh_modes = true;
+		std::vector<const IR::Inst*> pending;
+		for (const auto* blk: program.blocks)
+			for (const auto& in: *blk)
+				if (in.GetOpcode() == ValueOpcode::SetAttribute) {
+					const auto ix = in.Flags<IR::ExportFlags>().index;
+					if (ix < program.export_info.size() &&
+					    program.export_info[ix].kind == IR::ExportTargetKind::Position)
+						pending.push_back(&in);
+				}
+		while (!pending.empty()) {
+			const auto* in = pending.back();
+			pending.pop_back();
+			for (size_t a = 0; a < in->NumArgs(); a++) {
+				const auto* p = in->Arg(a).Resolve().TryInstruction();
+				if (p != nullptr && ctx.precise.insert(p).second) pending.push_back(p);
+			}
+		}
+	}
 	if (mesh_stage && !ctx.kk_bda) ctx.unsupported["mesh: needs the kk-bda convention"]++;
 	if (program.stage != ShaderType::Compute && !gfx_stage && !mesh_stage) {
 		ctx.unsupported[fmt::format("stage:{}", static_cast<int>(program.stage))]++;
@@ -1599,7 +1639,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		if (mesh_stage) MeshEpilogue(ctx);
 		b.Close(); // kernel
 		result.source = KkInjectHeader(ctx, result) +
-		                PreludeText(fuse_mad, gfx_float, gfx_relaxed, vs_single_lane, kk_minmax) +
+		                PreludeText(fuse_mad, gfx_float, gfx_relaxed || ctx.mesh_modes, vs_single_lane, kk_minmax) +
 		                LoopGuardHelper(ctx.loop_cap) + ctx.b.Take();
 		if (mesh_stage) {
 			size_t n = 0;

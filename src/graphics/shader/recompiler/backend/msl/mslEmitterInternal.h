@@ -36,6 +36,10 @@ struct MslCtx {
 	std::string            ret = "return;";      // statement that leaves the entry point
 	std::shared_ptr<GfxIo> gfx;                  // set for vertex/pixel programs
 	bool                   mesh = false;         // meshpath: [[mesh]] program (MslMesh.cpp)
+	// meshpath: KK's per-op float model (KYTY_MSL_MESH_MODES, default on for mesh): float results
+	// outside `precise` (= Kyty's NoContraction position slice) are assigned in math_mode(relaxed)
+	// blocks, slice results in safe ones, a MAD is two statements, no global contract(off).
+	bool mesh_modes = false;
 	uint32_t               loop_cap     = 0;     // MslOptions::loop_cap (0 = no loop guard)
 	bool                   loop_private = false; // per-loop counters (program has barriers)
 	uint32_t               loop_guards  = 0;     // private counters handed out
