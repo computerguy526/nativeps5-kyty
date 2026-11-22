@@ -1491,6 +1491,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	Mem::SetLoadSelectSafe({});   // KkBdaLocals: load_select fallback address (kk-bda root)
 	Mem::SetConstLoad(0, {});     // KkBdaLocals: vs_const_load state
 	Mem::SetLdsDevice(false); // KkBdaLocals: LDS in KK's SharedMemory device buffer (lds_storage)
+	Mem::SetKkBdaPagetable(false); // KkBdaLocals: meshpath guest-address loads via the page table
 	Mem::SetLdsThread(0u);    // KkBdaLocals: graphics per-invocation LDS (mslrest4)
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
 	ctx.mesh = mesh_stage;

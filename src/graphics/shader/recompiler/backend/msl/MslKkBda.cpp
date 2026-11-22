@@ -240,6 +240,29 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 			       KU(sd) + "));");
 		}
 	}
+	// meshpath: guest-address loads (FLAT/GLOBAL/scalar reads through a 64-bit guest address) read
+	// through the BDA page table like Kyty's SPIR-V (spirvEmitterMemory.cpp GetBdaPointer). Only
+	// for MESH programs for now, and only when the program has such a load (other texts unchanged).
+	SetKkBdaPagetable(false);
+	if (mesh) {
+		bool loads = false;
+		for (const auto* blk: program.blocks)
+			for (const auto& inst: *blk) {
+				const auto op = inst.GetOpcode();
+				loads |= op == IR::ValueOpcode::LoadAddressU8 || op == IR::ValueOpcode::LoadAddressU16 ||
+				         op == IR::ValueOpcode::LoadAddressU32;
+			}
+		const uint32_t pt = FirstOf(layout, Kind::BdaPagetable), fb = FirstOf(layout, Kind::FaultBuffer);
+		if (loads && pt != UINT32_MAX && fb != UINT32_MAX) {
+			b.Line("const ulong kk_bda_pt = *(constant ulong*)(kk_set0 + " + KU(pt) +
+			       "); const uint kk_bda_ptn = *(constant uint*)(kk_set0 + " + KU(pt + 8u) + ");");
+			b.Line("const ulong kk_bda_fb = *(constant ulong*)(kk_set0 + " + KU(fb) +
+			       "); const uint kk_bda_fbn = *(constant uint*)(kk_set0 + " + KU(fb + 8u) + ");");
+			SetKkBdaPagetable(true);
+		} else if (loads) {
+			bad("guest address load without BdaPagetable/FaultBuffer bindings");
+		}
+	}
 	const uint32_t lds_dev = FirstOf(layout, Kind::SharedMemory);
 	if (gfx_lane) {
 	} else if (mesh && m.lds_bytes != 0u && lds_dev != UINT32_MAX) {

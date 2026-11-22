@@ -624,7 +624,8 @@ bool AddressOp(Em& e, ValueOpcode op) {
 		e.Result("0u");
 		return e.Done();
 	}
-	if (e.ctx.kk_bda) return e.Fail("kk-bda: guest address access needs the BDA page table");
+	if (e.ctx.kk_bda && !(is_load && KkBdaPagetable()))
+		return e.Fail("kk-bda: guest address access needs the BDA page table");
 	const bool  scalar = mem.kind == IR::ResourceKind::ScalarAddress;
 	std::string low    = e.A(1);
 	if (scalar) low = "(" + low + " & ~3u)";
@@ -647,7 +648,30 @@ bool AddressOp(Em& e, ValueOpcode op) {
 	const auto        bits_of = [](IR::Type t) {
 		return t == IR::Type::U8 ? 8u : t == IR::Type::U16 ? 16u : 32u;
 	};
-	if (is_load) {
+	if (is_load && e.ctx.kk_bda) {
+		// meshpath: Kyty's SPIR-V LoadBda / LoadBdaDword / GetBdaPointer: page = a >> 14 (< 2^26, else
+		// unmapped), entry = page table[page] (0 past the table), 0 -> fault bit (page) in the
+		// FaultBuffer bitmap and the dword reads 0; a load that crosses a dword reads the next one too.
+		const uint32_t bits = scalar ? 32u : bits_of(e.inst.GetType());
+		const char*    ld   = mem.coherent ? "coherent device const uint*" : "device const uint*";
+		const auto     dw   = [&](const std::string& a, const std::string& out) {
+            e.o.Line("    { const ulong pg = (" + a + ") >> 14ul; const bool in = pg < 67108864ul; const uint p = in ? uint(pg) : 0u;");
+            e.o.Line("      const ulong en = (in && (p << 3u) + 7u < kk_bda_ptn) ? *(device const ulong*)(kk_bda_pt + ulong(p << 3u)) : 0ul;");
+            e.o.Line("      if (en == 0ul) { if (in && ((p >> 5u) << 2u) + 3u < kk_bda_fbn) atomic_fetch_or_explicit((device atomic_uint*)(kk_bda_fb + ulong((p >> 5u) << 2u)), 1u << (p & 31u), memory_order_relaxed); }");
+            e.o.Line("      else " + out + " = *(" + std::string(ld) + ")(en + ((" + a + ") & 16383ul)); }");
+		};
+		Guarded(e, active, true, [&] {
+			e.o.Line("    const ulong ba = " + addr + "; const ulong al = ba & ~3ul; const uint by = uint(ba) & 3u; uint w0 = 0u, w1 = 0u;");
+			dw("al", "w0");
+			if (bits != 8u) {
+				e.o.Line(std::string("    if (by ") + (bits == 16u ? "> 2u" : "!= 0u") + ")");
+				dw("al + 4ul", "w1");
+			}
+			std::string v = "((w0 >> (by << 3u)) | (w1 << (((4u - by) & 3u) << 3u)))";
+			if (bits != 32u) v = "(" + v + (bits == 8u ? " & 0xffu)" : " & 0xffffu)");
+			e.o.Line("    " + e.ctx.Name(e.inst) + " = " + e.type + "(" + v + ");");
+		});
+	} else if (is_load) {
 		const uint32_t bits = bits_of(e.inst.GetType());
 		Guarded(e, active, true, [&] {
 			const auto v = AddressLoad(e.o, addr, bits);

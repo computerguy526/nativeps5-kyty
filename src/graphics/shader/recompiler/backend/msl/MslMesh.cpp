@@ -20,6 +20,7 @@
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/opcodes/ValueOpcodes.h"
 
+#include <cstdlib>
 #include <fmt/format.h>
 #include <set>
 
@@ -58,10 +59,23 @@ std::string ExportFloat4(const std::string& d, const IR::ExportInfo& exp) {
 	return fmt::format("as_type<float4>(uint4({}, {}, {}, {}))", r[0], r[1], r[2], r[3]);
 }
 
+// KYTY_MSL_KK_PS_READS="loc:mask,..." (the linked B PS's "// kk-bda ps_reads" line, as for B vertex
+// shaders): parameters at locations the PS does not read are not exported (KK trims them too). Unset:
+// every parameter.
 std::set<uint32_t> Params(const MslCtx& c) {
 	std::set<uint32_t> p;
+	const char*        e = std::getenv("KYTY_MSL_KK_PS_READS");
+	std::set<uint32_t> read;
+	for (const char* q = e; q != nullptr && *q != 0;) {
+		char*      end = nullptr;
+		const auto l   = static_cast<uint32_t>(std::strtoul(q, &end, 10));
+		if (end == q || *end != ':') break;
+		if ((std::strtoul(end + 1, &end, 16) & 0xfu) != 0u) read.insert(l);
+		q = *end == ',' ? end + 1 : end;
+	}
 	for (const auto& o: c.program.info.outputs)
-		if (o.kind == IR::StageOutputKind::Parameter) p.insert(o.index);
+		if (o.kind == IR::StageOutputKind::Parameter && (e == nullptr || read.contains(o.location)))
+			p.insert(o.index);
 	return p;
 }
 

@@ -3,6 +3,16 @@
 namespace Libs::Graphics::ShaderRecompiler::Msl::Mem {
 
 namespace {
+thread_local bool g_kk_bda_pt = false;
+} // namespace
+void SetKkBdaPagetable(bool on) {
+	g_kk_bda_pt = on;
+}
+bool KkBdaPagetable() {
+	return g_kk_bda_pt;
+}
+
+namespace {
 thread_local bool     g_lds_device = false;
 thread_local uint32_t g_lds_thread_bytes =
     0; // mslrest4: graphics LDS = per-invocation array (Kyty function_lds)
