@@ -2164,6 +2164,15 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 	frame->blank = true;
 	// Into the GPU thread's command buffer (its flip) under the renderer's lock; the present
 	// thread's blank frame (no producer) uses only the presenter's scheduler and frame.
+	// present_scheduler has one current command buffer and two recording threads: this (vblank)
+	// thread and the load card thread (PresentLoadCard -> Impl::Present). Without present_mutex
+	// a blank frame begun while the card's present was recording hit BeginCommand's
+	// EXIT_IF(!m_command.IsInvalid()) at startup. Taken before the renderer's lock, the order
+	// Presenter::Present -> Impl::Present uses; no caller of this function holds present_mutex.
+	std::optional<Common::LockGuard> present_lock;
+	if (producer == nullptr) {
+		present_lock.emplace(m_impl->present_mutex);
+	}
 	std::optional<RenderLockGuard> render_lock;
 	if (producer != nullptr || !PresentUnlocked()) {
 		render_lock.emplace(m_impl->renderer.GetMutex());
