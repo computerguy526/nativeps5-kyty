@@ -60,8 +60,8 @@ std::string ExportFloat4(const std::string& d, const IR::ExportInfo& exp) {
 }
 
 // KYTY_MSL_KK_PS_READS="loc:mask,..." (the linked B PS's "// kk-bda ps_reads" line, as for B vertex
-// shaders): parameters at locations the PS does not read are not exported (KK trims them too). Unset:
-// every parameter.
+// shaders): parameters at locations the PS does not read are not exported (KK trims them too).
+// Unset: every parameter.
 std::set<uint32_t> Params(const MslCtx& c) {
 	std::set<uint32_t> p;
 	const char*        e = std::getenv("KYTY_MSL_KK_PS_READS");
@@ -90,9 +90,11 @@ uint32_t LocationOf(const MslCtx& c, uint32_t index) {
 std::string MeshTypes(MslCtx& c) {
 	const auto& m = MeshOf(c);
 	// KK's ffract (NIR lowering of Kyty's V_FRACT / the V_SIN/V_COS range reduction, SetKkTrig)
-	std::string s = "static inline float kyty_kk_fract(float x) {\n  const uint a = as_type<uint>(x) & 0x7fffffffu;\n"
-	                "  const float f = (a < 0x7f800000u && a >= 0x4b000000u) ? 0.0f : x - floor(x);\n"
-	                "  return a == 0u ? x : f;\n}\n";
+	std::string s =
+	    "static inline float kyty_kk_fract(float x) {\n  const uint a = as_type<uint>(x) & "
+	    "0x7fffffffu;\n"
+	    "  const float f = (a < 0x7f800000u && a >= 0x4b000000u) ? 0.0f : x - floor(x);\n"
+	    "  return a == 0u ? x : f;\n}\n";
 	s += "struct MeshVertexOut {\n  float4 pos [[position]];\n";
 	for (const auto& o: c.program.info.outputs) {
 		switch (o.kind) {
@@ -126,24 +128,26 @@ void MeshLocals(MslCtx& c) {
 }
 
 bool MeshEmitInst(MslCtx& c, const IR::Inst& inst) {
-	using O = IR::ValueOpcode;
+	using O          = IR::ValueOpcode;
 	auto&          b = c.b;
 	const uint32_t h = c.half;
 	switch (inst.GetOpcode()) {
 		case O::MeshDrawParameter: {
 			const uint32_t i = inst.Arg(0).U32();
-			const auto& m = MeshOf(c);
+			const auto&    m = MeshOf(c);
 			if (i >= IR::PushData::MeshDrawDwords(m.split_groups != 0)) {
 				c.unsupported["mesh: draw parameter index"]++;
 				b.Line(fmt::format("{} = 0u;", c.Name(inst)));
 				return true;
 			}
 			// root push range = KK root + 672 (MslKkBda.cpp KkRootPush)
-			b.Line(fmt::format(
-			    "{} = *(constant uint*)(kk_root + 684u) == {}u ? *(coherent device uint*)(ulong(*(constant "
-			    "uint*)(kk_root + 672u)) | (ulong(*(constant uint*)(kk_root + 676u)) << 32) | {}ul) : "
-			    "*(constant uint*)(kk_root + {}u);",
-			    c.Name(inst), IR::PushData::MeshIndirectSentinel, i * 4u, 672u + 4u * i));
+			b.Line(fmt::format("{} = *(constant uint*)(kk_root + 684u) == {}u ? *(coherent device "
+			                   "uint*)(ulong(*(constant "
+			                   "uint*)(kk_root + 672u)) | (ulong(*(constant uint*)(kk_root + "
+			                   "676u)) << 32) | {}ul) : "
+			                   "*(constant uint*)(kk_root + {}u);",
+			                   c.Name(inst), IR::PushData::MeshIndirectSentinel, i * 4u,
+			                   672u + 4u * i));
 			return true;
 		}
 		case O::MeshAllocate:
@@ -165,7 +169,8 @@ bool MeshEmitInst(MslCtx& c, const IR::Inst& inst) {
 						c.unsupported["mesh: auxiliary position export"]++;
 						return true;
 					}
-					b.Line(fmt::format("if ({}) ms_pos[{}] = {};", exec, h, ExportFloat4(data, exp)));
+					b.Line(
+					    fmt::format("if ({}) ms_pos[{}] = {};", exec, h, ExportFloat4(data, exp)));
 					return true;
 				case IR::ExportTargetKind::Parameter:
 					if (Params(c).contains(exp.index))
@@ -186,13 +191,16 @@ void MeshEpilogue(MslCtx& c) {
 	if (c.mesh_spill) {
 		// every lane's last LDS access is before this barrier: free the slot (MslKkBda.cpp claim)
 		b.Line("threadgroup_barrier(mem_flags::mem_threadgroup | mem_flags::mem_device);");
-		b.Line("if (tid == 0u) { atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device); "
-		       "atomic_store_explicit((device atomic_uint*)kk_scr + 16u + kk_slot, 0u, memory_order_relaxed); }");
+		b.Line("if (tid == 0u) { atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, "
+		       "thread_scope_device); "
+		       "atomic_store_explicit((device atomic_uint*)kk_scr + 16u + kk_slot, 0u, "
+		       "memory_order_relaxed); }");
 	} else {
 		b.Line("threadgroup_barrier(mem_flags::mem_threadgroup);");
 	}
-	b.Line(fmt::format("const uint ms_nv = min(ms_cnt[0], {}u); const uint ms_np = min(ms_cnt[1], {}u);",
-	                   m.max_vertices, m.max_primitives));
+	b.Line(fmt::format(
+	    "const uint ms_nv = min(ms_cnt[0], {}u); const uint ms_np = min(ms_cnt[1], {}u);",
+	    m.max_vertices, m.max_primitives));
 	b.Line("if (tid == 0u) mesh_out.set_primitive_count(ms_np);");
 	const auto ps = Params(c);
 	for (uint32_t h = 0; h < c.lanes; h++) {
@@ -206,8 +214,9 @@ void MeshEpilogue(MslCtx& c) {
 		b.Open(fmt::format("if ({} < ms_np)", L));
 		b.Line(fmt::format("const uint q = ms_prim[{}];", h));
 		for (uint32_t k = 0; k < 3; k++)
-			b.Line(fmt::format("mesh_out.set_index({} * 3u + {}u, min(extract_bits(q, {}, 10), {}u));",
-			                   L, k, k * 10u, m.max_vertices - 1u));
+			b.Line(
+			    fmt::format("mesh_out.set_index({} * 3u + {}u, min(extract_bits(q, {}, 10), {}u));",
+			                L, k, k * 10u, m.max_vertices - 1u));
 		b.Line("MeshPrimitiveOut p; p.cull = (q & 0x80000000u) != 0u;");
 		b.Line(fmt::format("mesh_out.set_primitive({}, p);", L));
 		b.Close();

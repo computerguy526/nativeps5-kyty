@@ -14,7 +14,8 @@ void                     WindowRun();
 void                     WindowRunBegin();
 [[nodiscard]] bool       WindowRunStep(int max_wait_ms);
 void                     WindowRunEnd();
-// mainhang: WindowRunEnd gave up on a stuck close-time pipeline cache save (KYTY_CLOSE_SAVE_TIMEOUT_MS).
+// mainhang: WindowRunEnd gave up on a stuck close-time pipeline cache save
+// (KYTY_CLOSE_SAVE_TIMEOUT_MS).
 [[nodiscard]] bool       WindowCloseSaveAbandoned();
 void                     WindowShutdown();
 

@@ -182,8 +182,8 @@ void ComputeInfoFromKey(const std::vector<uint32_t> &k,
 
 // Inverse of BuildStageStaticKey(ShaderVertexInputInfo) /
 // (ShaderPixelInputInfo). Mesh/tessellation vertex shaders are not decoded.
-bool VertexInfoFromKey(const std::vector<uint32_t> &k,
-                       ShaderVertexInputInfo &v, bool mesh_ok = false) {
+bool VertexInfoFromKey(const std::vector<uint32_t> &k, ShaderVertexInputInfo &v,
+                       bool mesh_ok = false) {
   if (k.size() < 10)
     return false;
   size_t i = 0;

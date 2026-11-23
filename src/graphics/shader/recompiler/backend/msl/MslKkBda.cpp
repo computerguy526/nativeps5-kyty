@@ -129,13 +129,15 @@ std::string KkBdaPrelude() {
 	       "KkSamplerTable {\n    sampler handles[4096];\n};\n";
 }
 
-// meshpath spill ABI (shared with KK patch 0030): KK_MESH_SCRATCH_* = word 0 ticket, word 1 overflow count,
-// words 16.. one owner flag per slot, slices from byte 8192, 16 KB apart, 1024 slots.
+// meshpath spill ABI (shared with KK patch 0030): KK_MESH_SCRATCH_* = word 0 ticket, word 1
+// overflow count, words 16.. one owner flag per slot, slices from byte 8192, 16 KB apart, 1024
+// slots.
 constexpr uint32_t KkMeshScratchSlots = 1024, KkMeshScratchFlags = 16, KkMeshScratchHead = 8192,
                    KkMeshScratchStride = 16384, KkMeshScratchTries = 64;
-bool MeshSpillWanted(uint32_t lds_bytes) {
+bool               MeshSpillWanted(uint32_t lds_bytes) {
 	const char* e = std::getenv("KYTY_MSL_MESH_SPILL");
-	return e != nullptr && std::strcmp(e, "1") == 0 && lds_bytes >= 6000u && lds_bytes <= KkMeshScratchStride;
+	return e != nullptr && std::strcmp(e, "1") == 0 && lds_bytes >= 6000u &&
+	       lds_bytes <= KkMeshScratchStride;
 }
 
 void KkBdaParams(MslCtx& ctx, const BindingModel& m, std::vector<std::string>& params) {
@@ -262,10 +264,12 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		for (const auto* blk: program.blocks)
 			for (const auto& inst: *blk) {
 				const auto op = inst.GetOpcode();
-				loads |= op == IR::ValueOpcode::LoadAddressU8 || op == IR::ValueOpcode::LoadAddressU16 ||
+				loads |= op == IR::ValueOpcode::LoadAddressU8 ||
+				         op == IR::ValueOpcode::LoadAddressU16 ||
 				         op == IR::ValueOpcode::LoadAddressU32;
 			}
-		const uint32_t pt = FirstOf(layout, Kind::BdaPagetable), fb = FirstOf(layout, Kind::FaultBuffer);
+		const uint32_t pt = FirstOf(layout, Kind::BdaPagetable),
+		               fb = FirstOf(layout, Kind::FaultBuffer);
 		if (loads && pt != UINT32_MAX && fb != UINT32_MAX) {
 			b.Line("const ulong kk_bda_pt = *(constant ulong*)(kk_set0 + " + KU(pt) +
 			       "); const uint kk_bda_ptn = *(constant uint*)(kk_set0 + " + KU(pt + 8u) + ");");
@@ -279,29 +283,35 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	const uint32_t lds_dev = FirstOf(layout, Kind::SharedMemory);
 	if (gfx_lane) {
 	} else if (mesh && ctx.mesh_spill) {
-		// meshpath spill: lane 0 claims a free slot (ticket, then compare-and-swap of its owner flag 0 -> 1),
-		// broadcasts it through threadgroup memory; a group that finds none in KkMeshScratchTries tickets counts
-		// itself and draws nothing (never a slice it does not own). The epilogue frees the slot (MslMesh.cpp).
+		// meshpath spill: lane 0 claims a free slot (ticket, then compare-and-swap of its owner
+		// flag 0 -> 1), broadcasts it through threadgroup memory; a group that finds none in
+		// KkMeshScratchTries tickets counts itself and draws nothing (never a slice it does not
+		// own). The epilogue frees the slot (MslMesh.cpp).
 		b.Line("threadgroup uint kk_slot_tg;");
 		b.Line("if (tid == 0u) {");
 		b.Line("  uint s = ~0u;");
 		b.Line("  for (uint k = 0u; k < " + KU(KkMeshScratchTries) + "; k++) {");
-		b.Line("    const uint t = atomic_fetch_add_explicit((device atomic_uint*)kk_scr, 1u, memory_order_relaxed) & " +
+		b.Line("    const uint t = atomic_fetch_add_explicit((device atomic_uint*)kk_scr, 1u, "
+		       "memory_order_relaxed) & " +
 		       KU(KkMeshScratchSlots - 1u) + ";");
 		b.Line("    uint z = 0u;");
-		b.Line("    if (atomic_compare_exchange_weak_explicit((device atomic_uint*)kk_scr + " + KU(KkMeshScratchFlags) +
+		b.Line("    if (atomic_compare_exchange_weak_explicit((device atomic_uint*)kk_scr + " +
+		       KU(KkMeshScratchFlags) +
 		       " + t, &z, 1u, memory_order_relaxed, memory_order_relaxed)) { s = t; break; }");
 		b.Line("  }");
-		b.Line("  if (s == ~0u) atomic_fetch_add_explicit((device atomic_uint*)kk_scr + 1u, 1u, memory_order_relaxed);");
+		b.Line("  if (s == ~0u) atomic_fetch_add_explicit((device atomic_uint*)kk_scr + 1u, 1u, "
+		       "memory_order_relaxed);");
 		b.Line("  kk_slot_tg = s;");
 		b.Line("}");
 		b.Line("threadgroup_barrier(mem_flags::mem_threadgroup);");
 		b.Line("const uint kk_slot = kk_slot_tg;");
 		b.Line("if (kk_slot == ~0u) { if (tid == 0u) mesh_out.set_primitive_count(0u); return; }");
-		b.Line("atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);");
+		b.Line("atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, "
+		       "thread_scope_device);");
 		b.Line("const uint kk_lds_bytes = " + KU(m.lds_bytes) + ";");
-		b.Line("KK_COHERENT device uint* lds = (KK_COHERENT device uint*)(kk_scr + " + KU(KkMeshScratchHead) +
-		       " + ulong(kk_slot) * " + std::to_string(KkMeshScratchStride) + "ul);");
+		b.Line("KK_COHERENT device uint* lds = (KK_COHERENT device uint*)(kk_scr + " +
+		       KU(KkMeshScratchHead) + " + ulong(kk_slot) * " +
+		       std::to_string(KkMeshScratchStride) + "ul);");
 		SetLdsDevice(true);
 	} else if (mesh && m.lds_bytes != 0u && lds_dev != UINT32_MAX) {
 		bad("mesh LDS in device memory (lds_storage)");

@@ -4558,8 +4558,8 @@ struct PipelineCache::PrefetchState {
 		// and its future only holds a broken promise (no exceptions on Linux, so check first).
 		std::shared_ptr<std::atomic<bool>> started;
 		// mainhang: a required wait timed out once; later required lookups only poll it.
-		bool     gave_up    = false;
-		uint64_t submit_ns  = 0;
+		bool     gave_up   = false;
+		uint64_t submit_ns = 0;
 	};
 	// keyed: builds describe their content and note it in the known-pipeline list (the skip
 	// builder, KYTY_PIPELINE_SKIP: its pipelines are published like the CP's own builds).
@@ -4604,12 +4604,14 @@ struct PipelineCache::PrefetchState {
 		     programs] {
 			    Profiler::SetThreadName("PipelineCompiler");
 			    if (keyed) {
-				    // mainhang test hook (KYTY_TEST_SKIP_BUILD_STALL_MS, default 0): the first skip build
-				    // stalls that long, like the 2026-11-22 build that never left the driver.
-				    static const uint64_t stall_ms = EnvU64("KYTY_TEST_SKIP_BUILD_STALL_MS", 0);
+				    // mainhang test hook (KYTY_TEST_SKIP_BUILD_STALL_MS, default 0): the first skip
+				    // build stalls that long, like the 2026-11-22 build that never left the driver.
+				    static const uint64_t    stall_ms = EnvU64("KYTY_TEST_SKIP_BUILD_STALL_MS", 0);
 				    static std::atomic<bool> stalled {false};
 				    if (stall_ms != 0 && !stalled.exchange(true)) {
-					    std::fprintf(stderr, "[mainhang] test: this skip build stalls %llu ms (KYTY_TEST_SKIP_BUILD_STALL_MS)\n",
+					    std::fprintf(stderr,
+					                 "[mainhang] test: this skip build stalls %llu ms "
+					                 "(KYTY_TEST_SKIP_BUILD_STALL_MS)\n",
 					                 static_cast<unsigned long long>(stall_ms));
 					    std::this_thread::sleep_for(std::chrono::milliseconds(stall_ms));
 				    }
@@ -4651,7 +4653,8 @@ struct PipelineCache::PrefetchState {
 			    started->store(true, std::memory_order_release);
 			    (*task)();
 		    }, ticket)) {
-			pending.emplace(key, Pending {std::move(future), ticket, std::move(started), false, CompileClockNs()});
+			pending.emplace(key, Pending {std::move(future), ticket, std::move(started), false,
+			                              CompileClockNs()});
 			pending_count.fetch_add(1, std::memory_order_relaxed);
 			submitted.fetch_add(1, std::memory_order_relaxed);
 			return true;
@@ -4661,15 +4664,16 @@ struct PipelineCache::PrefetchState {
 	Result Take(const GraphicsPipelineKey& key) {
 		std::future<Result> future;
 		uint64_t ticket = 0;
-		uint64_t submit_ns = 0;
+		uint64_t            submit_ns = 0;
 		{
 			std::lock_guard lock(mutex);
 			auto it = pending.find(key);
 			if (it == pending.end()) return {};
 			if (!it->second.future.valid()) return {}; // Another required lookup owns it.
-			if (it->second.gave_up &&
-			    it->second.future.wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
-				// mainhang: this build already outlived one bounded wait; do not wait a second time.
+			if (it->second.gave_up && it->second.future.wait_for(std::chrono::nanoseconds(0)) !=
+			                              std::future_status::ready) {
+				// mainhang: this build already outlived one bounded wait; do not wait a second
+				// time.
 				gave_up_polls.fetch_add(1, std::memory_order_relaxed);
 				Result skip;
 				skip.gave_up = true;
@@ -4684,12 +4688,12 @@ struct PipelineCache::PrefetchState {
 		queue.Promote(ticket);
 		const auto begin = CompileClockNs();
 		CompileProgress::WaitScope title_wait;
-		if (take_timeout_ms != 0 &&
-		    future.wait_for(std::chrono::milliseconds(take_timeout_ms)) != std::future_status::ready) {
-			// mainhang (KYTY_PIPELINE_TAKE_TIMEOUT_MS): the build is stuck (2026-11-22 blame6: a skip
-			// build inside the driver never returned and the CP waited here for ever). Give the
-			// future back (the key stays reserved, a later finish is still used) and skip the draw;
-			// no second build on the CP: it could block on the same driver lock.
+		if (take_timeout_ms != 0 && future.wait_for(std::chrono::milliseconds(take_timeout_ms)) !=
+		                                std::future_status::ready) {
+			// mainhang (KYTY_PIPELINE_TAKE_TIMEOUT_MS): the build is stuck (2026-11-22 blame6: a
+			// skip build inside the driver never returned and the CP waited here for ever). Give
+			// the future back (the key stays reserved, a later finish is still used) and skip the
+			// draw; no second build on the CP: it could block on the same driver lock.
 			const auto waited = CompileClockNs() - begin;
 			{
 				std::lock_guard lock(mutex);
@@ -4700,15 +4704,19 @@ struct PipelineCache::PrefetchState {
 			}
 			const auto n = gave_up_waits.fetch_add(1, std::memory_order_relaxed);
 			if (n < 16) {
-				std::fprintf(stderr,
-				             "[mainhang] pipeline wait: %s build for a required draw still running after %llu ms "
-				             "(queued %llu ms ago, %llu live compiles); the draw is skipped until it finishes "
-				             "(KYTY_PIPELINE_TAKE_TIMEOUT_MS=%llu; %llu gave up so far)\n",
-				             log_name, static_cast<unsigned long long>(waited / 1000000),
-				             static_cast<unsigned long long>((CompileClockNs() - submit_ns) / 1000000),
-				             static_cast<unsigned long long>(CompileProgress::Get().live.load(std::memory_order_relaxed)),
-				             static_cast<unsigned long long>(take_timeout_ms),
-				             static_cast<unsigned long long>(n + 1));
+				std::fprintf(
+				    stderr,
+				    "[mainhang] pipeline wait: %s build for a required draw still running after "
+				    "%llu ms "
+				    "(queued %llu ms ago, %llu live compiles); the draw is skipped until it "
+				    "finishes "
+				    "(KYTY_PIPELINE_TAKE_TIMEOUT_MS=%llu; %llu gave up so far)\n",
+				    log_name, static_cast<unsigned long long>(waited / 1000000),
+				    static_cast<unsigned long long>((CompileClockNs() - submit_ns) / 1000000),
+				    static_cast<unsigned long long>(
+				        CompileProgress::Get().live.load(std::memory_order_relaxed)),
+				    static_cast<unsigned long long>(take_timeout_ms),
+				    static_cast<unsigned long long>(n + 1));
 			}
 			if (n == 0) FlightRec::Trigger("pipewait");
 			Result skip;
@@ -4760,7 +4768,8 @@ struct PipelineCache::PrefetchState {
 	std::atomic<uint64_t> submitted {0}, used {0}, compile_ns {0}, wait_ns {0}, max_wait_ns {0};
 	std::atomic<uint64_t> gave_up_waits {0}, gave_up_polls {0};
 	// mainhang: KYTY_PIPELINE_TAKE_TIMEOUT_MS (default 0 = wait for ever, the old behaviour).
-	const uint64_t take_timeout_ms = std::min<uint64_t>(EnvU64("KYTY_PIPELINE_TAKE_TIMEOUT_MS", 0), 600000);
+	const uint64_t take_timeout_ms =
+	    std::min<uint64_t>(EnvU64("KYTY_PIPELINE_TAKE_TIMEOUT_MS", 0), 600000);
 	PipelineCompileQueue queue;
 };
 
@@ -6367,8 +6376,11 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 		                 "(KYTY_PIPELINE_SKIP_THREADS, KYTY_PIPELINE_SKIP_WAIT_US)",
 		                 threads, m_skip_wait_ns / 1000);
 		if (m_skip->take_timeout_ms != 0) {
-			std::fprintf(stderr, "[mainhang] pipeline wait: a draw that cannot be skipped waits at most %llu ms for a "
-			                     "skip build, then is skipped until the build finishes (KYTY_PIPELINE_TAKE_TIMEOUT_MS)\n",
+			std::fprintf(stderr,
+			             "[mainhang] pipeline wait: a draw that cannot be skipped waits at most "
+			             "%llu ms for a "
+			             "skip build, then is skipped until the build finishes "
+			             "(KYTY_PIPELINE_TAKE_TIMEOUT_MS)\n",
 			             static_cast<unsigned long long>(m_skip->take_timeout_ms));
 		}
 	}

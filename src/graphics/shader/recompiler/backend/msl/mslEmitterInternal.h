@@ -40,9 +40,10 @@ struct MslCtx {
 	// outside `precise` (= Kyty's NoContraction position slice) are assigned in math_mode(relaxed)
 	// blocks, slice results in safe ones, a MAD is two statements, no global contract(off).
 	bool mesh_modes = false;
-	// meshpath spill (KYTY_MSL_MESH_SPILL=1, idea from USER's private nxnative): the guest LDS lives in a claimed
-	// slice of KK's mesh scratch buffer (buffer 3) instead of threadgroup memory (MslKkBda.cpp, MslMesh.cpp)
-	bool mesh_spill = false;
+	// meshpath spill (KYTY_MSL_MESH_SPILL=1, idea from USER's private nxnative): the guest LDS
+	// lives in a claimed slice of KK's mesh scratch buffer (buffer 3) instead of threadgroup memory
+	// (MslKkBda.cpp, MslMesh.cpp)
+	bool                   mesh_spill   = false;
 	uint32_t               loop_cap     = 0;     // MslOptions::loop_cap (0 = no loop guard)
 	bool                   loop_private = false; // per-loop counters (program has barriers)
 	uint32_t               loop_guards  = 0;     // private counters handed out

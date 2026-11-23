@@ -231,8 +231,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
 	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
 	      "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT",
-	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_VS_MODES", "KYTY_MSL_XF_TABLE", "KYTY_MSL_LOADGROUP",
-	      "KYTY_MSL_LOADGROUP_MUTANT"}) {
+	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_VS_MODES", "KYTY_MSL_XF_TABLE",
+	      "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
 			        " is set in the environment; --mode does not mix with hand-set switches";
@@ -333,8 +333,10 @@ std::string ModeCatalogue() {
 	    "transform bounds_lim)\n"
 	    "gexit\tgpuguard loop budget checked inside the loop's own exit test (KYTY_MSL_XF_GEXIT=1 "
 	    "= transform guard_exit)\n"
-	    "vsmodes\tvertex: KK's per-op float modes (position slice safe, rest relaxed, MAD as two statements; KYTY_MSL_VS_MODES=1)\n"
-	    "meshspill\tmesh: guest LDS of 6-16 KB in a claimed slice of KosmicKrisp's mesh scratch (KYTY_MSL_MESH_SPILL=1; KK patch 0030)\n"
+	    "vsmodes\tvertex: KK's per-op float modes (position slice safe, rest relaxed, MAD as two "
+	    "statements; KYTY_MSL_VS_MODES=1)\n"
+	    "meshspill\tmesh: guest LDS of 6-16 KB in a claimed slice of KosmicKrisp's mesh scratch "
+	    "(KYTY_MSL_MESH_SPILL=1; KK patch 0030)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";
 	for (uint32_t i = 0; i < Count; i++) {
 		char line[96];

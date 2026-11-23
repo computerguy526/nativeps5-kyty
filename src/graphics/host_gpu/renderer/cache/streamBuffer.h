@@ -70,13 +70,14 @@ public:
 	[[nodiscard]] int  StreamScore() const noexcept { return stream_score; }
 	void               Flush(uint64_t offset, uint64_t size);
 	void               Invalidate(uint64_t offset, uint64_t size);
-	// nps5 faultcost (KYTY_FAULT_HOST_READBACK): read a device buffer on the host. KosmicKrisp has one
-	// memory type (host-visible, coherent, device-local: Metal shared storage), so a device buffer can
-	// be mapped. Maps the allocation, calls sink(offset, bytes, size) for each (offset, size) range and
-	// unmaps. false without a call when the buffer is sparse or not host-visible.
+	// nps5 faultcost (KYTY_FAULT_HOST_READBACK): read a device buffer on the host. KosmicKrisp has
+	// one memory type (host-visible, coherent, device-local: Metal shared storage), so a device
+	// buffer can be mapped. Maps the allocation, calls sink(offset, bytes, size) for each (offset,
+	// size) range and unmaps. false without a call when the buffer is sparse or not host-visible.
 	// The caller guarantees that every GPU writer of the ranges has completed.
-	[[nodiscard]] bool ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&             ranges,
-	                                  const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const;
+	[[nodiscard]] bool
+	     ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&              ranges,
+	                    const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const;
 	void CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t source_offset,
 	              uint64_t destination_offset, uint64_t size,
 	              vk::AccessFlags source_before      = vk::AccessFlagBits::eMemoryWrite,

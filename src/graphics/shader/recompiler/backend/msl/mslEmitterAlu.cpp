@@ -250,8 +250,9 @@ std::string AluExpression(ValueOpcode op, std::span<const std::string> a) {
 		case O::FPAdd32: return fmt::format("({} + {})", a[0], a[1]);
 		case O::FPSub32: return fmt::format("({} - {})", a[0], a[1]);
 		case O::FPMul32: return fmt::format("({} * {})", a[0], a[1]);
-		case O::FPFma32: // meshpath: KK prints a non-position ffma as fmul + fadd (two roundings), as the
-		                 // pixel split (MslNirReassoc) does; the prelude's contract(off) keeps them apart
+		case O::FPFma32: // meshpath: KK prints a non-position ffma as fmul + fadd (two roundings),
+		                 // as the pixel split (MslNirReassoc) does; the prelude's contract(off)
+		                 // keeps them apart
 			if (g_kk_trig) return fmt::format("(({} * {}) + {})", a[0], a[1], a[2]);
 			return fmt::format("fma({}, {}, {})", a[0], a[1], a[2]);
 		case O::FPMad32:

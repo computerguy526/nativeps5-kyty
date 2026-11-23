@@ -411,8 +411,9 @@ struct FaultHostReadbackStats {
 	std::atomic<uint64_t> bytes {0};
 	std::atomic<uint64_t> ranges {0};
 	std::atomic<uint64_t> done_ns {0};
-	// refusals: 0 unbounded writer pending, 1 publication/side readback pending, 2 GPU-written image,
-	// 3 no dirty bytes, 4 writer in the current recording, 5 writer queued (not complete), 6 map failed
+	// refusals: 0 unbounded writer pending, 1 publication/side readback pending, 2 GPU-written
+	// image, 3 no dirty bytes, 4 writer in the current recording, 5 writer queued (not complete), 6
+	// map failed
 	std::atomic<uint64_t> refused[7] {};
 	std::atomic<uint64_t> queued_ticks {0}; // sum of (newest writer - known GPU tick) for refusal 5
 };
@@ -787,16 +788,18 @@ void ReportReadFaultPublished(uint32_t frame) {
 		const auto refused5 = take(hr.refused[5]);
 		const auto ticks5   = take(hr.queued_ticks);
 		const auto done     = take(hr.done);
-		std::printf("Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64 ", done %" PRIu64
-		            " (%.1f KiB, %" PRIu64 " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
-		            ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64 ", queued writer %" PRIu64
-		            " (%.1f ticks ahead avg), map %" PRIu64 "\n",
-		            static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
-		            static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
-		            static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]), take(hr.refused[1]),
-		            take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]), refused5,
-		            refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
-		            take(hr.refused[6]));
+		std::printf(
+		    "Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64
+		    ", done %" PRIu64 " (%.1f KiB, %" PRIu64
+		    " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
+		    ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64
+		    ", queued writer %" PRIu64 " (%.1f ticks ahead avg), map %" PRIu64 "\n",
+		    static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
+		    static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
+		    static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]), take(hr.refused[1]),
+		    take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]), refused5,
+		    refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
+		    take(hr.refused[6]));
 	}
 }
 
@@ -2944,8 +2947,8 @@ void BufferCache::ReadMemoryDrain(uint64_t vaddr, uint64_t size, bool is_write,
 	trace.size  = window_end - window_begin;
 	// nps5 faultcost: KYTY_FAULT_HOST_READBACK (see its definition).
 	if (const auto host_mode = g_fault_host_readback.Get(); is_write && host_mode != 0) {
-		auto&      hr    = FaultHostReadback();
-		const auto start = ReadFaultDiag::NowNs();
+		auto&      hr              = FaultHostReadback();
+		const auto start           = ReadFaultDiag::NowNs();
 		const auto bytes_in_window = window_end - window_begin;
 		hr.attempts.fetch_add(1, std::memory_order_relaxed);
 		bool done = false;
@@ -2968,11 +2971,13 @@ void BufferCache::ReadMemoryDrain(uint64_t vaddr, uint64_t size, bool is_write,
 			uint64_t                                   bytes  = 0;
 			m_memory_tracker.ForEachDownloadRange<false>(
 			    window_begin, bytes_in_window, [&](uint64_t address, uint64_t size_in) noexcept {
-				    m_gpu_modified_ranges.ForEachInRange(address, size_in, [&](uint64_t start_in, uint64_t end_in) {
-					    ranges.emplace_back(start_in - buffer_begin, end_in - start_in);
-					    newest = std::max(newest, m_write_ticks.MaxTick(start_in, end_in - start_in));
-					    bytes += end_in - start_in;
-				    });
+				    m_gpu_modified_ranges.ForEachInRange(
+				        address, size_in, [&](uint64_t start_in, uint64_t end_in) {
+					        ranges.emplace_back(start_in - buffer_begin, end_in - start_in);
+					        newest = std::max(newest,
+					                          m_write_ticks.MaxTick(start_in, end_in - start_in));
+					        bytes += end_in - start_in;
+				        });
 			    });
 			if (ranges.empty()) {
 				hr.refused[3].fetch_add(1, std::memory_order_relaxed);
@@ -2984,7 +2989,8 @@ void BufferCache::ReadMemoryDrain(uint64_t vaddr, uint64_t size, bool is_write,
 				} else {
 					hr.refused[5].fetch_add(1, std::memory_order_relaxed);
 					const auto known = m_scheduler.GetMasterSemaphore().KnownGpuTick();
-					hr.queued_ticks.fetch_add(newest > known ? newest - known : 0, std::memory_order_relaxed);
+					hr.queued_ticks.fetch_add(newest > known ? newest - known : 0,
+					                          std::memory_order_relaxed);
 				}
 				break;
 			}
@@ -3003,7 +3009,8 @@ void BufferCache::ReadMemoryDrain(uint64_t vaddr, uint64_t size, bool is_write,
 			// The bytes are in the backing now: the GPU no longer owns them (as after a download's
 			// publication).
 			for (const auto& [offset, size_in]: ranges) {
-				CleanVerdict::Invalidate(buffer_begin + offset, size_in, Coherence::Source::BufferDirtySubtract);
+				CleanVerdict::Invalidate(buffer_begin + offset, size_in,
+				                         Coherence::Source::BufferDirtySubtract);
 				m_gpu_range_removals.fetch_add(1, std::memory_order_acq_rel);
 				m_gpu_modified_ranges.Subtract(buffer_begin + offset, size_in);
 			}

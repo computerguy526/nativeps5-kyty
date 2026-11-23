@@ -20,8 +20,8 @@ struct LdsInfo {
 // Per-emission switch (kk-bda + SharedMemory binding): LDS ops read the device region `lds` bounded
 // by `kk_lds_bytes`.
 void SetLdsDevice(bool on);
-// meshpath: kk-bda guest-address loads through the BDA page table (KkBdaLocals declares kk_bda_pt/_ptn
-// and kk_bda_fb/_fbn from set 0's BdaPagetable / FaultBuffer descriptors).
+// meshpath: kk-bda guest-address loads through the BDA page table (KkBdaLocals declares
+// kk_bda_pt/_ptn and kk_bda_fb/_fbn from set 0's BdaPagetable / FaultBuffer descriptors).
 void SetKkBdaPagetable(bool on);
 bool KkBdaPagetable();
 bool LdsIsDevice();

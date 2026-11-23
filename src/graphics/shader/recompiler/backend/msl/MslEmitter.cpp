@@ -257,8 +257,9 @@ std::string KkInjectHeader(const MslCtx& ctx, const MslResult& r) {
 	}
 	// meshpath: KK dispatches its own mesh threadgroup size; the replacement declares it.
 	if (ctx.program.stage == ShaderType::Mesh)
-		return fmt::format("// kk-mslinject v1 stage mesh entry main_entrypoint math safe threads {}{}\n",
-		                   r.threadgroup[0], ctx.mesh_spill ? " scratch 16384" : "");
+		return fmt::format(
+		    "// kk-mslinject v1 stage mesh entry main_entrypoint math safe threads {}{}\n",
+		    r.threadgroup[0], ctx.mesh_spill ? " scratch 16384" : "");
 	// Compute (litcompute 2026-11-19): 7f9ba790 lost the braces above, so every compute kernel got
 	// the fragment header.
 	return fmt::format("// kk-mslinject v1 local_size {} {} {} entry main_entrypoint math safe\n",
@@ -546,22 +547,27 @@ void EmitInst(MslCtx& ctx, const IR::Inst& inst, const ComputeShape& shape) {
 		if (ctx.mesh_modes && (t == IR::Type::F32 || t == IR::Type::F32x2)) {
 			const bool relaxed = !ctx.precise.contains(&inst);
 			ctx.b.Line("{");
-			ctx.b.Line(relaxed ? "#pragma METAL fp math_mode(relaxed)" : "#pragma METAL fp math_mode(safe)");
+			ctx.b.Line(relaxed ? "#pragma METAL fp math_mode(relaxed)"
+			                   : "#pragma METAL fp math_mode(safe)");
 			if (op == O::FPMad32 && t == IR::Type::F32 && inst.NumArgs() == 3) {
 				// KK prints Kyty's V_MAD (fmul + fadd) as two statements
 				ctx.b.Line(fmt::format("const float {0}_m = ({1} * {2});", ctx.Name(inst, h),
 				                       ctx.Val(inst.Arg(0)), ctx.Val(inst.Arg(1))));
-				ctx.b.Line(fmt::format("{0} = ({0}_m + {1});", ctx.Name(inst, h), ctx.Val(inst.Arg(2))));
+				ctx.b.Line(
+				    fmt::format("{0} = ({0}_m + {1});", ctx.Name(inst, h), ctx.Val(inst.Arg(2))));
 			} else if (!relaxed && ctx.program.stage == ShaderType::Vertex && op == O::FPFma32 &&
 			           t == IR::Type::F32 && inst.NumArgs() == 3) {
-				// heavypairs vsmodes: KK prints a position-slice ffma as precise::fma in its safe block
-				ctx.b.Line(fmt::format("{} = precise::fma({}, {}, {});", ctx.Name(inst, h), ctx.Val(inst.Arg(0)),
-				                       ctx.Val(inst.Arg(1)), ctx.Val(inst.Arg(2))));
+				// heavypairs vsmodes: KK prints a position-slice ffma as precise::fma in its safe
+				// block
+				ctx.b.Line(fmt::format("{} = precise::fma({}, {}, {});", ctx.Name(inst, h),
+				                       ctx.Val(inst.Arg(0)), ctx.Val(inst.Arg(1)),
+				                       ctx.Val(inst.Arg(2))));
 			} else if (!relaxed && ctx.program.stage == ShaderType::Vertex && op == O::FPRecip32 &&
 			           expr.rfind("kyty_rcp(", 0) == 0 && expr.back() == ')') {
-				// heavypairs vsmodes: a position-slice V_RCP is KK's `1/x` in the safe block (correctly
-				// rounded), not the relaxed kyty_rcp helper
-				ctx.b.Line(fmt::format("{} = (1.0f / ({}));", ctx.Name(inst, h), expr.substr(9, expr.size() - 10)));
+				// heavypairs vsmodes: a position-slice V_RCP is KK's `1/x` in the safe block
+				// (correctly rounded), not the relaxed kyty_rcp helper
+				ctx.b.Line(fmt::format("{} = (1.0f / ({}));", ctx.Name(inst, h),
+				                       expr.substr(9, expr.size() - 10)));
 			} else {
 				ctx.b.Line(fmt::format("{} = {};", ctx.Name(inst, h), expr));
 			}
@@ -1474,14 +1480,15 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	result.threadgroup[0] = total;
 
 	const bool gfx_stage   = GfxIsStage(program.stage);
-	// meshpath: a mesh program is KK-lowered graphics code (NIR from Kyty's graphics SPIR-V, FLOAT_MODE
-	// 0xC0): the graphics float rules (KK min/max, transcendental input flush, graphics f16 helpers)
-	// apply to it as to a vertex shader. KYTY_MSL_MESH_FLOAT=0 = compute rules (meshpath v2 text).
+	// meshpath: a mesh program is KK-lowered graphics code (NIR from Kyty's graphics SPIR-V,
+	// FLOAT_MODE 0xC0): the graphics float rules (KK min/max, transcendental input flush, graphics
+	// f16 helpers) apply to it as to a vertex shader. KYTY_MSL_MESH_FLOAT=0 = compute rules
+	// (meshpath v2 text).
 	const bool mesh_float = program.stage == ShaderType::Mesh && MeshEnabled() && [] {
 		const char* e = std::getenv("KYTY_MSL_MESH_FLOAT");
 		return e == nullptr || std::strcmp(e, "0") != 0;
 	}();
-	const bool gfx_float = gfx_stage || mesh_float;
+	const bool gfx_float   = gfx_stage || mesh_float;
 	const bool gfx_relaxed = program.stage == ShaderType::Pixel && GfxPixelRelaxed() &&
 	                         (options.kk_bda || KkBdaRequested());
 	// mslfix4: KYTY_MSL_VS_SINGLE_LANE=0 = old (real simdgroup ops in the VS with lid 0)
@@ -1492,8 +1499,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		                            return e == nullptr || std::strcmp(e, "0") != 0;
 	                            }();
 	SetPreciseTranscendentals(gfx_relaxed);
-	// heavypairs: vsmodes (KYTY_MSL_VS_MODES=1) also takes meshpath's KK spellings (precise:: trig, NIR ffract,
-	// V_FMA as fmul + fadd) and the per-op float model below
+	// heavypairs: vsmodes (KYTY_MSL_VS_MODES=1) also takes meshpath's KK spellings (precise:: trig,
+	// NIR ffract, V_FMA as fmul + fadd) and the per-op float model below
 	const bool vs_modes = program.stage == ShaderType::Vertex && Xf::EnvOn("KYTY_MSL_VS_MODES");
 	SetKkTrig(mesh_float || vs_modes);
 	// mslfix6: KYTY_MSL_GFX_MINMAX=0 = old text (Metal fmin/fmax/fmin3/fmax3/fmedian3)
@@ -1505,8 +1512,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	// fmafix: one statement per NIR op (V_MAD/V_FMA as fmul then fadd) like KK's text, so Metal
 	// contracts B exactly where it contracts KK; KYTY_MSL_GFX_SPLIT=0 = mslfix5 text (one
 	// expression per IR instruction)
-	// meshpath experiment: KYTY_MSL_MESH_REASSOC=1|split replays KK's NIR re-association on mesh text
-	// (no host contraction, library math unchanged). Default off.
+	// meshpath experiment: KYTY_MSL_MESH_REASSOC=1|split replays KK's NIR re-association on mesh
+	// text (no host contraction, library math unchanged). Default off.
 	const char* mesh_re      = std::getenv("KYTY_MSL_MESH_REASSOC");
 	const bool  mesh_reassoc = mesh_float && mesh_re != nullptr && std::strcmp(mesh_re, "0") != 0;
 	NirReassocBuild(
@@ -1526,8 +1533,8 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		return e == nullptr || std::strcmp(e, "0") != 0;
 	}());
 	const bool mesh_stage = program.stage == ShaderType::Mesh && MeshEnabled();
-	ctx.kk_bda = (program.stage == ShaderType::Compute || gfx_stage || mesh_stage) &&
-	             (options.kk_bda || KkBdaRequested());
+	ctx.kk_bda            = (program.stage == ShaderType::Compute || gfx_stage || mesh_stage) &&
+	                        (options.kk_bda || KkBdaRequested());
 	Mem::SetKkSamplerBias(false); // KkBdaLocals turns it on for kk-bda kernels
 	Mem::SetLoadSelectSafe({});   // KkBdaLocals: load_select fallback address (kk-bda root)
 	Mem::SetConstLoad(0, {});     // KkBdaLocals: vs_const_load state
@@ -1537,14 +1544,16 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	Mem::SetMipStats({});     // KkBdaLocals: GET_LOD_STATS feedback (kk-bda pixel shaders)
 	ctx.mesh = mesh_stage;
 	// heavypairs: the same per-op float model for vertex programs, opt-in (mode token `vsmodes` =
-	// KYTY_MSL_VS_MODES=1): KK prints the VS position slice in safe blocks and the rest relaxed, so a
-	// VS text with one global contract(off) differs from KK's clip-space z by 1-2 ulp (69ca3b3c).
-	if ((mesh_float && [] {
-		    const char* e = std::getenv("KYTY_MSL_MESH_MODES");
-		    return e == nullptr || std::strcmp(e, "0") != 0;
-	    }()) || vs_modes) {
-		// Kyty's SPIR-V position slice (spirvEmitterAlu.cpp CollectPositionSlice): IR producers of the
-		// Position exports, transitively.
+	// KYTY_MSL_VS_MODES=1): KK prints the VS position slice in safe blocks and the rest relaxed, so
+	// a VS text with one global contract(off) differs from KK's clip-space z by 1-2 ulp (69ca3b3c).
+	if ((mesh_float &&
+	     [] {
+		     const char* e = std::getenv("KYTY_MSL_MESH_MODES");
+		     return e == nullptr || std::strcmp(e, "0") != 0;
+	     }()) ||
+	    vs_modes) {
+		// Kyty's SPIR-V position slice (spirvEmitterAlu.cpp CollectPositionSlice): IR producers of
+		// the Position exports, transitively.
 		ctx.mesh_modes = true;
 		std::vector<const IR::Inst*> pending;
 		for (const auto* blk: program.blocks)
@@ -1655,16 +1664,20 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		if (mesh_stage) MeshEpilogue(ctx);
 		b.Close(); // kernel
 		result.source = KkInjectHeader(ctx, result) +
-		                PreludeText(fuse_mad, gfx_float, gfx_relaxed || ctx.mesh_modes, vs_single_lane, kk_minmax) +
+		                PreludeText(fuse_mad, gfx_float, gfx_relaxed || ctx.mesh_modes,
+		                            vs_single_lane, kk_minmax) +
 		                LoopGuardHelper(ctx.loop_cap) +
-		                (vs_modes ? std::string("static inline float kyty_kk_fract(float x) {\n  const uint a = as_type<uint>(x) & 0x7fffffffu;\n"
-		                                        "  const float f = (a < 0x7f800000u && a >= 0x4b000000u) ? 0.0f : x - floor(x);\n"
+		                (vs_modes ? std::string("static inline float kyty_kk_fract(float x) {\n  "
+		                                        "const uint a = as_type<uint>(x) & 0x7fffffffu;\n"
+		                                        "  const float f = (a < 0x7f800000u && a >= "
+		                                        "0x4b000000u) ? 0.0f : x - floor(x);\n"
 		                                        "  return a == 0u ? x : f;\n}\n")
 		                          : std::string()) +
 		                ctx.b.Take();
 		if (mesh_stage) {
 			size_t n = 0;
-			for (size_t at = 0; (at = result.source.find("/*nps5-mesh-end*/", at)) != std::string::npos; at++)
+			for (size_t at = 0;
+			     (at = result.source.find("/*nps5-mesh-end*/", at)) != std::string::npos; at++)
 				n++;
 			if (n > 1) ctx.unsupported["mesh: end of program before the last block"]++;
 		}
