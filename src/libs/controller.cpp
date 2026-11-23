@@ -24,7 +24,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <vector>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 namespace Libs::Controller {
 
@@ -474,6 +481,156 @@ void GetTriggerEffectState(int32_t* state) {
 	g_players[0]->GetTriggerEffectState(state);
 }
 
+// NPS5_PAD_NET=<port>: a controller forwarded from another machine (28-byte packets over a loopback TCP stream, normally an
+// SSH local forward) drives the host-input port like the keyboard does. Off unless the variable is set; listens on
+// 127.0.0.1 only, one client; no packet for 500 ms or a disconnect releases everything. No rumble goes back.
+//   u16 magic 0x504e | u8 ver 1 | u8 flags | u32 seq | u32 ms | u32 buttons (bit n = SDL gamepad button n) | i16 axes[6]
+namespace {
+std::atomic<bool> g_netpad_stop {false};
+std::thread       g_netpad_thread;
+
+struct NetPadState {
+	uint32_t pad = 0;   // PS button bits currently pressed by the forwarded pad
+	int      axes[6] {128, 128, 128, 128, 0, 0};
+};
+
+void NetPadApply(NetPadState& shown, const NetPadState& want) {
+	for (uint32_t bit = 1; bit != 0; bit <<= 1) {
+		if ((want.pad & bit) != (shown.pad & bit)) {
+			SetButton(HOST_INPUT_CONTROLLER_ID, bit, (want.pad & bit) != 0);
+		}
+	}
+	static constexpr Axis kAxes[6] = {Axis::LeftX, Axis::LeftY, Axis::RightX, Axis::RightY, Axis::TriggerLeft, Axis::TriggerRight};
+	for (int i = 0; i < 6; i++) {
+		if (want.axes[i] != shown.axes[i]) {
+			SetAxis(HOST_INPUT_CONTROLLER_ID, kAxes[i], want.axes[i]);
+		}
+	}
+	shown = want;
+}
+
+NetPadState NetPadFromPacket(const uint8_t* p) {
+	static constexpr struct { int sdl; uint32_t ps; } kMap[] = {
+	    {0, PAD_BUTTON_CROSS}, {1, PAD_BUTTON_CIRCLE}, {2, PAD_BUTTON_SQUARE}, {3, PAD_BUTTON_TRIANGLE}, {4, PAD_BUTTON_TOUCH_PAD},
+	    {6, PAD_BUTTON_OPTIONS}, {7, PAD_BUTTON_L3}, {8, PAD_BUTTON_R3}, {9, PAD_BUTTON_L1}, {10, PAD_BUTTON_R1},
+	    {11, PAD_BUTTON_UP}, {12, PAD_BUTTON_DOWN}, {13, PAD_BUTTON_LEFT}, {14, PAD_BUTTON_RIGHT}};
+	const uint32_t buttons = p[12] | (p[13] << 8) | (p[14] << 16) | (static_cast<uint32_t>(p[15]) << 24);
+	NetPadState    state;
+	for (const auto& m: kMap) {
+		if ((buttons >> m.sdl) & 1u) {
+			state.pad |= m.ps;
+		}
+	}
+	for (int i = 0; i < 6; i++) {
+		const int v = static_cast<int16_t>(static_cast<uint16_t>(p[16 + 2 * i] | (p[17 + 2 * i] << 8)));
+		state.axes[i] = i < 4 ? std::clamp((v + 32768) >> 8, 0, 255) : std::clamp(v >> 7, 0, 255);
+	}
+	return state;
+}
+
+void NetPadRun(int listen_fd) {
+	using Clock = std::chrono::steady_clock;
+	int          client = -1;
+	uint8_t      pending[28];
+	size_t       pending_size = 0;
+	NetPadState  shown;
+	Clock::time_point last_packet {};
+	bool         have = false;
+	while (!g_netpad_stop) {
+		pollfd fds[2] = {{listen_fd, POLLIN, 0}, {client, POLLIN, 0}};
+		if (poll(fds, client >= 0 ? 2 : 1, 50) > 0) {
+			if (fds[0].revents & POLLIN) {
+				const int next = accept(listen_fd, nullptr, nullptr);
+				if (next >= 0) {
+					if (client >= 0) {
+						close(client);
+					}
+					client = next;
+					int on = 1;
+					setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
+					pending_size = 0;
+					have         = false;
+					std::printf("[netpad] sender connected\n");
+				}
+			}
+			if (client >= 0 && (fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+				uint8_t     buf[256];
+				const auto  got = recv(client, buf, sizeof buf, 0);
+				bool        ok  = got > 0;
+				for (ssize_t i = 0; ok && i < got;) {
+					const size_t take = std::min<size_t>(sizeof pending - pending_size, static_cast<size_t>(got - i));
+					std::memcpy(pending + pending_size, buf + i, take);
+					pending_size += take;
+					i += static_cast<ssize_t>(take);
+					if (pending_size == sizeof pending) {
+						pending_size = 0;
+						if (pending[0] != 0x4e || pending[1] != 0x50 || pending[2] != 1) {
+							ok = false;
+							break;
+						}
+						NetPadApply(shown, NetPadFromPacket(pending));
+						last_packet = Clock::now();
+						have        = true;
+					}
+				}
+				if (!ok) {
+					close(client);
+					client = -1;
+					have   = false;
+					NetPadApply(shown, NetPadState {});
+					std::printf("[netpad] sender disconnected\n");
+				}
+			}
+		}
+		if (have && Clock::now() - last_packet > std::chrono::milliseconds(500)) {
+			have = false;
+			NetPadApply(shown, NetPadState {});   // silent sender: neutral
+		}
+	}
+	if (client >= 0) {
+		close(client);
+	}
+	NetPadApply(shown, NetPadState {});
+	close(listen_fd);
+}
+
+void NetPadStart() {
+	const char* text = std::getenv("NPS5_PAD_NET");
+	if (text == nullptr || *text == '\0' || g_netpad_thread.joinable()) {
+		return;
+	}
+	const int port = std::atoi(text);
+	if (port <= 0 || port > 65535) {
+		std::printf("[netpad] NPS5_PAD_NET='%s' is not a port\n", text);
+		return;
+	}
+	const int fd = socket(AF_INET, SOCK_STREAM, 0);
+	int       on = 1;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
+	sockaddr_in addr {};
+	addr.sin_family      = AF_INET;
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // loopback only
+	addr.sin_port        = htons(static_cast<uint16_t>(port));
+	if (fd < 0 || bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || listen(fd, 1) != 0) {
+		std::printf("[netpad] cannot listen on 127.0.0.1:%d\n", port);
+		if (fd >= 0) {
+			close(fd);
+		}
+		return;
+	}
+	g_netpad_stop   = false;
+	g_netpad_thread = std::thread(NetPadRun, fd);
+	std::printf("[netpad] listening on 127.0.0.1:%d (NPS5_PAD_NET)\n", port);
+}
+
+void NetPadStop() {
+	g_netpad_stop = true;
+	if (g_netpad_thread.joinable()) {
+		g_netpad_thread.join();
+	}
+}
+} // namespace
+
 void Initialize() {
 	EXIT_IF(g_players[0] != nullptr);
 
@@ -482,9 +639,11 @@ void Initialize() {
 	}
 	g_keyboard_player = Config::GetKeyboardPlayer();
 	RefreshPlayers();
+	NetPadStart();
 }
 
 void Shutdown() {
+	NetPadStop();
 	EmergencyShutdown();
 	for (auto& player: g_players) {
 		player.reset();
