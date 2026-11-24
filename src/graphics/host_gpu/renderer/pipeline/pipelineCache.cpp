@@ -74,6 +74,9 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/shaderVertexAliases.h"
+#include "graphics/host_gpu/renderer/pipeline/bgQueue.h"
+#include "graphics/host_gpu/renderer/pipeline/levelDb.h"
+#include "graphics/host_gpu/renderer/pipeline/levelTier.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
 #include "kytyGitVersion.h"
@@ -8038,11 +8041,172 @@ struct PipelineCache::JournalReplay {
 		for (uint32_t i = 0; i < running; i++) threads.emplace_back([this] { Worker(); });
 	}
 
+	// KYTY_SHADER_PREPARE=tier: the order of the replay from the level database (KYTY_SCENE_DB) and the save
+	// slots (KYTY_SHADER_PREPARE_SAVE, the save blob; KYTY_SHADER_PREPARE_EARLIEST / _AHEAD, default 2 / 2). Tier 1
+	// items first (they hold the game), then tier 2 in prepare order for the background queue. False: no usable
+	// database, the caller falls back to "all".
+	bool BuildTierOrder() {
+		const char* db_path = std::getenv("KYTY_SCENE_DB");
+		std::vector<uint8_t> bytes;
+		if (db_path == nullptr || *db_path == '\0') {
+			PipelineCacheLog("Launch phase (tier): KYTY_SCENE_DB is not set: the whole replay holds the game (all)");
+			return false;
+		}
+		{
+			std::ifstream in(db_path, std::ios::binary);
+			bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+		}
+		std::string error;
+		if (!LevelDb::Decode(bytes, tier_db, &error) || tier_db.pipelines.empty()) {
+			PipelineCacheLog("Launch phase (tier): cannot use the level database {} ({}): the whole replay holds the game (all)", db_path,
+			                 error.empty() ? "empty" : error);
+			return false;
+		}
+		std::vector<LevelTier::SlotProgress> slots;
+		if (const char* save = std::getenv("KYTY_SHADER_PREPARE_SAVE"); save != nullptr && *save != '\0') {
+			std::ifstream in(save, std::ios::binary);
+			std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			slots = LevelTier::ParseSaveSlots(text);
+		}
+		LevelTier::Config config;
+		config.earliest = static_cast<unsigned>(EnvU64("KYTY_SHADER_PREPARE_EARLIEST", 2));
+		config.ahead    = static_cast<unsigned>(EnvU64("KYTY_SHADER_PREPARE_AHEAD", 2));
+		const auto& boot = Level();
+		const auto  plan = LevelTier::PlanTiers(tier_db, slots, config, boot);
+		std::vector<uint32_t>      decodable;
+		std::vector<uint64_t>      keys;
+		std::unordered_set<uint64_t> seen_keys;
+		for (uint32_t i = 0; i < items.size(); i++) {
+			JournalPayload payload;
+			if (!DecodeJournalPayload(items[i].record.payload, payload)) continue;
+			decodable.push_back(i);
+			if (seen_keys.insert(items[i].record.key).second) keys.push_back(items[i].record.key);
+		}
+		const auto pp = LevelTier::PlanPipelines(tier_db, plan, keys, EnvU64("KYTY_SHADER_PREPARE_ALL_ROWS", 0) == 0);
+		std::unordered_map<uint64_t, uint32_t> position;
+		std::vector<uint32_t>                  scene_of(pp.entries.size(), 0);
+		for (uint32_t i = 0; i < pp.entries.size(); i++) {
+			position[pp.entries[i].key] = i;
+			scene_of[i]                 = pp.entries[i].scene;
+		}
+		std::stable_sort(decodable.begin(), decodable.end(), [&](uint32_t a, uint32_t b) {
+			return position[items[a].record.key] < position[items[b].record.key];
+		});
+		order.reserve(decodable.size());
+		std::vector<BgQueue::Job> jobs;
+		tier_scenes = plan.tier1;
+		tier_scenes.insert(tier_scenes.end(), plan.tier2.begin(), plan.tier2.end());
+		for (const auto i: decodable) {
+			const auto pos = position[items[i].record.key];
+			if (pp.entries[pos].tier == 1) {
+				order.push_back(i);
+			} else {
+				jobs.push_back({items[i].record.key, i, scene_of[pos]});
+			}
+		}
+		first_level = static_cast<uint32_t>(order.size());
+		tier1_items = first_level;
+		for (const auto& job: jobs) order.push_back(job.index);
+		bg_workers = BgQueue::WorkersFromText(std::getenv("KYTY_SHADER_BG_WORKERS"), 2, 16);
+		bg_queue.Reset(std::move(jobs), bg_workers, static_cast<unsigned>(EnvU64("KYTY_SHADER_BG_PROMOTE_BOOST", 1)));
+		PipelineCacheLog("Launch phase (tier): {} slot(s) read, target '{}': tier 1 = {} scenes, {} of {} pipelines ({} unattributed) hold the "
+		                 "game, {} build behind it on {} worker(s)",
+		                 slots.size(), boot, plan.tier1.size(), first_level, order.size(), pp.unattributed, order.size() - first_level, bg_workers);
+		if (first_level == 0) LaunchHoldRelease();
+		total.store(order.size(), std::memory_order_release);
+		CompileProgress::Get().pipeline_total.store(order.size(), std::memory_order_relaxed);
+		CompileProgress::Get().list_total.store(order.size(), std::memory_order_relaxed);
+		CompileProgress::UnitAddDone(items.size() - order.size());
+		return true;
+	}
+
+	// Once per ~10 ms, from whichever background worker asks: the frame-time guard (pause during loads and frame
+	// spikes) and promotion of the scene the player just entered.
+	void BgPoll(uint64_t now) {
+		auto last = bg_poll_ns.load(std::memory_order_relaxed);
+		if (now - last < 10'000'000ull || !bg_poll_ns.compare_exchange_strong(last, now)) return;
+		std::scoped_lock lock(bg_mutex);
+		const auto       present = Nps5Frame::g_last_present_ns.load(std::memory_order_relaxed);
+		if (present != bg_last_present_ns.load(std::memory_order_relaxed)) {
+			bg_last_present_ns.store(present, std::memory_order_relaxed);
+			bg_median.Add(static_cast<double>(Nps5Frame::g_last_frame_ms.load(std::memory_order_relaxed)));
+		}
+		const auto scene = CurrentSceneName();
+		const int  index = scene.empty() ? -1 : LevelDb::FindScene(tier_db, scene);
+		BgQueue::Sample sample;
+		sample.now_ns          = now;
+		sample.last_frame_ms   = static_cast<double>(Nps5Frame::g_last_frame_ms.load(std::memory_order_relaxed));
+		sample.median_frame_ms = bg_median.Median();
+		sample.last_slow_ns    = Nps5Frame::g_slow_frame_ns.load(std::memory_order_relaxed);
+		sample.last_load_ns    = Nps5Frame::LastLoadSignNs(now);
+		sample.calm_scene      = scene.empty() || index < 0 || LevelDb::IsAlwaysClass(tier_db.scenes[static_cast<size_t>(index)].cls);
+		sample.promoted        = bg_queue.PromotedPending();
+		const bool allow       = bg_guard.Update(sample);
+		bg_queue.SetPaused(!allow);
+		if (!allow && !bg_was_paused) bg_pause_since = now;
+		if (allow && bg_was_paused) bg_paused_ns.fetch_add(now - bg_pause_since, std::memory_order_relaxed);
+		bg_was_paused = !allow;
+		if (!scene.empty() && scene != bg_scene) {
+			bg_scene = scene;
+			if (index >= 0) {
+				const auto keys = LevelDb::KeysInScene(tier_db, scene);
+				std::unordered_set<uint64_t> ids(keys.begin(), keys.end());
+				const auto n = bg_queue.PromoteIds(ids, static_cast<uint32_t>(index));
+				PipelineCacheLog("Launch phase (tier): entered '{}': {} background pipelines promoted ({:.1f} s into the replay)", scene, n,
+				                 static_cast<double>(now - begin_ns) / 1e9);
+			}
+		}
+	}
+
+	// The background part of a tier replay: this worker takes jobs from the queue (budget, pause, promotion) until it is
+	// empty or the replay stops. Workers beyond the budget sleep.
+	void BgLoop() {
+		// Tier 1 first: the hold ends with its last record (the main loop releases it).
+		while (!stop.load(std::memory_order_acquire) && scene_done.load(std::memory_order_acquire) < tier1_items)
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		uint64_t zero = 0;
+		if (bg_start_ns.compare_exchange_strong(zero, CompileClockNs())) {
+			// The gate also limits the compute prewarm that goes on behind the game: the budget plus the promotion boost.
+			LaunchPhase::CompileGate::Get().Configure(EnvU64("NPS5_COMPILE_GATE", 1) != 0 ? bg_workers + 1 : 0);
+			PipelineCacheLog("Launch phase (tier): background part starts: {} pipelines on {} worker(s)", bg_queue.Pending(), bg_workers);
+		}
+#ifdef __APPLE__
+		if (const char* qos = std::getenv("KYTY_SHADER_BG_QOS"); qos != nullptr && std::strcmp(qos, "background") == 0)
+			pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
+#endif
+		while (!stop.load(std::memory_order_acquire)) {
+			BgPoll(CompileClockNs());
+			BgQueue::Job job;
+			const auto   result = bg_queue.Acquire(job);
+			if (result == BgQueue::Result::Done) break;
+			if (result == BgQueue::Result::Wait) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+				continue;
+			}
+			Replay(items[job.index], false);
+			bg_queue.Complete(job);
+			done.fetch_add(1, std::memory_order_relaxed);
+			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
+			CompileProgress::UnitAddDone(1);
+			MaybeReport();
+		}
+		if (bg_queue.Finished() && !bg_finished.exchange(1)) {
+			PipelineCacheLog("Launch phase (tier): background part done after {:.1f} s ({:.1f} s paused by the frame guard), {} pipelines",
+			                 static_cast<double>(CompileClockNs() - bg_start_ns.load()) / 1e9,
+			                 static_cast<double>(bg_paused_ns.load()) / 1e9, bg_queue.Completed());
+		}
+	}
+
 	// The boot level's records first, then the rest by rank (stable: first-needed order within
 	// one). KYTY_SHADER_PREPARE=scene: the hold set first (the target scene's records, untagged
 	// ones and the "always" scenes'); no record of the target scene at all = the whole replay holds
 	// ("all").
 	void BuildOrder() {
+		if (hold_tier) {
+			if (BuildTierOrder()) return;
+			hold_tier = false;
+			if (g_launch_hold.load(std::memory_order_acquire)) g_launch_hold_prewarm.store(true, std::memory_order_release);
+		}
 		const auto&           boot = Level();
 		std::vector<uint32_t> rest;
 		order.reserve(items.size());
@@ -8173,6 +8337,10 @@ struct PipelineCache::JournalReplay {
 		while (!stop.load(std::memory_order_acquire)) {
 			const auto index = next.fetch_add(1, std::memory_order_relaxed);
 			if (index >= order.size()) break;
+			if (hold_tier && index >= first_level) {
+				BgLoop();
+				break;
+			}
 			const bool can_defer = early && precompiler != nullptr && !precompiler->GetProgress().finished;
 			if (!Replay(items[order[index]], can_defer)) {
 				if (early_rounds) {
@@ -8203,7 +8371,7 @@ struct PipelineCache::JournalReplay {
 			// KYTY_SHADER_PREPARE=scene: the hold ends with the last record of the scene being
 			// loaded; the rest of the replay goes on behind the game on these same utility-QoS
 			// workers.
-			if (hold_scene && index < first_level &&
+			if ((hold_scene || hold_tier) && index < first_level &&
 			    scene_done.fetch_add(1, std::memory_order_acq_rel) + 1 == first_level) {
 				PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are built after "
 				                 "{:.1f} s; {} more go "
@@ -8584,6 +8752,23 @@ struct PipelineCache::JournalReplay {
 	// first first_level entries of the order). No such record (scene not known): the whole replay.
 	bool                     hold_scene = false;
 	std::atomic<uint64_t>    scene_done {0};
+	// KYTY_SHADER_PREPARE=tier (levelprep): tier 1 (boot, menus, hub, the earliest levels and, per save slot, its
+	// level and the next ones) holds the game; tier 2 builds behind it on KYTY_SHADER_BG_WORKERS workers, paused
+	// during loads and frame spikes, a scene entered by the player first (bgQueue.h, levelTier.h).
+	bool                         hold_tier  = false;
+	unsigned                     bg_workers = 2;
+	LevelDb::File                tier_db;
+	std::vector<std::string>     tier_scenes; // job scene index -> scene name (tier 1 scenes, then tier 2)
+	BgQueue::Queue               bg_queue;
+	BgQueue::Guard               bg_guard;
+	BgQueue::FrameMedian         bg_median;
+	std::mutex                   bg_mutex; // guard / median / promotion state
+	std::atomic<uint64_t>        bg_poll_ns {0}, bg_start_ns {0}, bg_paused_ns {0}, bg_last_present_ns {0};
+	std::atomic<uint32_t>        bg_finished {0};
+	std::string                  bg_scene;      // the scene whose keys were last promoted
+	bool                         bg_was_paused = false;
+	uint64_t                     bg_pause_since = 0;
+	uint32_t                     tier1_items = 0;
 	std::vector<std::string> always = SceneAlways();
 	// Last-scene memory (NoteScene) and the prepare's delta (KYTY_PIPELINE_DELTA_OUT /
 	// _REPLAY_KEYS).
@@ -8848,6 +9033,11 @@ void PipelineCache::InitializePipelineJournal() {
 	    mode != nullptr && std::strcmp(mode, "scene") == 0) {
 		replay.hold_scene = replay_all;
 	}
+	// tier: the level database decides what holds the game (see JournalReplay::BuildTierOrder).
+	if (const auto* mode = std::getenv("KYTY_SHADER_PREPARE");
+	    mode != nullptr && std::strcmp(mode, "tier") == 0) {
+		replay.hold_tier = replay_all;
+	}
 	// Last-scene memory, next to the journal (KYTY_PIPELINE_LAST_SCENE_PATH names another file).
 	if (const auto* custom = std::getenv("KYTY_PIPELINE_LAST_SCENE_PATH");
 	    custom != nullptr && *custom != '\0') {
@@ -8885,7 +9075,7 @@ void PipelineCache::InitializePipelineJournal() {
 	const bool hold = replay_all && !prepare && EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD", 1) != 0;
 	if (hold) {
 		// all: the compute prewarm counts too (scene: it builds behind the game).
-		if (!replay.hold_scene) g_launch_hold_prewarm.store(true, std::memory_order_release);
+		if (!replay.hold_scene && !replay.hold_tier) g_launch_hold_prewarm.store(true, std::memory_order_release);
 		g_launch_hold.store(true, std::memory_order_release);
 		LaunchHoldPublish(1);
 	}

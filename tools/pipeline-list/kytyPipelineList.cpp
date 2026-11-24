@@ -22,6 +22,7 @@
 //   info <list>                         Header, counts, levels, section sizes.
 //   check <list> --game <app0 dir or .zar> [--exe <executable>]
 //       Resolves the list against a game copy, as the emulator does at start-up.
+//   scenedb build|merge|info|query|tiers|check ...   the shader level database (sceneDbCommands.h)
 //   retarget --list <list> --exe <executable> --title <id> --app-ver <version> --out <list>
 //       Re-stamps a list for another copy of the game (another version or SKU): each shader is looked up in
 //       the other executable (at its recorded offset, then by hash), shaders not found are dropped with
@@ -45,6 +46,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineListInt21.h"
 #include "graphics/shader/shader.h"
+#include "sceneDbCommands.h"
 
 #include <algorithm>
 #include <chrono>
@@ -919,6 +921,7 @@ int main(int argc, char** argv) {
 	if (wide != nullptr) LocalFree(wide);
 #endif
 	args.command = utf8[1];
+	if (args.command == "scenedb") return SceneDbTool::Main(std::vector<std::string>(utf8.begin() + 2, utf8.end()));
 	for (int i = 2; i < argc; i++) {
 		const std::string arg   = utf8[i];
 		const auto        value = [&]() -> std::string { return i + 1 < argc ? utf8[++i] : std::string(); };
