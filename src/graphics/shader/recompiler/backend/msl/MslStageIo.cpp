@@ -243,8 +243,11 @@ namespace {
 // (pins a branch condition; emits nothing) and except the given dead operands (exports to no
 // attachment). Returns the live instruction set. Opt-in KYTY_MSL_KK_PS_ADCE=1 (default: the old
 // use-only liveness).
+// emitfix (vsadce): `not_root` = side-effect instructions that are no live root (the vertex
+// stage's dropped parameter exports); the pixel caller passes none.
 std::set<const IR::Inst*> PsLiveAdce(const IR::Program&                                  p,
-                                     const std::set<std::pair<const IR::Inst*, size_t>>& dead_use) {
+                                     const std::set<std::pair<const IR::Inst*, size_t>>& dead_use,
+                                     const std::set<const IR::Inst*>* not_root = nullptr) {
 	const size_t                       n = p.blocks.size();
 	std::map<const IR::Block*, size_t> bi;
 	for (size_t i = 0; i < n; i++)
@@ -322,7 +325,8 @@ std::set<const IR::Inst*> PsLiveAdce(const IR::Program&                         
 		}
 		for (const auto& inst: *p.blocks[b])
 			if ((inst.MayHaveSideEffects() || inst.GetType() == IR::Type::Void) &&
-			    inst.GetOpcode() != IR::ValueOpcode::Reference)
+			    inst.GetOpcode() != IR::ValueOpcode::Reference &&
+			    (not_root == nullptr || !not_root->contains(&inst)))
 				mark(&inst);
 	}
 	for (bool grew = true; grew;) {
@@ -368,6 +372,141 @@ std::set<const IR::Inst*> PsLiveAdce(const IR::Program&                         
 	return live;
 }
 } // namespace
+
+namespace {
+// emitfix (vsadce): what NIR's opt_if knows inside the arms of a two-way branch. In the blocks
+// that can only be entered over one edge of a conditional branch (the blocks its target dominates,
+// when the branch block is the target's only predecessor) the branch condition has that edge's
+// value, and with it: the operand of a LogicalNot / AnyLane (one lane in a vertex program), both
+// operands of a true LogicalAnd, both operands of a false LogicalOr. A select in such a block whose
+// condition evaluates under these facts never takes its other arm; that operand goes to
+// `dead_use`, so a value that only reaches kept exports through such arms is not live.
+void VsBranchFacts(const IR::Program& p, std::set<std::pair<const IR::Inst*, size_t>>& dead_use) {
+	using O        = IR::ValueOpcode;
+	const size_t n = p.blocks.size();
+	if (n == 0 || p.block_info.size() < n) return;
+	std::map<const IR::Block*, size_t> bi;
+	std::map<uint32_t, size_t>         by_id;
+	for (size_t i = 0; i < n; i++) {
+		bi[p.blocks[i]]           = i;
+		by_id[p.block_info[i].id] = i;
+	}
+	std::vector<std::vector<size_t>> pred(n);
+	for (size_t i = 0; i < n; i++)
+		for (auto* q: p.blocks[i]->ImmPredecessors())
+			if (auto it = bi.find(q); it != bi.end() && std::find(pred[i].begin(), pred[i].end(),
+			                                                      it->second) == pred[i].end())
+				pred[i].push_back(it->second);
+	// dominator sets (bitsets); block 0 is the entry
+	const size_t                       w = (n + 63) / 64;
+	std::vector<std::vector<uint64_t>> dom(n, std::vector<uint64_t>(w, ~0ull));
+	std::fill(dom[0].begin(), dom[0].end(), 0ull);
+	dom[0][0] = 1ull;
+	for (bool ch = true; ch;) {
+		ch = false;
+		for (size_t k = 1; k < n; k++) {
+			if (pred[k].empty()) continue; // unreachable: no facts are taken from it
+			std::vector<uint64_t> t(w, ~0ull);
+			for (auto q: pred[k])
+				for (size_t j = 0; j < w; j++)
+					t[j] &= dom[q][j];
+			t[k / 64] |= 1ull << (k % 64);
+			if (t != dom[k]) {
+				dom[k] = t;
+				ch     = true;
+			}
+		}
+	}
+	using Facts = std::map<const IR::Inst*, bool>;
+	std::function<void(const IR::Value&, bool, Facts&, int)> learn =
+	    [&](const IR::Value& v, bool val, Facts& f, int depth) {
+		    if (v.IsEmpty() || v.IsImmediate() || depth > 8) return;
+		    const IR::Inst* i = v.TryInstruction();
+		    if (i == nullptr || !f.emplace(i, val).second) return;
+		    switch (i->GetOpcode()) {
+			    case O::LogicalNot: learn(i->Arg(0), !val, f, depth + 1); break;
+			    case O::AnyLane: learn(i->Arg(0), val, f, depth + 1); break;
+			    case O::LogicalAnd:
+				    if (val) {
+					    learn(i->Arg(0), true, f, depth + 1);
+					    learn(i->Arg(1), true, f, depth + 1);
+				    }
+				    break;
+			    case O::LogicalOr:
+				    if (!val) {
+					    learn(i->Arg(0), false, f, depth + 1);
+					    learn(i->Arg(1), false, f, depth + 1);
+				    }
+				    break;
+			    default: break;
+		    }
+	    };
+	std::vector<Facts> facts(n); // per block: every fact of every edge region it lies in
+	for (size_t x = 0; x < n; x++) {
+		const auto& info = p.block_info[x];
+		if (info.terminator.kind != CFG::TerminatorKind::ConditionalBranch ||
+		    info.condition.IsEmpty() || info.condition.IsImmediate())
+			continue;
+		const auto t = by_id.find(info.terminator.true_block);
+		const auto f = by_id.find(info.terminator.false_block);
+		if (t == by_id.end() || f == by_id.end() || t->second == f->second) continue;
+		for (int arm = 0; arm < 2; arm++) {
+			const size_t head = arm == 0 ? t->second : f->second;
+			if (head == 0 || pred[head].size() != 1 || pred[head][0] != x) continue;
+			Facts edge;
+			learn(info.condition, arm == 0, edge, 0);
+			for (size_t b = 0; b < n; b++) {
+				if (pred[b].empty() && b != 0) continue;
+				if (((dom[b][head / 64] >> (head % 64)) & 1u) == 0u) continue;
+				for (const auto& [i, val]: edge) {
+					const auto [it, fresh] = facts[b].emplace(i, val);
+					if (!fresh && it->second != val) it->second = val; // unreachable block
+				}
+			}
+		}
+	}
+	std::function<int(const IR::Value&, const Facts&, int)> eval = // -1 unknown, 0 false, 1 true
+	    [&](const IR::Value& v, const Facts& f, int depth) -> int {
+		if (v.IsEmpty() || depth > 8) return -1;
+		if (v.IsImmediate()) return v.GetType() == IR::Type::U1 ? (v.U1() ? 1 : 0) : -1;
+		const IR::Inst* i = v.TryInstruction();
+		if (i == nullptr) return -1;
+		if (const auto k = f.find(i); k != f.end()) return k->second ? 1 : 0;
+		switch (i->GetOpcode()) {
+			case O::LogicalNot: {
+				const int a = eval(i->Arg(0), f, depth + 1);
+				return a < 0 ? -1 : 1 - a;
+			}
+			case O::AnyLane: return eval(i->Arg(0), f, depth + 1);
+			case O::LogicalAnd: {
+				const int a = eval(i->Arg(0), f, depth + 1), b = eval(i->Arg(1), f, depth + 1);
+				return a == 0 || b == 0 ? 0 : (a == 1 && b == 1 ? 1 : -1);
+			}
+			case O::LogicalOr: {
+				const int a = eval(i->Arg(0), f, depth + 1), b = eval(i->Arg(1), f, depth + 1);
+				return a == 1 || b == 1 ? 1 : (a == 0 && b == 0 ? 0 : -1);
+			}
+			default: return -1;
+		}
+	};
+	for (size_t b = 0; b < n; b++) {
+		if (facts[b].empty()) continue;
+		for (const auto& inst: *p.blocks[b]) {
+			const auto op = inst.GetOpcode();
+			if (op != O::SelectU32 && op != O::SelectF32 && op != O::SelectU1) continue;
+			const int c = eval(inst.Arg(0), facts[b], 0);
+			if (c >= 0) dead_use.insert({&inst, c == 1 ? 2u : 1u});
+		}
+	}
+}
+} // namespace
+
+std::set<const IR::Inst*> VsLiveAdce(const IR::Program& p, const std::set<const IR::Inst*>& dropped,
+                                     const std::set<std::pair<const IR::Inst*, size_t>>& dead_use) {
+	auto du = dead_use;
+	VsBranchFacts(p, du);
+	return PsLiveAdce(p, du, &dropped);
+}
 
 uint32_t KkLiveComponents(const IR::Inst&                                 composite,
                           const std::function<uint32_t(const IR::Inst&)>& user_mask) {
@@ -657,6 +796,19 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 						for (size_t i = 0; i < v->NumArgs(); i++)
 							if (((live >> i) & 1u) == 0u) dead_use.insert({v, i});
 					}
+			// emitfix: mode token vsadce (KYTY_MSL_KK_VS_ADCE=1). The use-only rule below never
+			// frees a value that is carried round a loop (its phi and its update use each other) or
+			// that only feeds the condition of a branch doing no live work. NIR (KosmicKrisp) frees
+			// both, so its vertex text loads fewer attributes and numbers the slots differently
+			// ("vertex attribute layout differs"). With the switch on, liveness is the pixel
+			// stage's mark-and-sweep (PsLiveAdce) from the exports KosmicKrisp keeps. Off: the old
+			// rule, text unchanged.
+			if (Xf::EnvOn("KYTY_MSL_KK_VS_ADCE")) {
+				const auto live = VsLiveAdce(p, dead, dead_use);
+				for (const auto* blk: p.blocks)
+					for (const auto& inst: *blk)
+						if (!live.contains(&inst)) dead.insert(&inst);
+			}
 			for (bool grew = true;
 			     grew;) { // also unused values (NIR DCE drops an attribute load nothing reads)
 				grew = false;

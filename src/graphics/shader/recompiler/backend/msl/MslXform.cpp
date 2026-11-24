@@ -232,7 +232,7 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
 	      "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT",
 	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_VS_MODES", "KYTY_MSL_XF_TABLE",
-	      "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT"}) {
+	      "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT", "KYTY_MSL_KK_VS_ADCE"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
 			        " is set in the environment; --mode does not mix with hand-set switches";
@@ -286,6 +286,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_XF_GEXIT", "1", error);
 		} else if (key == "vsmodes" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_VS_MODES", "1", error);
+		} else if (key == "vsadce" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_KK_VS_ADCE", "1", error);
 		} else if (key == "meshspill" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_MESH_SPILL", "1", error);
 		} else if (key == "perfr" && val.empty()) {
@@ -335,6 +337,8 @@ std::string ModeCatalogue() {
 	    "= transform guard_exit)\n"
 	    "vsmodes\tvertex: KK's per-op float modes (position slice safe, rest relaxed, MAD as two "
 	    "statements; KYTY_MSL_VS_MODES=1)\n"
+	    "vsadce\tvertex: attribute slots from mark-and-sweep liveness, as NIR numbers them "
+	    "(KYTY_MSL_KK_VS_ADCE=1)\n"
 	    "meshspill\tmesh: guest LDS of 6-16 KB in a claimed slice of KosmicKrisp's mesh scratch "
 	    "(KYTY_MSL_MESH_SPILL=1; KK patch 0030)\n"
 	    "xf=HEX\ttransform bit mask in registry order:\n";

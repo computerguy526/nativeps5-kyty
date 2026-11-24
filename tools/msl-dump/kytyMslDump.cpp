@@ -389,7 +389,7 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
       if (link_perm && !link_perm->spec.empty() &&
           SR::Msl::Xf::EnvOn("KYTY_MSL_FIX6")) {
         SR::IR::ResourceSpecialization ds;
-        if (SR::IR::DecodeSpecialization(link_perm->spec, ds))
+        if (SR::IR::DecodeSpecializationCompat(link_perm->spec, ds))
           pspec = ds;
         else
           std::fprintf(stderr, "warning: spec decode failed for link perm %d\n",
@@ -468,7 +468,7 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   }
   if (perm && !perm->spec.empty()) {
     SR::IR::ResourceSpecialization ds;
-    if (SR::IR::DecodeSpecialization(perm->spec, ds))
+    if (SR::IR::DecodeSpecializationCompat(perm->spec, ds))
       spec = ds;
     else
       std::fprintf(stderr, "warning: spec decode failed for perm %d\n",

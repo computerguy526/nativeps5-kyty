@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -69,6 +70,12 @@ void SetKkMinMax(bool on); // mslfix6: KK-exact f32 min/max/med3 helpers (graphi
 // exported to two parameters with different kept components stays live in the union.
 [[nodiscard]] uint32_t KkLiveComponents(const IR::Inst&                                 composite,
                                         const std::function<uint32_t(const IR::Inst&)>& user_mask);
+// emitfix (mode token vsadce): the live instructions of a kk-bda vertex program by mark-and-sweep
+// with control dependence, as NIR does it. Roots: side effects and void instructions except the
+// `dropped` parameter exports; `dead_use` = operands (instruction, argument) no kept export reads.
+[[nodiscard]] std::set<const IR::Inst*>
+VsLiveAdce(const IR::Program& p, const std::set<const IR::Inst*>& dropped,
+           const std::set<std::pair<const IR::Inst*, size_t>>& dead_use);
 
 [[nodiscard]] MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_info,
                                     const MslOptions& options = {});

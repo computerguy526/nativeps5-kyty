@@ -91,6 +91,12 @@ private:
 void EncodeSpecialization(const ResourceSpecialization& value, std::vector<uint8_t>& out);
 [[nodiscard]] bool DecodeSpecialization(std::span<const uint8_t> bytes,
                                         ResourceSpecialization& value);
+// Offline tools only (kyty_msl_dump): DecodeSpecialization, and when that fails the layout older
+// program caches hold (image records without indirect_group; the group reads as "none").
+// `legacy` tells which layout matched. The runtime cache keeps the strict decoder.
+[[nodiscard]] bool DecodeSpecializationCompat(std::span<const uint8_t> bytes,
+                                              ResourceSpecialization&  value,
+                                              bool*                    legacy = nullptr);
 
 void EncodeCompiledShaderInfo(const CompiledShaderInfo& value, std::vector<uint8_t>& out);
 [[nodiscard]] bool DecodeCompiledShaderInfo(std::span<const uint8_t> bytes,

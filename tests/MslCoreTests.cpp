@@ -9,6 +9,7 @@
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 #include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
+#include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include <cstdio>
@@ -1113,6 +1114,263 @@ void TestEmitterModes() {
         "mode: catalogue");
 }
 
+// emitfix: kyty_msl_dump reads the specialization blobs of a program cache
+// written before ResourceSpecialization::Image::indirect_group existed (image
+// record four bytes shorter). The strict decoder refuses them; the tool then
+// used the translation's own resource list, whose buffer strides are 0, and
+// printed `index * 0u` for every indexed buffer read.
+void TestSpecializationCompat() {
+  namespace IR = SR::IR;
+  IR::ResourceSpecialization spec;
+  IR::ResourceSpecialization::Buffer b0, b1;
+  b0.packed_stride = 16;
+  b1.packed_stride = 704;
+  b1.zero_stride_oob = true;
+  spec.buffers = {b0, b1};
+  IR::ResourceSpecialization::Image i0, i1;
+  i0.mip_count = 7;
+  i0.cube = true;
+  i1.shader_swizzle = 0x1234u;
+  i1.indirect_root = 3;
+  i1.indirect_mapping_offset = 40;
+  i1.indirect_search_iterations = 5;
+  i1.fmask = true;
+  spec.images = {i0, i1};
+  std::vector<uint8_t> cur;
+  IR::EncodeSpecialization(spec, cur);
+  // the same value in the old layout, written field by field
+  std::vector<uint8_t> old;
+  {
+    IR::CodecWriter w(old);
+    w.U32(static_cast<uint32_t>(spec.buffers.size()));
+    for (const auto &b : spec.buffers) {
+      w.U32(b.packed_stride);
+      w.U32(static_cast<uint32_t>(b.descriptor_format));
+      w.U32(b.descriptor_swizzle);
+      w.Bool(b.zero_stride_oob);
+    }
+    w.U32(static_cast<uint32_t>(spec.images.size()));
+    for (const auto &i : spec.images) {
+      w.U32(static_cast<uint32_t>(i.numeric_class));
+      w.U32(static_cast<uint32_t>(i.dimension));
+      w.U32(i.mip_count);
+      w.U32(static_cast<uint32_t>(i.conversion_format));
+      w.U32(i.shader_swizzle);
+      w.U32(i.indirect_root);
+      w.U32(i.indirect_mapping_offset);
+      w.U32(i.indirect_search_iterations);
+      w.Bool(i.cube);
+      w.Bool(i.fmask);
+    }
+  }
+  Check(old.size() + 4 * spec.images.size() == cur.size(),
+        "spec compat: an old image record is four bytes shorter");
+  IR::ResourceSpecialization back;
+  bool legacy = true;
+  Check(IR::DecodeSpecializationCompat(cur, back, &legacy) && !legacy &&
+            back == spec,
+        "spec compat: the current layout decodes as before");
+  IR::ResourceSpecialization strict;
+  Check(!IR::DecodeSpecialization(old, strict),
+        "spec compat: the strict decoder still refuses the old layout");
+  IR::ResourceSpecialization oldback;
+  legacy = false;
+  Check(IR::DecodeSpecializationCompat(old, oldback, &legacy) && legacy &&
+            oldback == spec && oldback.buffers[1].packed_stride == 704 &&
+            oldback.images[1].indirect_group ==
+                IR::ImageResource::NoIndirectImage,
+        "spec compat: the old layout decodes, buffer strides kept, no image "
+        "group");
+  IR::ResourceSpecialization keep = spec;
+  for (size_t cut : {size_t{1}, size_t{3}, old.size() / 2}) {
+    std::vector<uint8_t> t(old.begin(), old.end() - static_cast<long>(cut));
+    Check(!IR::DecodeSpecializationCompat(t, keep) && keep == spec,
+          "spec compat: a truncated blob fails and leaves the value alone");
+  }
+  std::vector<uint8_t> more = old;
+  more.push_back(0);
+  Check(!IR::DecodeSpecializationCompat(more, keep),
+        "spec compat: trailing bytes fail");
+  IR::ResourceSpecialization noimg;
+  noimg.buffers = {b0};
+  std::vector<uint8_t> nb;
+  IR::EncodeSpecialization(noimg, nb);
+  legacy = true;
+  Check(
+      IR::DecodeSpecializationCompat(nb, back, &legacy) && !legacy &&
+          back == noimg,
+      "spec compat: without images both layouts are the same bytes (current)");
+}
+
+// emitfix: vertex attribute liveness as NIR computes it (mode token vsadce). A
+// guest vertex shader keeps a masked-off value alive in the IR (`cond ? new :
+// old` inside the branch taken only when cond holds); NIR's opt_if folds such a
+// select, the old value dies and with it the attribute load that only fed it,
+// so KosmicKrisp numbers its attribute slots without it.
+void TestVsLiveAdce() {
+  namespace IR = SR::IR;
+  namespace CFG = SR::CFG;
+  using O = ValueOpcode;
+  const auto U = [](uint32_t v) { return IR::Value(v); };
+  struct Built {
+    IR::Program p;
+    const IR::Inst *a0 = nullptr, *a1 = nullptr, *a2 = nullptr, *sel = nullptr,
+                   *exp = nullptr, *exp2 = nullptr, *late = nullptr;
+  };
+  // b0: a0, a1, a2 = attributes 0..2; c = a0 != 0; d = a0 != 1; cond =
+  // `make_cond`
+  //     branch cond ? b1 : b2
+  // b1: sel = select(`sel_cond`, a0, a1)      (true arm of the branch)
+  // b2: (false arm)
+  // b3: phi(b1: sel, b2: a0); late = select(c, phi, a2); export 0 = (late, 0,
+  // 0, 0);
+  //     export 1 = (a2, 0, 0, 0)
+  enum Shape { NotC, AndCD, OrCD, PlainC };
+  auto build = [&](Shape shape, bool sel_on_d, bool sel_in_false_arm,
+                   Built &o) {
+    auto &p = o.p;
+    for (int i = 0; i < 4; i++) {
+      p.block_storage.push_back(std::make_unique<IR::Block>());
+      p.blocks.push_back(p.block_storage.back().get());
+    }
+    auto *b0 = p.blocks[0], *b1 = p.blocks[1], *b2 = p.blocks[2],
+         *b3 = p.blocks[3];
+    auto &a0 = b0->AppendNewInst(O::GetAttribute, {U(0), U(0)});
+    auto &a1 = b0->AppendNewInst(O::GetAttribute, {U(1), U(0)});
+    auto &a2 = b0->AppendNewInst(O::GetAttribute, {U(2), U(0)});
+    auto &c = b0->AppendNewInst(O::INotEqual32, {IR::Value(&a0), U(0)});
+    auto &d = b0->AppendNewInst(O::INotEqual32, {IR::Value(&a0), U(1)});
+    IR::Inst *cond = &c;
+    if (shape == NotC) {
+      auto &any = b0->AppendNewInst(O::AnyLane, {IR::Value(&c)});
+      cond = &b0->AppendNewInst(O::LogicalNot, {IR::Value(&any)});
+    } else if (shape == AndCD) {
+      cond = &b0->AppendNewInst(O::LogicalAnd, {IR::Value(&c), IR::Value(&d)});
+    } else if (shape == OrCD) {
+      cond = &b0->AppendNewInst(O::LogicalOr, {IR::Value(&c), IR::Value(&d)});
+    }
+    auto *arm = sel_in_false_arm ? b2 : b1;
+    auto &sel =
+        arm->AppendNewInst(O::SelectU32, {IR::Value(sel_on_d ? &d : &c),
+                                          IR::Value(&a0), IR::Value(&a1)});
+    auto &phi = b3->AppendNewInst(O::Phi);
+    phi.SetFlags(IR::Type::U32); // a phi's type lives in its flags
+    phi.AddPhiOperand(b1, sel_in_false_arm ? IR::Value(&a0) : IR::Value(&sel));
+    phi.AddPhiOperand(b2, sel_in_false_arm ? IR::Value(&sel) : IR::Value(&a0));
+    auto &late = b3->AppendNewInst(
+        O::SelectU32, {IR::Value(&c), IR::Value(&phi), IR::Value(&a2)});
+    auto &v = b3->AppendNewInst(O::CompositeConstructU32x4,
+                                {IR::Value(&late), U(0), U(0), U(0)});
+    auto &e =
+        b3->AppendNewInst(O::SetAttribute, {IR::Value(&v), IR::Value(true)});
+    auto &v2 = b3->AppendNewInst(O::CompositeConstructU32x4,
+                                 {IR::Value(&a2), U(0), U(0), U(0)});
+    auto &e2 =
+        b3->AppendNewInst(O::SetAttribute, {IR::Value(&v2), IR::Value(true)});
+    b0->AddBranch(b1);
+    b0->AddBranch(b2);
+    b1->AddBranch(b3);
+    b2->AddBranch(b3);
+    p.block_info.resize(4);
+    for (uint32_t i = 0; i < 4; i++)
+      p.block_info[i].id = 10 + i;
+    p.block_info[0].terminator.kind = CFG::TerminatorKind::ConditionalBranch;
+    p.block_info[0].terminator.true_block = 11;
+    p.block_info[0].terminator.false_block = 12;
+    p.block_info[0].condition = IR::Value(cond);
+    p.block_info[1].terminator.kind = CFG::TerminatorKind::Branch;
+    p.block_info[1].terminator.true_block = 13;
+    p.block_info[2].terminator.kind = CFG::TerminatorKind::Branch;
+    p.block_info[2].terminator.true_block = 13;
+    o.a0 = &a0, o.a1 = &a1, o.a2 = &a2, o.sel = &sel, o.exp = &e, o.exp2 = &e2,
+    o.late = &late;
+  };
+  const std::set<const IR::Inst *> none;
+  const std::set<std::pair<const IR::Inst *, size_t>> nouse;
+  {
+    Built t; // if (!any(c)) { select(c, a0, a1) }: c is false there, a0 is the
+             // dead arm
+    build(NotC, false, false, t);
+    const auto live = Msl::VsLiveAdce(t.p, none, nouse);
+    Check(live.contains(t.a1) && live.contains(t.sel) && live.contains(t.a2) &&
+              live.contains(t.exp),
+          "vsadce: !c arm keeps the false operand of select(c, ..), exports "
+          "are roots");
+    // a0 stays live: the branch condition and the merge phi read it
+    Check(live.contains(t.a0),
+          "vsadce: a value the live branch condition reads stays live");
+  }
+  {
+    Built t; // if (!any(c)) {} else { select(c, a0, a1) }: c is true there, a1
+             // dies
+    build(NotC, false, true, t);
+    const auto live = Msl::VsLiveAdce(t.p, none, nouse);
+    Check(!live.contains(t.a1) && live.contains(t.a0) && live.contains(t.sel),
+          "vsadce: in the else arm of if (!c) the select on c drops its false "
+          "operand");
+  }
+  {
+    Built t; // if (c && d) { select(d, a0, a1) }: d is true there, a1 dies
+    build(AndCD, true, false, t);
+    Check(!Msl::VsLiveAdce(t.p, none, nouse).contains(t.a1),
+          "vsadce: both operands of a true && are true in the then arm");
+    Built f; // else arm of (c && d): nothing known about d
+    build(AndCD, true, true, f);
+    Check(Msl::VsLiveAdce(f.p, none, nouse).contains(f.a1),
+          "vsadce: the else arm of && knows neither operand");
+  }
+  {
+    Built t; // if (c || d) {} else { select(d, a0, a1) }: d is false there, a0
+             // is the dead arm
+    build(OrCD, true, true, t);
+    const auto live = Msl::VsLiveAdce(t.p, none, nouse);
+    Check(live.contains(t.a1),
+          "vsadce: both operands of a false || are false in the else arm");
+    Built f; // then arm of (c || d): nothing known about d
+    build(OrCD, true, false, f);
+    Check(Msl::VsLiveAdce(f.p, none, nouse).contains(f.a1),
+          "vsadce: the then arm of || knows neither operand");
+  }
+  {
+    Built
+        t; // the merge block is outside both arms: select(c, phi, a2) keeps a2
+    build(PlainC, false, false, t);
+    const auto live = Msl::VsLiveAdce(t.p, none, nouse);
+    Check(live.contains(t.a2) && live.contains(t.late) && !live.contains(t.a1),
+          "vsadce: no fact outside the arms; if (c) { select(c, a0, a1) } "
+          "drops a1");
+  }
+  {
+    Built t; // dropped exports are no roots; an operand in dead_use is not
+             // followed
+    build(PlainC, false, false, t);
+    const std::set<const IR::Inst *> dropped{t.exp2};
+    const std::set<std::pair<const IR::Inst *, size_t>> du{{t.late, 2}};
+    const auto live = Msl::VsLiveAdce(t.p, dropped, du);
+    Check(!live.contains(t.a2) && !live.contains(t.exp2) &&
+              live.contains(t.exp),
+          "vsadce: a dropped export and a dead operand keep nothing alive");
+    const std::set<const IR::Inst *> all{t.exp, t.exp2};
+    Check(Msl::VsLiveAdce(t.p, all, nouse).empty(),
+          "vsadce: no kept export, nothing live");
+  }
+  // mode token and off switch
+  namespace Xf = Msl::Xf;
+  std::string err;
+  unsetenv("KYTY_MSL_KK_VS_ADCE");
+  unsetenv("KYTY_MSL_FIX6");
+  Check(Xf::ApplyMode("fix6+vsadce", err) &&
+            std::string(std::getenv("KYTY_MSL_KK_VS_ADCE")) == "1",
+        "mode: vsadce sets KYTY_MSL_KK_VS_ADCE");
+  unsetenv("KYTY_MSL_FIX6");
+  Check(!Xf::ApplyMode("fix6", err) &&
+            err.find("KYTY_MSL_KK_VS_ADCE") != std::string::npos,
+        "mode: refuses a leftover KYTY_MSL_KK_VS_ADCE");
+  unsetenv("KYTY_MSL_KK_VS_ADCE");
+  Check(Xf::ModeCatalogue().find("vsadce") != std::string::npos,
+        "mode: catalogue lists vsadce");
+}
+
 // onereg T2: PS_UINT32 / SINT export modes. A raw 32-bit MRT export of a pixel program with
 // target_output_mode 7 (UINT) / 10 (SINT) declares a uint4 / int4 colour output and stores bit
 // casts of the exported registers; mode 0 stays float4 (text unchanged).
@@ -1175,6 +1433,8 @@ int main() {
   TestGuardExit();
   TestEmitterModes();
   TestPixelOutputModes();
+  TestSpecializationCompat();
+  TestVsLiveAdce();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

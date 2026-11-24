@@ -1163,6 +1163,40 @@ bool DecodeSpecialization(std::span<const uint8_t> bytes, ResourceSpecialization
 	return reader.AtEnd();
 }
 
+bool DecodeSpecializationCompat(std::span<const uint8_t> bytes, ResourceSpecialization& value,
+                                bool* legacy) {
+	if (legacy != nullptr) *legacy = false;
+	if (ResourceSpecialization cur; DecodeSpecialization(bytes, cur)) {
+		value = std::move(cur);
+		return true;
+	}
+	// The layout before ResourceSpecialization::Image::indirect_group: an image record is four
+	// bytes shorter, so a blob with at least one image never ends exactly under both layouts.
+	ResourceSpecialization old;
+	CodecReader            r(bytes);
+	ReadVector(r, old.buffers);
+	const auto count = r.Count(1);
+	old.images.resize(count);
+	for (auto& v: old.images) {
+		v.numeric_class              = EnumFrom<Prospero::TextureNumericClass>(r.U32());
+		v.dimension                  = EnumFrom<Decoder::ImageDimension>(r.U32());
+		v.mip_count                  = r.U32();
+		v.conversion_format          = EnumFrom<Prospero::BufferFormat>(r.U32());
+		v.shader_swizzle             = r.U32();
+		v.indirect_root              = r.U32();
+		v.indirect_mapping_offset    = r.U32();
+		v.indirect_search_iterations = r.U32();
+		v.indirect_group             = ImageResource::NoIndirectImage;
+		v.cube                       = r.Bool();
+		v.fmask                      = r.Bool();
+		if (r.Failed()) break;
+	}
+	if (!r.AtEnd()) return false;
+	value = std::move(old);
+	if (legacy != nullptr) *legacy = true;
+	return true;
+}
+
 void EncodeCompiledShaderInfo(const CompiledShaderInfo& value, std::vector<uint8_t>& out) {
 	CodecWriter w(out);
 	w.U32(EnumBits(value.stage));
