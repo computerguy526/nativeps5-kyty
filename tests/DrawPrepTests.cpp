@@ -1902,33 +1902,39 @@ void TestGapLedgerExclusive() {
 	Check(ledger.Depth() == 0, "gap ledger: balanced");
 }
 
-// nps5 saroscp: the former gpuwait.misc is split by caller, each with its own name, and a GPU wait
-// of each kind inside a commit lands in the per-pass nested totals (kPassNestedCats).
+// nps5 saroscp: the former gpuwait.misc is split by caller, each with its own
+// name, and a GPU wait of each kind inside a commit lands in the per-pass
+// nested totals (kPassNestedCats).
 void TestGapLedgerWaitSplit() {
-	using CpGaps::Cat;
-	const char* a = CpGaps::CatName(Cat::GpuWaitUnmap);
-	const char* b = CpGaps::CatName(Cat::GpuWaitPredication);
-	const char* c = CpGaps::CatName(Cat::GpuWaitGds);
-	Check(std::strcmp(a, "gpuwait.unmap") == 0 && std::strcmp(b, "gpuwait.predication") == 0 &&
-	          std::strcmp(c, "gpuwait.gds") == 0 && std::strcmp(CpGaps::CatName(Cat::GpuWaitMisc), "gpuwait.misc") == 0,
-	      "gap wait split: names");
-	Check(std::strcmp(CpGaps::CatName(Cat::Blocked), "blocked") == 0, "gap wait split: names stay aligned");
-	CpGaps::Ledger ledger;
-	ledger.Enter(Cat::Commit, 0);
-	ledger.Enter(Cat::Protect, 2);
-	ledger.Exit(6); // 4
-	ledger.Enter(Cat::GpuWaitDrain, 10);
-	ledger.Exit(15); // 5
-	ledger.Exit(20);
-	uint64_t nested[CpGaps::kPassNestedCats.size()] = {};
-	for (size_t i = 0; i < CpGaps::kPassNestedCats.size(); i++) {
-		nested[i] = ledger.InCommit(CpGaps::kPassNestedCats[i]);
-	}
-	Check(nested[0] == 4 && nested[1] == 5 && nested[2] == 0, "gap wait split: per-pass nested totals");
-	ledger.Enter(Cat::GpuWaitPredication, 30);
-	ledger.Exit(37);
-	Check(ledger.Ticks(Cat::GpuWaitPredication) == 7 && ledger.InCommit(Cat::GpuWaitPredication) == 0,
-	      "gap wait split: predication wait outside a commit");
+  using CpGaps::Cat;
+  const char *a = CpGaps::CatName(Cat::GpuWaitUnmap);
+  const char *b = CpGaps::CatName(Cat::GpuWaitPredication);
+  const char *c = CpGaps::CatName(Cat::GpuWaitGds);
+  Check(std::strcmp(a, "gpuwait.unmap") == 0 &&
+            std::strcmp(b, "gpuwait.predication") == 0 &&
+            std::strcmp(c, "gpuwait.gds") == 0 &&
+            std::strcmp(CpGaps::CatName(Cat::GpuWaitMisc), "gpuwait.misc") == 0,
+        "gap wait split: names");
+  Check(std::strcmp(CpGaps::CatName(Cat::Blocked), "blocked") == 0,
+        "gap wait split: names stay aligned");
+  CpGaps::Ledger ledger;
+  ledger.Enter(Cat::Commit, 0);
+  ledger.Enter(Cat::Protect, 2);
+  ledger.Exit(6); // 4
+  ledger.Enter(Cat::GpuWaitDrain, 10);
+  ledger.Exit(15); // 5
+  ledger.Exit(20);
+  uint64_t nested[CpGaps::kPassNestedCats.size()] = {};
+  for (size_t i = 0; i < CpGaps::kPassNestedCats.size(); i++) {
+    nested[i] = ledger.InCommit(CpGaps::kPassNestedCats[i]);
+  }
+  Check(nested[0] == 4 && nested[1] == 5 && nested[2] == 0,
+        "gap wait split: per-pass nested totals");
+  ledger.Enter(Cat::GpuWaitPredication, 30);
+  ledger.Exit(37);
+  Check(ledger.Ticks(Cat::GpuWaitPredication) == 7 &&
+            ledger.InCommit(Cat::GpuWaitPredication) == 0,
+        "gap wait split: predication wait outside a commit");
 }
 
 void TestGapLedgerPhasesAndNested() {
@@ -2049,8 +2055,8 @@ int main(int argc, char** argv) {
 	TestStealStress();
 	TestGapLedgerExclusive();
 	TestGapLedgerPhasesAndNested();
-	TestGapLedgerWaitSplit();
-	TestGapLedgerFlushAndOverflow();
+        TestGapLedgerWaitSplit();
+        TestGapLedgerFlushAndOverflow();
 	if (g_failures != 0) {
 		std::fprintf(stderr, "DrawPrepTests: %d failure(s)\n", g_failures);
 		return 1;

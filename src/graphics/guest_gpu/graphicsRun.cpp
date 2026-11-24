@@ -2539,13 +2539,13 @@ static bool PredicationNoDrain() {
 
 namespace {
 struct PredicationCounters {
-	std::atomic<uint64_t> bool_waits {0};   // op 0x03 with wait_op != 0
+	std::atomic<uint64_t> bool_waits {0};    // op 0x03 with wait_op != 0
 	std::atomic<uint64_t> drain_skipped {0}; // mode 2: read without the drain
 	std::atomic<uint64_t> drain_kept {0};    // mode 2: drained (deferred label, dirty, not clean)
 	std::atomic<uint64_t> kept_label {0};
 	std::atomic<uint64_t> kept_dirty {0};
-	std::atomic<uint64_t> nonzero {0};       // predicate read as nonzero (skip when condition 0)
-	std::atomic<uint64_t> wait_ns {0};       // time in the kept drains
+	std::atomic<uint64_t> nonzero {0}; // predicate read as nonzero (skip when condition 0)
+	std::atomic<uint64_t> wait_ns {0}; // time in the kept drains
 	~PredicationCounters() {
 		if (PredicationNoDrainMode() == 0 && bool_waits.load() == 0) {
 			return;
@@ -2613,8 +2613,8 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 					    g_gpu_state->DeferredLabelTick(reinterpret_cast<uint64_t>(address),
 					                                   sizeof(uint64_t)) != 0;
 					uint64_t probe = 0;
-					smart_clean    = !label &&
-					              LibKernel::Memory::TryReadGpuCleanBacking(
+					smart_clean =
+					    !label && LibKernel::Memory::TryReadGpuCleanBacking(
 					                  reinterpret_cast<uint64_t>(address), &probe, sizeof(probe));
 					(smart_clean ? g_predication_counters.drain_skipped
 					             : g_predication_counters.drain_kept)
@@ -3835,12 +3835,15 @@ static bool GdsEopDeferEnabled() {
 static void GdsWaitNote(uint32_t dw_offset, uint32_t dw_size, uint64_t dst) {
 	static std::atomic<uint64_t> calls {0};
 	static const bool            stats = [] {
-        const auto* v = std::getenv("KYTY_GDS_EOP_STATS");
-        const bool  on = v != nullptr && std::strcmp(v, "1") == 0;
-        if (on) {
-            std::atexit([] { std::fprintf(stderr, "[gdswait] total gds eop sync reads=%llu\n", static_cast<unsigned long long>(calls.load())); });
-        }
-        return on;
+		const auto* v  = std::getenv("KYTY_GDS_EOP_STATS");
+		const bool  on = v != nullptr && std::strcmp(v, "1") == 0;
+		if (on) {
+			std::atexit([] {
+				std::fprintf(stderr, "[gdswait] total gds eop sync reads=%llu\n",
+				             static_cast<unsigned long long>(calls.load()));
+			});
+		}
+		return on;
 	}();
 	const auto n = calls.fetch_add(1, std::memory_order_relaxed);
 	if (stats && n < 32) {

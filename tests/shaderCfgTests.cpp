@@ -13329,15 +13329,18 @@ void TestNewShaderRecompilerExpPixelOutputs() {
         "compressed UINT16 MRT export was incorrectly decoded as FP16");
   CheckSpirvBinaryValidates(uint16_result.spirv);
 
-  // KYTY_PS_UINT32_TARGETS on a SINT target: internal mode 10 = int4 output with the raw export bits.
+  // KYTY_PS_UINT32_TARGETS on a SINT target: internal mode 10 = int4 output
+  // with the raw export bits.
   ShaderPixelInputInfo sint_info;
   sint_info.target_output_mode[0] = 10;
   options.input_info.pixel = &sint_info;
   auto sint_result = RecompileForTest(shader, options);
   const auto sint_source = DisassembleSpirvBinary(sint_result.spirv);
-  Check((sint_source.find("OpVariable %_ptr_Output_v4int Output") != std::string::npos),
+  Check((sint_source.find("OpVariable %_ptr_Output_v4int Output") !=
+         std::string::npos),
         "SINT raw MRT export did not use a signed integer output");
-  Check(sint_source.find("OpVariable %_ptr_Output_v4float Output") == std::string::npos,
+  Check(sint_source.find("OpVariable %_ptr_Output_v4float Output") ==
+            std::string::npos,
         "SINT raw MRT export still declares a float output");
   Check(!SpirvContainsExtInst(sint_result.spirv, 62),
         "SINT raw MRT export was decoded as FP16");

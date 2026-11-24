@@ -231,29 +231,30 @@ void Print(ThreadState& state, Report& report, uint64_t now_ns, uint64_t now_tsc
 			continue;
 		}
 		const auto& key = pass.key;
-		std::printf("CpPass: %s %ux%u c%u color0=%u depth=%u draws/frame=%.1f "
-		            "commit_ms/frame=%.3f bindings_ms/frame=%.3f descriptors_ms/frame=%.3f "
-		            "rebind_ms/frame=%.3f shader_tables/frame=%.1f shader_bytes/frame=%.0f "
-		            "potential_tables_saved/frame=%.1f potential_bytes_saved/frame=%.0f "
-		            "nested_protect_ms/frame=%.3f nested_drain_ms/frame=%.3f nested_side_ms/frame=%.3f "
-		            "nested_upload_ms/frame=%.3f nested_fault_ms/frame=%.3f\n",
-		            i + 1 == state.draw_pass_totals.size() ? "overflow" :
-		                key.width == 0 ? "unclassified" : "attachments",
-		            key.width, key.height, key.colors, key.color_format, key.depth_format,
-		            static_cast<double>(pass.draws) / frames,
-		            static_cast<double>(pass.ticks) * ms_tick,
-		            static_cast<double>(pass.binding_ticks) * ms_tick,
-		            static_cast<double>(pass.descriptor_ticks) * ms_tick,
-		            static_cast<double>(pass.rebind_ticks) * ms_tick,
-		            static_cast<double>(pass.shader_table_bindings) / frames,
-		            static_cast<double>(pass.shader_table_bytes) / frames,
-		            static_cast<double>(pass.shader_table_reduction) / frames,
-		            static_cast<double>(pass.shader_byte_reduction) / frames,
-		            static_cast<double>(pass.nested_protect) * ms_tick,
-		            static_cast<double>(pass.nested_drain) * ms_tick,
-		            static_cast<double>(pass.nested_side) * ms_tick,
-		            static_cast<double>(pass.nested_upload) * ms_tick,
-		            static_cast<double>(pass.nested_fault) * ms_tick);
+		std::printf(
+		    "CpPass: %s %ux%u c%u color0=%u depth=%u draws/frame=%.1f "
+		    "commit_ms/frame=%.3f bindings_ms/frame=%.3f descriptors_ms/frame=%.3f "
+		    "rebind_ms/frame=%.3f shader_tables/frame=%.1f shader_bytes/frame=%.0f "
+		    "potential_tables_saved/frame=%.1f potential_bytes_saved/frame=%.0f "
+		    "nested_protect_ms/frame=%.3f nested_drain_ms/frame=%.3f nested_side_ms/frame=%.3f "
+		    "nested_upload_ms/frame=%.3f nested_fault_ms/frame=%.3f\n",
+		    i + 1 == state.draw_pass_totals.size() ? "overflow"
+		    : key.width == 0                       ? "unclassified"
+		                                           : "attachments",
+		    key.width, key.height, key.colors, key.color_format, key.depth_format,
+		    static_cast<double>(pass.draws) / frames, static_cast<double>(pass.ticks) * ms_tick,
+		    static_cast<double>(pass.binding_ticks) * ms_tick,
+		    static_cast<double>(pass.descriptor_ticks) * ms_tick,
+		    static_cast<double>(pass.rebind_ticks) * ms_tick,
+		    static_cast<double>(pass.shader_table_bindings) / frames,
+		    static_cast<double>(pass.shader_table_bytes) / frames,
+		    static_cast<double>(pass.shader_table_reduction) / frames,
+		    static_cast<double>(pass.shader_byte_reduction) / frames,
+		    static_cast<double>(pass.nested_protect) * ms_tick,
+		    static_cast<double>(pass.nested_drain) * ms_tick,
+		    static_cast<double>(pass.nested_side) * ms_tick,
+		    static_cast<double>(pass.nested_upload) * ms_tick,
+		    static_cast<double>(pass.nested_fault) * ms_tick);
 		pass = {};
 	}
 	std::fflush(stdout);

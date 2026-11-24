@@ -743,7 +743,8 @@ private:
 	int     m_dcc_known_fill_aliased = 0;
 	bool    m_cmask_gpu_refresh      = false;
 	ImageId m_diag_target_id {};
-	void    DccKnownAliasedDiag(const GuestRange& range, const ImageDesc& desc, uint32_t known_byte, bool uniform);
+	void    DccKnownAliasedDiag(const GuestRange& range, const ImageDesc& desc, uint32_t known_byte,
+	                            bool uniform);
 	// Atomic: the verify's deferred comparison runs on whichever thread pops pending operations.
 	struct DccRefreshTotals {
 		std::atomic<uint64_t> refreshes {0}; // slices inspected through the refresh

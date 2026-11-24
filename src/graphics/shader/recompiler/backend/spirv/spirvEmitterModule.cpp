@@ -860,15 +860,16 @@ void DefineOutputs(EmitterState& state) {
 				    state.program.stage == ShaderType::Pixel &&
 				    binding.index < std::size(state.input_info.pixel->target_output_mode) &&
 				    state.input_info.pixel->target_output_mode[binding.index] == 7u;
-				// mode 10 (KYTY_PS_UINT32_TARGETS, SINT target): int4 output with the raw export bits
+				// mode 10 (KYTY_PS_UINT32_TARGETS, SINT target): int4 output with the raw export
+				// bits
 				const bool sint_output =
 				    binding.kind == IR::StageOutputKind::Mrt &&
 				    state.program.stage == ShaderType::Pixel &&
 				    binding.index < std::size(state.input_info.pixel->target_output_mode) &&
 				    state.input_info.pixel->target_output_mode[binding.index] == 10u;
-				const auto type = uint_output   ? TypeU32Vector(state, 4)
-				                  : sint_output ? TypeI32Vector(state, 4)
-				                                : TypeF32Vector(state, 4);
+				const auto type        = uint_output   ? TypeU32Vector(state, 4)
+				                         : sint_output ? TypeI32Vector(state, 4)
+				                                       : TypeF32Vector(state, 4);
 				binding.variable_id = DefineInterfaceVariable(state, type, spv::StorageClassOutput,
 				                                              binding.debug_name.c_str());
 				const bool dual_source = binding.kind == IR::StageOutputKind::Mrt &&

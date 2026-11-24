@@ -7497,12 +7497,14 @@ void ApplyUint32Targets(const HW::Context& context, ShaderPixelInputInfo& pixel_
 				             slot, vk::to_string(format).c_str(), mode);
 			}
 		} else if (IsSintColorFormat(format)) {
-			// Internal mode 10 (not a hardware SPI_SHADER_COL_FORMAT): int4 output carrying the raw export bits.
+			// Internal mode 10 (not a hardware SPI_SHADER_COL_FORMAT): int4 output carrying the raw
+			// export bits.
 			pixel_info.target_output_mode[i] = 10;
 			static std::atomic<uint32_t> logged_sint {0};
 			if (logged_sint.fetch_add(1, std::memory_order_relaxed) < 8) {
-				std::fprintf(stderr, "[uint32targets] export %u -> slot %u %s: mode %u -> sint output\n", i, slot,
-				             vk::to_string(format).c_str(), mode);
+				std::fprintf(stderr,
+				             "[uint32targets] export %u -> slot %u %s: mode %u -> sint output\n", i,
+				             slot, vk::to_string(format).c_str(), mode);
 			}
 		}
 	}

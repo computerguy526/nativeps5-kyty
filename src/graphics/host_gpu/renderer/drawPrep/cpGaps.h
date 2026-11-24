@@ -305,10 +305,10 @@ struct DrawPassSample {
 	// nps5 saroscp: ledger time nested in this commit (protect, drains, side copies, uploads,
 	// faults), taken as the difference of the in-commit ledger totals over the commit.
 	uint64_t nested_protect = 0;
-	uint64_t nested_drain = 0;
-	uint64_t nested_side = 0;
-	uint64_t nested_upload = 0;
-	uint64_t nested_fault = 0;
+	uint64_t nested_drain   = 0;
+	uint64_t nested_side    = 0;
+	uint64_t nested_upload  = 0;
+	uint64_t nested_fault   = 0;
 };
 
 struct DrawPassTotals {
@@ -322,11 +322,11 @@ struct DrawPassTotals {
 	uint64_t shader_table_bytes = 0;
 	int64_t shader_table_reduction = 0;
 	int64_t shader_byte_reduction = 0;
-	uint64_t nested_protect = 0;
-	uint64_t nested_drain = 0;
-	uint64_t nested_side = 0;
-	uint64_t nested_upload = 0;
-	uint64_t nested_fault = 0;
+	uint64_t    nested_protect         = 0;
+	uint64_t    nested_drain           = 0;
+	uint64_t    nested_side            = 0;
+	uint64_t    nested_upload          = 0;
+	uint64_t    nested_fault           = 0;
 };
 
 struct ThreadState {
@@ -381,8 +381,8 @@ private:
 
 // nps5 saroscp: the in-commit ledger totals the per-pass nested split reads (protect, drain,
 // side copy, upload, fault), in this order.
-inline constexpr std::array<Cat, 5> kPassNestedCats = {Cat::Protect, Cat::GpuWaitDrain, Cat::GpuWaitSideCopy,
-                                                       Cat::TextureUpload, Cat::Fault};
+inline constexpr std::array<Cat, 5> kPassNestedCats = {
+    Cat::Protect, Cat::GpuWaitDrain, Cat::GpuWaitSideCopy, Cat::TextureUpload, Cat::Fault};
 
 [[nodiscard]] inline DrawPassSample* CurrentDrawPassSample() noexcept {
 	return t_state != nullptr ? t_state->draw_pass_sample : nullptr;

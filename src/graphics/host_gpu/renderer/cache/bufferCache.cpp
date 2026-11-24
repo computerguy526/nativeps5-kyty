@@ -5773,7 +5773,8 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	return {source, stage_offset};
 }
 
-void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds, bool keep_images) {
+void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds,
+                             bool keep_images) {
 	if ((vaddr & 3u) != 0 || size == 0 || (size & 3u) != 0 || size > UINT64_MAX - vaddr) {
 		EXIT("BufferCache: fill range must be dword aligned\n");
 	}

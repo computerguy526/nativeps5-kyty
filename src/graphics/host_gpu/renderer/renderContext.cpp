@@ -342,7 +342,7 @@ struct UnmapStatsT {
 	std::atomic<uint64_t> bytes {0};
 	std::atomic<uint64_t> ns {0};
 	std::atomic<uint64_t> big {0}; // >= 1 MiB
-	void Note(uint64_t vaddr, uint64_t size, uint64_t wait_ns) {
+	void                  Note(uint64_t vaddr, uint64_t size, uint64_t wait_ns) {
 		static const bool log = [] {
 			const auto* v = std::getenv("KYTY_UNMAP_STATS");
 			return v != nullptr && std::strcmp(v, "1") == 0;
@@ -356,7 +356,8 @@ struct UnmapStatsT {
 		if (log && n < 48) {
 			std::fprintf(stderr, "[unmapstat] #%llu addr=0x%llx size=0x%llx wait_us=%.0f\n",
 			             static_cast<unsigned long long>(n), static_cast<unsigned long long>(vaddr),
-			             static_cast<unsigned long long>(size), static_cast<double>(wait_ns) * 1e-3);
+			             static_cast<unsigned long long>(size),
+			             static_cast<double>(wait_ns) * 1e-3);
 		}
 	}
 	~UnmapStatsT() {
@@ -364,10 +365,11 @@ struct UnmapStatsT {
 		if (v == nullptr || std::strcmp(v, "1") != 0 || calls.load() == 0) {
 			return;
 		}
-		std::fprintf(stderr, "[unmapstat] total drained_unmaps=%llu bytes=%llu big=%llu wait_ms=%.1f\n",
-		             static_cast<unsigned long long>(calls.load()),
-		             static_cast<unsigned long long>(bytes.load()),
-		             static_cast<unsigned long long>(big.load()), static_cast<double>(ns.load()) * 1e-6);
+		std::fprintf(
+		    stderr, "[unmapstat] total drained_unmaps=%llu bytes=%llu big=%llu wait_ms=%.1f\n",
+		    static_cast<unsigned long long>(calls.load()),
+		    static_cast<unsigned long long>(bytes.load()),
+		    static_cast<unsigned long long>(big.load()), static_cast<double>(ns.load()) * 1e-6);
 	}
 };
 UnmapStatsT& UnmapStats() {
@@ -398,10 +400,11 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 			const auto                    t0   = std::chrono::steady_clock::now();
 			m_command_scheduler.Finish();
 			m_command_scheduler.WaitPriorityOperations(tick);
-			UnmapStats().Note(vaddr, size,
-			                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-			                                            std::chrono::steady_clock::now() - t0)
-			                                            .count()));
+			UnmapStats().Note(
+			    vaddr, size,
+			    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                              std::chrono::steady_clock::now() - t0)
+			                              .count()));
 		}
 		m_buffer_cache.InvalidateMemory(vaddr, size);
 		m_texture_cache.UnmapMemory(vaddr, size);
