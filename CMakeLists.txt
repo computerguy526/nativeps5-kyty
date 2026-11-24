@@ -681,6 +681,10 @@ target_include_directories(bundle_compact_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(nanite_shade_stats_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/NaniteShadeStatsTests.cpp")
 target_include_directories(nanite_shade_stats_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# mfxlayer: FSR 3.1 constant-block detector of the UE upscaler-slot MetalFX adapter (header only), no GPU.
+add_executable(metalfx_ue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MetalFxUeTests.cpp")
+target_include_directories(metalfx_ue_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5 kprogress2: on-screen compile progress state/animation timing (header only), no GPU.
 add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ProgressOverlayTests.cpp")
 target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")

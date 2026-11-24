@@ -1,5 +1,6 @@
 // nps5: MetalFX in place of Astro Bot's temporal upscale pass (metalfx.h).
 #include "graphics/host_gpu/renderer/metalfx.h"
+#include "graphics/host_gpu/renderer/metalfxUe.h"
 
 #include "common/guestAddress.h"
 #include "graphics/host_gpu/renderer/astroTileGrid.h"
@@ -76,7 +77,7 @@ struct DepthPair {
 //     depth), history. No projection jitter. Its history target is read by other passes, so the
 //     game's pass draws and MetalFX then overwrites target 0 ("after").
 // KYTY_METALFX_PASS=<hash>[:1019|:1007] names another pass (the title profile's value).
-enum class Layout : uint8_t { V1019, V1007 };
+enum class Layout : uint8_t { V1019, V1007, Blit, Ue };
 struct PassProfile {
 	uint64_t hash;
 	Layout   layout;
@@ -93,6 +94,7 @@ struct Pending {
 	uint32_t in_w = 0, in_h = 0, out_w = 0, out_h = 0, frame = 0;
 	bool     cut = false;
 	float    jitter_uv[4] {};
+	float    mv_mul[2] {1.0f, 1.0f}; // Ue: the upscaler's own motion vector scale
 };
 
 std::atomic<uint64_t> g_flips {0};
@@ -120,6 +122,10 @@ struct State {
 	int         cycle_index = -1;
 	// A compute pass that scales the scene colour to the output size (TryMetalFxCompute); 0 = none.
 	uint64_t    compute_hash = 0x4bf3b92602fbe696ull; // ASTRO BOT 01.007 levels
+	uint32_t    compute_in = 0, compute_out = 1; // image indices of that pass (mfxlayer: <hash>:<in>:<out>)
+	bool        compute_replace = false;         // KYTY_METALFX_COMPUTE_REPLACE
+	int         blit_index = -1;                 // KYTY_METALFX_PASS=<hash>:blit:<index>, -1 = auto
+	bool        blit_auto  = false;              // KYTY_METALFX_PASS=auto:blit (no hash: by shape)
 	uint64_t    win_draws = 0, win_scene = 0; // pass draws of the current cycle window; those with a scene-size input
 	uint32_t    win_in_w = 0, win_in_h = 0;
 	uint32_t jitter_index   = 0;
@@ -158,10 +164,16 @@ State& Get() {
 		if (const char* value = std::getenv("KYTY_METALFX_PASS"); value != nullptr) {
 			if (std::strcmp(value, "auto") == 0) {
 				s.pass_auto = true;
+			} else if (std::strcmp(value, "auto:blit") == 0) {
+				s.blit_auto = true;
 			} else {
 				char* end   = nullptr;
 				s.pass_hash = std::strtoull(value, &end, 16);
 				s.pass_layout = (end != nullptr && std::strcmp(end, ":1019") == 0) ? Layout::V1019 : Layout::V1007;
+				if (end != nullptr && std::strncmp(end, ":blit", 5) == 0) {
+					s.pass_layout = Layout::Blit;
+					s.blit_index  = end[5] == ':' ? std::atoi(end + 6) : -1;
+				}
 				for (const auto& known: KNOWN_PASSES) {
 					if (known.hash == s.pass_hash && (end == nullptr || *end == '\0')) {
 						s.pass_layout = known.layout;
@@ -194,7 +206,17 @@ State& Get() {
 			}
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_COMPUTE_PASS"); value != nullptr) {
-			s.compute_hash = std::strtoull(value, nullptr, 16);
+			char* end      = nullptr;
+			s.compute_hash = std::strtoull(value, &end, 16);
+			if (end != nullptr && *end == ':') {
+				s.compute_in = static_cast<uint32_t>(std::strtoul(end + 1, &end, 10));
+				if (end != nullptr && *end == ':') {
+					s.compute_out = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 10));
+				}
+			}
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_COMPUTE_REPLACE"); value != nullptr) {
+			s.compute_replace = std::strcmp(value, "1") == 0;
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_CYCLE_FROM"); value != nullptr) {
 			s.cycle_from = std::strtoull(value, nullptr, 10);
@@ -299,7 +321,7 @@ bool LogOnce(State& s, uint64_t hash) {
 } // namespace
 
 bool Requested() {
-	static const bool requested = Get().mode != Mode::Off || Get().find || FindWide();
+	static const bool requested = Get().mode != Mode::Off || Get().find || FindWide() || UeEnabled();
 	return requested;
 }
 
@@ -399,6 +421,88 @@ void NoteFlip() {
 	AstroTileGridPatch();
 }
 
+bool ComputeReplace(uint64_t shader_hash) {
+	const auto& s = Get();
+	return s.compute_replace && s.mode != Mode::Off && s.compute_hash != 0 && s.compute_hash == shader_hash;
+}
+
+namespace {
+struct KoConfig {
+	std::vector<uint64_t> hashes;
+	uint64_t              cycle   = 0;
+	int64_t               from_ns = 90'000'000'000LL;
+};
+const KoConfig& Ko() {
+	static const KoConfig config = [] {
+		KoConfig c;
+		if (const char* value = std::getenv("KYTY_CS_KO"); value != nullptr) {
+			for (const char* at = value; *at != '\0';) {
+				char*      end  = nullptr;
+				const auto hash = std::strtoull(at, &end, 16);
+				if (end == at) {
+					break;
+				}
+				if (hash != 0) {
+					c.hashes.push_back(hash);
+				}
+				at = *end == ',' ? end + 1 : end;
+				if (*end != ',' ) {
+					break;
+				}
+			}
+		}
+		if (const char* value = std::getenv("KYTY_CS_KO_CYCLE"); value != nullptr) {
+			c.cycle = std::strtoull(value, nullptr, 10);
+		}
+		if (const char* value = std::getenv("KYTY_CS_KO_FROM_S"); value != nullptr) {
+			c.from_ns = static_cast<int64_t>(std::atoi(value)) * 1'000'000'000LL;
+		}
+		return c;
+	}();
+	return config;
+}
+} // namespace
+
+bool CsKnockoutEnabled() {
+	static const bool enabled = !Ko().hashes.empty();
+	return enabled;
+}
+
+// Called on the command-processor thread for every compute dispatch while enabled.
+bool CsKnockout(uint64_t shader_hash) {
+	const auto&     c = Ko();
+	static int64_t  first_ns   = 0;
+	static uint64_t base_flip  = 0;
+	static int      state      = -1; // -1 before from_s, 0 off window, 1 on window
+	static uint64_t skipped    = 0;
+	const auto      now        = NowNs();
+	if (first_ns == 0) {
+		first_ns = now;
+	}
+	if (now - first_ns < c.from_ns) {
+		return false;
+	}
+	const auto flips = g_flips.load(std::memory_order_relaxed);
+	if (state < 0) {
+		base_flip = flips;
+	}
+	// The first window is OFF (a control window after from_s), then on, off, ...
+	const int want = c.cycle == 0 ? 1 : static_cast<int>(((flips - base_flip) / c.cycle) % 2);
+	if (want != state) {
+		std::printf("CsKo cycle: flip %llu t_us %lld %s skipped %llu\n", static_cast<unsigned long long>(flips),
+		            static_cast<long long>(now / 1000), want != 0 ? "on" : "off",
+		            static_cast<unsigned long long>(skipped));
+		std::fflush(stdout);
+		state   = want;
+		skipped = 0;
+	}
+	if (want == 0 || std::find(c.hashes.begin(), c.hashes.end(), shader_hash) == c.hashes.end()) {
+		return false;
+	}
+	skipped++;
+	return true;
+}
+
 bool FindWide() {
 	static const bool wide = [] {
 		const char* value = std::getenv("KYTY_METALFX_FIND");
@@ -406,6 +510,166 @@ bool FindWide() {
 	}();
 	return wide;
 }
+
+namespace {
+// KYTY_METALFX_FIND_ANCHOR (metalfx.h): the passes around one dispatch (a UE upscaler pass).
+struct AnchorRec {
+	struct Img {
+		uint32_t w, h;
+		vk::Format format;
+		uint64_t address;
+	};
+	struct Buf {
+		uint64_t address;
+		uint32_t size;
+	};
+	uint64_t hash = 0;
+	char     kind = '?';
+	uint32_t image_count = 0, buffer_count = 0;
+	Img      out {};
+	std::array<Img, 16> images {};
+	std::array<Buf, 8>  buffers {};
+};
+
+std::string AnchorText(const AnchorRec& r) {
+	std::string text = fmt::format("{} shader {:016x} output {} images:", r.kind == 'd' ? "draw" : "dispatch", r.hash,
+	                               r.out.address != 0 ? fmt::format("{}x{}:{}@{:x}", r.out.w, r.out.h,
+	                                                                vk::to_string(r.out.format), r.out.address)
+	                                                  : std::string("-"));
+	for (uint32_t i = 0; i < r.image_count; i++) {
+		const auto& m = r.images[i];
+		text += m.address != 0 ? fmt::format(" {}x{}:{}@{:x}", m.w, m.h, vk::to_string(m.format), m.address) : " -";
+	}
+	text += " buffers:";
+	for (uint32_t i = 0; i < r.buffer_count; i++) {
+		text += fmt::format(" {:x}+{}", r.buffers[i].address, r.buffers[i].size);
+	}
+	return text;
+}
+
+bool AnchorShares(const AnchorRec& a, const AnchorRec& b) {
+	const auto has = [&b](uint64_t address) {
+		if (address == 0) {
+			return false;
+		}
+		if (b.out.address == address) {
+			return true;
+		}
+		for (uint32_t i = 0; i < b.image_count; i++) {
+			if (b.images[i].address == address) {
+				return true;
+			}
+		}
+		return false;
+	};
+	// 1x1 and other tiny images are shared dummies, not data flow
+	if (a.out.w > 8 && has(a.out.address)) {
+		return true;
+	}
+	for (uint32_t i = 0; i < a.image_count; i++) {
+		if (a.images[i].w > 8 && has(a.images[i].address)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void AnchorWords(const AnchorRec& r) {
+	for (uint32_t i = 0; i < r.buffer_count; i++) {
+		const auto& b = r.buffers[i];
+		if (b.address == 0 || b.size < 16 || b.size > 16384) {
+			continue;
+		}
+		const auto* w = Guest::Ptr<const uint32_t>(b.address);
+		for (uint32_t at = 0; at * 4 < b.size; at += 32) {
+			std::string words;
+			for (uint32_t k = at; k < at + 32 && (k + 1) * 4 <= b.size; k++) {
+				words += fmt::format(" {:08x}", w[k]);
+			}
+			std::printf("MetalFX anchor:   words %016llx %llx+%u @%u:%s\n", static_cast<unsigned long long>(r.hash),
+			            static_cast<unsigned long long>(b.address), b.size, at, words.c_str());
+		}
+	}
+}
+
+void FindAnchor(const char* kind, const PreparedBindings& bindings, TextureCache& cache, const Image* out,
+                uint64_t hash, bool started) {
+	static const uint64_t anchor = [] {
+		const char* value = std::getenv("KYTY_METALFX_FIND_ANCHOR");
+		return value != nullptr ? std::strtoull(value, nullptr, 16) : 0ull;
+	}();
+	if (anchor == 0) {
+		return;
+	}
+	static int frames_left = [] {
+		const char* value = std::getenv("KYTY_METALFX_FIND_ANCHOR_FRAMES");
+		return value != nullptr ? std::atoi(value) : 2;
+	}();
+	static std::array<AnchorRec, 64> ring;
+	static uint32_t  ring_next = 0, ring_count = 0;
+	static AnchorRec anchor_rec;
+	static uint64_t  anchor_flip = ~0ull;
+	static uint32_t  after_count = 0;
+
+	AnchorRec r;
+	r.hash = hash;
+	r.kind = kind[1] == 'r' ? 'd' : 'c'; // "draw" / "dispatch"
+	if (out != nullptr) {
+		r.out = {out->info.extent.width, out->info.extent.height, out->backing.format, out->info.data.address};
+	}
+	for (const auto& binding: bindings.images) {
+		if (r.image_count == r.images.size()) {
+			break;
+		}
+		const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
+		r.images[r.image_count++] = image != nullptr ? AnchorRec::Img {image->info.extent.width, image->info.extent.height,
+		                                                                image->backing.format, image->info.data.address}
+		                                             : AnchorRec::Img {};
+	}
+	for (const auto& source: bindings.buffer_sources) {
+		if (r.buffer_count == r.buffers.size()) {
+			break;
+		}
+		r.buffers[r.buffer_count++] = {source.address, static_cast<uint32_t>(source.size)};
+	}
+	const auto flips = g_flips.load(std::memory_order_relaxed);
+	if (anchor_flip == flips && hash != anchor && after_count < 48 && AnchorShares(anchor_rec, r)) {
+		std::printf("MetalFX anchor: +%u %s\n", ++after_count, AnchorText(r).c_str());
+		std::fflush(stdout);
+	}
+	if (hash == anchor && started && frames_left > 0 && anchor_flip != flips) {
+		frames_left--;
+		anchor_flip = flips;
+		anchor_rec  = r;
+		after_count = 0;
+		std::printf("MetalFX anchor: ==== flip %llu %s\n", static_cast<unsigned long long>(flips), AnchorText(r).c_str());
+		AnchorWords(r);
+		std::array<uint8_t, 64> level {};
+		for (uint32_t k = 0; k < ring_count; k++) {
+			level[k] = AnchorShares(r, ring[(ring_next + ring.size() - 1 - k) % ring.size()]) ? 1 : 0;
+		}
+		for (uint32_t k = 0; k < ring_count; k++) {
+			const auto& rk = ring[(ring_next + ring.size() - 1 - k) % ring.size()];
+			for (uint32_t j = 0; level[k] == 0 && j < ring_count; j++) {
+				if (level[j] == 1 && AnchorShares(ring[(ring_next + ring.size() - 1 - j) % ring.size()], rk)) {
+					level[k] = 2;
+				}
+			}
+		}
+		for (uint32_t k = 0; k < ring_count; k++) {
+			const auto& rk = ring[(ring_next + ring.size() - 1 - k) % ring.size()];
+			std::printf("MetalFX anchor: -%u L%u %s\n", k + 1, static_cast<unsigned>(level[k]), AnchorText(rk).c_str());
+			if (level[k] == 1 && rk.kind == 'c') {
+				AnchorWords(rk);
+			}
+		}
+		std::fflush(stdout);
+	}
+	ring[ring_next] = r;
+	ring_next       = (ring_next + 1) % ring.size();
+	ring_count      = std::min<uint32_t>(ring_count + 1, static_cast<uint32_t>(ring.size()));
+}
+} // namespace
 
 void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& cache, ImageId output,
              uint32_t color_count) {
@@ -475,6 +739,7 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 		}
 		std::fflush(stdout);
 	}
+	FindAnchor(kind, bindings, cache, out, hash, reset_s == 0 || reset_done);
 	if (!wanted || !LogOnce(s, hash ^ 0x3333333333333333ull)) {
 		return;
 	}
@@ -845,7 +1110,9 @@ bool Execute(State& s, TextureCache& cache, CommandBuffer& buffer, const Pending
 	Image* depth = p.temporal && p.depth ? &cache.GetImage(p.depth) : nullptr;
 	if (!SameSize(color, p.in_w, p.in_h) || !SameSize(out, p.out_w, p.out_h) ||
 	    (mv != nullptr && !SameSize(*mv, p.in_w, p.in_h)) ||
-	    (depth != nullptr && (!SameSize(*depth, p.in_w, p.in_h) || !depth->info.IsDepth()))) {
+	    (depth != nullptr && (!SameSize(*depth, p.in_w, p.in_h) ||
+	                          (!depth->info.IsDepth() &&
+	                           !(p.layout == Layout::Ue && depth->backing.format == vk::Format::eR32Sfloat))))) {
 		return Fail(s, Fallback::Sizes);
 	}
 
@@ -876,8 +1143,8 @@ bool Execute(State& s, TextureCache& cache, CommandBuffer& buffer, const Pending
 	// MetalFX wants pixels pointing at the previous position, without the jitter.
 	info.jitter[0]   = s.jitter_sign * p.jitter_uv[0] * static_cast<float>(p.in_w);
 	info.jitter[1]   = s.jitter_sign * p.jitter_uv[1] * static_cast<float>(p.in_h);
-	info.mv_scale[0] = -s.mv_sign * static_cast<float>(p.in_w);
-	info.mv_scale[1] = -s.mv_sign * static_cast<float>(p.in_h);
+	info.mv_scale[0] = -s.mv_sign * static_cast<float>(p.in_w) * p.mv_mul[0];
+	info.mv_scale[1] = -s.mv_sign * static_cast<float>(p.in_h) * p.mv_mul[1];
 	info.mv_bias[0]  = s.mv_jitter * (p.jitter_uv[0] - p.jitter_uv[2]);
 	info.mv_bias[1]  = s.mv_jitter * (p.jitter_uv[1] - p.jitter_uv[3]);
 	// A camera cut, a gap in the pass's frame counter or a new size (the game's dynamic resolution
@@ -940,7 +1207,208 @@ char CycleConfig(State& s, bool& changed) {
 	return config;
 }
 
+
+struct UeState {
+	bool     log = false, adapter = false, skip = true;
+	uint64_t flip = ~0ull;
+	uint32_t index = 0;
+	ImageId  depth, depth_r32, motion, replaced;
+	uint32_t healthy = 0;
+	uint64_t cool_until = 0, last_eval_flip = 0;
+	uint64_t skipped = 0, kept = 0;
+	int64_t  print_ns = 0;
+};
+UeState& Ue() {
+	static UeState state = [] {
+		UeState u;
+		if (const char* value = std::getenv("KYTY_METALFX_UE"); value != nullptr) {
+			u.log     = std::strcmp(value, "log") == 0 || std::strcmp(value, "fsr3") == 0;
+			u.adapter = std::strcmp(value, "fsr3") == 0;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_UE_SKIP"); value != nullptr) {
+			u.skip = std::strcmp(value, "0") != 0;
+		}
+		return u;
+	}();
+	return state;
+}
+
 } // namespace
+
+bool UeEnabled() {
+	static const bool enabled = Ue().log;
+	return enabled;
+}
+
+ImageId UeOutput() {
+	return Ue().replaced;
+}
+
+int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureCache& cache) {
+	if (bindings.runtime == nullptr || !*bindings.runtime) {
+		return 0;
+	}
+	Fsr3Frame f;
+	bool      found = false;
+	for (const auto& source: bindings.buffer_sources) {
+		if (source.address != 0 && source.size >= 96 && source.size <= 256 &&
+		    ParseFsr3Constants(Guest::Ptr<const uint32_t>(source.address), source.size, f)) {
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		return 0;
+	}
+	auto&      s     = Get();
+	auto&      u     = Ue();
+	const auto flips = g_flips.load(std::memory_order_relaxed);
+	if (u.flip != flips) {
+		u.flip      = flips;
+		u.index     = 0;
+		u.depth     = {};
+		u.depth_r32 = {};
+		u.motion    = {};
+	}
+	const uint32_t index = u.index++;
+	const auto     hash  = bindings.runtime->program->shader_hash;
+	ImageId        color {}, output {};
+	uint32_t       out_colors = 0;
+	for (const auto& binding: bindings.images) {
+		const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
+		if (image == nullptr) {
+			continue;
+		}
+		const uint32_t w = image->info.extent.width, h = image->info.extent.height;
+		const auto     format     = image->backing.format;
+		const bool     render     = w == f.in_w && h == f.in_h;
+		const bool     upscaled   = w == f.out_w && h == f.out_h;
+		const bool     color_like = format == vk::Format::eB10G11R11UfloatPack32 || format == vk::Format::eR16G16B16A16Sfloat;
+		if (render && image->info.IsDepth() && !u.depth) {
+			u.depth = binding.image_id;
+		} else if (render && format == vk::Format::eR32Sfloat && !u.depth_r32) {
+			u.depth_r32 = binding.image_id;
+		} else if (render && format == vk::Format::eR16G16Sfloat) {
+			u.motion = binding.image_id;
+		} else if (render && color_like && !upscaled) {
+			color = binding.image_id;
+		} else if (upscaled && color_like) {
+			output = binding.image_id;
+			out_colors++;
+		}
+	}
+	const bool last = color && out_colors >= 2;
+	if (LogOnce(s, hash ^ 0x7777777777777777ull)) {
+		std::printf("MetalFX ue: fsr3 #%u shader %016llx role %s render %ux%u (max %ux%u) upscale %ux%u jitter %.4f %.4f mv scale %.3f %.3f | depth %d r32 %d motion %d colour %d outputs %u\n",
+		            index, static_cast<unsigned long long>(hash), last ? "last" : index == 0 ? "first" : "mid", f.in_w,
+		            f.in_h, f.max_w, f.max_h, f.out_w, f.out_h, static_cast<double>(f.jitter[0]),
+		            static_cast<double>(f.jitter[1]), static_cast<double>(f.mv_scale[0]),
+		            static_cast<double>(f.mv_scale[1]), u.depth ? 1 : 0, u.depth_r32 ? 1 : 0, u.motion ? 1 : 0,
+		            color ? 1 : 0, out_colors);
+		std::fflush(stdout);
+	}
+	if (!u.adapter || s.mode != Mode::Temporal) {
+		return 0;
+	}
+	bool       changed = false;
+	const char config  = CycleConfig(s, changed);
+	if (config == 'g') {
+		u.healthy = 0;
+		return 0;
+	}
+	if (const auto now = NowNs(); now - u.print_ns > 10'000'000'000LL) {
+		if (u.print_ns != 0) {
+			std::printf("MetalFX ue 10s: fsr3 dispatches skipped %llu kept %llu healthy %u\n",
+			            static_cast<unsigned long long>(u.skipped), static_cast<unsigned long long>(u.kept), u.healthy);
+			std::fflush(stdout);
+		}
+		u.print_ns = now;
+		u.skipped  = 0;
+		u.kept     = 0;
+	}
+	if (!last) {
+		// The first dispatch (PrepareInputs) writes the dilated motion vectors MetalFX reads.
+		if (index != 0 && u.skip && u.healthy >= 8 && flips >= u.cool_until) {
+			u.skipped++;
+			return 1;
+		}
+		u.kept++;
+		return 0;
+	}
+	s.pass_draws++;
+	if (s.cycle_every != 0) {
+		s.win_draws++;
+		s.win_scene++;
+		s.win_in_w = f.in_w;
+		s.win_in_h = f.in_h;
+	}
+	const auto fail = [&](Fallback reason) {
+		u.healthy    = 0;
+		u.cool_until = flips + 300;
+		u.kept++;
+		Fail(s, reason);
+		return 0;
+	};
+	const ImageId depth = u.depth ? u.depth : u.depth_r32;
+	if (!u.motion) {
+		return fail(Fallback::NoMotionVectors);
+	}
+	if (!depth) {
+		return fail(Fallback::NoDepth);
+	}
+	if (f.in_w >= f.out_w || f.in_h >= f.out_h || f.in_w > s.max_in_w || f.out_w > 3 * f.in_w || f.out_h > 3 * f.in_h) {
+		return fail(Fallback::NoUpscale);
+	}
+	if (!s.lookup_tried) {
+		s.lookup_tried = true;
+		s.command      = Lookup();
+	}
+	if (s.command == nullptr) {
+		return fail(Fallback::NoDriver);
+	}
+	Pending p;
+	p.temporal = true;
+	p.layout   = Layout::Ue;
+	p.color    = color;
+	p.motion   = u.motion;
+	p.depth    = depth;
+	p.output   = output;
+	p.in_w     = f.in_w;
+	p.in_h     = f.in_h;
+	p.out_w    = f.out_w;
+	p.out_h    = f.out_h;
+	p.frame    = s.last_frame + 1;
+	p.cut      = changed || u.last_eval_flip + 1 != flips;
+	p.jitter_uv[0] = f.jitter[0] / static_cast<float>(f.in_w);
+	p.jitter_uv[1] = s.jitter_sign_y * f.jitter[1] / static_cast<float>(f.in_h);
+	p.jitter_uv[2] = p.jitter_uv[0];
+	p.jitter_uv[3] = p.jitter_uv[1];
+	p.mv_mul[0]    = f.mv_scale[0];
+	p.mv_mul[1]    = f.mv_scale[1];
+	// mfxlexec: cycle letters a/b/c flip the jitter sign, the motion sign, both (KYTY_METALFX_CYCLE=80,tabc).
+	const float saved_jitter_sign = s.jitter_sign, saved_mv_sign = s.mv_sign;
+	if (config == 'a' || config == 'c') {
+		s.jitter_sign = -s.jitter_sign;
+	}
+	if (config == 'b' || config == 'c') {
+		s.mv_sign = -s.mv_sign;
+	}
+	const bool executed = Execute(s, cache, buffer, p);
+	s.jitter_sign       = saved_jitter_sign;
+	s.mv_sign           = saved_mv_sign;
+	if (!executed) {
+		u.healthy    = 0;
+		u.cool_until = flips + 300;
+		u.kept++;
+		return 0;
+	}
+	u.replaced = p.output; // the caller commits the GPU write (UeOutput)
+	u.healthy++;
+	u.last_eval_flip = flips;
+	u.skipped++;
+	return 2;
+}
+
 } // namespace MetalFx
 
 // True: the pass was replaced (V1019), the draw is done. False: the draw runs; when the pass is one
@@ -967,10 +1435,100 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 			}
 		}
 	}
+	if (!known && s.blit_auto) {
+		known  = true;
+		layout = Layout::Blit;
+	}
 	if (!known) {
 		return false;
 	}
 	s.pass_draws++;
+	if (layout == Layout::Blit) {
+		// mfxlayer: UE's secondary upscale draw (one bound image scaled to a larger single target).
+		auto&        blit_cache = m_context.GetTextureCache();
+		const Image* target     = output ? blit_cache.TryGetImage(output) : nullptr;
+		if (s.blit_auto) {
+			// By shape (experiments only): one colour target at least 2560 wide and exactly one bound
+			// image larger than 8 texels, which is smaller than the target and has its aspect.
+			uint32_t big = 0, fit = 0;
+			for (const auto& binding: pixel.images) {
+				const Image* image = binding.image_id ? blit_cache.TryGetImage(binding.image_id) : nullptr;
+				if (image == nullptr || image->info.extent.width <= 8 || target == nullptr) {
+					continue;
+				}
+				big++;
+				const uint32_t w = image->info.extent.width, h = image->info.extent.height;
+				const int64_t  skew = static_cast<int64_t>(w) * target->info.extent.height -
+				                      static_cast<int64_t>(h) * target->info.extent.width;
+				fit += (w < target->info.extent.width && h < target->info.extent.height && w >= 960 &&
+				        std::llabs(skew) <= static_cast<int64_t>(target->info.extent.width + target->info.extent.height))
+				           ? 1
+				           : 0;
+			}
+			if (color_count != 1 || target == nullptr || target->info.extent.width < 2560 || big != 1 || fit != 1) {
+				s.pass_draws--;
+				return false;
+			}
+			if (LogOnce(s, hash ^ 0x5555555555555555ull)) {
+				std::printf("MetalFX blit: auto shader %016llx target %ux%u:%s\n", static_cast<unsigned long long>(hash),
+				            target->info.extent.width, target->info.extent.height,
+				            vk::to_string(target->backing.format).c_str());
+				std::fflush(stdout);
+			}
+		}
+		bool       blit_changed = false;
+		const char blit_config  = CycleConfig(s, blit_changed);
+		if (color_count != 1 || target == nullptr) {
+			return Fail(s, Fallback::Bindings);
+		}
+		Pending p;
+		p.temporal = false;
+		p.layout   = layout;
+		p.output   = output;
+		p.out_w    = target->info.extent.width;
+		p.out_h    = target->info.extent.height;
+		for (size_t i = 0; i < pixel.images.size(); i++) {
+			const Image* image = pixel.images[i].image_id ? blit_cache.TryGetImage(pixel.images[i].image_id) : nullptr;
+			if (image == nullptr || (s.blit_index >= 0 && static_cast<size_t>(s.blit_index) != i)) {
+				continue;
+			}
+			const uint32_t w = image->info.extent.width, h = image->info.extent.height;
+			// the target's aspect within one texel, smaller than the target, the widest such image
+			const int64_t skew = static_cast<int64_t>(w) * p.out_h - static_cast<int64_t>(h) * p.out_w;
+			if (w < p.out_w && h < p.out_h && w > p.in_w && std::llabs(skew) <= static_cast<int64_t>(p.out_w + p.out_h)) {
+				p.color = pixel.images[i].image_id;
+				p.in_w  = w;
+				p.in_h  = h;
+			}
+		}
+		if (s.cycle_every != 0) {
+			s.win_draws++;
+			s.win_in_w = p.in_w;
+			s.win_in_h = p.in_h;
+			s.win_scene += p.color ? 1 : 0;
+		}
+		if (blit_config == 'g') {
+			Summary(s);
+			return false;
+		}
+		if (!p.color || p.in_w > s.max_in_w) {
+			return Fail(s, Fallback::NoUpscale);
+		}
+		if (!s.lookup_tried) {
+			s.lookup_tried = true;
+			s.command      = Lookup();
+		}
+		if (s.command == nullptr) {
+			return Fail(s, Fallback::NoDriver);
+		}
+		p.frame = s.last_frame + 1;
+		p.cut   = blit_changed;
+		if (!Execute(s, blit_cache, buffer, p)) {
+			return false;
+		}
+		blit_cache.CommitGpuWrite(blit_cache.GetImage(p.output));
+		return true;
+	}
 	const bool v1007 = layout == Layout::V1007;
 	// The configuration of this frame: g the game's picture, s spatial, t temporal, a-d temporal
 	// with the viewport jitter and MetalFX jitter signs ++, --, +-, -+ (KYTY_METALFX_CYCLE).
@@ -1135,16 +1693,17 @@ bool RenderExecutor::TryMetalFxCompute(CommandBuffer& buffer, const PreparedBind
 	}
 	s.pass_draws++;
 	auto& cache = m_context.GetTextureCache();
-	if (bindings.images.size() < 2 || !bindings.images[0].image_id || !bindings.images[1].image_id ||
-	    cache.TryGetImage(bindings.images[0].image_id) == nullptr ||
-	    cache.TryGetImage(bindings.images[1].image_id) == nullptr) {
+	const uint32_t ci = s.compute_in, co = s.compute_out;
+	if (bindings.images.size() <= std::max(ci, co) || ci == co || !bindings.images[ci].image_id ||
+	    !bindings.images[co].image_id || cache.TryGetImage(bindings.images[ci].image_id) == nullptr ||
+	    cache.TryGetImage(bindings.images[co].image_id) == nullptr) {
 		return Fail(s, Fallback::Bindings);
 	}
 	Pending p;
 	p.temporal = false;
 	p.layout   = Layout::V1007;
-	p.color    = bindings.images[0].image_id;
-	p.output   = bindings.images[1].image_id;
+	p.color    = bindings.images[ci].image_id;
+	p.output   = bindings.images[co].image_id;
 	{
 		const auto& in  = cache.GetImage(p.color);
 		const auto& out = cache.GetImage(p.output);

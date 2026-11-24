@@ -1156,6 +1156,11 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		ResetBindings();
 		return;
 	}
+	// mfxlayer KYTY_CS_KO (metalfx.h; diagnostic, default off): knocked-out compute shaders.
+	if (MetalFx::CsKnockoutEnabled() && MetalFx::CsKnockout(program.shader_hash)) [[unlikely]] {
+		ResetBindings();
+		return;
+	}
 	// rtimage KYTY_COMPUTE_IMAGE_COPY: a surface copy through two buffers as a native image copy.
 	bool     copy_verify_kernel = false;
 	uint32_t copy_slots[2]      = {0, 0};
@@ -1234,6 +1239,24 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	FindBuffers(bindings);
 	if (MetalFx::FindWide()) [[unlikely]] {
 		MetalFx::FindLog("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0);
+	}
+	// mfxlayer KYTY_METALFX_UE (metalfx.h, default off): UE's FSR3 upscaler slot.
+	if (MetalFx::UeEnabled()) [[unlikely]] {
+		if (const int ue = MetalFx::UeDispatch(buffer, bindings, m_context.GetTextureCache()); ue != 0) {
+			if (ue == 2) {
+				auto& ue_cache = m_context.GetTextureCache();
+				ue_cache.CommitGpuWrite(ue_cache.GetImage(MetalFx::UeOutput()));
+			}
+			ResetBindings();
+			return;
+		}
+	}
+	// mfxlayer KYTY_METALFX_COMPUTE_REPLACE (metalfx.h, default off): MetalFX instead of the dispatch.
+	if (MetalFx::Requested() && MetalFx::ComputeReplace(input_info.stage.program->shader_hash)) [[unlikely]] {
+		if (TryMetalFxCompute(buffer, bindings)) {
+			ResetBindings();
+			return;
+		}
 	}
 	if (MetalFx::ResAuditEnabled()) [[unlikely]] {
 		const uint32_t groups[3]  = {thread_group_x, thread_group_y, thread_group_z};
@@ -1687,7 +1710,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		}
 	}
 	// nps5 KYTY_METALFX (metalfx.h): a compute pass that scales the scene to the output size.
-	if (MetalFx::Requested()) [[unlikely]] {
+	if (MetalFx::Requested() && !MetalFx::ComputeReplace(program.shader_hash)) [[unlikely]] {
 		TryMetalFxCompute(buffer, bindings);
 	}
 	ResetBindings();
@@ -1788,6 +1811,10 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 		// Temporary until RT is implemented.
 		return;
 	}
+	if (MetalFx::CsKnockoutEnabled() && MetalFx::CsKnockout(input_info.stage.program->shader_hash)) [[unlikely]] {
+		ResetBindings();
+		return;
+	}
 	buffer.EndRendering();
 	const bool rt_kernel    = input_info.stage.program->info.uses_bvh;
 	const bool rt_load_hold = RtLoadHold(rt_kernel);
@@ -1811,6 +1838,24 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	FindBuffers(bindings);
 	if (MetalFx::FindWide()) [[unlikely]] {
 		MetalFx::FindLog("dispatch", bindings, m_context.GetTextureCache(), ImageId {}, 0);
+	}
+	// mfxlayer KYTY_METALFX_UE (metalfx.h, default off): UE's FSR3 upscaler slot.
+	if (MetalFx::UeEnabled()) [[unlikely]] {
+		if (const int ue = MetalFx::UeDispatch(buffer, bindings, m_context.GetTextureCache()); ue != 0) {
+			if (ue == 2) {
+				auto& ue_cache = m_context.GetTextureCache();
+				ue_cache.CommitGpuWrite(ue_cache.GetImage(MetalFx::UeOutput()));
+			}
+			ResetBindings();
+			return;
+		}
+	}
+	// mfxlayer KYTY_METALFX_COMPUTE_REPLACE (metalfx.h, default off): MetalFX instead of the dispatch.
+	if (MetalFx::Requested() && MetalFx::ComputeReplace(input_info.stage.program->shader_hash)) [[unlikely]] {
+		if (TryMetalFxCompute(buffer, bindings)) {
+			ResetBindings();
+			return;
+		}
 	}
 	if (MetalFx::ResAuditEnabled()) [[unlikely]] {
 		MetalFx::ResAudit("dispatch-indirect", bindings, m_context.GetTextureCache(), ImageId {}, 0,
@@ -1965,7 +2010,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	if (program.info.bda_writes) {
 		m_context.GetBufferCache().SettleBdaWrites(program.shader_hash);
 	}
-	if (MetalFx::Requested()) [[unlikely]] {
+	if (MetalFx::Requested() && !MetalFx::ComputeReplace(program.shader_hash)) [[unlikely]] {
 		TryMetalFxCompute(buffer, bindings);
 	}
 	ResetBindings();
