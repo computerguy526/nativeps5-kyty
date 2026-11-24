@@ -41,6 +41,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineLibrary.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineStats.h"
+#include "graphics/host_gpu/renderer/pipeline/prepareArchiveFlush.h"
 #include "graphics/host_gpu/renderer/pipeline/programDiskCache.h"
 #include "graphics/host_gpu/renderer/pipeline/rtSession.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderCodeSnapshot.h"
@@ -6479,18 +6480,35 @@ void PipelineCache::RunListPrepare() {
 	// below runs no exit handler, so the pipelines compiled last (up to 32, the slowest of the list
 	// among them) were never written and the first session compiled them again. Nothing compiles
 	// any more here: wait one flush period.
-	if (const auto* archive = std::getenv("KK_PIPELINE_ARCHIVE_DIR");
-	    archive != nullptr && *archive != '\0') {
+	{
+		const auto* archive = std::getenv("KK_PIPELINE_ARCHIVE_DIR");
+		const bool  has_dir = archive != nullptr && *archive != '\0';
 		double period = 10.0;
 		if (const auto* custom = std::getenv("KK_PIPELINE_ARCHIVE_FLUSH_S");
 		    custom != nullptr && std::atof(custom) > 0.0) {
 			period = std::atof(custom);
 		}
-		PipelineCacheLog(
-		    "Prepare shaders: waiting {:.0f} s for the driver's pipeline archive to be written",
-		    period + 3.0);
+		// nps5 prepfast S1 (KYTY_PREPARE_FLUSH_SYNC=1): the driver's nps5_kk_archive_flush writes the archive and returns, no
+		// fixed sleep; without the gate or the symbol, or when it fails, the sleep below is the same as before.
+		const bool sync = EnvU64("KYTY_PREPARE_FLUSH_SYNC", 0) != 0;
+		auto*      flush = sync ? reinterpret_cast<ArchiveFlushFn>(dlsym(RTLD_DEFAULT, "nps5_kk_archive_flush")) : nullptr;
+		if (has_dir && !(sync && flush != nullptr)) {
+			PipelineCacheLog(
+			    "Prepare shaders: waiting {:.0f} s for the driver's pipeline archive to be written",
+			    period + 3.0);
+		}
 		std::fflush(nullptr);
-		std::this_thread::sleep_for(std::chrono::duration<double>(period + 3.0));
+		const auto flush_begin = CompileClockNs();
+		const auto outcome = PrepareArchiveWait(
+		    has_dir, sync, flush, static_cast<uint32_t>(EnvU64("KYTY_PREPARE_FLUSH_WAIT_MS", 60000)), period,
+		    [](double seconds) { std::this_thread::sleep_for(std::chrono::duration<double>(seconds)); });
+		if (outcome.synced) {
+			PipelineCacheLog("Prepare shaders: archive flushed on demand ({} pipelines, {:.2f} s), no fixed wait",
+			                 outcome.written, static_cast<double>(CompileClockNs() - flush_begin) / 1e9);
+		} else if (!outcome.note.empty()) {
+			PipelineCacheLog("Prepare shaders: KYTY_PREPARE_FLUSH_SYNC fell back to the {:.0f} s wait: {}",
+			                 outcome.slept_s, outcome.note);
+		}
 	}
 	std::fflush(nullptr);
 	std::_Exit(0);

@@ -789,6 +789,10 @@ add_executable(replay_skip_stats_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(replay_skip_stats_tests PRIVATE ${inc_headers})
 
+# nps5 prepfast S1: prepare archive wait (flush on demand vs the fixed sleep), header only, no GPU.
+add_executable(prepare_archive_flush_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PrepareArchiveFlushTests.cpp")
+target_include_directories(prepare_archive_flush_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5 kshaders: KosmicKrisp fallbacks (64-bit buffer atomic forms, min-LOD view range), no GPU.
 add_executable(kk_lowering_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/KkLoweringTests.cpp"
