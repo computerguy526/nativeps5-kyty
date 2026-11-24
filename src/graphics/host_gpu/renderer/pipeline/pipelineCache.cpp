@@ -7420,13 +7420,14 @@ void ApplyDualSourceBlending(const HW::Context& context, ShaderPixelInputInfo& p
 	}
 }
 
-// sarosclay: KYTY_PS_UINT32_TARGETS=1 (default off). A pixel export in a raw 32-bit SPI_SHADER_COL_FORMAT
-// (1 32_R, 2 32_GR, 3 32_AR, 9 32_ABGR) to a UINT colour target stores the export's bits. The emitter declares
-// such an output float4 (only mode 7, UINT16_ABGR, gets a uint4 output), and a float fragment output on an
-// integer attachment is undefined in Vulkan and Metal (SAROS: the 192x128 R32G32B32A32Uint virtual-texture page
-// table received garbage, so every VT material sampled one physical texel = the flat "clay" character).
-// With the switch the export's mode becomes 7 for such a target: uint4 output, raw bits (an uncompressed export
-// under mode 7 already takes the raw dwords). The mode is part of the pixel stage's static key.
+// sarosclay: KYTY_PS_UINT32_TARGETS=1 (default off). A pixel export in a raw 32-bit
+// SPI_SHADER_COL_FORMAT (1 32_R, 2 32_GR, 3 32_AR, 9 32_ABGR) to a UINT colour target stores the
+// export's bits. The emitter declares such an output float4 (only mode 7, UINT16_ABGR, gets a uint4
+// output), and a float fragment output on an integer attachment is undefined in Vulkan and Metal
+// (SAROS: the 192x128 R32G32B32A32Uint virtual-texture page table received garbage, so every VT
+// material sampled one physical texel = the flat "clay" character). With the switch the export's
+// mode becomes 7 for such a target: uint4 output, raw bits (an uncompressed export under mode 7
+// already takes the raw dwords). The mode is part of the pixel stage's static key.
 static bool PsUint32TargetsEnabled() {
 	static const bool enabled = [] {
 		const char* v = std::getenv("KYTY_PS_UINT32_TARGETS");
@@ -7468,14 +7469,16 @@ void ApplyUint32Targets(const HW::Context& context, ShaderPixelInputInfo& pixel_
 		if (rt.base.addr == 0 || rt.info.format == Prospero::ChannelLayout::kInvalid) {
 			continue;
 		}
-		const auto format =
-		    TextureGetRenderTargetFormat(rt.info.format, rt.info.channel_type, rt.info.channel_order).format;
+		const auto format = TextureGetRenderTargetFormat(rt.info.format, rt.info.channel_type,
+		                                                 rt.info.channel_order)
+		                        .format;
 		if (IsUintColorFormat(format)) {
 			pixel_info.target_output_mode[i] = 7;
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
-				std::fprintf(stderr, "[uint32targets] export %u -> slot %u %s: mode %u -> uint output\n", i, slot,
-				             vk::to_string(format).c_str(), mode);
+				std::fprintf(stderr,
+				             "[uint32targets] export %u -> slot %u %s: mode %u -> uint output\n", i,
+				             slot, vk::to_string(format).c_str(), mode);
 			}
 		}
 	}
