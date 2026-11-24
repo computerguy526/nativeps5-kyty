@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <cstdio>
@@ -255,8 +256,10 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 				const auto mode  = inst.Arg(2).U32();
 				used[input] = true;
 				// KYTY_PS_PER_VERTEX=0: no raw-vertex inputs (the reads take the interpolated value).
+				// sarosnanite: KYTY_SAROS_NANITE_RAW pixel shaders read the raw vertices from the mesh
+				// program's per-primitive copy.
 				per_vertex[input] =
-				    ShaderPixelRawVertexInputs(*pixel) &&
+				    (ShaderPixelRawVertexInputs(*pixel) || SarosNaniteRawPs(program.shader_hash)) &&
 				    (per_vertex[input] || mode < 2u || !ShaderPixelParameterIsFlat(*pixel, input));
 			}
 		}

@@ -153,6 +153,18 @@ public:
 	[[nodiscard]] bool TakeEagerFlushRequest(bool in_rendering);
 	[[nodiscard]] Buffer&  GetBuffer(BufferId id) { return m_slot_buffers[id]; }
 	[[nodiscard]] BufferId FindBuffer(uint64_t vaddr, uint64_t size);
+	// nps5 memtrk: KYTY_WATCH_CONSUMER=<hex program hash> (diagnostic). The dispatch/draw being bound
+	// names its program (SetWatchProgram); ObtainBuffer remembers the ranges the consumer binds and
+	// logs every other program that binds an overlapping range for writing (producer search).
+	static void SetWatchProgram(uint64_t program, int ring) noexcept;
+	// nps5 memtrk: KYTY_FLAG_READBACK=<hex hash>[,<hex hash>...] (diagnostic). After a listed program's
+	// dispatch, the first 128 bytes of each range it bound for writing are copied to a host buffer
+	// and printed when the dispatch's submission completes (first 16 dispatches per program).
+	void FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint32_t gy, uint32_t gz);
+	// The same watch for raw pointers: 64-bit word pairs and V# bases in a stage's user data and
+	// flattened SRT that point into (or up to 64 KiB below) a consumer range.
+	static void WatchScanWords(uint64_t program, std::span<const uint32_t> words, const char* kind,
+	                           uint64_t tick) noexcept;
 	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBuffer(uint64_t vaddr, uint64_t size,
 	                                                        bool     is_written,
 	                                                        bool     is_texel_buffer = false,
@@ -344,6 +356,8 @@ private:
 		uint64_t verify_mismatch_pages  = 0;
 	};
 	void SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSyncStats* stats);
+	// The original walk of SynchronizeBuffersInRange (every overlapping buffer).
+	void SynchronizeBuffersInRangeAll(uint64_t vaddr, uint64_t size, BdaSyncStats* stats);
 	// KYTY_BDA_HOT_SYNC pass: re-synchronizes only the hot page runs the last full pass recorded.
 	// False (nothing done) when a recorded buffer is gone; the caller then scans fully.
 	[[nodiscard]] bool SynchronizeBdaHotRanges(BdaSyncStats& stats);
@@ -933,6 +947,29 @@ private:
 	// write fault, which changes the fault epoch, and buffers only change with the structure one.
 	// Dirty-log passes add the hot runs they find in the logged ranges.
 	std::vector<BdaHotRange>                          m_bda_hot_ranges;
+	// nps5 findbuf (bufferCache.cpp, FindbufMode): KYTY_FINDBUF_FAST=1 walks only the buffers of a
+	// BDA range that hold CPU-dirty (or untracked) pages, found from the tracker's dirty runs
+	// (bdaScanWalk.h), and dedupes a dirty-log pass's new hot runs with a hash set;
+	// KYTY_FINDBUF_VERIFY=1 runs the old walk and checks the fast answer against it;
+	// KYTY_FINDBUF_STATS=1 (implied by both) prints "Findbuf 10s:" (BDA pass time by kind,
+	// buffers visited, hot pages compared). GPU thread only.
+	struct FindbufTotals {
+		uint64_t walks = 0, fast_walks = 0, fallback_walks = 0;
+		uint64_t old_visits = 0, old_dirty_visits = 0, fast_visits = 0, runs = 0;
+		uint64_t verify_walks = 0, verify_mismatches = 0, verify_races = 0, verify_extra = 0;
+		uint64_t dedupe_checks = 0, dedupe_mismatches = 0;
+		uint64_t pass_count[6] {};
+		uint64_t pass_ns[6] {};
+		uint64_t pass_bytes[6] {};
+		uint64_t hot_pages = 0;
+	};
+	int                                               m_findbuf_mode  = 0; // 0 off, 1 fast, 2 verify
+	bool                                              m_findbuf_stats = false;
+	FindbufTotals                                     m_findbuf_totals;
+	FindbufTotals                                     m_findbuf_reported;
+	std::chrono::steady_clock::time_point             m_findbuf_report_time {};
+	uint64_t                                          m_findbuf_report_calls = 0;
+	void                                              FindbufReport();
 	// KYTY_BDA_DIRTY_LOG (default on with KYTY_BDA_HOT_SYNC; =0 off). A BDA pass whose structure
 	// epoch is unchanged but whose fault epoch moved synchronizes only the ranges the tracker
 	// logged since the last pass (MemoryTracker::TakeDirtiedRanges, taken with the epoch they
@@ -942,6 +979,19 @@ private:
 	// range before advancing it, under its region lock and before changing the page's bits. A
 	// full scan runs when the log overflowed, the buffers changed (structure epoch), or no full
 	// scan with the log has run yet (m_bda_log_baseline).
+	// cphot 7, KYTY_BDA_STRUCT_LOG=1|verify (default off): a structure change by buffer creation or
+	// joining is logged as the new buffer's range (before the epoch bump), and the next BDA pass
+	// runs the dirty-log pass over it instead of the full scan. Any other bump (GPU map/unmap),
+	// any removal and any log overflow marks the log incomplete: the full scan then. GPU thread
+	// for the pass, any thread for the log (m_bda_struct_mutex).
+	int                                               m_bda_struct_log = 0; // 0 off, 1 on, 2 verify
+	std::mutex                                        m_bda_struct_mutex;
+	std::vector<std::pair<uint64_t, uint64_t>>        m_bda_struct_ranges;
+	bool                                              m_bda_struct_incomplete = false;
+	struct BdaStructTotals { uint64_t passes = 0, fallbacks = 0, verify_checks = 0, verify_mismatch_pages = 0; };
+	BdaStructTotals                                   m_bda_struct_totals;
+	void NoteBdaStructure(uint64_t address, uint64_t size, bool complete) noexcept;
+	void ReportBdaStruct();
 	bool                                              m_bda_dirty_log    = false;
 	bool                                              m_bda_log_baseline = false;
 	int                                               m_bda_log_verify   = 0;

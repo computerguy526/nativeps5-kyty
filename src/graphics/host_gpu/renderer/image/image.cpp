@@ -777,6 +777,39 @@ uint32_t Image::CopyRows(uint64_t row_size, uint32_t rows, uint64_t capacity) no
 	return static_cast<uint32_t>(std::min<uint64_t>(rows, capacity / row_size));
 }
 
+static uint32_t CopyTransferBytes(const Image& image) noexcept {
+	const auto depth = DepthAspectTransferBytes(image.backing.format);
+	return depth != 0 ? depth : image.info.bytes_per_block;
+}
+
+bool Image::CopyViaBufferSupported(const Image& source) const noexcept {
+	const uint32_t levels = std::min(source.backing.mip_levels, backing.mip_levels);
+	const auto     bytes  = CopyTransferBytes(source);
+	return levels != 0 && bytes != 0 && bytes == CopyTransferBytes(*this) &&
+	       source.info.IsBlock() == info.IsBlock();
+}
+
+void Image::DescribeCopyMismatch(const Image& source, const char* what) const noexcept {
+	const auto describe = [](const char* role, const Image& image) {
+		std::fprintf(stderr,
+		             "[memtrk]   %s 0x%016" PRIx64 "+0x%" PRIx64 " %s guest_fmt=%u tile=%u pitch=%u"
+		             " %ux%ux%u type=%d mips=%u layers=%u samples=%u bytes_per_block=%u transfer_bytes=%u "
+		             "block=%u\n",
+		             role, image.info.data.address, image.info.data.size,
+		             vk::to_string(image.backing.format).c_str(),
+		             static_cast<uint32_t>(image.info.guest_format), static_cast<uint32_t>(image.info.tile_mode),
+		             image.info.pitch,
+		             image.backing.extent.width, image.backing.extent.height, image.backing.extent.depth,
+		             static_cast<int>(image.backing.image_type), image.backing.mip_levels,
+		             image.backing.layers, static_cast<uint32_t>(image.backing.samples),
+		             image.info.bytes_per_block, CopyTransferBytes(image), image.info.IsBlock() ? 4u : 1u);
+	};
+	std::fprintf(stderr, "[memtrk] %s: image copy between incompatible texel sizes\n", what);
+	describe("source", source);
+	describe("destination", *this);
+	std::fflush(stderr);
+}
+
 void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler) {
 	// Copies read and write whole chains: TextureCache::RequireFullResidency comes first.
 	EXIT_IF(native_first != 0 || source.native_first != 0);
@@ -797,6 +830,10 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 	                                       : info.bytes_per_block;
 	const uint32_t source_block      = source.info.IsBlock() ? 4u : 1u;
 	const uint32_t destination_block = info.IsBlock() ? 4u : 1u;
+	if (levels == 0 || source_bytes == 0 || source_bytes != destination_bytes ||
+	    source_block != destination_block) [[unlikely]] {
+		DescribeCopyMismatch(source, "CopyImageWithBuffer");
+	}
 	EXIT_IF(levels == 0 || source_bytes == 0 || source_bytes != destination_bytes ||
 	        source_block != destination_block);
 	const auto source_transform = source.info.GetColorTransform();

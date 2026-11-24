@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include "common/assert.h"
@@ -12,6 +13,32 @@
 #include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
+
+// KYTY_SKIP_UNDECODABLE=1 (bring-up): a scalar operand the decoder does not know (e.g. SRC_SHARED_BASE,
+// which needs flat-aperture support) marks the program undecodable instead of ending the session;
+// TranslateProgram then skips its draws and dispatches.
+static thread_local uint32_t t_undecodable_pc   = UINT32_MAX;
+static thread_local uint32_t t_undecodable_code = 0;
+bool SkipUndecodable() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_SKIP_UNDECODABLE");
+		return v != nullptr && v[0] == '1';
+	}();
+	return on;
+}
+void NoteUndecodable(uint32_t pc, uint32_t code) {
+	if (t_undecodable_pc == UINT32_MAX) {
+		t_undecodable_pc   = pc;
+		t_undecodable_code = code;
+	}
+}
+bool TakeUndecodable(uint32_t& pc, uint32_t& code) {
+	if (t_undecodable_pc == UINT32_MAX) return false;
+	pc                 = t_undecodable_pc;
+	code               = t_undecodable_code;
+	t_undecodable_pc   = UINT32_MAX;
+	return true;
+}
 namespace {
 
 bool HasLiteral(const Instruction& inst) {
@@ -272,6 +299,10 @@ void DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand) {
 		case 125u: operand.kind = OperandKind::Null; return;
 		case 126u: operand.kind = OperandKind::ExecLo; return;
 		case 127u: operand.kind = OperandKind::ExecHi; return;
+		case 235u: operand.kind = OperandKind::SharedBase; return;
+		case 236u: operand.kind = OperandKind::SharedLimit; return;
+		case 237u: operand.kind = OperandKind::PrivateBase; return;
+		case 238u: operand.kind = OperandKind::PrivateLimit; return;
 		case 239u: operand.kind = OperandKind::PopsExitingWaveId; return;
 		case 248u:
 			operand.kind      = OperandKind::FloatInlineConstant;
@@ -281,7 +312,13 @@ void DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand) {
 		case 252u: operand.kind = OperandKind::ExecZ; return;
 		case 253u: operand.kind = OperandKind::Scc; return;
 		case 255u: operand.kind = OperandKind::LiteralConstant; return;
-		default: EXIT("unsupported scalar source operand 0x%08x at pc 0x%08x", code, pc);
+		default:
+			if (SkipUndecodable()) {
+				NoteUndecodable(pc, code);
+				operand.kind = OperandKind::Null;
+				return;
+			}
+			EXIT("unsupported scalar source operand 0x%08x at pc 0x%08x", code, pc);
 	}
 }
 
@@ -301,7 +338,13 @@ void DecodeScalarDestination(uint32_t code, uint32_t pc, Operand& operand) {
 		case 125u: operand.kind = OperandKind::Null; return;
 		case 126u: operand.kind = OperandKind::ExecLo; return;
 		case 127u: operand.kind = OperandKind::ExecHi; return;
-		default: EXIT("unsupported scalar destination operand 0x%08x at pc 0x%08x", code, pc);
+		default:
+			if (SkipUndecodable()) {
+				NoteUndecodable(pc, code);
+				operand.kind = OperandKind::Null;
+				return;
+			}
+			EXIT("unsupported scalar destination operand 0x%08x at pc 0x%08x", code, pc);
 	}
 }
 
@@ -480,6 +523,10 @@ std::string OperandToString(const Operand& operand) {
 		case OperandKind::ExecZ: text = "execz"; break;
 		case OperandKind::Scc: text = "scc"; break;
 		case OperandKind::M0: text = "m0"; break;
+		case OperandKind::SharedBase: text = "shared_base"; break;
+		case OperandKind::SharedLimit: text = "shared_limit"; break;
+		case OperandKind::PrivateBase: text = "private_base"; break;
+		case OperandKind::PrivateLimit: text = "private_limit"; break;
 		case OperandKind::PopsExitingWaveId: text = "pops_exiting_wave_id"; break;
 		case OperandKind::Null: text = "null"; break;
 		default: text = "unknown"; break;

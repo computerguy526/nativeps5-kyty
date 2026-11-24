@@ -78,6 +78,9 @@ public:
 		uint32_t                  wave_size       = 0;
 		uint32_t                  user_data_base  = 0;
 		bool                      plain_mip_stats_variant = false;
+		// sarosperf: translation-changing switch state (0 = none, adds nothing to the key bytes, so
+		// every pre-existing cache entry keeps its key). See SarosCacheVariant in pipelineCache.cpp.
+		uint64_t                  variant = 0;
 		std::span<const uint32_t> code;
 		std::span<const uint32_t> back_code;
 	};

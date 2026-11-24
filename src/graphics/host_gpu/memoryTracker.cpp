@@ -1,5 +1,8 @@
 #include "graphics/host_gpu/memoryTracker.h"
 
+#include <cstdio>
+#include <execinfo.h>
+
 #include "common/alignment.h"
 #include "common/assert.h"
 
@@ -8,6 +11,18 @@
 #include <cstring>
 
 namespace Libs::Graphics {
+
+void MemoryTracker::ReportUploadReentry() noexcept {
+	void*     frames[64];
+	const int count = ::backtrace(frames, 64);
+	std::fprintf(stderr, "[memtrk] memory tracker re-entered from upload callback; backtrace (%d frames):\n",
+	             count);
+	std::fflush(stderr);
+	::backtrace_symbols_fd(frames, count, 2);
+	EXIT("memory tracker re-entered from upload callback\n");
+	std::abort();
+}
+
 
 static_assert(std::atomic<void*>::is_always_lock_free);
 

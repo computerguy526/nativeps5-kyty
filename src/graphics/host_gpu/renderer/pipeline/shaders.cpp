@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "common/assert.h"
 #include "graphics/compileProgress.h"
 #include "common/common.h"
@@ -22,6 +23,12 @@
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
+#include <unordered_map>
+#include <mutex>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+#include <dlfcn.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -759,6 +766,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
+	if (input_info.stage.program != nullptr) {
+		KkTagRegisterModule(compute_module, input_info.stage.program->shader_hash);
+	}
+	const KkTagScope kk_tag_scope(compute_module);
 	if (create_hook != nullptr) {
 		result = (*create_hook)(info, &pipeline.pipeline);
 	} else {
@@ -790,4 +801,67 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 }
 
+} // namespace Libs::Graphics
+
+namespace Libs::Graphics {
+namespace {
+using KkTagFn = void (*)(uint64_t);
+KkTagFn KkTagFunction() {
+	static const KkTagFn fn = [] {
+		const char* v = std::getenv("KYTY_KK_TAG");
+		if (v == nullptr || std::strcmp(v, "1") != 0) {
+			return KkTagFn {nullptr};
+		}
+		// The Vulkan loader opens the ICD RTLD_LOCAL: its symbols are not in the global namespace.
+		// Look for the loaded KosmicKrisp image by name and resolve the symbol from its handle.
+		void* sym = dlsym(RTLD_DEFAULT, "nps5_kk_tag");
+#if defined(__APPLE__)
+		for (uint32_t i = 0; sym == nullptr && i < _dyld_image_count(); i++) {
+			const char* name = _dyld_get_image_name(i);
+			if (name != nullptr && std::strstr(name, "kosmickrisp") != nullptr) {
+				if (void* handle = dlopen(name, RTLD_NOLOAD | RTLD_LAZY); handle != nullptr) {
+					sym = dlsym(handle, "nps5_kk_tag");
+				}
+			}
+		}
+#endif
+		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n", sym != nullptr ? "found" : "NOT found");
+		return reinterpret_cast<KkTagFn>(sym);
+	}();
+	return fn;
+}
+std::mutex                             g_kk_tag_mutex;
+std::unordered_map<uint64_t, uint64_t> g_kk_tag_modules;
+} // namespace
+
+void KkTagRegisterModule(vk::ShaderModule module, uint64_t program_hash) {
+	if (KkTagFunction() == nullptr || module == nullptr) {
+		return;
+	}
+	std::scoped_lock lock(g_kk_tag_mutex);
+	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] = program_hash;
+}
+
+KkTagScope::KkTagScope(vk::ShaderModule module) {
+	const auto fn = KkTagFunction();
+	if (fn == nullptr || module == nullptr) {
+		return;
+	}
+	uint64_t hash = 0;
+	{
+		std::scoped_lock lock(g_kk_tag_mutex);
+		const auto it = g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
+		if (it != g_kk_tag_modules.end()) {
+			hash = it->second;
+		}
+	}
+	fn(hash);
+	m_set = true;
+}
+
+KkTagScope::~KkTagScope() {
+	if (m_set) {
+		KkTagFunction()(0);
+	}
+}
 } // namespace Libs::Graphics

@@ -231,6 +231,12 @@ public:
 	// thread only (the depth-target resolution of draws).
 	[[nodiscard]] bool IsMetaCleared(uint64_t address, uint32_t slice);
 	[[nodiscard]] bool ClearMeta(uint64_t address);
+	// memtrk (KYTY_META_EXPORT_NOT_CLEAR): every slice of the metadata at `address` stops being
+	// clear (a compute pass wrote the surface and its metadata, e.g. a depth export).
+	[[nodiscard]] bool ExpandMeta(uint64_t address);
+	// KYTY_META_EXPORT_NOT_CLEAR: a storage binding of `image` stops overlapping HTILE being clear.
+	// Caller holds m_lock.
+	void ExpandMetaForStorageWriteLocked(const Image& image);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
 
 	void UnmapMemory(uint64_t address, uint64_t size);

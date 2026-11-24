@@ -361,6 +361,7 @@ private:
 	void          ExecWriteData(const CpSeq::WriteDataOp& op, const uint32_t* src);
 	void          ExecReferenceClock(const CpSeq::ReferenceClockOp& op);
 	void          ExecDmaData(const CpSeq::DmaDataOp& op);
+	void          ExecBundleCompact(const CpSeq::BundleCompactOp& op); // sarosbundle
 	void          ExecLodStats(const CpSeq::LodStatsOp& op);
 	void          ExecFlip(const CpSeq::FlipOp& op);
 	CpSeq::Result ExecWaitRegMem(const CpSeq::WaitRegMemOp& op);

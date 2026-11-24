@@ -398,6 +398,7 @@ void Write(CodecWriter& w, const ImageResource& v) {
 	w.U32(v.indirect_root);
 	w.U32(v.indirect_mapping_offset);
 	w.U32(v.indirect_search_iterations);
+	w.U32(v.indirect_group);
 	w.Words(v.indirect_resources);
 }
 
@@ -421,6 +422,7 @@ void Read(CodecReader& r, ImageResource& v) {
 	v.indirect_root              = r.U32();
 	v.indirect_mapping_offset    = r.U32();
 	v.indirect_search_iterations = r.U32();
+	v.indirect_group             = r.U32();
 	v.indirect_resources         = r.Words();
 }
 
@@ -553,6 +555,7 @@ void Write(CodecWriter& w, const ResourceSpecialization::Image& v) {
 	w.U32(v.indirect_root);
 	w.U32(v.indirect_mapping_offset);
 	w.U32(v.indirect_search_iterations);
+	w.U32(v.indirect_group);
 	w.Bool(v.cube);
 	w.Bool(v.fmask);
 }
@@ -566,6 +569,7 @@ void Read(CodecReader& r, ResourceSpecialization::Image& v) {
 	v.indirect_root              = r.U32();
 	v.indirect_mapping_offset    = r.U32();
 	v.indirect_search_iterations = r.U32();
+	v.indirect_group             = r.U32();
 	v.cube                       = r.Bool();
 	v.fmask                      = r.Bool();
 }

@@ -27,6 +27,7 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
+#include <vulkan/vulkan_format_traits.hpp>
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/lowLatency.h"
 #include "graphics/presentation/window/windowInternal.h"
@@ -804,6 +805,22 @@ public:
 		if (!m_pending.empty() && m_flips >= m_pending_flip + m_delay) {
 			Write(graphics);
 		}
+		// memtrk: KYTY_DUMP_TARGETS_AFTER_S=<s>: the series starts at the first flip at least s seconds
+		// after the first flip (KYTY_DUMP_TARGETS_FROM is then counted from that flip).
+		if (m_after_s > 0 && !m_after_armed) {
+			const auto now = std::chrono::steady_clock::now();
+			if (m_first_flip_time == std::chrono::steady_clock::time_point {}) {
+				m_first_flip_time = now;
+			}
+			if (std::chrono::duration<double>(now - m_first_flip_time).count() < m_after_s) {
+				return;
+			}
+			m_after_armed = true;
+			m_from += m_flips - 1;
+			std::fprintf(stderr, "[kyty-target] time trigger %d s reached at flip %llu: series from flip %llu\n",
+			             m_after_s, static_cast<unsigned long long>(m_flips),
+			             static_cast<unsigned long long>(m_from));
+		}
 		// A series with KYTY_DUMP_TARGETS_EVERY below the delay (consecutive flips for a flicker
 		// check) is recorded whole and written after its last dump.
 		// KYTY_DUMP_TARGETS_BURST=<k> (default 1): k consecutive flips at each dump point (two give a
@@ -821,11 +838,75 @@ public:
 			const auto& info    = image.info;
 			const auto  format  = image.backing.format;
 			const auto  name    = vk::to_string(format);
+			// sarostex2: KYTY_DUMP_BC=1 (default off): raw level-0 / layer-0 texel blocks of block-compressed
+			// images, and of the images named in KYTY_DUMP_BC_ADDRS (any uncompressed format), to a host
+			// buffer, written as .bin + .json (+ .dds for BC) next to the BMPs.
+			if (m_bc && image.backing.image != nullptr && info.samples == 1 && !info.IsDepth() &&
+			    BcWanted(info.data.address, info.data.size, image.backing.extent.width,
+			                                 info.IsBlock())) {
+				const uint32_t bw   = image.backing.extent.width;
+				const uint32_t bh   = image.backing.extent.height;
+				const bool     bcf  = IsBcFormat(format);
+				const uint64_t bpb  = vk::blockSize(format);
+				const uint64_t cols = bcf ? (bw + 3) / 4 : bw;
+				const uint64_t rows = bcf ? (bh + 3) / 4 : bh;
+				// saroslight: volumes (the baked-lighting bricks) are dumped whole, all depth slices of level 0.
+				const uint32_t slices = info.IsVolume() ? std::max(image.backing.extent.depth, 1u) : 1u;
+				const uint64_t bytes  = cols * rows * bpb * slices;
+				if (bpb != 0 && bytes <= (96ull << 20) && m_bc_bytes + bytes <= (768ull << 20) &&
+				    m_pending.size() < m_bc_max) {
+					m_bc_bytes += bytes;
+					Entry entry {};
+					entry.bc            = true;
+					entry.bc_bytes      = bytes;
+					entry.bc_bcf        = bcf;
+					entry.bc_format     = format;
+					entry.extent.width  = bw;
+					entry.extent.height = bh;
+					entry.address       = info.data.address;
+					entry.guest_format  = static_cast<unsigned>(info.guest_format);
+					entry.tile_mode     = static_cast<unsigned>(info.tile_mode);
+					entry.levels        = info.resources.levels;
+					entry.layers        = info.IsVolume() ? slices : info.resources.layers;
+					std::snprintf(entry.name, sizeof(entry.name), "bc_%02d_%llx_%ux%u%s%u_%s", index,
+					              static_cast<unsigned long long>(info.data.address), bw, bh, info.IsVolume() ? "x" : "_L",
+					              info.IsVolume() ? slices : 1u, name.c_str());
+					Create(graphics, entry);
+					image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+					              command);
+					vk::BufferImageCopy copy {};
+					copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+					copy.imageExtent      = vk::Extent3D {bw, bh, slices};
+					command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal,
+					                          entry.buffer, 1, &copy);
+					m_pending.push_back(entry);
+					std::fprintf(stderr,
+					             "[kyty-bc] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile %u levels %u layers %u "
+					             "%llu bytes\n",
+					             index, static_cast<unsigned long long>(m_flips),
+					             static_cast<unsigned long long>(info.data.address),
+					             static_cast<unsigned long long>(info.data.size), bw, bh, name.c_str(),
+					             entry.guest_format, entry.tile_mode, entry.levels, entry.layers,
+					             static_cast<unsigned long long>(bytes));
+				} else {
+					std::fprintf(stderr, "[kyty-bc] skipped image 0x%llx %ux%u %s (%llu bytes, budget)\n",
+					             static_cast<unsigned long long>(info.data.address), bw, bh, name.c_str(),
+					             static_cast<unsigned long long>(bytes));
+				}
+				return;
+			}
 			const bool  integer = name.find("int") != std::string::npos;
-			const bool  wanted  = image.backing.image != nullptr && !info.IsDepth() && !info.IsBlock() &&
-			                      !info.IsVolume() && image.backing.extent.width >= m_min_width &&
-			                      (m_only_width == 0 || image.backing.extent.width == m_only_width);
-			const bool  blit    = wanted && info.samples == 1 && !integer &&
+			const bool  size_ok = image.backing.image != nullptr && !info.IsBlock() && !info.IsVolume() &&
+			                     image.backing.extent.width >= m_min_width &&
+			                     (m_only_width == 0 || image.backing.extent.width == m_only_width);
+			// memtrk: KYTY_DUMP_TARGETS_DEPTH=1 also dumps depth images (depth aspect, level 0 / layer 0,
+			// full resolution, as raw values to a host buffer, written as a min..max grey BMP).
+			const auto  depth_fmt  = DepthAspectTransferFormat(format);
+			const auto  depth_size = DepthAspectTransferBytes(format);
+			const bool  depth_dump = m_depth && size_ok && info.IsDepth() && info.samples == 1 &&
+			                        depth_size != 0 && m_pending.size() < 256;
+			const bool  wanted  = size_ok && (!info.IsDepth() || m_depth);
+			const bool  blit    = wanted && !info.IsDepth() && info.samples == 1 && !integer &&
 			                      static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
 			                                        vk::FormatFeatureFlagBits::eBlitSrc) &&
 			                      m_pending.size() < 256;
@@ -847,7 +928,81 @@ public:
 				             static_cast<unsigned long long>(image.DefiniteWrites()),
 				             static_cast<unsigned>(info.metadata.kind),
 				             static_cast<unsigned long long>(info.metadata.range.address),
-				             info.metadata.dcc_clear_word, blit ? "" : " (not dumped)");
+				             info.metadata.dcc_clear_word, blit || depth_dump ? "" : " (not dumped)");
+			}
+			if (depth_dump) {
+				Entry entry {};
+				entry.depth         = true;
+				entry.depth_format  = depth_fmt;
+				entry.texel_bytes   = depth_size;
+				entry.extent.width  = image.backing.extent.width;
+				entry.extent.height = image.backing.extent.height;
+				std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
+				              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+				              image.backing.extent.height, name.c_str());
+				Create(graphics, entry);
+				image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+				              command);
+				vk::BufferImageCopy copy {};
+				copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1};
+				copy.imageExtent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
+				command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
+				                          &copy);
+				m_pending.push_back(entry);
+				// nanite: the stencil aspect too (raw bytes: nonzero share and value range, "_stencil"),
+				// e.g. the Nanite bit a depth export sets for the material passes' stencil test.
+				if (format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint ||
+				    format == vk::Format::eD16UnormS8Uint) {
+					Entry stencil {};
+					stencil.raw           = true;
+					stencil.texel_bytes   = 1;
+					stencil.extent        = entry.extent;
+					std::snprintf(stencil.name, sizeof(stencil.name), "k3_%02d_%llx_%ux%u_stencil.bmp", index,
+					              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+					              image.backing.extent.height);
+					Create(graphics, stencil);
+					vk::BufferImageCopy scopy {};
+					scopy.imageSubresource = {vk::ImageAspectFlagBits::eStencil, 0, 0, 1};
+					scopy.imageExtent      = vk::Extent3D {stencil.extent.width, stencil.extent.height, 1};
+					command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, stencil.buffer,
+					                          1, &scopy);
+					m_pending.push_back(stencil);
+				}
+				return;
+			}
+			// memtrk: KYTY_DUMP_TARGETS_RAW=1 also dumps single-sample integer colour images (e.g. a
+			// 64-bit visibility buffer): raw texels to a host buffer, written as a BMP that colours each
+			// nonzero texel by a hash of its low 32 bits, plus the share of nonzero texels.
+			uint32_t raw_bytes = 0;
+			switch (format) {
+				case vk::Format::eR8Uint: raw_bytes = 1; break;
+				case vk::Format::eR16Uint: raw_bytes = 2; break;
+				case vk::Format::eR32Uint:
+				case vk::Format::eR8G8B8A8Uint: raw_bytes = 4; break;
+				case vk::Format::eR32G32Uint: raw_bytes = 8; break;
+				case vk::Format::eR32G32B32A32Uint: raw_bytes = 16; break;
+				default: break;
+			}
+			if (m_raw && wanted && integer && !info.IsDepth() && info.samples == 1 && raw_bytes != 0 &&
+			    m_pending.size() < 256) {
+				Entry entry {};
+				entry.raw           = true;
+				entry.texel_bytes   = raw_bytes;
+				entry.extent.width  = image.backing.extent.width;
+				entry.extent.height = image.backing.extent.height;
+				std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
+				              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+				              image.backing.extent.height, name.c_str());
+				Create(graphics, entry);
+				image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+				              command);
+				vk::BufferImageCopy copy {};
+				copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+				copy.imageExtent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
+				command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
+				                          &copy);
+				m_pending.push_back(entry);
+				return;
 			}
 			if (!blit) {
 				return;
@@ -910,6 +1065,17 @@ private:
 		vk::Buffer       buffer        = nullptr;
 		vk::DeviceMemory buffer_memory = nullptr;
 		void*            mapped        = nullptr;
+		bool             depth         = false; // memtrk: raw depth aspect in `buffer`, no `image`
+		bool             raw           = false; // memtrk: raw integer texels in `buffer`, no `image`
+		bool             bc            = false; // sarostex2: raw level-0 texel blocks in `buffer`, no `image`
+		bool             bc_bcf        = false;
+		uint64_t         bc_bytes      = 0;
+		vk::Format       bc_format     = vk::Format::eUndefined;
+		uint64_t         address       = 0;
+		unsigned         guest_format  = 0, tile_mode = 0;
+		uint32_t         levels        = 0, layers = 0;
+		vk::Format       depth_format  = vk::Format::eUndefined;
+		uint32_t         texel_bytes   = 4;
 	};
 	TargetDump() {
 		const auto number = [](const char* name, int fallback) {
@@ -924,6 +1090,26 @@ private:
 		m_max_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MAXW", 960), 16));
 		m_only_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_ONLYW", 0), 0));
 		m_burst      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_BURST", 1), 1));
+		m_depth      = number("KYTY_DUMP_TARGETS_DEPTH", 0) != 0;
+		m_raw        = number("KYTY_DUMP_TARGETS_RAW", 0) != 0;
+		m_after_s    = std::max(number("KYTY_DUMP_TARGETS_AFTER_S", 0), 0);
+		m_bc         = number("KYTY_DUMP_BC", 0) != 0;
+		m_bc_max     = static_cast<size_t>(std::max(number("KYTY_DUMP_BC_MAX", 400), 1));
+		m_bc_all     = number("KYTY_DUMP_BC_ALL", 0) != 0;
+		m_bc_minw    = static_cast<uint32_t>(std::max(number("KYTY_DUMP_BC_MINW", 16), 1));
+		m_bc_maxw    = static_cast<uint32_t>(std::max(number("KYTY_DUMP_BC_MAXW", 4096), 16));
+		if (const char* list = std::getenv("KYTY_DUMP_BC_ADDRS"); m_bc && list != nullptr) {
+			for (const char* at = list; *at != '\0';) {
+				char*          end = nullptr;
+				const uint64_t a   = std::strtoull(at, &end, 16);
+				if (end == at) {
+					at++;
+					continue;
+				}
+				m_bc_addrs.push_back(a);
+				at = end;
+			}
+		}
 	}
 	static void Create(GraphicContext& graphics, Entry& entry) {
 		auto       device      = graphics.device;
@@ -937,6 +1123,9 @@ private:
 			EXIT("target dump: no memory type\n");
 			return 0u;
 		};
+		vk::MemoryRequirements requirements {};
+		vk::MemoryAllocateInfo allocate {};
+		if (!entry.depth && !entry.raw && !entry.bc) {
 		vk::ImageCreateInfo create {};
 		create.imageType   = vk::ImageType::e2D;
 		create.extent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
@@ -946,16 +1135,17 @@ private:
 		create.usage   = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 		create.samples = vk::SampleCountFlagBits::e1;
 		RequireVulkanSuccess(device.createImage(&create, nullptr, &entry.image), "target dump image");
-		vk::MemoryRequirements requirements {};
 		device.getImageMemoryRequirements(entry.image, &requirements);
-		vk::MemoryAllocateInfo allocate {};
 		allocate.allocationSize  = requirements.size;
 		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
 		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &entry.image_memory),
 		                     "target dump image memory");
 		device.bindImageMemory(entry.image, entry.image_memory, 0);
+		}
 		vk::BufferCreateInfo buffer {};
-		buffer.size  = static_cast<vk::DeviceSize>(entry.extent.width) * entry.extent.height * 4u;
+		buffer.size  = entry.bc ? entry.bc_bytes
+		                        : static_cast<vk::DeviceSize>(entry.extent.width) * entry.extent.height *
+		                              (entry.depth || entry.raw ? entry.texel_bytes : 4u);
 		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
 		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &entry.buffer), "target dump buffer");
 		device.getBufferMemoryRequirements(entry.buffer, &requirements);
@@ -972,6 +1162,18 @@ private:
 	void Write(GraphicContext& graphics) {
 		auto device = graphics.device;
 		for (auto& entry: m_pending) {
+			if (entry.bc) {
+				WriteBc(device, entry);
+				continue;
+			}
+			if (entry.depth) {
+				WriteDepth(device, entry);
+				continue;
+			}
+			if (entry.raw) {
+				WriteRaw(device, entry);
+				continue;
+			}
 			const uint32_t bytes = entry.extent.width * entry.extent.height * 4u;
 			uint8_t        header[54] {};
 			const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
@@ -1011,7 +1213,254 @@ private:
 		}
 		m_pending.clear();
 	}
+	static uint32_t BcDxgi(vk::Format f) {
+		switch (f) {
+			case vk::Format::eBc1RgbUnormBlock:
+			case vk::Format::eBc1RgbaUnormBlock: return 71;
+			case vk::Format::eBc1RgbSrgbBlock:
+			case vk::Format::eBc1RgbaSrgbBlock: return 72;
+			case vk::Format::eBc2UnormBlock: return 74;
+			case vk::Format::eBc2SrgbBlock: return 75;
+			case vk::Format::eBc3UnormBlock: return 77;
+			case vk::Format::eBc3SrgbBlock: return 78;
+			case vk::Format::eBc4UnormBlock: return 80;
+			case vk::Format::eBc4SnormBlock: return 81;
+			case vk::Format::eBc5UnormBlock: return 83;
+			case vk::Format::eBc5SnormBlock: return 84;
+			case vk::Format::eBc6HUfloatBlock: return 95;
+			case vk::Format::eBc6HSfloatBlock: return 96;
+			case vk::Format::eBc7UnormBlock: return 98;
+			case vk::Format::eBc7SrgbBlock: return 99;
+			default: return 0;
+		}
+	}
+	static bool IsBcFormat(vk::Format f) { return BcDxgi(f) != 0; }
+	// sarostex2: an image to dump: named in KYTY_DUMP_BC_ADDRS (any format; an address inside the image
+	// counts) or, with no list, any block-compressed image of width KYTY_DUMP_BC_MINW..MAXW (16..4096); KYTY_DUMP_BC_ALL=1 adds that range to the list.
+	bool BcWanted(uint64_t address, uint64_t size, uint32_t width, bool block) const {
+		for (const auto a: m_bc_addrs) {
+			if (address == a || (size != 0 && a > address && a < address + size)) {
+				return true;
+			}
+		}
+		return (m_bc_addrs.empty() || m_bc_all) && block && width >= m_bc_minw && width <= m_bc_maxw;
+	}
+	// sarostex2: <name>.bin = raw level-0 blocks, <name>.json = format/size/tiling, <name>.dds for BC (DX10 header).
+	void WriteBc(vk::Device device, Entry& entry) {
+		const auto*    src  = static_cast<const uint8_t*>(entry.mapped);
+		const uint32_t dxgi = BcDxgi(entry.bc_format);
+		uint64_t       groups = 0, nonzero = 0;
+		for (uint64_t i = 0; i + 4 <= entry.bc_bytes; i += 16) {
+			uint8_t x = 0;
+			for (uint64_t k = 0; k < 16 && i + k < entry.bc_bytes; k++) {
+				x |= src[i + k];
+			}
+			nonzero += x != 0;
+			groups++;
+		}
+		if (auto* file = std::fopen(DumpPath((std::string(entry.name) + ".bin").c_str()).c_str(), "wb"); file != nullptr) {
+			std::fwrite(src, 1, entry.bc_bytes, file);
+			std::fclose(file);
+		}
+		if (dxgi != 0) {
+			if (auto* file = std::fopen(DumpPath((std::string(entry.name) + ".dds").c_str()).c_str(), "wb"); file != nullptr) {
+				uint32_t h[37] {}; // magic, 124-byte header (31 dwords), DX10 header (5 dwords)
+				h[0]  = 0x20534444u; // "DDS "
+				h[1]  = 124;
+				h[2]  = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000; // caps height width pixelformat linearsize
+				h[3]  = entry.extent.height;
+				h[4]  = entry.extent.width;
+				h[5]  = static_cast<uint32_t>(entry.bc_bytes);
+				h[7]  = 1;                 // mip count
+				h[19] = 32;                // pixel format size
+				h[20] = 0x4;               // DDPF_FOURCC
+				h[21] = 0x30315844u;       // "DX10"
+				h[27] = 0x1000;            // DDSCAPS_TEXTURE
+				h[32] = dxgi;              // DX10 header: format, 2D, misc, array size, alpha mode
+				h[33] = 3;
+				h[35] = 1;
+				std::fwrite(h, 4, 37, file);
+				std::fwrite(src, 1, entry.bc_bytes, file);
+				std::fclose(file);
+			}
+		}
+		if (auto* file = std::fopen(DumpPath((std::string(entry.name) + ".json").c_str()).c_str(), "wb"); file != nullptr) {
+			std::fprintf(file,
+			             "{\"address\": \"0x%llx\", \"format\": \"%s\", \"guest_format\": %u, \"tile_mode\": %u, "
+			             "\"width\": %u, \"height\": %u, \"levels\": %u, \"layers\": %u, \"bc\": %s, \"dxgi\": %u, "
+			             "\"bytes\": %llu}\n",
+			             static_cast<unsigned long long>(entry.address), vk::to_string(entry.bc_format).c_str(),
+			             entry.guest_format, entry.tile_mode, entry.extent.width, entry.extent.height, entry.levels,
+			             entry.layers, entry.bc_bcf ? "true" : "false", dxgi,
+			             static_cast<unsigned long long>(entry.bc_bytes));
+			std::fclose(file);
+		}
+		std::fprintf(stderr, "[kyty-bc] %s: written, %.1f%% of 16-byte groups nonzero\n", entry.name,
+		             groups != 0 ? 100.0 * static_cast<double>(nonzero) / static_cast<double>(groups) : 0.0);
+		device.unmapMemory(entry.buffer_memory);
+		device.destroyBuffer(entry.buffer, nullptr);
+		device.freeMemory(entry.buffer_memory, nullptr);
+	}
+	// memtrk: a depth entry as a grey BMP (black = min, white = max of the values that are neither 0
+	// nor 1) and one stats line: the share of pixels at exactly 0
+	// and 1 (cleared near/far) tells whether a pass wrote depth at all.
+	void WriteDepth(vk::Device device, Entry& entry) {
+		const uint64_t pixels_n = static_cast<uint64_t>(entry.extent.width) * entry.extent.height;
+		std::vector<float> values(pixels_n);
+		const auto* src = static_cast<const uint8_t*>(entry.mapped);
+		for (uint64_t i = 0; i < pixels_n; i++) {
+			if (entry.depth_format == vk::Format::eD16Unorm) {
+				uint16_t v = 0;
+				std::memcpy(&v, src + i * 2, 2);
+				values[i] = static_cast<float>(v) / 65535.0f;
+			} else if (entry.depth_format == vk::Format::eX8D24UnormPack32) {
+				uint32_t v = 0;
+				std::memcpy(&v, src + i * 4, 4);
+				values[i] = static_cast<float>(v & 0x00ffffffu) / 16777215.0f;
+			} else {
+				std::memcpy(&values[i], src + i * 4, 4);
+			}
+		}
+		uint64_t zeros = 0, ones = 0, other = 0;
+		float    lo = 1e30f, hi = -1e30f;
+		for (const auto v: values) {
+			if (v == 0.0f) {
+				zeros++;
+			} else if (v == 1.0f) {
+				ones++;
+			} else {
+				other++;
+				lo = std::min(lo, v);
+				hi = std::max(hi, v);
+			}
+		}
+		const uint32_t bytes = static_cast<uint32_t>(pixels_n * 4u);
+		uint8_t        header[54] {};
+		const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+		header[0] = 'B';
+		header[1] = 'M';
+		put(2, 54u + bytes);
+		put(10, 54u);
+		put(14, 40u);
+		put(18, entry.extent.width);
+		put(22, static_cast<uint32_t>(-static_cast<int32_t>(entry.extent.height)));
+		header[26] = 1;
+		header[28] = 32;
+		put(34, bytes);
+		put(38, 2835u);
+		put(42, 2835u);
+		std::vector<uint8_t> out(bytes);
+		const float          span = hi > lo ? hi - lo : 1.0f;
+		for (uint64_t i = 0; i < pixels_n; i++) {
+			const float v = values[i];
+			uint8_t     g = 0;
+			if (v == 1.0f) {
+				g = 255;
+			} else if (v != 0.0f) {
+				g = static_cast<uint8_t>(std::clamp((v - lo) / span, 0.0f, 1.0f) * 253.0f + 1.0f);
+			}
+			out[i * 4 + 0] = g;
+			out[i * 4 + 1] = g;
+			out[i * 4 + 2] = g;
+			out[i * 4 + 3] = 0xff;
+		}
+		if (auto* file = std::fopen(DumpPath(entry.name).c_str(), "wb"); file != nullptr) {
+			std::fwrite(header, 1, sizeof(header), file);
+			std::fwrite(out.data(), 1, bytes, file);
+			std::fclose(file);
+		}
+		std::fprintf(stderr,
+		             "[kyty-target] %s: depth %ux%u zero %.1f%% one %.1f%% other %.1f%% (min %.6g max %.6g)\n",
+		             entry.name, entry.extent.width, entry.extent.height,
+		             100.0 * static_cast<double>(zeros) / static_cast<double>(pixels_n),
+		             100.0 * static_cast<double>(ones) / static_cast<double>(pixels_n),
+		             100.0 * static_cast<double>(other) / static_cast<double>(pixels_n), other != 0 ? lo : 0.0f,
+		             other != 0 ? hi : 0.0f);
+		device.unmapMemory(entry.buffer_memory);
+		device.destroyBuffer(entry.buffer, nullptr);
+		device.freeMemory(entry.buffer_memory, nullptr);
+	}
 
+	// memtrk: a raw integer entry: nonzero texels coloured by a hash of their low 32 bits (black =
+	// zero), plus the share of nonzero texels and, for 8-byte texels, the range of the high words.
+	void WriteRaw(vk::Device device, Entry& entry) {
+		const uint64_t pixels_n = static_cast<uint64_t>(entry.extent.width) * entry.extent.height;
+		const auto*    src      = static_cast<const uint8_t*>(entry.mapped);
+		const uint32_t bytes    = static_cast<uint32_t>(pixels_n * 4u);
+		std::vector<uint8_t> out(bytes);
+		uint64_t nonzero = 0;
+		uint32_t hi_min = UINT32_MAX, hi_max = 0, lo_min = UINT32_MAX, lo_max = 0;
+		for (uint64_t i = 0; i < pixels_n; i++) {
+			const uint8_t* t   = src + i * entry.texel_bytes;
+			uint32_t       low = 0;
+			std::memcpy(&low, t, std::min<uint32_t>(entry.texel_bytes, 4u));
+			bool any = false;
+			for (uint32_t b = 0; b < entry.texel_bytes; b++) {
+				any |= t[b] != 0;
+			}
+			if (entry.texel_bytes >= 8) {
+				uint32_t hi = 0;
+				std::memcpy(&hi, t + 4, 4);
+				if (any) {
+					hi_min = std::min(hi_min, hi);
+					hi_max = std::max(hi_max, hi);
+				}
+			}
+			uint8_t r = 0, g = 0, b = 0;
+			if (any) {
+				nonzero++;
+				lo_min = std::min(lo_min, low);
+				lo_max = std::max(lo_max, low);
+				uint32_t h = low * 2654435761u;
+				h ^= h >> 15;
+				r = static_cast<uint8_t>(64 + (h & 0xbf));
+				g = static_cast<uint8_t>(64 + ((h >> 8) & 0xbf));
+				b = static_cast<uint8_t>(64 + ((h >> 16) & 0xbf));
+			}
+			out[i * 4 + 0] = b;
+			out[i * 4 + 1] = g;
+			out[i * 4 + 2] = r;
+			out[i * 4 + 3] = 0xff;
+		}
+		uint8_t    header[54] {};
+		const auto put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+		header[0] = 'B';
+		header[1] = 'M';
+		put(2, 54u + bytes);
+		put(10, 54u);
+		put(14, 40u);
+		put(18, entry.extent.width);
+		put(22, static_cast<uint32_t>(-static_cast<int32_t>(entry.extent.height)));
+		header[26] = 1;
+		header[28] = 32;
+		put(34, bytes);
+		put(38, 2835u);
+		put(42, 2835u);
+		if (auto* file = std::fopen(DumpPath(entry.name).c_str(), "wb"); file != nullptr) {
+			std::fwrite(header, 1, sizeof(header), file);
+			std::fwrite(out.data(), 1, bytes, file);
+			std::fclose(file);
+		}
+		std::fprintf(stderr, "[kyty-target] %s: raw %ux%u %u B/texel nonzero %.2f%% high words 0x%08x..0x%08x low 0x%x..0x%x\n",
+		             entry.name, entry.extent.width, entry.extent.height, entry.texel_bytes,
+		             100.0 * static_cast<double>(nonzero) / static_cast<double>(pixels_n),
+		             nonzero != 0 && entry.texel_bytes >= 8 ? hi_min : 0u, hi_max, nonzero != 0 ? lo_min : 0u, lo_max);
+		device.unmapMemory(entry.buffer_memory);
+		device.destroyBuffer(entry.buffer, nullptr);
+		device.freeMemory(entry.buffer_memory, nullptr);
+	}
+
+	bool               m_depth        = false;
+	bool               m_raw          = false;
+	int                m_after_s      = 0;
+	bool               m_bc           = false; // sarostex2: KYTY_DUMP_BC
+	size_t             m_bc_max       = 400;   // KYTY_DUMP_BC_MAX
+	bool               m_bc_all       = false; // KYTY_DUMP_BC_ALL=1: the width range also with an address list
+	uint32_t           m_bc_minw      = 16, m_bc_maxw = 4096;
+	uint64_t           m_bc_bytes     = 0;
+	std::vector<uint64_t> m_bc_addrs;   // KYTY_DUMP_BC_ADDRS=0x..,0x.. (hex, any separator)
+	bool               m_after_armed  = false;
+	std::chrono::steady_clock::time_point m_first_flip_time {};
 	int                m_limit        = 0;
 	int                m_dumped       = 0;
 	uint64_t           m_from         = 1;

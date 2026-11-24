@@ -12,6 +12,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
@@ -141,8 +142,19 @@ bool IsRuntimeSelect(ValueOpcode op) {
 	       op == ValueOpcode::SelectF32;
 }
 
+// nps5 kytyone (port of upstream KytyPS5 8d0ebb8f, shadowbeat070): KYTY_SRT_SMIN=1 lets the SRT walker
+// evaluate S_MIN_I32 in runtime descriptor values (SAROS bindless T#). Default off: ASTRO's plans unchanged.
+bool SrtSignedMin() {
+	static const bool on = [] {
+		const char* value = std::getenv("KYTY_SRT_SMIN");
+		return value != nullptr && std::strcmp(value, "1") == 0;
+	}();
+	return on;
+}
+
 bool IsRuntimeUniformOp(ValueOpcode op) {
 	switch (op) {
+		case ValueOpcode::SMin32: return SrtSignedMin();
 		case ValueOpcode::BitCastU32F32:
 		case ValueOpcode::BitCastF32U32:
 		case ValueOpcode::ConvertU32F32:
@@ -627,6 +639,7 @@ uint32_t ArithmeticArity(const ResourcePlan::EvaluationRecipe& recipe) {
 		case ValueOpcode::ISub64:
 		case ValueOpcode::IMul32:
 		case ValueOpcode::IMul64:
+		case ValueOpcode::SMin32:
 		case ValueOpcode::UMin32:
 		case ValueOpcode::ShiftLeftLogical32:
 		case ValueOpcode::ShiftLeftLogical64:
@@ -1491,6 +1504,26 @@ bool SrtWalker::InPlaceReadable(uint64_t address) {
 
 void SrtWalker::NoteUnmappedRead(uint64_t address) const {
 	Profiler::CountFrameEvent(Profiler::FrameEvent::SrtUnmappedReads);
+	// nps5 memtrk: KYTY_SRT_UNMAPPED_DIAG=1 prints the first 64 unmapped SRT reads of any shader
+	// (not once per shader) with the dispatch's user data, to tell a null table pointer in the user
+	// SGPRs from a pointer read as 0 out of memory. Diagnostic only.
+	static const bool diag = [] {
+		const char* v = std::getenv("KYTY_SRT_UNMAPPED_DIAG");
+		return v != nullptr && std::strcmp(v, "1") == 0;
+	}();
+	if (diag) {
+		static std::atomic<uint32_t> count {0};
+		if (count.fetch_add(1, std::memory_order_relaxed) < 64) {
+			std::string words;
+			const auto  user = m_runtime.user_data;
+			for (size_t i = 0; i < user.size() && i < 16; i++) {
+				words += fmt::format(" {:08x}", user[i]);
+			}
+			std::fprintf(stderr, "[memtrk] SRT unmapped read: %s 0x%016llx addr 0x%llx; user data (%zu):%s\n",
+			             StageName(m_program.stage), static_cast<unsigned long long>(m_program.shader_hash),
+			             static_cast<unsigned long long>(address), user.size(), words.c_str());
+		}
+	}
 	static std::mutex                   mutex;
 	static std::unordered_set<uint64_t> logged;
 	{
@@ -1717,6 +1750,12 @@ bool SrtWalker::EvaluateInstWithOperands(const Inst& inst, uint64_t& result, Rea
 		case ValueOpcode::UMin32:
 			if (binary()) {
 				result = std::min(static_cast<uint32_t>(a), static_cast<uint32_t>(b));
+				return true;
+			}
+			return false;
+		case ValueOpcode::SMin32:
+			if (binary()) {
+				result = static_cast<uint32_t>(std::min(static_cast<int32_t>(a), static_cast<int32_t>(b)));
 				return true;
 			}
 			return false;
@@ -2301,6 +2340,7 @@ TraceThread& ThreadTraces() {
 
 bool IsTracePure(ValueOpcode op) {
 	switch (op) {
+		case ValueOpcode::SMin32: return SrtSignedMin();
 		case ValueOpcode::CompositeConstructU64:
 		case ValueOpcode::IAdd32:
 		case ValueOpcode::IAdd64:

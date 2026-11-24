@@ -124,6 +124,10 @@ public:
 	void Resolve(Image& source, const ImageSubresourceRange& source_range,
 	             const ImageSubresourceRange& destination_range);
 	void CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tiler);
+	// nps5 memtrk: whether CopyImageWithBuffer can copy `source` into this image (equal transfer
+	// bytes per texel block and equal block size); it EXITs otherwise. Prints both images when not.
+	[[nodiscard]] bool CopyViaBufferSupported(const Image& source) const noexcept;
+	void               DescribeCopyMismatch(const Image& source, const char* what) const noexcept;
 	void CopyMip(Image& source, uint32_t mip, uint32_t layer);
 
 	// Native contents identity. Every recorded write to this image gives it a fresh serial

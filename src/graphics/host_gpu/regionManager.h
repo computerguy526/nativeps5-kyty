@@ -155,6 +155,12 @@ public:
 		});
 	}
 
+	// One 64-page word of the CPU-dirty mirror, read as IsCpuModifiedRelaxed reads it (nps5
+	// findbuf: MemoryTracker::ForEachCpuDirtyRunRelaxed).
+	[[nodiscard]] uint64_t CpuMirrorWordRelaxed(size_t word) const noexcept {
+		return m_cpu_mirror[word].load(std::memory_order_relaxed);
+	}
+
 	// IsModified without `lock` (KYTY_TRACKER_LOCKFREE_DIRTY, adapted from usa-ratt/KytyPS5-GT7
 	// ba83f1a64, mainline #1284): the mirror words, published with release stores under `lock`
 	// after every change of the bits, read with acquire loads. For the thread that owns the

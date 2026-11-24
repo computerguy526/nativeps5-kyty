@@ -123,6 +123,14 @@ struct CodegenOptions {
 	// exchange the halves through workgroup memory; a branch whose region holds no exchange or
 	// barrier is decided by each half on its own lanes. KYTY_LANE_LOCAL programs stay as they are.
 	bool wave64_warps = false;
+	// KYTY_WAVE64_WARPS_DENY=<file> / KYTY_WAVE64_WARPS_ALLOW=<file> (uetrans; hex guest shader hashes, one per
+	// line, '#' comments): per-shader gate of KYTY_WAVE64_WARPS for bisecting it on UE5 titles (SAROS/Cronos:
+	// ~80 % of their wave64 compute programs are one-wave workgroups). DENY: listed programs keep two lanes per
+	// invocation. ALLOW: ONLY listed programs split (ALLOW and not DENY). No effect without KYTY_WAVE64_WARPS=1.
+	// Sorted; part of the codegen fingerprint only when wave64_warps is on and a list is set.
+	std::vector<uint64_t> wave64_warps_deny;
+	std::vector<uint64_t> wave64_warps_allow;
+	bool                  wave64_warps_allow_set = false;
 	// KYTY_FAST_PKRTZ=0: convert V_CVT_PKRTZ_F16_F32 halves with the original select chain instead
 	// of the shorter integer formulation.
 	bool fast_pkrtz = true;
@@ -472,11 +480,21 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 // KYTY_FAST_MATH_DENY / KYTY_FAST_MATH_ALLOW: may this guest shader use fast math? (true when no
 // list is set)
 [[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage = "?");
+// KYTY_WAVE64_WARPS (+ _DENY / _ALLOW lists): may this wave64 compute program run as a split wave?
+[[nodiscard]] bool Wave64WarpsShaderAllowed(uint64_t shader_hash);
 // KYTY_GPU_ACCURACY=normal covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
 [[nodiscard]] bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage);
 // KYTY_GPU_ACCURACY=low covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
 [[nodiscard]] bool AllFastApplies(uint64_t shader_hash, const char* stage);
 
+// nps5 memtrk: KYTY_STORE_COMPLETION_FENCE=1 (default off, SAROS). S_WAITCNT vmcnt/vscnt(0)
+// (StoreCompletion) orders only the wave's own stores: emit a device memory barrier
+// (OpMemoryBarrier; KK: atomic_thread_fence) instead of a subgroup/workgroup execution barrier
+// (KK: simdgroup_barrier / threadgroup_barrier). An execution barrier inside a spin loop that some
+// lanes or waves have left can stall the pollers (UE5 persistent culling; nxnative's PRAGMATA
+// MEMBAR fix 6dad3406). Part of the codegen fingerprint only when on. Not a CodegenOptions field,
+// so the options layout is unchanged.
+[[nodiscard]] bool StoreCompletionFence();
 [[nodiscard]] const CodegenOptions& GetCodegenOptions();
 // KYTY_LOD_STATS_PLAIN_VARIANT's value means "on" (the renderer's default).
 [[nodiscard]] bool LodStatsPlainVariantOn(const char* value);

@@ -33,11 +33,18 @@ struct InputBinding : IR::StageInput {
 	// KYTY_PS_PER_VERTEX=gs: a per-vertex pixel parameter is three flat vec4 inputs (the raw
 	// vertices 0..2, written by the generated geometry stage); variable_id is vertex 0's.
 	std::array<uint32_t, 3> vertex_variable_ids {};
+	// sarosnanite (KYTY_SAROS_NANITE_RAW): the vertex variables are one uvec4 per-primitive input.
+	bool saros_raw_u32 = false;
 };
 
 struct OutputBinding : IR::StageOutput {
 	uint32_t variable_id        = 0;
 	uint32_t mesh_data_variable = 0;
+	// sarosnanite (KYTY_SAROS_NANITE_RAW): a mesh Parameter's per-vertex copy in workgroup memory
+	// and its per-primitive AND output.
+	uint32_t saros_raw_shared    = 0;
+	uint32_t saros_raw_primitive = 0;
+	std::array<uint32_t, 3> saros_raw_vertices {};
 };
 
 using ImageDimension = Decoder::ImageDimension;

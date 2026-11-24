@@ -22,6 +22,7 @@
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/hostMemory.h"
+#include "graphics/host_gpu/renderer/inputProfileDraw.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
@@ -52,6 +53,7 @@
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
+#include <filesystem>
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -61,7 +63,10 @@
 #include <cstring>
 #include <dlfcn.h> // nps5 decalfix: KYTY_GBCOPY_REMAP=auto reads the recomp patch choices
 #include <fmt/format.h>
+#include <cinttypes>
 #include <limits>
+#include <map>
+#include <tuple>
 #include <mutex>
 #include <span>
 #include <string>
@@ -1815,6 +1820,13 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 	EXIT_IF(!runtime);
 	const auto& program  = *runtime.program;
 	const auto& snapshot = *runtime.resources;
+	// Read once (cphot: getenv on every draw showed in the CP profile; same value, no switch).
+	static const bool watch_consumer = std::getenv("KYTY_WATCH_CONSUMER") != nullptr;
+	if (watch_consumer) [[unlikely]] {
+		const auto tick = m_context.GetCommandScheduler().CurrentTick();
+		BufferCache::WatchScanWords(program.shader_hash, snapshot.user_data, "user", tick);
+		BufferCache::WatchScanWords(program.shader_hash, snapshot.flattened_srt, "srt", tick);
+	}
 	prepared.runtime = &runtime;
 	prepared.xframe_verify_views = false;
 	prepared.plan             = plan;
@@ -2693,6 +2705,45 @@ void NoteRebindAfterJoin(const char* kind, const char* name) {
 	}
 }
 
+void NoteBdaUser(const char* kind, uint32_t stage, uint64_t hash, bool bda_writes, uint32_t width,
+                 uint32_t height) {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_BDA_DRAW_LOG");
+		return value != nullptr && value[0] == '1';
+	}();
+	if (!enabled) {
+		return;
+	}
+	struct Key {
+		std::string kind;
+		uint32_t    stage;
+		uint64_t    hash;
+		uint32_t    width, height;
+		bool        writes;
+		bool        operator<(const Key& o) const {
+			return std::tie(kind, stage, hash, width, height, writes) <
+			       std::tie(o.kind, o.stage, o.hash, o.width, o.height, o.writes);
+		}
+	};
+	static std::mutex                 mutex;
+	static std::map<Key, uint64_t>    counts;
+	static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	std::scoped_lock                  lock(mutex);
+	++counts[Key {kind, stage, hash, width, height, bda_writes}];
+	const auto now = std::chrono::steady_clock::now();
+	if (now - last < std::chrono::seconds(10)) {
+		return;
+	}
+	const double secs = std::chrono::duration<double>(now - last).count();
+	last              = now;
+	for (const auto& [key, count]: counts) {
+		std::printf("BdaUser: %s stage=%u hash=0x%016" PRIx64 " pass=%ux%u bda_writes=%d count_per_s=%.1f\n",
+		            key.kind.c_str(), key.stage, key.hash, key.width, key.height, key.writes ? 1 : 0,
+		            static_cast<double>(count) / secs);
+	}
+	counts.clear();
+}
+
 void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> stages,
                                              std::span<RenderColorInfo> colors, bool keep_images) {
 	bool uses_dma = false;
@@ -2704,6 +2755,14 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	}
 	CommitStats::StepMark(CommitStats::Step::FindBuffers);
 	if (uses_dma) {
+		for (auto* stage: stages) {
+			const auto& info = stage->runtime->program->info;
+			if (info.uses_dma) {
+				const auto extent = colors.empty() ? vk::Extent2D {} : colors[0].Extent();
+				NoteBdaUser("draw", static_cast<uint32_t>(stage->runtime->program->stage),
+				            stage->runtime->program->shader_hash, info.bda_writes, extent.width, extent.height);
+			}
+		}
 		const BufferLookupStats::PartScope stats_scope(BufferLookupStats::Part::PrepareBda);
 		m_context.PrepareBda();
 	}
@@ -2749,6 +2808,10 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	// Discovery can read back PS5 metadata and submit the scheduler. Reserve draw buffers only
 	// after image identities are final; attachment layout transitions follow buffer alias copies.
 	// The uploads of every stage share one barrier pair (KYTY_UPLOAD_BATCH).
+	if (!stages.empty() && stages.back() != nullptr && stages.back()->runtime != nullptr &&
+	    *stages.back()->runtime) {
+		BufferCache::SetWatchProgram(stages.back()->runtime->program->shader_hash, 2); // draw (ps)
+	}
 	FlightRecDraw::Begin('D', stages, m_context.GetCommandScheduler().CurrentTick());
 	{
 		const BufferCache::UploadBatch upload_batch(m_context.GetBufferCache());
@@ -2759,6 +2822,7 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 		}
 	}
 	FlightRecDraw::End(cache, stages, colors);
+	InputProfileDraw::Note(m_context.GetBufferCache(), stages);
 	CommitStats::StepMark(CommitStats::Step::RbBatchEnd);
 	CommitStats::Mark(CommitStats::Phase::RebindBuffers);
 }
@@ -2977,6 +3041,137 @@ private:
 };
 
 } // namespace
+
+// nps5 memtrk: KYTY_CS_CAPTURE=<hex hash>[,<hex hash>...] with KYTY_CS_CAPTURE_AFTER_S=<s> (default 180)
+// and KYTY_CS_CAPTURE_DIR=<dir>: the first dispatch of each listed compute program after that many
+// seconds is captured once for a standalone replay. Before the dispatch (the inputs), the descriptor
+// writes' buffer ranges (each up to 64 MiB) are copied to host buffers; when the submission completes,
+// <dir>/<hash>/ receives meta.txt (bindings: binding, type, array index, size, file; image formats and
+// extents; push data in hex) and buf_<binding>_<index>.bin. Diagnostic only.
+void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderInfo& program,
+                                    const PreparedBindings& prepared, const uint32_t* push_dwords,
+                                    size_t push_bytes) {
+	static const std::vector<uint64_t> list = [] {
+		std::vector<uint64_t> l;
+		const char*           v = std::getenv("KYTY_CS_CAPTURE");
+		while (v != nullptr && *v != '\0') {
+			char* end = nullptr;
+			l.push_back(std::strtoull(v, &end, 16));
+			v = (end != nullptr && *end == ',') ? end + 1 : nullptr;
+		}
+		return l;
+	}();
+	if (list.empty() || std::find(list.begin(), list.end(), program.shader_hash) == list.end()) {
+		return;
+	}
+	static const auto start = std::chrono::steady_clock::now();
+	static const double after = [] {
+		const char* v = std::getenv("KYTY_CS_CAPTURE_AFTER_S");
+		return v != nullptr ? std::atof(v) : 180.0;
+	}();
+	if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() < after) {
+		return;
+	}
+	static std::mutex                   mutex;
+	static std::unordered_set<uint64_t> done;
+	{
+		std::scoped_lock lock(mutex);
+		if (!done.insert(program.shader_hash).second) {
+			return;
+		}
+	}
+	const char* dir_env = std::getenv("KYTY_CS_CAPTURE_DIR");
+	const std::string dir = fmt::format("{}/{:016x}", dir_env != nullptr ? dir_env : "/tmp/kyty_cs_capture",
+	                                    program.shader_hash);
+	std::string meta = fmt::format("hash {:016x}\npush_bytes {}\npush", program.shader_hash, push_bytes);
+	for (size_t i = 0; i < push_bytes / 4; i++) {
+		meta += fmt::format(" {:08x}", push_dwords[i]);
+	}
+	meta += "\n";
+	struct Copy {
+		std::string file;
+		uint64_t    offset;
+		uint64_t    bytes;
+	};
+	std::vector<Copy>           copies;
+	std::vector<vk::BufferCopy> regions;
+	std::vector<vk::Buffer>     sources;
+	uint64_t                    total = 0;
+	for (const auto& write: m_descriptor_writes) {
+		const auto type = write.descriptorType;
+		meta += fmt::format("write binding {} type {} count {}\n", write.dstBinding, vk::to_string(type),
+		                    write.descriptorCount);
+		if (write.pBufferInfo == nullptr) {
+			continue;
+		}
+		for (uint32_t j = 0; j < write.descriptorCount; j++) {
+			const auto& info  = write.pBufferInfo[j];
+			uint64_t    bytes = info.range;
+			if (info.buffer == nullptr) continue;
+			if (bytes == VK_WHOLE_SIZE) bytes = 64ull << 20u;
+			bytes = std::min<uint64_t>(bytes, 64ull << 20u);
+			if (total + bytes > (512ull << 20u)) break;
+			const auto file = fmt::format("buf_{}_{}.bin", write.dstBinding, j);
+			meta += fmt::format("buffer binding {} index {} offset {} range {} bytes {} file {}\n",
+			                    write.dstBinding, j, info.offset, info.range, bytes, file);
+			copies.push_back({file, total, bytes});
+			regions.push_back({info.offset, total, bytes});
+			sources.push_back(info.buffer);
+			total += (bytes + 255) & ~uint64_t {255};
+		}
+	}
+	for (size_t i = 0; i < prepared.images.size(); i++) {
+		const auto& binding = prepared.images[i];
+		if (!binding.image_id) {
+			meta += fmt::format("image {} null\n", i);
+			continue;
+		}
+		const auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
+		meta += fmt::format("image {} format {} extent {}x{}x{} levels {} layers {} storage {}\n", i,
+		                    vk::to_string(image.backing.format), image.backing.extent.width,
+		                    image.backing.extent.height, image.backing.extent.depth, image.backing.mip_levels,
+		                    image.backing.layers,
+		                    binding.desc.type == TextureCache::BindingType::Storage ? 1 : 0);
+	}
+	std::shared_ptr<Buffer> host;
+	if (total != 0) {
+		host = std::make_shared<Buffer>(m_context.GetGraphics(), m_context.GetCommandScheduler(),
+		                                MemoryUsage::Download, 0, vk::BufferUsageFlagBits::eTransferDst, total);
+		auto              native = m_context.GetCommandScheduler().Current().HelperSink();
+		vk::MemoryBarrier before {};
+		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite |
+		                       vk::AccessFlagBits::eHostWrite;
+		before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, 1,
+		                       &before, 0, nullptr, 0, nullptr);
+		for (size_t i = 0; i < regions.size(); i++) {
+			native.copyBuffer(sources[i], host->Handle(), 1, &regions[i]);
+		}
+		vk::MemoryBarrier after {};
+		after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+		after.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
+		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, 1,
+		                       &after, 0, nullptr, 0, nullptr);
+	}
+	std::fprintf(stderr, "[memtrk] KYTY_CS_CAPTURE: CS %016llx captured (%zu buffer ranges, %llu bytes) -> %s\n",
+	             static_cast<unsigned long long>(program.shader_hash), copies.size(),
+	             static_cast<unsigned long long>(total), dir.c_str());
+	m_context.GetCommandScheduler().DeferOperation([host, copies, meta, dir]() mutable {
+		std::filesystem::create_directories(dir);
+		if (std::FILE* f = std::fopen((dir + "/meta.txt").c_str(), "wb")) {
+			std::fwrite(meta.data(), 1, meta.size(), f);
+			std::fclose(f);
+		}
+		for (const auto& copy: copies) {
+			if (std::FILE* f = std::fopen((dir + "/" + copy.file).c_str(), "wb")) {
+				std::fwrite(host->Mapped().data() + copy.offset, 1, copy.bytes, f);
+				std::fclose(f);
+			}
+		}
+		std::fprintf(stderr, "[memtrk] KYTY_CS_CAPTURE: wrote %s\n", dir.c_str());
+		host.reset();
+	});
+}
 
 void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     vk::PipelineBindPoint              pipeline_bind_point,
@@ -3265,6 +3460,9 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 			std::ranges::copy(prepared->shader_data,
 			                  push_data.dwords.begin() + program.bindings.push_data_start_dword);
 			has_push_data = true;
+		}
+		if (pipeline_bind_point == vk::PipelineBindPoint::eCompute) [[unlikely]] {
+			CsCaptureMaybe(program, *prepared, push_data.dwords.data(), sizeof(push_data));
 		}
 		CommitStats::StepMark(CommitStats::Step::CbBuild);
 	}

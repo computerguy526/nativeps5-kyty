@@ -109,6 +109,12 @@ std::vector<uint8_t> CodegenFingerprint() {
 	b.U8(options.volatile_loads ? 1u : 0u);
 	b.U8(static_cast<uint8_t>(options.wave32_clusters));
 	b.U8(static_cast<uint8_t>(options.lds_waitcnt_barrier));
+	if (const char* tree = std::getenv("KYTY_DISPATCHER_TREE"); tree != nullptr && std::strcmp(tree, "1") == 0) {
+		b.Text("dispatcher_tree"); // nps5 memtrk: only when on
+	}
+	if (StoreCompletionFence()) {
+		b.Text("store_completion_fence/2"); // nps5 memtrk: only when on (off keeps the fingerprint); /2: split waves keep the barrier
+	}
 	b.U8(static_cast<uint8_t>(options.lds_device_buffer));
 	b.U32(options.lds_limit_override);
 	b.U8(options.ps_per_vertex ? 1u : 0u);
@@ -128,6 +134,18 @@ std::vector<uint8_t> CodegenFingerprint() {
 	}
 	if (options.wave64_warps) {
 		b.Text("wave64_warps");
+		if (!options.wave64_warps_deny.empty() || options.wave64_warps_allow_set) {
+			b.Text("wave64_warps_acl");
+			b.U32(static_cast<uint32_t>(options.wave64_warps_deny.size()));
+			for (const auto hash: options.wave64_warps_deny) {
+				b.U64(hash);
+			}
+			b.U8(options.wave64_warps_allow_set ? 1u : 0u);
+			b.U32(static_cast<uint32_t>(options.wave64_warps_allow.size()));
+			for (const auto hash: options.wave64_warps_allow) {
+				b.U64(hash);
+			}
+		}
 	}
 	if (options.native_float_min_max) {
 		b.Text("native_float_min_max");

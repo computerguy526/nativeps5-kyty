@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/nanProbe.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -880,6 +881,10 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, uint32_t resident_first
 	if (!info.data.Empty()) {
 		RegisterImage(id);
 	}
+	if (NanProbe::Armed()) [[unlikely]] {
+		auto& inserted = m_slot_images[id];
+		NanProbe::WatchLog("insert", nullptr, inserted.info.data.address, inserted.info.data.size, id.index, id.generation, vk::to_string(inserted.backing.format).c_str(), inserted.info.extent.width, inserted.info.extent.height, inserted.IsGpuModified() ? 1 : 0);
+	}
 	return id;
 }
 
@@ -1407,6 +1412,13 @@ void TextureCache::NoteVramFree(const Image& image, HangTrace::ImageFreeReason r
 void TextureCache::FreeImage(ImageId id, HangTrace::ImageFreeReason reason) {
 	HangTrace::SetImageFreeReason(reason);
 	auto& image = m_slot_images[id];
+	if (NanProbe::Armed()) [[unlikely]] {
+		static constexpr const char* reasons[] = {"other", "depth-association", "depth-recreate", "overlap-layout",
+		                                          "overlap-mip-merge", "overlap-stale", "expand", "smaller-resources",
+		                                          "unmap", "gc", "pressure-gc", "resident-idle"};
+		const auto r = static_cast<uint32_t>(reason);
+		NanProbe::WatchLog("free", r < std::size(reasons) ? reasons[r] : "?", image.info.data.address, image.info.data.size, id.index, id.generation, vk::to_string(image.backing.format).c_str(), image.info.extent.width, image.info.extent.height, image.IsGpuModified() ? 1 : 0);
+	}
 	if (VramStats::Enabled() && image.registered) {
 		NoteVramFree(image, reason);
 	}
@@ -2321,6 +2333,28 @@ bool TextureCache::CopyImage(ImageId destination_id, ImageId source_id, const ch
 		if (source.backing.samples != 1 || destination.backing.samples != 1) {
 			EXIT("TextureCache: cross-format multisample image copy is unsupported\n");
 		}
+		if (!destination.CopyViaBufferSupported(source) && AliasBytesEnabled() &&
+		    !source_depth && !dest_depth && !source.depth_id && !destination.depth_id &&
+		    !source.info.HasStencil() && !destination.info.HasStencil()) [[unlikely]] {
+			// nps5 memtrk: texels of different sizes (e.g. SAROS's R64 Nanite visibility buffer and
+			// a 32-bit view of the same memory) have no texel-for-texel copy: the guest reinterprets
+			// the memory. As a GPU reading the other view would, the source's owned bytes are tiled
+			// out into the buffer in its guest layout and the destination is rebuilt from there in
+			// its own layout (the path a buffer-owned source takes above). Before this, Kyty EXITed
+			// in Image::CopyImageWithBuffer here, so no copy that ran before takes this branch.
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
+				destination.DescribeCopyMismatch(source, "TextureCache::CopyImage (rebuilt through memory)");
+			}
+			const auto moved = MaterializeOwnedBytes(destination.info.data, source_id, {}, "copy-reinterpret");
+			destination.MarkBufferModified();
+			HangTrace::RecordTransfer(HangTrace::TransferKind::ImageCopy, "reinterpret-via-memory",
+			                          context, destination.info.data.address,
+			                          static_cast<uint32_t>(destination.backing.format),
+			                          destination.info.extent.width, destination.info.extent.height,
+			                          moved, 0);
+			return false;
+		}
 		auto& copy_buffer = m_buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
 		destination.CopyImageWithBuffer(source, copy_buffer, m_tiler);
 		Profiler::CountFrameEvent(Profiler::FrameEvent::ImageCopyViaBuffer);
@@ -3035,6 +3069,9 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 		}
 		image.NoteUpload();
 		image.ClearDirtySpan();
+		if (NanProbe::Armed()) [[unlikely]] {
+			NanProbe::WatchLog("upload", partial.done ? "cpu-write-partial" : reason, image.info.data.address, image.info.data.size, id.index, id.generation, vk::to_string(image.backing.format).c_str(), image.info.extent.width, image.info.extent.height, image.IsGpuModified() ? 1 : 0);
+		}
 		FlightRec::Rec(FlightRec::EvTexUpload, image.info.data.address, uploaded,
 		               partial.done ? FlightRec::TexUploadPartial : FlightRec::TexUpload,
 		               (static_cast<uint64_t>(image.backing.format) << 32u) |
@@ -5304,6 +5341,7 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 	}
 	if (desc.type == BindingType::Storage) {
 		MarkImageGpuModified(image);
+		ExpandMetaForStorageWriteLocked(image);
 	}
 	if (!image.info.data.Empty()) {
 		RefreshImage(id, desc.type == BindingType::Storage ? RefreshIntent::Write
@@ -5449,9 +5487,39 @@ void TextureCache::MarkGpuWritten(ImageId id) {
 	}
 }
 
+// nps5 nanite: KYTY_DEPTH_STENCIL_ALIAS_SYNC=1 (default off) lets a depth-stencil image and a 32-bit
+// colour alias of its depth plane (same range and extent) synchronize like other aliases: the newer
+// interpretation's contents are copied through the depth aspect (the stencil aspect is untouched).
+// SAROS (UE5.5 Nanite): the depth export CS writes scene depth as R32F storage over the D32S8 depth
+// target; without the sync the depth target keeps its pre-export contents and the Nanite world
+// never reaches depth, so the base pass and lighting see only non-Nanite geometry.
+static bool DepthStencilAliasSyncEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_DEPTH_STENCIL_ALIAS_SYNC");
+		const bool  on    = value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+		if (on) {
+			std::fprintf(stderr, "[nanite] KYTY_DEPTH_STENCIL_ALIAS_SYNC: depth-stencil <-> R32 colour aliases sync\n");
+		}
+		return on;
+	}();
+	return enabled;
+}
+
+// A depth image with a stencil plane and a single-sample 32-bit colour image of the same range and
+// extent (the pair KYTY_DEPTH_STENCIL_ALIAS_SYNC synchronizes).
+static bool DepthStencilColorPair(const Image& a, const Image& b) {
+	const auto& depth = a.info.IsDepth() ? a : b;
+	const auto& color = a.info.IsDepth() ? b : a;
+	return DepthStencilAliasSyncEnabled() && a.info.IsDepth() != b.info.IsDepth() && depth.info.HasStencil() &&
+	       !color.info.HasStencil() && !color.info.IsDepth() && depth.info.data == color.info.data &&
+	       depth.info.extent == color.info.extent && depth.backing.samples == 1 && color.backing.samples == 1 &&
+	       !color.depth_id && vk::blockSize(color.backing.format) == 4 &&
+	       depth.backing.format == vk::Format::eD32SfloatS8Uint;
+}
+
 bool TextureCache::SyncAliasReturnsAtOnce(const Image& image) {
 	return !AliasAgeByFrames() || image.alias_owner || image.depth_id || image.info.data.Empty() ||
-	       image.info.HasStencil() || image.backing.image == nullptr;
+	       (image.info.HasStencil() && !DepthStencilAliasSyncEnabled()) || image.backing.image == nullptr;
 }
 
 // Whether two images at the same guest range are interpretations of the same texel grid. Same
@@ -5494,7 +5562,7 @@ void TextureCache::SyncAliasFromOwner(ImageId id) {
 	auto& image = m_slot_images[id];
 	// TextureCache::SyncAliasReturnsAtOnce mirrors this condition.
 	if (!AliasAgeByFrames() || image.alias_owner || image.depth_id || image.info.data.Empty() ||
-	    image.info.HasStencil() || image.backing.image == nullptr) {
+	    (image.info.HasStencil() && !DepthStencilAliasSyncEnabled()) || image.backing.image == nullptr) {
 		return;
 	}
 	// A kept alias (same memory, another format) is stale when another interpretation wrote the
@@ -5503,10 +5571,32 @@ void TextureCache::SyncAliasFromOwner(ImageId id) {
 		const auto* other = m_slot_images.try_get(other_id);
 		if (other_id == id || other == nullptr || !other->registered || other->depth_id ||
 		    !other->alias_owner || !other->IsGpuModified() || other->IsBufferModified() ||
-		    other->info.HasStencil() || other->info.data != image.info.data ||
-		    !SameAliasGrid(other->info, image.info) ||
+		    other->info.data != image.info.data || !SameAliasGrid(other->info, image.info) ||
 		    other->backing.samples != image.backing.samples) {
 			continue;
+		}
+		const bool ds_pair = DepthStencilColorPair(image, *other);
+		if ((other->info.HasStencil() || image.info.HasStencil()) && !ds_pair) {
+			continue;
+		}
+		if (ds_pair) {
+			// nps5 nanite (KYTY_DEPTH_STENCIL_ALIAS_SYNC): the depth plane through the depth aspect.
+			const auto source_format = other->backing.format;
+			++m_lookup_side_effects;
+			RequireFullResidency(id);
+			(void)CopyImage(id, other_id, "ds-alias-sync");
+			static std::atomic<uint32_t> logged {0};
+			const bool via_memory = image.IsBufferModified();
+			if (!via_memory) {
+				CommitGpuWrite(image);
+			}
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+				std::fprintf(stderr, "[nanite] ds-alias-sync 0x%010" PRIx64 " %ux%u %s <- %s%s\n", image.info.data.address,
+				             image.info.extent.width, image.info.extent.height, vk::to_string(image.backing.format).c_str(),
+				             vk::to_string(source_format).c_str(), via_memory ? " (via memory)" : "");
+			}
+			Profiler::CountFrameEvent(Profiler::FrameEvent::AliasSyncCopies);
+			return;
 		}
 		++m_lookup_side_effects;
 		// Taking over the owner's contents makes this image GPU-owned: whole chain.
@@ -5548,6 +5638,12 @@ void TextureCache::SyncAliasFromOwner(ImageId id) {
 			}
 		}
 		const bool lossless = CopyImage(id, other_id, "alias-sync");
+		if (image.IsBufferModified()) {
+			// No texel copy between these formats (CopyImage): the alias is rebuilt from the
+			// buffer, which now holds the owner's bytes, as in the partial-owner case above.
+			trace_sync("reinterpret-via-memory", 0);
+			return;
+		}
 		CommitGpuWrite(image);
 		if (lossless && AliasSyncSkipEnabled()) {
 			image.AdoptContentSerial(m_slot_images[other_id].ContentSerial());
@@ -5657,6 +5753,9 @@ void TextureCache::CommitGpuWrite(Image& image, const WriteClaim& claim) {
 				continue;
 			}
 			other->alias_owner = false;
+			if (NanProbe::Armed()) [[unlikely]] {
+				NanProbe::WatchLog("disowned", other->IsGpuModified() ? "was-gpu-modified" : "clean", (*other).info.data.address, (*other).info.data.size, id.index, id.generation, vk::to_string((*other).backing.format).c_str(), (*other).info.extent.width, (*other).info.extent.height, (*other).IsGpuModified() ? 1 : 0);
+			}
 			if (other->IsGpuModified()) {
 				other->ClearGpuModified();
 				InvalidateCleanImageProofs(other->live.address, other->live.size,
@@ -7299,6 +7398,66 @@ bool TextureCache::ClearMeta(uint64_t address) {
 	}
 	found->second.clear_mask.set();
 	NoteSurfaceMetaChange();
+	return true;
+}
+
+// memtrk: KYTY_META_EXPORT_NOT_CLEAR=1 also covers exports through storage IMAGES. A storage write
+// to the memory of a depth surface that has HTILE (or to the HTILE memory itself, bound as an
+// image) means a compute pass produced that surface, e.g. UE5 Nanite's depth export: the HTILE
+// clear recorded earlier no longer holds, and the next depth-target use must LOAD, not CLEAR.
+// KYTY_META_CLEAR_LOG=1 prints the first 64 such expansions. Caller holds m_lock.
+void TextureCache::ExpandMetaForStorageWriteLocked(const Image& image) {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_META_EXPORT_NOT_CLEAR");
+		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+	}();
+	static const bool meta_log = [] {
+		const auto* value = std::getenv("KYTY_META_CLEAR_LOG");
+		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+	}();
+	if (!enabled || image.info.data.Empty() || m_surface_metas.empty()) {
+		return;
+	}
+	static std::atomic<uint32_t> logged {0};
+	const auto expand = [&](uint64_t meta_address, uint64_t surface, const char* how) {
+		const auto found = m_surface_metas.find(meta_address);
+		if (found == m_surface_metas.end() || !found->second.clear_mask.any()) {
+			return;
+		}
+		found->second.clear_mask.reset();
+		NoteSurfaceMetaChange();
+		if (meta_log && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+			std::fprintf(stderr,
+			             "[memtrk] storage write %s: image 0x%llx +0x%llx (%ux%u fmt %u) -> HTILE 0x%llx of surface "
+			             "0x%llx no longer clear\n",
+			             how, static_cast<unsigned long long>(image.info.data.address),
+			             static_cast<unsigned long long>(image.info.data.size), image.info.extent.width,
+			             image.info.extent.height, static_cast<unsigned>(image.info.guest_format),
+			             static_cast<unsigned long long>(meta_address), static_cast<unsigned long long>(surface));
+		}
+	};
+	// The HTILE memory itself, written through an image view.
+	expand(image.info.data.address, 0, "to HTILE memory");
+	// A depth surface with HTILE that this write overlaps.
+	for (const auto other_id: FindImagesInRegion(image.info.data.address, image.info.data.size, false)) {
+		const auto* other = m_slot_images.try_get(other_id);
+		if (other == nullptr || other->info.metadata.kind != ImageMetadataKind::Htile) {
+			continue;
+		}
+		expand(other->info.metadata.range.address, other->info.data.address, "over a depth surface");
+	}
+}
+
+bool TextureCache::ExpandMeta(uint64_t address) {
+	std::scoped_lock lock {m_lock};
+	const auto       found = m_surface_metas.find(address);
+	if (found == m_surface_metas.end()) {
+		return false;
+	}
+	if (found->second.clear_mask.any()) {
+		found->second.clear_mask.reset();
+		NoteSurfaceMetaChange();
+	}
 	return true;
 }
 

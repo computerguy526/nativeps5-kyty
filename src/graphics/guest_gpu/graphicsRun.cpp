@@ -14,6 +14,8 @@
 #include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
+#include "graphics/guest_gpu/command_processor/bundleCompact.h"
+#include "graphics/guest_gpu/command_processor/naniteShadeStats.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
 #include "graphics/guest_gpu/command_processor/cpLeadBound.h"
 #include "graphics/guest_gpu/command_processor/cpOps.h"
@@ -163,6 +165,8 @@ static uint64_t IndexElementSize(uint32_t index_type_and_size) {
 	}
 	return 0;
 }
+
+static bool CondExecLogEnabled(); // sarosnormals (defined at ExecCondExec)
 
 void ReadGuestForCp(uint64_t vaddr, uint64_t size, void* dst) {
 	EXIT_IF(vaddr == 0 || dst == nullptr);
@@ -1634,6 +1638,43 @@ void CommandProcessor::ExecDmaData(const CpSeq::DmaDataOp& op) {
 	                        dst_gds, src_gds);
 }
 
+void CommandProcessor::ExecBundleCompact(const CpSeq::BundleCompactOp& op) {
+	const auto p = BundleCompact::Decode(op.user_data);
+	if (!BundleCompact::Valid(p)) {
+		std::fprintf(stderr, "[bundle] compact: implausible layout n=%u r=%u trailer=%u, skipped\n", p.n, p.r,
+		             p.trailer);
+		return;
+	}
+	std::vector<uint8_t> input(BundleCompact::InputBytes(p));
+	ReadGuestForCp(p.input, input.size(), input.data());
+	const uint64_t       args_extent = BundleCompact::ArgsExtent(p, input.data());
+	std::vector<uint8_t> args(std::max<uint64_t>(args_extent, 16u));
+	if (args_extent != 0) {
+		ReadGuestForCp(p.args, args_extent, args.data());
+	}
+	std::vector<uint8_t> output(BundleCompact::OutputBytes(p));
+	ReadGuestForCp(p.output, output.size(), output.data());
+	// KYTY_BUNDLE_COMPACT_DROP=1 (bisect aid): treat every bin as empty (the command region holds the trailer only).
+	static const bool drop_all = std::getenv("KYTY_BUNDLE_COMPACT_DROP") != nullptr;
+	if (drop_all) {
+		std::fill(args.begin(), args.end(), uint8_t {0});
+	}
+	const uint32_t k = BundleCompact::Compact(p, input.data(), args.data(), output.data());
+	// naniteshade: KYTY_SAROS_NANITE_SHADE_STATS=1 classifies the bins' DISPATCH_INDIRECTs by this args range.
+	NaniteShadeStats::NoteCompaction(
+	    p.args, std::max<uint64_t>(args_extent, uint64_t {p.args_offset} + uint64_t {p.args_stride} * p.n), p.n, k);
+	StreamCopyDefer::NoteGpuOnlyWrite(p.output, output.size());
+	std::memcpy(Guest::Ptr<void>(p.output), output.data(), output.size());
+	NoteCpWrite(p.output, output.size());
+	static std::atomic<uint32_t> log_count {0};
+	if (log_count.fetch_add(1) < 16) {
+		std::fprintf(stderr,
+		             "[bundle] compact: %u of %u records (R=%u, trailer %u) args 0x%010" PRIx64 " in 0x%010" PRIx64
+		             " out 0x%010" PRIx64 "\n",
+		             k, p.n, p.r, p.trailer, p.args, p.input, p.output);
+	}
+}
+
 void GuestGpu::Enqueue(Submission submission) {
 	EXIT_IF(submission.queue_id >= QueueCount);
 	if (HangTrace::Enabled()) {
@@ -2332,6 +2373,17 @@ bool CommandProcessor::ProcessPacket(Pm4Execution& execution) {
 		if (!reference && !prefetch) {
 			Profiler::CountFrameEvent(Profiler::FrameEvent::PredicatedPacketsSkipped);
 			static std::atomic<uint32_t> skip_log_count {0};
+			if (CondExecLogEnabled() &&
+			    (opcode == Pm4::IT_DISPATCH_DIRECT || opcode == Pm4::IT_DISPATCH_INDIRECT ||
+			     opcode == Pm4::IT_DRAW_INDEX_2 || opcode == Pm4::IT_DRAW_INDEX_AUTO ||
+			     opcode == Pm4::IT_DRAW_INDEX_OFFSET_2 || opcode == Pm4::IT_DRAW_INDIRECT ||
+			     opcode == Pm4::IT_DRAW_INDEX_INDIRECT || opcode == Pm4::IT_DRAW_INDIRECT_MULTI ||
+			     opcode == Pm4::IT_DRAW_INDEX_INDIRECT_MULTI)) {
+				static std::atomic<uint32_t> err_count {0};
+				if (err_count.fetch_add(1) < 256) {
+					std::fprintf(stderr, "[sarosn] predicated skip of op 0x%02x (len %u)\n", opcode, packet_dw);
+				}
+			}
 			if (skip_log_count.fetch_add(1) < 2048) {
 				LOGF("\t predicated skip: op=0x%02" PRIx32 ", r=0x%02" PRIx32 ", len=%" PRIu32
 				     ", packet=0x%016" PRIx64 ", cmd_id=0x%08" PRIx32 "\n",
@@ -2666,6 +2718,14 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 		event.condition = condition;
 		event.skip      = skip;
 		HangTrace::RecordOcclusion(event);
+	}
+	if (op == 0x03 && CondExecLogEnabled()) {
+		static std::atomic<uint32_t> err_count {0};
+		if (err_count.fetch_add(1) < 256) {
+			std::fprintf(stderr, "[sarosn] bool predication addr 0x%010llx value 0x%llx cond %u skip %u wait %u\n",
+			             static_cast<unsigned long long>(reinterpret_cast<uint64_t>(address)),
+			             static_cast<unsigned long long>(value), condition, skip ? 1u : 0u, wait_op);
+		}
 	}
 	if (op == 0x03) {
 		static std::atomic<uint32_t> log_count {0};
@@ -3260,6 +3320,39 @@ void CommandProcessor::ExecDrawIndirectMulti(const CpSeq::DrawIndirectOp& op) {
 	}
 }
 
+// sarosbundle: KYTY_BUNDLE_COMPACT=1 (default off) turns the shader-bundle compaction kernel's dispatch
+// into a CPU op (bundleCompact.h). The matcher is d872ee3c0e77b1ff's exact 0x270 code bytes, cached per
+// address.
+static Live::Switch g_bundle_compact("KYTY_BUNDLE_COMPACT", Live::ParseDefaultOff);
+static bool         BundleCompactSwitch() {
+	return g_bundle_compact.Get() != 0;
+}
+
+static bool IsBundleCompactKernel(uint64_t code_addr) {
+	if (code_addr == 0) {
+		return false;
+	}
+	static std::mutex                           mutex;
+	static std::unordered_map<uint64_t, bool>   verdicts;
+	{
+		std::scoped_lock lock(mutex);
+		const auto       it = verdicts.find(code_addr);
+		if (it != verdicts.end()) {
+			return it->second;
+		}
+	}
+	uint8_t code[BundleCompact::kKernelCodeSize] {};
+	const bool match =
+	    LibKernel::Memory::TryReadBacking(code_addr, code, sizeof(code)) && BundleCompact::MatchesKernel(code);
+	if (match) {
+		std::fprintf(stderr, "[bundle] compaction kernel d872ee3c0e77b1ff at 0x%010" PRIx64 ": CPU HLE on\n",
+		             code_addr);
+	}
+	std::scoped_lock lock(mutex);
+	verdicts[code_addr] = match;
+	return match;
+}
+
 void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_group_y,
                                       uint32_t thread_group_z, uint32_t mode) {
 	// The wave size is register state: the front sets it, the op's execution reads it.
@@ -3271,6 +3364,14 @@ void CommandProcessor::DispatchDirect(uint32_t thread_group_x, uint32_t thread_g
 	if (prepare && engine->SpeculativeSlots() != 0) {
 		// The slot must follow the real parse's (a SkipSlots op retires the speculative ones).
 		DropSpeculativeSlots();
+	}
+	// sarosbundle (KYTY_BUNDLE_COMPACT=1, default off): the platform command-compaction kernel has no
+	// program; its dispatch becomes the CPU compaction op.
+	if (BundleCompactSwitch() && IsBundleCompactKernel(m_sh_ctx.GetCs().cs_regs.data_addr)) {
+		CpSeq::BundleCompactOp bundle;
+		std::memcpy(bundle.user_data, m_sh_ctx.GetCs().cs_user_sgpr.value, sizeof(bundle.user_data));
+		(void)Submit(bundle);
+		return;
 	}
 	CpSeq::DispatchDirectOp op;
 	op.x    = thread_group_x;
@@ -4977,6 +5078,9 @@ CpSeq::Result CommandProcessor::ExecuteOp(CpSeq::OpKind kind, const void* payloa
 			ExecReferenceClock(*static_cast<const CpSeq::ReferenceClockOp*>(payload));
 			break;
 		case OpKind::DmaData: ExecDmaData(*static_cast<const CpSeq::DmaDataOp*>(payload)); break;
+		case OpKind::BundleCompact:
+			ExecBundleCompact(*static_cast<const CpSeq::BundleCompactOp*>(payload));
+			break;
 		case OpKind::LodStats: ExecLodStats(*static_cast<const CpSeq::LodStatsOp*>(payload)); break;
 		case OpKind::Flip: ExecFlip(*static_cast<const CpSeq::FlipOp*>(payload)); break;
 		case OpKind::WaitRegMem:
@@ -5015,8 +5119,55 @@ bool CommandProcessor::CondExec(uint64_t address) {
 	return result.value != 0;
 }
 
+// sarosnormals: COND_EXEC reads its condition dword straight from guest memory. A condition the
+// GPU wrote (UE5 Nanite: per-shading-bin counts guarding the material dispatches) may still sit
+// in a host GPU buffer, so the stale guest copy (0) skips the guarded packets. KYTY_CONDEXEC_SYNC=1
+// (default off) reads it through ReadGuestForCp, which synchronizes GPU-written bytes first (as
+// WAIT_REG_MEM and the branch packet already do). KYTY_CONDEXEC_LOG=1 prints the first 512
+// conditions to stderr: address, the raw guest dword, the synchronized dword and the decision.
+static bool CondExecLogEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CONDEXEC_LOG");
+		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
+static bool CondExecSyncEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CONDEXEC_SYNC");
+		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
 CpSeq::Result CommandProcessor::ExecCondExec(const CpSeq::CondExecOp& op) {
-	return {false, *Guest::Ptr<const volatile uint32_t>(op.address) != 0 ? 1u : 0u};
+	const uint32_t raw = *Guest::Ptr<const volatile uint32_t>(op.address);
+	if (!CondExecSyncEnabled() && !CondExecLogEnabled()) {
+		return {false, raw != 0 ? 1u : 0u};
+	}
+	const uint32_t synced = ReadGuestForCp<uint32_t>(op.address);
+	const uint32_t value  = CondExecSyncEnabled() ? synced : raw;
+	if (CondExecLogEnabled()) {
+		static std::atomic<uint64_t> total {0};
+		static std::atomic<uint64_t> differ {0};
+		static std::atomic<uint64_t> skipped {0};
+		const auto n = total.fetch_add(1, std::memory_order_relaxed) + 1;
+		if ((raw != 0) != (synced != 0)) differ.fetch_add(1, std::memory_order_relaxed);
+		if (value == 0) skipped.fetch_add(1, std::memory_order_relaxed);
+		if (n <= 512 || ((raw != 0) != (synced != 0) && n <= 4096)) {
+			std::fprintf(stderr, "[sarosn] condexec #%llu addr 0x%010llx raw %u synced %u -> %s%s\n",
+			             static_cast<unsigned long long>(n), static_cast<unsigned long long>(op.address), raw,
+			             synced, value != 0 ? "exec" : "SKIP", CondExecSyncEnabled() ? " (sync)" : "");
+		}
+		if (n % 5000 == 0) {
+			std::fprintf(stderr, "[sarosn] condexec totals: %llu conditions, %llu raw/synced differ, %llu skipped\n",
+			             static_cast<unsigned long long>(n),
+			             static_cast<unsigned long long>(differ.load(std::memory_order_relaxed)),
+			             static_cast<unsigned long long>(skipped.load(std::memory_order_relaxed)));
+		}
+	}
+	return {false, value != 0 ? 1u : 0u};
 }
 
 bool CommandProcessor::Branch(uint64_t compare_addr, uint64_t mask, uint64_t reference,
@@ -5035,9 +5186,17 @@ bool CommandProcessor::Branch(uint64_t compare_addr, uint64_t mask, uint64_t ref
 }
 
 CpSeq::Result CommandProcessor::ExecBranch(const CpSeq::BranchOp& op) {
-	const bool taken =
-	    TestWaitRegMemValue(ReadGuestForCp<uint64_t>(op.compare_addr), op.reference, op.mask,
-	                        op.function);
+	const auto value = ReadGuestForCp<uint64_t>(op.compare_addr);
+	const bool taken = TestWaitRegMemValue(value, op.reference, op.mask, op.function);
+	if (CondExecLogEnabled()) {
+		static std::atomic<uint32_t> err_count {0};
+		if (err_count.fetch_add(1) < 256) {
+			std::fprintf(stderr, "[sarosn] branch addr 0x%010llx value 0x%llx ref 0x%llx mask 0x%llx fn %u -> %s\n",
+			             static_cast<unsigned long long>(op.compare_addr), static_cast<unsigned long long>(value),
+			             static_cast<unsigned long long>(op.reference), static_cast<unsigned long long>(op.mask),
+			             op.function, taken ? "then" : "else");
+		}
+	}
 	return {false, taken ? 1u : 0u};
 }
 
@@ -5256,6 +5415,15 @@ bool CommandProcessor::CpWriteRange(CpSeq::OpKind kind, const void* payload, uin
 			if (op.dst_sel == 0u || op.dst_sel == 3u) {
 				address = op.dst;
 				size    = op.num_bytes;
+			}
+			break;
+		}
+		case OpKind::BundleCompact: {
+			const auto& op = *static_cast<const CpSeq::BundleCompactOp*>(payload);
+			const auto  p  = BundleCompact::Decode(op.user_data);
+			if (BundleCompact::Valid(p)) {
+				address = p.output;
+				size    = BundleCompact::OutputBytes(p);
 			}
 			break;
 		}

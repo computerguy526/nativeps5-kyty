@@ -1,6 +1,7 @@
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <cstdlib>
 #include <fmt/format.h>
@@ -189,6 +190,12 @@ Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
 	Value                           invariant;
 	std::vector<Value>              pending {value};
 	std::unordered_set<const Inst*> visited;
+	// saroslights (KYTY_SAROS_HANDSHADERS, listed hashes only): a register the shader initialises on
+	// one branch only (SAROS 905b: the constant sampler s36..s39 is built in the first light loop and
+	// read by the second) reaches the other branch's loop phi as the entry's zero default. With the
+	// switch an immediate-zero incoming is ignored when the remaining incomings agree.
+	const bool ignore_entry_zero = SarosHandShader(program.shader_hash);
+	bool       saw_zero          = false;
 	while (!pending.empty()) {
 		const auto current = pending.back().Resolve();
 		pending.pop_back();
@@ -202,11 +209,19 @@ Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
 			}
 			continue;
 		}
+		if (ignore_entry_zero && current.IsImmediate() && current.GetType() == Type::U32 &&
+		    current.U32() == 0u) {
+			saw_zero = true;
+			continue;
+		}
 		if (invariant.IsEmpty()) {
 			invariant = current;
 		} else if (!EquivalentValue(program, invariant, current)) {
 			return {};
 		}
+	}
+	if (invariant.IsEmpty() && saw_zero) {
+		return Value(0u);
 	}
 	return invariant;
 }

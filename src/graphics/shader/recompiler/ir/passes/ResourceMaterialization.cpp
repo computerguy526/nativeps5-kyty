@@ -9,6 +9,7 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/shaderBindings.h"
 
 #include <algorithm>
@@ -502,14 +503,31 @@ bool MaterializeIndirectImage(const ResourcePlan& program,
 		keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
 	} else {
 		ShaderBufferResource material;
+		// sarosshade: the listed SAROS kernels index their record buffer by i * 0xa0 whatever the
+		// V#'s own stride says.
 		if (!DecodeBufferDescriptor(material_value, material) || table_value.dword_count != 4u ||
-		    material.Stride() != indirect.selector->stride) {
+		    (material.Stride() != indirect.selector->stride &&
+		     !SarosHandShader(program.shader_hash))) {
 			return false;
 		}
 		// Enumerate every wrapped scalar-buffer offset that can pass the descriptor bounds.
-		const auto step = std::gcd<uint64_t>(indirect.selector->stride, uint64_t {1} << 32u);
-		const auto residue = static_cast<uint64_t>(indirect.selector->offset) % step;
-		const auto limit = std::min<uint64_t>(UINT32_MAX, material.GetSize() + 3u);
+		// saroslight: the listed kernels read record i at i * stride + offset; probing every gcd(stride, 2^32)
+		// = 32-byte slot also reads non-index record fields as heap keys, whose garbage images fill the 64
+		// image slots (KYTY_SAROS_KEYSTRIDE=0 restores the old enumeration for A/B).
+		static const bool saros_keystride = [] {
+			const auto* v = std::getenv("KYTY_SAROS_KEYSTRIDE");
+			return v == nullptr || std::strcmp(v, "0") != 0;
+		}();
+		const bool exact = saros_keystride && SarosHandShader(program.shader_hash);
+		const auto step = exact ? uint64_t {indirect.selector->stride}
+		                        : std::gcd<uint64_t>(indirect.selector->stride, uint64_t {1} << 32u);
+		const auto residue = exact ? uint64_t {indirect.selector->offset}
+		                           : static_cast<uint64_t>(indirect.selector->offset) % step;
+		auto limit = std::min<uint64_t>(UINT32_MAX, material.GetSize() + 3u);
+		// sarosshade: the listed kernels walk min(count, 64) records.
+		if (SarosHandShader(program.shader_hash)) {
+			limit = std::min<uint64_t>(limit, 64ull * indirect.selector->stride);
+		}
 		const auto probe_count = residue <= limit ? (limit - residue) / step + 1u : 0u;
 		if (probe_count > MaxIndirectImageProbes) {
 			return false;
@@ -535,7 +553,27 @@ bool MaterializeIndirectImage(const ResourcePlan& program,
 	const auto mapping_offset = snapshot.flattened_srt.size();
 	const auto root_image = specialization.images[image_index];
 	IndirectImageIndex children;
-	snapshot.flattened_srt.resize(mapping_offset + 1u + keys.size() * 2u);
+	// sarosperf: KYTY_SAROS_MAP_PAD=1 (default off, listed hand shaders only) sizes the key table's
+	// region by the binary-search tier (2^bit_width(count) entries, the unused ones stay zero and are
+	// never read: the search is bounded by the stored count) instead of the exact key count. The
+	// next root's mapping_offset is baked into the shader, so with exact sizes every change of any
+	// root's distinct-key count made a new permutation (~270 permutations of two 700 KB MSL kernels in
+	// 5 minutes, each a multi-second Metal compile); padded, the offsets only change per tier.
+	static const bool map_pad = [] {
+		const auto* v = std::getenv("KYTY_SAROS_MAP_PAD");
+		return v != nullptr && std::strcmp(v, "1") == 0;
+	}();
+	// (A first version padded only to 2^bit_width(count): still ~270 permutations, because six roots
+	// each pick one of up to seven tiers; the walk covers at most 64 records + the zero key, so one
+	// tier of 2^7 entries and 7 search iterations fits every count.)
+	// sarosperf2: KYTY_SAROS_HS_DYNIDX=1 implies the padded layout and keeps the table (and one
+	// child) for a root whose keys all name the same image, so no root flips between the direct and
+	// the indirect form; CanonicalizeIndirectGroups then lays the candidate slots out.
+	const bool   dynidx      = SarosHsDynIdx() && SarosHandShader(program.shader_hash);
+	const bool   padded      = (map_pad || dynidx) && SarosHandShader(program.shader_hash);
+	const size_t map_tier    = padded ? std::max<size_t>(7u, std::bit_width(keys.size())) : 0u;
+	const size_t map_entries = padded ? size_t {1} << map_tier : keys.size();
+	snapshot.flattened_srt.resize(mapping_offset + 1u + map_entries * 2u);
 	snapshot.flattened_srt[mapping_offset] = static_cast<uint32_t>(keys.size());
 	for (uint32_t entry = 0; entry < keys.size(); ++entry) {
 		const auto key = keys[entry];
@@ -547,6 +585,13 @@ bool MaterializeIndirectImage(const ResourcePlan& program,
 		}
 		if (NullImageDescriptor(candidate) ||
 		    !ValidImageDescriptor(candidate, program.info.images[image_index].r128)) {
+			candidate.dwords.fill(0);
+		}
+		// sarosshade: every record of the buffer is probed, live or stale; a heap slot whose image
+		// type is not the one the shader's operation declares (3D bricks) is not a candidate.
+		if (SarosHandShader(program.shader_hash) && !NullImageDescriptor(candidate) &&
+		    DescriptorDimension(candidate, program.info.images[image_index].dimension) !=
+		        program.info.images[image_index].dimension) {
 			candidate.dwords.fill(0);
 		}
 		uint32_t ordinal = 0;
@@ -566,17 +611,55 @@ bool MaterializeIndirectImage(const ResourcePlan& program,
 			ordinal = lookup.ordinal;
 			if (ordinal > snapshot.images.size() - children_begin) {
 				if (snapshot.images.size() >= ShaderInfo::MaxImages) {
-					return false;
+					if (!SarosHandShader(program.shader_hash)) return false;
+					// sarosshade: out of image slots: this record reads the first record's image
+					// (degraded) instead of dropping the whole dispatch.
+					ordinal = 0;
+				} else {
+					snapshot.images.push_back(candidate);
+					auto child = root_image;
+					child.indirect_root = image_index;
+					specialization.images.push_back(child);
+					if constexpr (Optimize) children.Insert(lookup);
 				}
-				snapshot.images.push_back(candidate);
-				auto child = root_image;
-				child.indirect_root = image_index;
-				specialization.images.push_back(child);
-				if constexpr (Optimize) children.Insert(lookup);
 			}
 		}
 		snapshot.flattened_srt[mapping_offset + 1u + entry * 2u] = key;
 		snapshot.flattened_srt[mapping_offset + 2u + entry * 2u] = ordinal;
+		// saroslight: KYTY_SAROS_HANDSHADERS_LOG=2 prints every probed heap key with its T# dwords.
+		if (SarosHandShader(program.shader_hash)) {
+			static const bool            verbose = [] {
+				const auto* v = std::getenv("KYTY_SAROS_HANDSHADERS_LOG");
+				return v != nullptr && std::strcmp(v, "2") == 0;
+			}();
+			static std::atomic<uint32_t> vlines {0};
+			if (verbose && vlines.fetch_add(1, std::memory_order_relaxed) < 1500u) {
+				std::fprintf(stderr,
+				             "[sarosshade2] 0x%016llx img%u key %u ord %u T# %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				             static_cast<unsigned long long>(program.shader_hash), image_index, key, ordinal,
+				             candidate.dwords[0], candidate.dwords[1], candidate.dwords[2], candidate.dwords[3],
+				             candidate.dwords[4], candidate.dwords[5], candidate.dwords[6], candidate.dwords[7]);
+			}
+		}
+	}
+	if (SarosHandShader(program.shader_hash)) {
+		// KYTY_SAROS_HANDSHADERS_LOG=1: the first 64 materializations (keys probed, distinct images).
+		static const bool        log = std::getenv("KYTY_SAROS_HANDSHADERS_LOG") != nullptr;
+		static std::atomic<uint32_t> lines {0};
+		if (log && lines.fetch_add(1, std::memory_order_relaxed) < 64u) {
+			std::fprintf(stderr,
+			             "[sarosshade] 0x%016llx image %u: %zu heap keys, %zu extra images, root %s\n",
+			             static_cast<unsigned long long>(program.shader_hash), image_index,
+			             keys.size(), snapshot.images.size() - children_begin,
+			             NullImageDescriptor(snapshot.images[image_index]) ? "null" : "typed");
+		}
+	}
+	if (dynidx && snapshot.images.size() == children_begin &&
+	    snapshot.images.size() < ShaderInfo::MaxImages) {
+		snapshot.images.push_back(snapshot.images[image_index]);
+		auto child = root_image;
+		child.indirect_root = image_index;
+		specialization.images.push_back(child);
 	}
 	if (snapshot.images.size() == children_begin) {
 		snapshot.flattened_srt.resize(mapping_offset);
@@ -584,7 +667,7 @@ bool MaterializeIndirectImage(const ResourcePlan& program,
 		auto& root = specialization.images[image_index];
 		root.indirect_root = image_index;
 		root.indirect_mapping_offset = static_cast<uint32_t>(mapping_offset);
-		root.indirect_search_iterations = std::bit_width(keys.size());
+		root.indirect_search_iterations = padded ? static_cast<uint32_t>(map_tier) : std::bit_width(keys.size());
 	}
 	return true;
 }
@@ -673,6 +756,159 @@ static bool SpecializeBuffer(const BufferResource& buffer, DescriptorValue& desc
 	        buffer.formatted ? descriptor.DstSelXYZW() : DstSel(4, 5, 6, 7),
 	    .zero_stride_oob = descriptor.OutOfBounds() == 0u && stride == 0u,
 	});
+	return true;
+}
+
+// sarosperf2: KYTY_SAROS_HS_DYNIDX=1. Runs after the per-root candidate classes are settled (every
+// slot of a root already has the root's image class). Lays the indirect slots of a hand shader out
+// canonically so the SPIR-V does not depend on how many distinct heap images each root found or on
+// which root a child belongs to:
+//  - roots of one image class form a group (head = its first root); the group's candidate list is
+//    every slot of the group in slot order (roots, then children), so a table entry stores the slot's
+//    position in that list;
+//  - the slots beyond the program's own images are split into a fixed share per group
+//    ((MaxImages - program images) / groups, the remainder to the first group); a group fills its
+//    share with its children (extra ones, over the share, read the group's first root like the
+//    "out of image slots" case) and with padding that aliases the head's image;
+//  - the image count is therefore always MaxImages, with every group a fixed size.
+// Returns false only for an internal inconsistency; with no room it leaves the layout untouched.
+static bool CanonicalizeIndirectGroups(const ResourcePlan& program, ResourceSnapshot& snapshot,
+                                       ResourceSpecialization& specialization) {
+	auto&      images = specialization.images;
+	const auto base   = static_cast<uint32_t>(program.info.images.size());
+	if (base >= ShaderInfo::MaxImages || images.size() < base) return true;
+	std::vector<uint32_t> roots;
+	for (uint32_t r = 0; r < base; r++) {
+		if (images[r].indirect_root == r) roots.push_back(r);
+	}
+	if (roots.empty()) return true;
+	const auto same_class = [&](uint32_t a, uint32_t b) {
+		const auto& x = images[a];
+		const auto& y = images[b];
+		const auto& bx = program.info.images[a];
+		const auto& by = program.info.images[b];
+		return x.numeric_class == y.numeric_class && x.dimension == y.dimension && x.cube == y.cube &&
+		       x.mip_count == y.mip_count && x.conversion_format == y.conversion_format &&
+		       x.shader_swizzle == y.shader_swizzle && bx.resource_class == by.resource_class &&
+		       bx.mip_mode == by.mip_mode && bx.depth_compare == by.depth_compare &&
+		       bx.atomic == by.atomic && bx.atomic64 == by.atomic64 && bx.r128 == by.r128 &&
+		       bx.read == by.read && bx.written == by.written;
+	};
+	std::vector<uint32_t> heads;             // group index -> head root
+	std::vector<uint32_t> group_of(base, 0); // root -> group index
+	for (const auto r: roots) {
+		uint32_t g = 0;
+		while (g < heads.size() && !same_class(heads[g], r)) g++;
+		if (g == heads.size()) heads.push_back(r);
+		group_of[r] = g;
+	}
+	const uint32_t room = ShaderInfo::MaxImages - base;
+	if (room < heads.size()) return true;
+	const uint32_t groups = static_cast<uint32_t>(heads.size());
+	// Old candidate list of each root (ordinal -> slot), as ApplyResourceSpecialization builds it.
+	std::vector<std::vector<uint32_t>> old_list(base);
+	for (const auto r: roots) {
+		for (uint32_t s = 0; s < images.size(); s++) {
+			if (images[s].indirect_root == r) old_list[r].push_back(s);
+		}
+	}
+	// New slot of every old slot; kept children first, then padding, per group.
+	std::vector<uint32_t> new_slot(images.size(), UINT32_MAX);
+	for (uint32_t s = 0; s < base; s++) new_slot[s] = s;
+	std::vector<uint32_t>              share(groups);
+	std::vector<std::vector<uint32_t>> group_slots(groups); // new slots, group order
+	for (uint32_t g = 0; g < groups; g++) {
+		share[g] = room / groups + (g == 0 ? room % groups : 0u);
+		for (const auto r: roots) {
+			if (group_of[r] == g) group_slots[g].push_back(r);
+		}
+	}
+	uint32_t next = base;
+	for (uint32_t g = 0; g < groups; g++) {
+		uint32_t kept = 0;
+		// sarosflick: roots of one group probe the same heap keys, so their children are mostly the same
+		// descriptors (sf3: 8 roots x 5 children = 40 slots for ~5 distinct images, share 25 -> drops and
+		// one-frame wrong-texture blocks). A child equal to an earlier child or to a root of the group
+		// reuses that slot; only distinct descriptors consume the share.
+		std::vector<std::pair<uint32_t, uint32_t>> pool; // (old slot holding the descriptor, new slot)
+		for (const auto r: roots) {
+			if (group_of[r] == g) pool.emplace_back(r, r);
+		}
+		for (uint32_t s = base; s < images.size(); s++) {
+			if (images[s].indirect_root >= base || group_of[images[s].indirect_root] != g) continue;
+			const auto same = std::find_if(pool.begin(), pool.end(), [&](const auto& e) {
+				return snapshot.images[e.first] == snapshot.images[s];
+			});
+			if (same != pool.end()) {
+				new_slot[s] = same->second;
+				continue;
+			}
+			if (kept < share[g]) {
+				pool.emplace_back(s, next + kept);
+				new_slot[s] = next + kept;
+				group_slots[g].push_back(next + kept);
+				kept++;
+			}
+		}
+		for (; kept < share[g]; kept++) group_slots[g].push_back(next + kept);
+		next += share[g];
+	}
+	EXIT_IF(next != ShaderInfo::MaxImages);
+	std::vector<ResourceSpecialization::Image> new_images(ShaderInfo::MaxImages);
+	std::vector<DescriptorValue>               new_values(ShaderInfo::MaxImages);
+	for (uint32_t s = 0; s < base; s++) {
+		new_images[s] = images[s];
+		new_values[s] = snapshot.images[s];
+	}
+	std::vector<uint32_t> position(ShaderInfo::MaxImages, 0);
+	for (uint32_t g = 0; g < groups; g++) {
+		for (uint32_t k = 0; k < group_slots[g].size(); k++) {
+			const auto slot = group_slots[g][k];
+			position[slot]  = k;
+			if (slot < base) continue;
+			new_images[slot]                   = images[heads[g]];
+			new_images[slot].indirect_root     = heads[g];
+			new_images[slot].indirect_mapping_offset    = 0;
+			new_images[slot].indirect_search_iterations = 0;
+			new_values[slot]                   = snapshot.images[heads[g]];
+		}
+		for (const auto r: roots) {
+			if (group_of[r] == g) new_images[r].indirect_group = heads[g];
+		}
+		for (uint32_t k = 0; k < group_slots[g].size(); k++) {
+			new_images[group_slots[g][k]].indirect_group = heads[g];
+		}
+	}
+	// Kept children keep their own descriptor (the head's class applies to all of them already).
+	for (uint32_t s = base; s < images.size(); s++) {
+		if (new_slot[s] != UINT32_MAX) new_values[new_slot[s]] = snapshot.images[s];
+	}
+	// Rewrite each root's table: the old ordinal names a slot of its old list, the new one is that
+	// slot's position in the group list (a dropped slot reads the group's first root).
+	for (const auto r: roots) {
+		const auto offset = images[r].indirect_mapping_offset;
+		const auto count  = snapshot.flattened_srt[offset];
+		for (uint32_t e = 0; e < count; e++) {
+			auto&      ordinal = snapshot.flattened_srt[offset + 2u + e * 2u];
+			const auto old_slot = ordinal < old_list[r].size() ? old_list[r][ordinal] : r;
+			auto       slot     = new_slot[old_slot];
+			if (slot == UINT32_MAX) {
+				// sarosflick: a candidate over the group's share is dropped. It used to read the group HEAD's
+				// image, i.e. another root's material (one-frame wrong-texture blocks in SAROS, only with
+				// HS_DYNIDX); it now reads its own root's image, the same degraded case as the pre-canonical
+				// "out of image slots" record. KYTY_SAROS_HANDSHADERS_LOG counts the drops.
+				slot = r;
+				static std::atomic<uint32_t> drops {0};
+				if (std::getenv("KYTY_SAROS_HANDSHADERS_LOG") != nullptr && drops.fetch_add(1, std::memory_order_relaxed) < 200u) {
+					std::fprintf(stderr, "[sarosflick] hs 0x%016llx root %u entry %u: candidate over the group share (%u slots/group, %u groups) dropped\n",
+					             static_cast<unsigned long long>(program.shader_hash), r, e, room / groups, groups);
+				}
+			}
+			ordinal = position[slot];
+		}
+	}
+	images           = std::move(new_images);
+	snapshot.images = std::move(new_values);
 	return true;
 }
 
@@ -794,7 +1030,7 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		const auto key_count = root.indirect_mapping_offset < snapshot.flattened_srt.size()
 		                           ? snapshot.flattened_srt[root.indirect_mapping_offset]
 		                           : 0u;
-		if (root.indirect_search_iterations == 0u || key_count < 2u ||
+		if (root.indirect_search_iterations == 0u || key_count < (SarosHsDynIdx() ? 1u : 2u) ||
 		    static_cast<size_t>(root.indirect_mapping_offset) + 1u +
 		            static_cast<size_t>(key_count) * 2u >
 		        snapshot.flattened_srt.size()) {
@@ -815,7 +1051,30 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		if (resource_count < 2u || exemplar == ImageResource::NoIndirectImage) {
 			return SpecializationFail("indirect image specialization has no typed candidate");
 		}
-		const auto& image_class = specialization.images[exemplar];
+		const bool saros = SarosHandShader(program.shader_hash);
+		if (saros) {
+			// sarosshade: stale records give stray candidates; the class most candidates share is
+			// the table's, the others are bound as null images below.
+			uint32_t best = 0;
+			for (uint32_t a = 0; a < specialization.images.size(); a++) {
+				const auto& ia = specialization.images[a];
+				if (ia.indirect_root != root_index || NullImageDescriptor(snapshot.images[a])) continue;
+				uint32_t votes = 0;
+				for (uint32_t b = 0; b < specialization.images.size(); b++) {
+					const auto& ib = specialization.images[b];
+					votes += ib.indirect_root == root_index && !NullImageDescriptor(snapshot.images[b]) &&
+					         ib.numeric_class == ia.numeric_class && ib.dimension == ia.dimension &&
+					         ib.cube == ia.cube && ib.mip_count == ia.mip_count &&
+					         ib.conversion_format == ia.conversion_format &&
+					         ib.shader_swizzle == ia.shader_swizzle;
+				}
+				if (votes > best) {
+					best     = votes;
+					exemplar = a;
+				}
+			}
+		}
+		const auto image_class = specialization.images[exemplar];
 		const auto is_2d = [](Decoder::ImageDimension dimension) {
 			return dimension == Decoder::ImageDimension::Dim2D ||
 			       dimension == Decoder::ImageDimension::Dim2DArray;
@@ -823,6 +1082,19 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 		for (uint32_t candidate = 0; candidate < specialization.images.size(); candidate++) {
 			auto& image = specialization.images[candidate];
 			if (image.indirect_root != root_index) {
+				continue;
+			}
+			if (saros && NullImageDescriptor(snapshot.images[candidate])) {
+				// sarosshade: no null member in the table (a null 3D image ended r114hs with
+				// "invalid image view"): an empty or stale record's slot aliases the exemplar. The
+				// kernel only visits records below its count and guards unused slots itself.
+				snapshot.images[candidate] = snapshot.images[exemplar];
+				image.numeric_class        = image_class.numeric_class;
+				image.dimension            = image_class.dimension;
+				image.mip_count            = image_class.mip_count;
+				image.conversion_format    = image_class.conversion_format;
+				image.shader_swizzle       = image_class.shader_swizzle;
+				image.cube                 = image_class.cube;
 				continue;
 			}
 			if (NullImageDescriptor(snapshot.images[candidate])) {
@@ -840,11 +1112,25 @@ static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSna
 			    image.mip_count != image_class.mip_count ||
 			    image.conversion_format != image_class.conversion_format ||
 			    image.shader_swizzle != image_class.shader_swizzle) {
+				if (saros) {
+					snapshot.images[candidate] = snapshot.images[exemplar];
+					image.numeric_class        = image_class.numeric_class;
+					image.dimension            = image_class.dimension;
+					image.mip_count            = image_class.mip_count;
+					image.conversion_format    = image_class.conversion_format;
+					image.shader_swizzle       = image_class.shader_swizzle;
+					image.cube                 = image_class.cube;
+					continue;
+				}
 				return SpecializationFail(
 				    fmt::format("indirect image table at pc 0x{:08x} has incompatible candidates",
 				                program.info.images[root_index].first_use_pc));
 			}
 		}
+	}
+	if (SarosHsDynIdx() && SarosHandShader(program.shader_hash) &&
+	    !CanonicalizeIndirectGroups(program, snapshot, specialization)) {
+		return SpecializationFail("indirect image group layout failed");
 	}
 	// Native filtering/border variants read their source sampler's snapshot entry
 	// (SamplerResource::snapshot_index); the snapshot holds the program's samplers only.
@@ -1641,14 +1927,30 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 		image.indirect_root              = source.indirect_root;
 		image.indirect_mapping_offset    = source.indirect_mapping_offset;
 		image.indirect_search_iterations = source.indirect_search_iterations;
+		image.indirect_group             = source.indirect_group;
 		image.cube                       = source.cube;
 		image.indirect_resources.clear();
 	}
+	const bool grouped = std::ranges::any_of(images, [](const ImageResource& image) {
+		return image.indirect_group != ImageResource::NoIndirectImage;
+	});
 	for (uint32_t index = 0; index < images.size(); index++) {
 		const auto root = images[index].indirect_root;
 		if (root != ImageResource::NoIndirectImage) {
 			EXIT_IF(root >= images.size());
+			// sarosperf2: a grouped root's candidates are every slot of its group, in slot order.
+			if (grouped) continue;
 			images[root].indirect_resources.push_back(index);
+		}
+	}
+	if (grouped) {
+		for (uint32_t root = 0; root < images.size(); root++) {
+			if (images[root].indirect_root != root) continue;
+			for (uint32_t index = 0; index < images.size(); index++) {
+				if (images[index].indirect_group == images[root].indirect_group) {
+					images[root].indirect_resources.push_back(index);
+				}
+			}
 		}
 	}
 
@@ -1762,8 +2064,12 @@ void ApplyResourceSpecialization(Program& program, const ResourceSpecialization&
 				memory.sampler = sampler_plan.mapping[memory.sampler][type];
 				EXIT_IF(memory.sampler == UINT32_MAX);
 			}
+			// sarosshade: the listed kernels also fetch texels (IMAGE_LOAD) through the table; the
+			// SPIR-V back end selects the candidate per fetch.
 			EXIT_IF(image.indirect_root == memory.resource &&
-			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw);
+			        inst.GetOpcode() != ValueOpcode::ImageSampleRaw &&
+			        !(inst.GetOpcode() == ValueOpcode::ImageRead &&
+			          SarosHandShader(program.shader_hash)));
 		}
 	}
 	// Dead-code elimination can remove an image operation (an unused IMAGE_GET_LOD result) before

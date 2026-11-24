@@ -420,7 +420,8 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   options.wave_size = s.wave;
   options.user_data_base = s.user_data_base;
   options.shader_hash = s.hash;
-  options.dump_ir = false;
+  options.dump_ir = std::getenv("KYTY_DUMP_STDOUT") != nullptr;
+  options.early_dump = options.dump_ir;
   options.emit_msl = true;
   options.emit_spirv = false;
   options.msl_loop_cap = g_loop_cap;

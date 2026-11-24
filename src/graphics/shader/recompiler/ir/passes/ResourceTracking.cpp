@@ -3,8 +3,11 @@
 #include "common/assert.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <span>
 #include <utility>
@@ -63,6 +66,35 @@ Value CanonicalizeSampleAdjustDword3(Value value) {
 			return value;
 		}
 	}
+}
+
+// Whether the high dword of a FLAT address is provably an aperture tag (LDS/scratch) rather than a
+// canonical 48-bit guest address.
+bool IsNoncanonicalFlatAddress(Value high, Value active) {
+	high   = high.Resolve();
+	active = active.Resolve();
+	// A predicated VGPR write supplies its new value on exactly the lanes which execute this access.
+	while (const auto* select = high.TryInstruction()) {
+		if (select->GetOpcode() != ValueOpcode::SelectU32 || select->Arg(0).Resolve() != active) break;
+		high = select->Arg(1).Resolve();
+	}
+	uint32_t lower = 0, upper = UINT32_MAX;
+	if (high.IsImmediate() && high.GetType() == Type::U32) {
+		lower = upper = high.U32();
+	} else if (const auto* inst = high.TryInstruction();
+	           inst != nullptr && inst->GetOpcode() == ValueOpcode::UMedTri32) {
+		// The median lies between any two constant inputs, regardless of the third.
+		uint32_t count = 0;
+		for (size_t index = 0; index < inst->NumArgs(); ++index) {
+			const auto value = inst->Arg(index).Resolve();
+			if (!value.IsImmediate() || value.GetType() != Type::U32) continue;
+			if (count++ == 0) lower = upper = value.U32();
+			else { lower = std::min(lower, value.U32()); upper = std::max(upper, value.U32()); }
+		}
+		if (count < 2) return false;
+	}
+	// Leave one high DWORD on each side for the signed instruction offset/carry.
+	return lower > 0x00008000u && upper < 0xffff7fffu;
 }
 
 const char* StageName(ShaderType stage) {
@@ -448,6 +480,13 @@ private:
 			return false;
 		}
 		const auto* selector_inst = selector.TryInstruction();
+		// sarosshade (KYTY_SAROS_HANDSHADERS, listed hashes only): the record selector is a scalar
+		// loop counter (record = CB[i * 0xa0]), not a ReadFirstLane. The host enumerates every
+		// record of the buffer before the dispatch either way, so any wave-uniform U32 selects.
+		if (stride != 0u && selector_inst != nullptr && selector.GetType() == Type::U32 &&
+		    SarosHandShader(m_program.shader_hash)) {
+			return true;
+		}
 		return stride != 0u && selector_inst != nullptr &&
 		       selector_inst->GetOpcode() == ValueOpcode::ReadFirstLane;
 	}
@@ -874,9 +913,20 @@ private:
 		return {};
 	}
 
+	// sarosshade: KYTY_SAROS_HANDSHADERS_LOG=1 names the check that refused an indirect-image plan
+	// of a listed shader (source line of the check, pc of the image operation).
+	bool RejectIndirect(int line, uint32_t pc) const {
+		static const bool log = std::getenv("KYTY_SAROS_HANDSHADERS_LOG") != nullptr;
+		if (log && SarosHandShader(m_program.shader_hash)) {
+			std::fprintf(stderr, "[sarosshade] 0x%016llx pc=0x%x indirect image refused at line %d\n",
+			             static_cast<unsigned long long>(m_program.shader_hash), pc, line);
+		}
+		return false;
+	}
+
 	bool TryMakeIndirectImage(Inst& handle, uint32_t pc, IndirectImagePlan& plan) {
 		if (handle.GetOpcode() != ValueOpcode::GetImageResource || handle.NumArgs() != 8u) {
-			return false;
+			return RejectIndirect(__LINE__, pc);
 		}
 		Inst* table_handle = nullptr;
 		Value key;
@@ -884,13 +934,13 @@ private:
 		for (uint32_t dword = 0; dword < plan.reads.size(); ++dword) {
 			auto* read = handle.Arg(dword).Resolve().TryInstruction();
 			if (read == nullptr) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			uint32_t memory_index = 0;
 			const auto* memory = ScalarReadMemory(*read, memory_index);
 			if (memory == nullptr || memory->offset > INT32_MAX || (memory->offset & 3u) != 0u ||
 			    !MemoryIndexBelongsTo(memory_index, *read)) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			auto* current_handle = read->Arg(0).Resolve().TryInstruction();
 			Value current_key;
@@ -904,7 +954,7 @@ private:
 			     !EquivalentValue(m_program, Value(table_handle), Value(current_handle))) ||
 			    !MatchTableOffset(read->Arg(1), current_key, offset) ||
 			    memory->offset > UINT32_MAX - offset) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			offset += memory->offset;
 			if (dword == 0u) {
@@ -912,11 +962,20 @@ private:
 				table_offset = offset;
 			} else if (!EquivalentValue(m_program, key, current_key) ||
 			           static_cast<uint64_t>(table_offset) + dword * sizeof(uint32_t) != offset) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			table_handle = current_handle;
 			const std::array<const Inst*, 1> image_users {&handle};
-			if (!UsesOnly(*read, image_users)) {
+			// sarosshade (listed hashes only): one heap T# feeds several image operations, each
+			// through its own handle built from the same eight reads. Every such handle gets the
+			// same plan, so the read is still used by handles only.
+			const bool shared_handles = SarosHandShader(m_program.shader_hash) &&
+			    !read->Uses().empty() &&
+			    std::ranges::all_of(read->Uses(), [&](const Use& use) {
+				    return use.user->GetOpcode() == ValueOpcode::GetImageResource &&
+				           use.user->NumArgs() == 8u && use.operand == dword;
+			    });
+			if (!shared_handles && !UsesOnly(*read, image_users)) {
 				// A T# word the shader also uses as a value stays a real read through the table;
 				// only the handle's own uses are planned. An explicit-LOD gather passes words 1 and
 				// 3 by value (its mip selection reads them on the GPU, Translator::IMAGE_GATHER:
@@ -934,7 +993,7 @@ private:
 					           image_users.end();
 				});
 				if ((!lod_words_only && !data_words) || dword == 0u) {
-					return false;
+					return RejectIndirect(__LINE__, pc);
 				}
 				plan.memory[dword] = UINT32_MAX;
 				continue;
@@ -945,7 +1004,7 @@ private:
 
 		DescriptorSource table_source;
 		if (!MakeRuntimeTableSource(*table_handle, pc, table_source)) {
-			return false;
+			return RejectIndirect(__LINE__, pc);
 		}
 		DescriptorSource material_source;
 		DescriptorSource::IndirectDescriptor indirect;
@@ -962,10 +1021,10 @@ private:
 			}
 			if (indirect.key_count.IsEmpty() &&
 			    !MatchUniformizedMaterialKey(key, handle, indirect, material_source, pc)) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			if ((table_offset & 3u) != 0u ||
-			    (bitscan && table_offset > UINT32_MAX - (32u * 32u - 1u))) return false;
+			    (bitscan && table_offset > UINT32_MAX - (32u * 32u - 1u))) return RejectIndirect(__LINE__, pc);
 		} else {
 			auto* material_read = key.Resolve().TryInstruction();
 			uint32_t material_memory_index = 0;
@@ -976,26 +1035,29 @@ private:
 			if (table_offset != 0u || memory == nullptr || memory->kind != ResourceKind::ScalarBuffer ||
 			    (memory->offset & 3u) != 0u || memory->offset > INT32_MAX ||
 			    !MemoryIndexBelongsTo(material_memory_index, *material_read)) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			Value selector;
 			DescriptorSource::IndirectDescriptor::SelectorRead selector_read;
 			if (!MatchMaterialOffset(material_read->Arg(1), selector, selector_read.stride,
 			                         selector_read.offset) ||
 			    selector_read.offset > UINT32_MAX - memory->offset) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			selector_read.offset += memory->offset;
 			const auto* shift = plan.reads[0]->Arg(1).Resolve().TryInstruction();
 			const std::array<const Inst*, 1> material_users {shift};
-			if (!UsesOnly(*material_read, material_users) || !UsesOnly(*shift, plan.reads)) {
-				return false;
+			// sarosshade (listed hashes only): the heap index may also be used as a value (a "none"
+			// test) and its shift by several handles' reads; the index stays a real read.
+			if (!SarosHandShader(m_program.shader_hash) &&
+			    (!UsesOnly(*material_read, material_users) || !UsesOnly(*shift, plan.reads))) {
+				return RejectIndirect(__LINE__, pc);
 			}
 			const auto* material_handle = material_read->Arg(0).Resolve().TryInstruction();
 			if (material_handle == nullptr ||
 			    material_handle->GetOpcode() != ValueOpcode::GetBufferResource ||
 			    !MakeRuntimeTableSource(*material_handle, pc, material_source)) {
-				return false;
+				return RejectIndirect(__LINE__, pc);
 			}
 			selector_read.source = InternSource(material_source);
 			indirect.selector    = selector_read;
@@ -1302,6 +1364,16 @@ private:
 		if (address_info.access != AddressAccess::None) {
 			if (!IsAddressResourceKind(memory.kind)) {
 				Fail(flags.pc, "address operation has invalid resource kind");
+			}
+			if (memory.kind == ResourceKind::Flat && memory.address_is_full &&
+			    IsNoncanonicalFlatAddress(inst.Arg(2), inst.Arg(inst.NumArgs() - 1))) {
+				// Flat pointer into the LDS/scratch aperture: lowered by the emitter per aperture tag.
+				ValidateAddressHandle(inst.Arg(0), flags.pc);
+				if (memory.data_bits != 32u || m_program.scratch_dwords == 0) {
+					Fail(flags.pc, "local FLAT access requires DWORD data and per-thread scratch storage");
+				}
+				m_program.memory_info[flags.index].kind = ResourceKind::FlatLocal;
+				return;
 			}
 			if (memory.kind == ResourceKind::Scratch) {
 				handle = inst.Arg(0).Resolve().TryInstruction();

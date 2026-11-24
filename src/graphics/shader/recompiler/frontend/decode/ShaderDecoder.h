@@ -10,6 +10,10 @@
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
+// High dwords of the flat (generic) address apertures: LDS and per-thread scratch.
+constexpr uint32_t PrivateApertureHigh = 0x70000000u;
+constexpr uint32_t SharedApertureHigh  = 0x80000000u;
+
 enum class Family {
 	Unknown,
 	SOP1,
@@ -794,6 +798,10 @@ enum class OperandKind {
 	PopsExitingWaveId,
 	Null,
 	Vgpr,
+	SharedBase,
+	SharedLimit,
+	PrivateBase,
+	PrivateLimit,
 };
 
 enum ImageSampleFlag : uint32_t {
@@ -918,6 +926,11 @@ Program DecodeFrontProgram(std::span<const uint32_t> front);
 // decode_bvh=false stops at the first IMAGE_BVH*_INTERSECT_RAY, marks it unsupported and sets
 // has_bvh (the shader's dispatches are then skipped); true decodes it like any other instruction.
 void DecodeProgram(std::span<const uint32_t> code, Program& program, bool decode_bvh = false);
+// KYTY_SKIP_UNDECODABLE=1: unknown scalar operands decode as Null and are recorded; TakeUndecodable
+// returns (and clears) the first one of this thread since the last call.
+bool SkipUndecodable();
+void NoteUndecodable(uint32_t pc, uint32_t code);
+bool TakeUndecodable(uint32_t& pc, uint32_t& code);
 [[nodiscard]] bool IsBvhIntersect(const Instruction& inst);
 bool IsConditionalBranch(Opcode opcode);
 bool IsDirectBranch(Opcode opcode);

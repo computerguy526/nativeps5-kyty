@@ -25,6 +25,7 @@ struct ResourceSpecialization {
 		uint32_t                      indirect_root              = ImageResource::NoIndirectImage;
 		uint32_t                      indirect_mapping_offset    = 0;
 		uint32_t                      indirect_search_iterations = 0;
+		uint32_t                      indirect_group             = ImageResource::NoIndirectImage;
 		bool                          cube                       = false;
 		bool                          fmask                      = false;
 		bool                          operator==(const Image&) const = default;

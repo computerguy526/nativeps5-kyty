@@ -206,6 +206,14 @@ CodegenOptions FromEnvironment() {
 	    path != nullptr && path[0] != '\0') {
 		options.fast_math_allow = ReadHashFile(path, &options.fast_math_allow_set);
 	}
+	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_DENY"); path != nullptr && path[0] != '\0') {
+		bool ok                   = false;
+		options.wave64_warps_deny = ReadHashFile(path, &ok);
+	}
+	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_ALLOW"); path != nullptr && path[0] != '\0') {
+		// A missing file leaves the set flag false (no list), as for KYTY_FAST_MATH_ALLOW.
+		options.wave64_warps_allow = ReadHashFile(path, &options.wave64_warps_allow_set);
+	}
 	if (const auto* accuracy = std::getenv("KYTY_GPU_ACCURACY"); accuracy != nullptr) {
 		options.gpu_accuracy = std::strcmp(accuracy, "normal") == 0 ? 1u
 		                       : std::strcmp(accuracy, "low") == 0  ? 2u
@@ -368,6 +376,14 @@ bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage) {
 	return allowed;
 }
 
+bool Wave64WarpsShaderAllowed(uint64_t shader_hash) {
+	const auto& options = Storage();
+	return options.wave64_warps &&
+	       (!options.wave64_warps_allow_set ||
+	        std::binary_search(options.wave64_warps_allow.begin(), options.wave64_warps_allow.end(), shader_hash)) &&
+	       !std::binary_search(options.wave64_warps_deny.begin(), options.wave64_warps_deny.end(), shader_hash);
+}
+
 bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage) {
 	const auto& options = Storage();
 	if (options.gpu_accuracy != 1 || options.fast_math != 0) {
@@ -425,6 +441,14 @@ ComputeLdsPlan PlanComputeLds(uint32_t requested_dwords, uint32_t device_limit_b
 		plan.clamped = true;
 	}
 	return plan;
+}
+
+bool StoreCompletionFence() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_STORE_COMPLETION_FENCE");
+		return v != nullptr && std::strcmp(v, "1") == 0;
+	}();
+	return on;
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler

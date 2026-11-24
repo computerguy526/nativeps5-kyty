@@ -2124,6 +2124,94 @@ void TestRangeSignatureAcrossRegions() {
   Release(memory);
 }
 
+// nps5 findbuf: MemoryTracker::ForEachCpuDirtyRunRelaxed reports ascending, disjoint, merged runs
+// clipped to its range, and a sub-range intersects one exactly when QueryCpuDirtyRelaxed answers
+// "dirty" or cannot decide (a missing region), across bit words and regions.
+void TestCpuDirtyRunsMatchRelaxedQuery() {
+  constexpr uintptr_t base = 0x0000000205000000ull;
+  constexpr uint64_t region_size = Libs::Graphics::TRACKER_REGION_SIZE;
+  TrackerHarness harness;
+  auto &tracker = harness.tracker;
+  const auto page_size = harness.page_manager.GetPageSize();
+  auto *memory = static_cast<uint8_t *>(
+      VirtualAlloc(reinterpret_cast<void *>(base), region_size * 3,
+                   MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+  Check(memory == reinterpret_cast<void *>(base), "fixed VirtualAlloc failed");
+  // Regions 0 and 2 exist and are clean; region 1 is never touched (missing).
+  UploadAll(tracker, base, region_size);
+  UploadAll(tracker, base + region_size * 2, region_size);
+  const auto span_end = base + region_size * 3;
+  std::mt19937_64 rng(0xf1dbu);
+  std::vector<std::pair<uint64_t, uint64_t>> runs;
+  const auto collect = [&](uint64_t address, uint64_t size) {
+    runs.clear();
+    tracker.ForEachCpuDirtyRunRelaxed(address, size, [&](uint64_t begin, uint64_t end) {
+      runs.emplace_back(begin, end);
+    });
+    for (size_t i = 0; i < runs.size(); i++) {
+      Check(runs[i].first < runs[i].second && runs[i].first >= address &&
+                runs[i].second <= address + size,
+            "a dirty run is empty or outside its range");
+      Check(i == 0 || runs[i - 1].second < runs[i].first,
+            "dirty runs are not ascending, disjoint and merged");
+    }
+  };
+  const auto intersects = [&](uint64_t start, uint64_t finish) {
+    for (const auto &[begin, end] : runs) {
+      if (begin < finish && start < end) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (int round = 0; round < 6; round++) {
+    // Dirty a few random page runs (some across bit words and the region 0/1 boundary is left
+    // to the missing region), then upload a few back to clean.
+    for (int i = 0; i < 12; i++) {
+      const uint64_t region = (rng() % 2) * 2;
+      const uint64_t page = rng() % (region_size / page_size);
+      const uint64_t pages = 1 + rng() % 70;
+      const auto address = base + region * region_size + page * page_size;
+      const auto size = std::min<uint64_t>(pages * page_size,
+                                           base + (region + 1) * region_size - address);
+      tracker.MarkRegionAsCpuModified(address, size);
+    }
+    for (int i = 0; i < 4; i++) {
+      const uint64_t region = (rng() % 2) * 2;
+      const uint64_t page = rng() % (region_size / page_size);
+      const auto address = base + region * region_size + page * page_size;
+      UploadAll(tracker, address,
+                std::min<uint64_t>(page_size * (1 + rng() % 40),
+                                   base + (region + 1) * region_size - address));
+    }
+    for (int q = 0; q < 300; q++) {
+      // An enclosing walk range and a sub-range of it, at byte (not page) granularity.
+      uint64_t a = base + rng() % (span_end - base);
+      uint64_t b = base + rng() % (span_end - base);
+      if (a > b) std::swap(a, b);
+      if (a == b) b = a + 1;
+      collect(a, b - a);
+      uint64_t s = a + rng() % (b - a);
+      uint64_t f = s + 1 + rng() % (b - s);
+      bool dirty = false;
+      const bool decided = tracker.QueryCpuDirtyRelaxed(s, f - s, dirty);
+      Check(intersects(s, f) == (!decided || dirty),
+            "a sub-range's dirty runs disagree with QueryCpuDirtyRelaxed");
+    }
+  }
+  // The missing region is one run, and no query created it.
+  collect(base + region_size, region_size);
+  Check(runs.size() == 1 && runs[0].first == base + region_size &&
+            runs[0].second == base + region_size * 2,
+        "the missing region is not reported as one run");
+  bool missing_dirty = false;
+  Check(!tracker.QueryCpuDirtyRelaxed(base + region_size, page_size, missing_dirty),
+        "the missing region was created");
+  tracker.UntrackMemory(base, region_size);
+  tracker.UntrackMemory(base + region_size * 2, region_size);
+  Check(VirtualFree(memory, 0, MEM_RELEASE) != 0, "release failed");
+}
+
 // MemoryTracker::QueryDirty decides as `!IsRegionGpuModified && IsRegionCpuModified` does (it
 // creates missing regions exactly when that expression would), and the lock-free GPU-dirty mirror
 // (IsRegionGpuModifiedRelaxed) follows every GPU-bit transition, across regions and bit words.
@@ -2995,6 +3083,7 @@ int main(int argc, char **argv) {
   TestRangeDirtiedSignature();
   TestRangeSignatureAcrossRegions();
   TestDirtyQueryAndGpuMirror();
+  TestCpuDirtyRunsMatchRelaxedQuery();
   TestCoherenceLogTrackerTransitions();
   TestFatalPaths();
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX

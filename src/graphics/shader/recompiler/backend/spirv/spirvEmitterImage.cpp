@@ -3,11 +3,14 @@
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 #include "graphics/shader/recompiler/frontend/decode/ImageOps.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <algorithm>
 #include <bit>
 #include <cstdio>
+#include <functional>
 #include <optional>
+#include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 namespace {
@@ -1003,6 +1006,85 @@ void EmitMipStatsRecord(EmitterState& state, uint32_t resource, uint32_t lod) {
 	});
 }
 
+// One contiguous stretch of an indirect root's candidate list that a single array-indexed
+// descriptor load can address (slot = selected + slot_bias), or a lone candidate (count 1).
+struct IndirectRun {
+	uint32_t first;
+	uint32_t count;
+	uint32_t resource;
+	uint32_t slot_bias;
+};
+
+static std::vector<IndirectRun> BuildIndirectRuns(EmitterState& state, const IR::ImageResource& image,
+                                           bool native_runs) {
+	std::vector<IndirectRun> runs;
+	for (uint32_t ordinal = 0; ordinal < image.indirect_resources.size(); ++ordinal) {
+		const auto resource = image.indirect_resources[ordinal];
+		const auto& candidate = state.program.info.images[resource];
+		const auto kind = *IR::DescriptorBindingForImage(candidate);
+		const auto& binding = *IR::FindBinding(state.program.bindings, kind);
+		if (native_runs && !runs.empty()) {
+			auto& run = runs.back();
+			const auto& first = state.program.info.images[run.resource];
+			const auto next_slot = run.slot_bias + ordinal;
+			if (candidate.dimension == first.dimension && candidate.cube == first.cube &&
+			    IR::DescriptorBindingForImage(first) == kind &&
+			    candidate.mip_count == 1u && first.mip_count == 1u &&
+			    (ordinal == 1u || (next_slot < binding.resources.size() &&
+			                      binding.resources[next_slot] == resource))) {
+				// Native roots precede appended children; only the root may have a slot gap.
+				if (ordinal == 1u)
+					run.slot_bias = ResourceForDescriptor(state, kind, resource) - ordinal;
+				++run.count;
+				continue;
+			}
+		}
+		runs.push_back({ordinal, 1u, resource,
+		                ResourceForDescriptor(state, kind, resource) - ordinal});
+	}
+	return runs;
+}
+
+// Selects the run holding ordinal `selected` and emits it with emit(resource, slot): slot is 0 for
+// a lone candidate (constant descriptor) or the dynamic descriptor-array index of the run.
+static uint32_t EmitIndirectRuns(EmitterState& state, const IR::ImageResource& image,
+                          uint32_t root_resource, uint32_t selected,
+                          const std::vector<IndirectRun>& runs, uint32_t result_type,
+                          const std::function<uint32_t(uint32_t, uint32_t)>& emit) {
+	const auto EmitRun = [&](uint32_t index) {
+		const auto& run = runs[index];
+		if (run.count == 1u) return emit(run.resource, 0u);
+		auto slot = Binary(state, spv::OpIAdd, TypeU32(state), selected,
+		                   ConstantU32(state, run.slot_bias));
+		if (run.first == 0u) {
+			const auto kind = *IR::DescriptorBindingForImage(image);
+			const auto root_slot = ResourceForDescriptor(state, kind, root_resource);
+			if (root_slot != run.slot_bias) {
+				const auto is_root = Binary(state, spv::OpIEqual, TypeBool(state), selected,
+				                            ConstantU32(state, 0u));
+				const auto root_or_child = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpSelect, TypeU32(state), root_or_child,
+				                          is_root, ConstantU32(state, root_slot), slot);
+				slot = root_or_child;
+			}
+		}
+		return emit(run.resource, slot);
+	};
+	auto run_index = ConstantU32(state, 0u);
+	for (uint32_t index = 1; index < runs.size(); ++index) {
+		const auto at_or_after = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state),
+		                               selected, ConstantU32(state, runs[index].first));
+		const auto next = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpSelect, TypeU32(state), next, at_or_after,
+		                          ConstantU32(state, index), run_index);
+		run_index = next;
+	}
+	return runs.size() == 1u
+	           ? EmitRun(0u)
+	           : EmitIndexSwitch(state, run_index, static_cast<uint32_t>(runs.size()), result_type,
+	                             EmitRun);
+}
+
 void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto op         = inst.GetOpcode();
 	const auto image_info = IR::ImageOpcodeInfoOf(op);
@@ -1051,19 +1133,74 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 		    EmitValueOrDefaultIfCondition(
 		        state, condition, TypeU32Vector(state, 4), ConstantU32CompositeZero(state, 4),
 		        [&]() {
-			        const auto descriptor = LoadImageDescriptor(state, mem.resource);
-			        const auto color      = state.builder.AllocateId();
-			        const auto coord      = CoordU32(ctx, mem, *address, dimension);
-			        if (dimension_info.multisampled != 0u) {
-				        state.builder.AddFunction(
-				            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4), color,
-				            descriptor, coord, spv::ImageOperandsSampleMask,
-				            AddressU32(ctx, mem, *address, dimension_info.coordinate_components));
+			        uint32_t color = 0;
+			        // sarosshade (KYTY_SAROS_HANDSHADERS): a texel fetch through an indirect image
+			        // table (heap T# picked by a per-record key): one fetch per candidate, selected
+			        // by the key's ordinal in the dispatch's mapping, as the sample path does.
+			        // Everything else keeps the original emission order (byte-identical SPIR-V).
+			        const auto* handle = image_arg.ResolveInstruction();
+			        if (image.indirect_root == mem.resource && handle != nullptr &&
+			            handle->NumArgs() != 0u && state.flattened_srt_variable != 0 &&
+			            image.indirect_resources.size() >= 2u) {
+				        const auto coord      = CoordU32(ctx, mem, *address, dimension);
+				        const auto EmitFetch = [&](uint32_t resource, uint32_t array_index = 0u) {
+					        const auto descriptor = LoadImageDescriptor(state, resource, 0u, array_index);
+					        if (array_index != 0u) {
+						        state.builder.RequireExtension("SPV_EXT_descriptor_indexing");
+						        state.builder.RequireCapability(spv::CapabilityShaderNonUniform);
+						        state.builder.RequireCapability(
+						            spv::CapabilitySampledImageArrayNonUniformIndexing);
+						        state.builder.AddAnnotation(spv::OpDecorate, descriptor,
+						                                    spv::DecorationNonUniform);
+					        }
+					        const auto fetched    = state.builder.AllocateId();
+					        if (dimension_info.multisampled != 0u) {
+						        state.builder.AddFunction(
+						            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4), fetched,
+						            descriptor, coord, spv::ImageOperandsSampleMask,
+						            AddressU32(ctx, mem, *address, dimension_info.coordinate_components));
+					        } else {
+						        state.builder.AddFunction(spv::OpImageFetch,
+						                                  ImageVectorType(state, numeric_class, 4), fetched,
+						                                  descriptor, coord, spv::ImageOperandsLodMask,
+						                                  LodU32(ctx, mem, *address, dimension));
+					        }
+					        return fetched;
+				        };
+				        const auto selected = EmitIndirectResourceIndex(
+				            state, ctx.Def(handle->Arg(0)), image.indirect_mapping_offset,
+				            image.indirect_search_iterations, 0u);
+				        if (image.indirect_group != IR::ImageResource::NoIndirectImage &&
+				            image.resource_class == IR::ImageResourceClass::Sampled) {
+					        // sarosperf2 (KYTY_SAROS_HS_DYNIDX): the group's candidates are fetched by one
+					        // dynamic descriptor-array index per contiguous run, not one case each.
+					        color = EmitIndirectRuns(
+					            state, image, mem.resource, selected,
+					            BuildIndirectRuns(state, image, true),
+					            ImageVectorType(state, numeric_class, 4), EmitFetch);
+				        } else {
+					        color = EmitIndexSwitch(
+					            state, selected,
+					            static_cast<uint32_t>(image.indirect_resources.size()),
+					            ImageVectorType(state, numeric_class, 4), [&](uint32_t ordinal) {
+						            return EmitFetch(image.indirect_resources[ordinal]);
+					            });
+				        }
 			        } else {
-				        state.builder.AddFunction(spv::OpImageFetch,
-				                                  ImageVectorType(state, numeric_class, 4), color,
-				                                  descriptor, coord, spv::ImageOperandsLodMask,
-				                                  LodU32(ctx, mem, *address, dimension));
+				        const auto descriptor = LoadImageDescriptor(state, mem.resource);
+				        color                 = state.builder.AllocateId();
+				        const auto coord      = CoordU32(ctx, mem, *address, dimension);
+				        if (dimension_info.multisampled != 0u) {
+					        state.builder.AddFunction(
+					            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4), color,
+					            descriptor, coord, spv::ImageOperandsSampleMask,
+					            AddressU32(ctx, mem, *address, dimension_info.coordinate_components));
+				        } else {
+					        state.builder.AddFunction(spv::OpImageFetch,
+					                                  ImageVectorType(state, numeric_class, 4), color,
+					                                  descriptor, coord, spv::ImageOperandsLodMask,
+					                                  LodU32(ctx, mem, *address, dimension));
+				        }
 			        }
 			        return ResultVector(ctx, UnpackImageTexel(ctx, mem, color), numeric_class,
 			                            false, mem);
@@ -1185,7 +1322,8 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 		    GetCodegenOptions().sample_lod_clamp) {
 			lod_clamp = AddressF32(ctx, mem, *address, layout.clamp);
 		}
-		const bool gradient    = HasFlag(mem, Decoder::ImageSampleFlagDerivative);
+		const bool gradient    = HasFlag(mem, Decoder::ImageSampleFlagDerivative) &&
+		                      !SarosSampleLod0(state.program.shader_hash);
 		const bool min_lod_op  = lod_clamp != 0u && (gradient || !explicit_lod) &&
 		                        GetHostImageFeatures().min_lod;
 		uint32_t   explicit_lod_value = 0;
@@ -1262,6 +1400,14 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				coord = ApplyDynamicSampleOffset(state, resource, coord, candidate.dimension,
 				                                 sample_offset.packed, level);
 			}
+			if (SarosSampleFract(state.program.shader_hash) && !dref &&
+			    state.program.stage == ShaderType::Pixel &&
+			    ImageDimensionInfoFor(candidate.dimension).coordinate_components == 2u) {
+				const auto fr = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpExtInst, TypeF32Vector(state, 2), fr, GlslStd450(state),
+				                          GLSLstd450Fract, coord);
+				coord = fr;
+			}
 			const auto sampled = MakeSampledImage(state, resource, sampler_id, 0u, array_index);
 			const auto            sample  = state.builder.AllocateId();
 			std::vector<uint32_t> sample_operands {result_type, sample, sampled, coord};
@@ -1330,6 +1476,22 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 					EmitMipStatsRecord(state, resource, sample_lod(sampled));
 				}
 			}
+			// sarosuv: KYTY_SAROS_SAMPLE_DBG=<hex,..|all> (bring-up experiment, default off): the listed pixel shaders'
+			// 2D float samples return (coord.x, coord.y, 0, 1) instead of the texel, so the albedo/normal targets
+			// show the sampling coordinates the shader computed (flat colour = constant UV).
+			if (SarosSampleDbg(state.program.shader_hash) && !dref &&
+			    state.program.stage == ShaderType::Pixel &&
+			    ImageDimensionInfoFor(candidate.dimension).coordinate_components >= 2u &&
+			    result_type == TypeF32Vector(state, 4)) {
+				const auto cx = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), cx, coord, 0u);
+				const auto cy = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), cy, coord, 1u);
+				const auto dbg = state.builder.AllocateId();
+				state.builder.AddFunction(spv::OpCompositeConstruct, result_type, dbg, cx, cy,
+				                          ZeroF32(state), ConstantF32Value(state, 1.0f));
+				return dbg;
+			}
 			return sample;
 		};
 		if (image.indirect_root != mem.resource) {
@@ -1358,73 +1520,15 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 		}
 		const auto selected = EmitIndirectResourceIndex(
 		    state, key, image.indirect_mapping_offset, image.indirect_search_iterations, 0u);
-		struct SampleRun {
-			uint32_t first;
-			uint32_t count;
-			uint32_t resource;
-			uint32_t slot_bias;
-		};
-		std::vector<SampleRun> runs;
 		// Dynamic sample offsets and GET_LOD_STATS records query or count the candidate itself, so
 		// those samples keep one case per candidate.
 		const bool native_runs = !sample_offset.dynamic &&
 		                         !(state.mip_stats_variable != 0 && state.mip_stats_records);
-		for (uint32_t ordinal = 0; ordinal < image.indirect_resources.size(); ++ordinal) {
-			const auto resource = image.indirect_resources[ordinal];
-			const auto& candidate = state.program.info.images[resource];
-			const auto kind = *IR::DescriptorBindingForImage(candidate);
-			const auto& binding = *IR::FindBinding(state.program.bindings, kind);
-			if (native_runs && !runs.empty()) {
-				auto& run = runs.back();
-				const auto& first = state.program.info.images[run.resource];
-				const auto next_slot = run.slot_bias + ordinal;
-				if (candidate.dimension == first.dimension && candidate.cube == first.cube &&
-				    IR::DescriptorBindingForImage(first) == kind &&
-				    candidate.mip_count == 1u && first.mip_count == 1u &&
-				    (ordinal == 1u || (next_slot < binding.resources.size() &&
-				                      binding.resources[next_slot] == resource))) {
-					// Native roots precede appended children; only the root may have a slot gap.
-					if (ordinal == 1u)
-						run.slot_bias = ResourceForDescriptor(state, kind, resource) - ordinal;
-					++run.count;
-					continue;
-				}
-			}
-			runs.push_back({ordinal, 1u, resource,
-			                ResourceForDescriptor(state, kind, resource) - ordinal});
-		}
-		const auto EmitRun = [&](uint32_t index) {
-			const auto& run = runs[index];
-			if (run.count == 1u) return EmitSample(run.resource);
-			auto slot = Binary(state, spv::OpIAdd, TypeU32(state), selected,
-			                   ConstantU32(state, run.slot_bias));
-			if (run.first == 0u) {
-				const auto kind = *IR::DescriptorBindingForImage(image);
-				const auto root_slot = ResourceForDescriptor(state, kind, mem.resource);
-				if (root_slot != run.slot_bias) {
-					const auto is_root = Binary(state, spv::OpIEqual, TypeBool(state), selected,
-					                            ConstantU32(state, 0u));
-					const auto root_or_child = state.builder.AllocateId();
-					state.builder.AddFunction(spv::OpSelect, TypeU32(state), root_or_child,
-					                          is_root, ConstantU32(state, root_slot), slot);
-					slot = root_or_child;
-				}
-			}
-			return EmitSample(run.resource, slot);
-		};
-		auto run_index = ConstantU32(state, 0u);
-		for (uint32_t index = 1; index < runs.size(); ++index) {
-			const auto at_or_after = Binary(state, spv::OpUGreaterThanEqual, TypeBool(state),
-			                               selected, ConstantU32(state, runs[index].first));
-			const auto next = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpSelect, TypeU32(state), next, at_or_after,
-			                          ConstantU32(state, index), run_index);
-			run_index = next;
-		}
-		auto result = runs.size() == 1u
-		                  ? EmitRun(0u)
-		                  : EmitIndexSwitch(state, run_index, static_cast<uint32_t>(runs.size()),
-		                                    result_type, EmitRun);
+		const auto runs = BuildIndirectRuns(state, image, native_runs);
+		auto result = EmitIndirectRuns(state, image, mem.resource, selected, runs, result_type,
+		                               [&](uint32_t resource, uint32_t slot) {
+			                               return EmitSample(resource, slot);
+		                               });
 		if (!dref) {
 			result = UnpackImageTexel(ctx, mem, result);
 		}

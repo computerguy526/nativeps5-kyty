@@ -1053,6 +1053,10 @@ struct GraphicsDynamicStateShadow {
 // KYTY_REBIND_AFTER_JOIN (descriptors.cpp).
 [[nodiscard]] bool RebindAfterJoinEnabled();
 void               NoteRebindAfterJoin(const char* kind, const char* name);
+// KYTY_BDA_DRAW_LOG=1 (cphot step 9, diagnostic): one `BdaUser:` line per 10 s and distinct
+// (kind, stage, program hash, pass) that takes the flat-pointer (uses_dma) sync.
+void               NoteBdaUser(const char* kind, uint32_t stage, uint64_t hash, bool bda_writes, uint32_t width,
+                               uint32_t height);
 
 class RenderExecutor {
 public:
@@ -1078,6 +1082,9 @@ public:
 	void                           RebindImages(PreparedBindings& bindings);
 	// keep_images (KYTY_DRAW_RUN continuation): no image transition is recorded; the images are in
 	// the states the previous draw left them in (DrawRunImagesUnchanged).
+	// nps5 memtrk: KYTY_CS_CAPTURE (descriptors.cpp).
+	void CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderInfo& program, const PreparedBindings& prepared,
+	                    const uint32_t* push_dwords, size_t push_bytes);
 	void CommitBindings(CommandBuffer& buffer, vk::PipelineBindPoint pipeline_bind_point,
 	                    const PipelineCache::Pipeline&     pipeline,
 	                    std::span<PreparedBindings* const> bindings, bool keep_images = false);

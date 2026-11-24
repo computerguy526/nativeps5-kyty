@@ -164,6 +164,16 @@ uint32_t LoadVertexParameter(EmitterState& state, const InputBinding& input, uin
                              uint32_t chan) {
 	const auto pointer = state.builder.AllocateId();
 	const auto value   = state.builder.AllocateId();
+	if (input.saros_raw_u32) {
+		// sarosnanite: the per-primitive AND of the three vertices' dwords (uvec4).
+		const auto bits = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpAccessChain,
+		                          TypePointer(state, spv::StorageClassInput, TypeU32(state)), pointer,
+		                          input.vertex_variable_ids[vertex], ConstantU32(state, chan & 3u));
+		state.builder.AddFunction(spv::OpLoad, TypeU32(state), bits, pointer);
+		state.builder.AddFunction(spv::OpBitcast, TypeF32(state), value, bits);
+		return value;
+	}
 	if (input.vertex_variable_ids[0] != 0) {
 		// KYTY_PS_PER_VERTEX=gs: the vertex's flat copy.
 		state.builder.AddFunction(spv::OpAccessChain,
@@ -747,6 +757,17 @@ uint32_t EmitIdentity(ValueEmitContext&, uint32_t value) {
 void EmitVoid(ValueEmitContext&) {}
 
 void EmitStoreCompletion(EmitterState& state) {
+	if (StoreCompletionFence() && !state.split_wave) {
+		// KYTY_STORE_COMPLETION_FENCE: a memory fence only (see CodegenOptions). A split wave keeps
+		// the workgroup barrier: its two halves are different host subgroups and see each other's
+		// stores only through it (SAROS r71/r74: CS b6c61a6c2ebb842d, a split wave64, spun past the
+		// 4 s watchdog with the fence there).
+		state.builder.AddFunction(
+		    spv::OpMemoryBarrier, ConstantU32(state, spv::ScopeDevice),
+		    ConstantU32(state, spv::MemorySemanticsReleaseMask | spv::MemorySemanticsUniformMemoryMask |
+		                          spv::MemorySemanticsImageMemoryMask));
+		return;
+	}
 	// A split wave spans two host subgroups of its workgroup.
 	NoteWaveSync(state);
 	state.builder.AddFunction(

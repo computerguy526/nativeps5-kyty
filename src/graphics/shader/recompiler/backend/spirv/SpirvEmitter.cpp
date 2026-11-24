@@ -200,7 +200,10 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 					if (planning_only_handle(inst)) {
 						break;
 					}
-					if (inst.NumArgs() != 2 || !program.info.uses_dma) {
+					// A FlatLocal access keeps its (unused) address handle without DMA.
+					if (inst.NumArgs() != 2 ||
+					    (!program.info.uses_dma && !std::any_of(program.memory_info.begin(), program.memory_info.end(),
+					         [](const IR::MemoryInfo& m) { return m.kind == IR::ResourceKind::FlatLocal; }))) {
 						Fail(program, "typed address handle has invalid DMA metadata");
 					}
 					break;
@@ -341,11 +344,15 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 					Fail(program, "address operation has invalid memory metadata");
 				}
 				const auto& memory = program.memory_info[memory_index];
-				if (memory.kind == IR::ResourceKind::Scratch) {
+				if (memory.kind == IR::ResourceKind::Scratch ||
+				    memory.kind == IR::ResourceKind::FlatLocal) {
 					if (program.scratch_dwords == 0) {
 						Fail(program, "scratch operation has no per-thread storage");
 					}
 					requirements.function_scratch = true;
+					requirements.function_lds |= memory.kind == IR::ResourceKind::FlatLocal &&
+					                             program.stage != ShaderType::Compute &&
+					                             program.stage != ShaderType::Mesh;
 				} else if (address_access == IR::AddressAccess::Write) {
 					Fail(program, "writable FLAT/GLOBAL addresses require GPU ownership tracking");
 				} else {
@@ -637,7 +644,7 @@ std::vector<uint32_t> EmitProgram(const IR::Program& program,
 	// KYTY_LANE_LOCAL: a proven lane-local wave64 program runs one guest lane per invocation.
 	state.lane_count =
 	    program.lane_local ? 1u : ShaderLanesPerInvocation(program.stage, program.wave_size, input_info);
-	if (state.lane_count == 2 && GetCodegenOptions().wave64_warps &&
+	if (state.lane_count == 2 && Wave64WarpsShaderAllowed(program.shader_hash) &&
 	    program.stage == ShaderType::Compute && !program.dispatcher_fallback &&
 	    // BVH node counts (KYTY_RT_NODE_BUDGET/STATS) report per two-lane invocation.
 	    !IR::UsesBvhNodeCount(program) &&

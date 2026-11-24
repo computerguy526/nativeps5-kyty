@@ -292,10 +292,55 @@ bool RenderContext::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 	return m_mapped_ranges.Contains(vaddr, size);
 }
 
+// nps5 memtrk: KYTY_CP_READ_IMAGE_SYNC=1 (default off). A command-processor read (indirect
+// arguments, labels: ReadGuestForCp) of bytes a GPU-modified image covers used to give up here and
+// read the guest view, whose bytes the image has not published: SAROS's GPU-written indirect
+// dispatch arguments read as 0xFFFFFFFF (r47/r52) from memory UE's transient allocator also used
+// for a 256x256 texture. With the switch the read publishes the range first, as a guest read fault
+// does (BufferCache::ReadMemory), then the caller reads the backing. KYTY_CP_READ_DIAG=1 (or the
+// switch) logs the first such reads.
+static bool CpReadImageSync() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_CP_READ_IMAGE_SYNC");
+		return v != nullptr && std::strcmp(v, "1") == 0;
+	}();
+	return on;
+}
+static bool CpReadDiag() {
+	static const bool on = [] {
+		const char* v = std::getenv("KYTY_CP_READ_DIAG");
+		return CpReadImageSync() || (v != nullptr && std::strcmp(v, "1") == 0);
+	}();
+	return on;
+}
+
 bool RenderContext::SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size) {
 	if (!GuestGpu::IsGpuThread() || CommandScheduler::InDeferredOperation() ||
 	    !m_command_scheduler.Active() || m_command_scheduler.Current().IsInvalid() ||
-	    !IsMapped(vaddr, size) || m_texture_cache.IsRegionGpuModified(vaddr, size)) {
+	    !IsMapped(vaddr, size)) {
+		return false;
+	}
+	if (m_texture_cache.IsRegionGpuModified(vaddr, size)) {
+		if (CpReadDiag()) [[unlikely]] {
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+				std::fprintf(stderr,
+				             "[memtrk] CP read 0x%016" PRIx64 "+0x%" PRIx64
+				             " covered by a GPU-modified image%s\n",
+				             vaddr, size,
+				             CpReadImageSync() ? ": publishing it first (KYTY_CP_READ_IMAGE_SYNC)"
+				                               : ": reading the guest view (stale if the image wrote it)");
+			}
+		}
+		if (!CpReadImageSync()) {
+			return false;
+		}
+		m_buffer_cache.CompleteSideReadbacks(vaddr, size);
+		HangTrace::SetReadbackKind(HangTrace::ReadbackKind::GpuSync);
+		m_buffer_cache.ReadMemory(vaddr, size);
+		HangTrace::SetReadbackKind(HangTrace::ReadbackKind::Invalidate);
+		// The caller retries the strict read; if the image keeps the range GPU-modified it falls
+		// back to the guest view, which the read above has published.
 		return false;
 	}
 

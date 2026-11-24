@@ -1,5 +1,6 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/recompiler/LodStatsEarlyTests.h"
 
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
@@ -606,6 +607,41 @@ void DefineInputs(EmitterState& state) {
 				EXIT_IF(alias->per_vertex != input.per_vertex);
 				input.variable_id         = alias->variable_id;
 				input.vertex_variable_ids = alias->vertex_variable_ids;
+				input.saros_raw_u32       = alias->saros_raw_u32;
+				continue;
+			}
+			if (input.per_vertex && SarosNaniteRawPs(state.program.shader_hash)) {
+				// sarosnanite: all three raw vertices read the mesh program's per-primitive AND.
+				state.builder.RequireCapability(spv::CapabilityMeshShadingEXT);
+				state.builder.RequireExtension("SPV_EXT_mesh_shader");
+				// (KYTY_SAROS_NANITE_RAW_VERTS locations: the three vertices themselves.)
+				const bool verts = SarosNaniteRawVerts(location);
+				for (uint32_t vertex = 0; vertex < (verts ? 3u : 1u); vertex++) {
+					const auto variable = DefineInterfaceVariable(
+					    state, TypeU32Vector(state, 4), spv::StorageClassInput,
+					    fmt::format("{}_prim{}", input.debug_name, vertex).c_str());
+					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
+					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationPerPrimitiveEXT);
+					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation,
+					                            verts ? SarosNaniteRawVertexLocation(location, vertex)
+					                                  : SarosNaniteRawLocation(location));
+					input.vertex_variable_ids[vertex] = variable;
+				}
+				if (!verts) {
+					input.vertex_variable_ids[1] = input.vertex_variable_ids[0];
+					input.vertex_variable_ids[2] = input.vertex_variable_ids[0];
+				}
+				input.variable_id   = input.vertex_variable_ids[0];
+				input.saros_raw_u32 = true;
+				static std::atomic<uint32_t> logged {0};
+				if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+					std::printf("[sarosnanite] ps 0x%016llx param %u (location %u) reads per-primitive raw %s "
+					            "at location %u%s\n",
+					            static_cast<unsigned long long>(state.program.shader_hash), input.location,
+					            location, verts ? "vertices" : "AND",
+					            verts ? SarosNaniteRawVertexLocation(location, 0) : SarosNaniteRawLocation(location),
+					            verts || SarosNaniteRawAnd(location) ? "" : " (NOT forwarded by the mesh program)");
+				}
 				continue;
 			}
 			if (input.per_vertex && PixelPerVertexEmulated(state)) {

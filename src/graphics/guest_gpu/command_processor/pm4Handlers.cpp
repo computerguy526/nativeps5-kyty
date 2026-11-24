@@ -1483,7 +1483,39 @@ KYTY_CP_OP_PARSER(CpOpCondExec) {
 	EXIT_NOT_IMPLEMENTED(addr == 0);
 	EXIT_NOT_IMPLEMENTED(payload_dw + exec_count >= dw);
 
-	if (!cp.CondExec(addr)) {
+	const bool exec = cp.CondExec(addr);
+	// sarosnormals: KYTY_CONDEXEC_LOG=1 also names the work each condition guards (first 512).
+	static const bool condexec_log = [] {
+		const auto* value = std::getenv("KYTY_CONDEXEC_LOG");
+		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+	}();
+	if (condexec_log) {
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 512) {
+			uint32_t dispatches = 0, indirect = 0, draws = 0, packets = 0, ibs = 0;
+			for (uint32_t i = payload_dw; i < payload_dw + exec_count;) {
+				const uint32_t header = buffer[i];
+				if ((header >> 30u) != 3u) { i++; continue; }
+				const uint32_t opcode = (header >> 8u) & 0xffu;
+				packets++;
+				if (opcode == Pm4::IT_DISPATCH_DIRECT) dispatches++;
+				if (opcode == Pm4::IT_DISPATCH_INDIRECT) indirect++;
+				if (opcode == Pm4::IT_INDIRECT_BUFFER) ibs++;
+				if (opcode == Pm4::IT_DRAW_INDEX_2 || opcode == Pm4::IT_DRAW_INDEX_AUTO ||
+				    opcode == Pm4::IT_DRAW_INDEX_OFFSET_2 || opcode == Pm4::IT_DRAW_INDIRECT ||
+				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT || opcode == Pm4::IT_DRAW_INDIRECT_MULTI ||
+				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT_MULTI) {
+					draws++;
+				}
+				i += KYTY_PM4_LEN(header);
+			}
+			std::fprintf(stderr,
+			             "[sarosn] condexec guard addr 0x%010llx %u dw: %u packets, %u dispatch, %u dispatch-indirect, %u draws, %u ib -> %s\n",
+			             static_cast<unsigned long long>(addr), exec_count, packets, dispatches, indirect, draws, ibs,
+			             exec ? "exec" : "SKIP");
+		}
+	}
+	if (!exec) {
 		return payload_dw + exec_count;
 	}
 

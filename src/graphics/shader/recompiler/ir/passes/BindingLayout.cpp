@@ -64,6 +64,13 @@ SharedMemoryResources CollectSharedMemory(const Program& program) {
 	for (const auto* block: program.blocks) {
 		for (const auto& inst: *block) {
 			if (SharedAccessOf(inst.GetOpcode()) == SharedAccess::None) {
+				if (AddressOpcodeInfoOf(inst.GetOpcode()).access != AddressAccess::None) {
+					const auto index = inst.Flags<MemoryFlags>().index;
+					if (index < program.memory_info.size() &&
+					    program.memory_info[index].kind == ResourceKind::FlatLocal) {
+						shared.lds = true; // flat pointers into the LDS aperture
+					}
+				}
 				continue;
 			}
 			const auto index = inst.Flags<MemoryFlags>().index;

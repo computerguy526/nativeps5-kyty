@@ -19,6 +19,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/readFaultDiag.h"
+#include "graphics/host_gpu/renderer/cache/bdaScanWalk.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 #include "graphics/host_gpu/renderer/cache/faultClass.h"
 #include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
@@ -748,6 +749,37 @@ void NoteReadFaultPublication(std::span<const GuestRange> ranges, uint32_t frame
 	       frame - found->second <= ReadFaultPublishedFrames();
 }
 
+// KYTY_FAULT_HOST_READBACK counters, own 10 s timer (called from the write-drain path itself: the
+// read-fault report above only runs for guest read faults, which a SAROS run barely has).
+void ReportFaultHostReadback() {
+	static std::atomic<uint64_t> report_ns {0};
+	const auto                   now  = ReadFaultDiag::NowNs();
+	auto                         last = report_ns.load(std::memory_order_relaxed);
+	if (last == 0) {
+		report_ns.compare_exchange_strong(last, now);
+		return;
+	}
+	if (now - last < 10'000'000'000ull || !report_ns.compare_exchange_strong(last, now)) {
+		return;
+	}
+	const auto take = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
+		auto&      hr       = FaultHostReadback();
+		const auto attempts = take(hr.attempts);
+		const auto refused5 = take(hr.refused[5]);
+		const auto ticks5   = take(hr.queued_ticks);
+		const auto done     = take(hr.done);
+		std::printf("Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64 ", done %" PRIu64
+		            " (%.1f KiB, %" PRIu64 " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
+		            ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64 ", queued writer %" PRIu64
+		            " (%.1f ticks ahead avg), map %" PRIu64 "\n",
+		            static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
+		            static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
+		            static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]), take(hr.refused[1]),
+		            take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]), refused5,
+		            refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
+		            take(hr.refused[6]));
+}
+
 void ReportReadFaultPublished(uint32_t frame) {
 	auto&      state = ReadFaultPublished();
 	const auto now   = ReadFaultDiag::NowNs();
@@ -783,23 +815,7 @@ void ReportReadFaultPublished(uint32_t frame) {
 	    take(state.write_drains[2]), static_cast<double>(take(state.write_drain_ns[2])) / 1e6,
 	    take(state.write_drains[3]), static_cast<double>(take(state.write_drain_ns[3])) / 1e6);
 	if (g_fault_host_readback.On()) {
-		auto&      hr       = FaultHostReadback();
-		const auto attempts = take(hr.attempts);
-		const auto refused5 = take(hr.refused[5]);
-		const auto ticks5   = take(hr.queued_ticks);
-		const auto done     = take(hr.done);
-		std::printf(
-		    "Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64
-		    ", done %" PRIu64 " (%.1f KiB, %" PRIu64
-		    " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
-		    ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64
-		    ", queued writer %" PRIu64 " (%.1f ticks ahead avg), map %" PRIu64 "\n",
-		    static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
-		    static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
-		    static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]), take(hr.refused[1]),
-		    take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]), refused5,
-		    refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
-		    take(hr.refused[6]));
+		ReportFaultHostReadback();
 	}
 }
 
@@ -1178,6 +1194,23 @@ bool WrittenSyncSkipEnabled() {
 // never wrote release the page without draining the GPU (BufferCache::TryFalseSharingWrite).
 bool FalseSharingWritesEnabled() {
 	return ParseEnvU64("KYTY_FALSE_SHARING_WRITES", 0) != 0;
+}
+
+// nps5 findbuf: KYTY_FINDBUF_FAST=1 (1) / KYTY_FINDBUF_VERIFY=1 (2, wins over FAST), default
+// off (0). See BufferCache::FindbufTotals.
+int FindbufMode() {
+	static const int mode = [] {
+		if (ParseEnvU64("KYTY_FINDBUF_VERIFY", 0) != 0) {
+			return 2;
+		}
+		return ParseEnvU64("KYTY_FINDBUF_FAST", 0) != 0 ? 1 : 0;
+	}();
+	return mode;
+}
+
+bool FindbufStatsEnabled() {
+	static const bool enabled = FindbufMode() != 0 || ParseEnvU64("KYTY_FINDBUF_STATS", 0) != 0;
+	return enabled;
 }
 
 // KYTY_BDA_SYNC_EPOCH_VERIFY=1|exit: every skipped BDA pass runs anyway and counts the pages the
@@ -1649,7 +1682,15 @@ Buffer* BufferCache::GetBdaPageTableBuffer() {
 
 template <bool insert>
 void BufferCache::ChangeRegister(BufferId id) {
-	InvalidateBdaSynchronization();
+	{
+		// Logged before the epoch moves; a removal is not loggable (hot runs and mappings of it).
+		const auto& logged = m_slot_buffers[id];
+		NoteBdaStructure(logged.CpuAddress(), logged.Size(), insert);
+		auto epoch = m_bda_structure_epoch.load(std::memory_order_relaxed);
+		while (epoch != UINT64_MAX &&
+		       !m_bda_structure_epoch.compare_exchange_weak(epoch, epoch + 1, std::memory_order_release,
+		                                                    std::memory_order_relaxed)) {}
+	}
 	EnsureBdaPageTableInitialized();
 	auto& buffer = m_slot_buffers[id];
 	PageTable::PageRange pages {};
@@ -1998,10 +2039,25 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 		g_write_drain_dma = m_upload_dma.get(); // KYTY_UPLOAD_DMA_WRITE_DRAIN
 	}
 	m_relaxed_queries = RelaxedQueriesEnabled();
+	m_findbuf_mode    = FindbufMode();
+	m_findbuf_stats   = FindbufStatsEnabled();
+	if (m_findbuf_mode != 0) {
+		std::printf("Kyty findbuf: %s (BDA pass buffer walk from the tracker's dirty runs%s)\n",
+		            m_findbuf_mode == 2 ? "VERIFY" : "FAST",
+		            m_findbuf_mode == 2 ? "; the old walk does the work and checks it" : "");
+	}
 	m_bda_dirty_log   = m_bda_hot_sync && BdaDirtyLogEnabled();
 	if (m_bda_dirty_log) {
 		m_memory_tracker.EnableDirtiedLog();
 		m_bda_log_verify = BdaDirtyLogVerifyMode();
+	}
+	if (m_bda_dirty_log) {
+		const auto* sl = std::getenv("KYTY_BDA_STRUCT_LOG");
+		m_bda_struct_log = sl == nullptr ? 0 : std::strcmp(sl, "1") == 0 ? 1 : std::strcmp(sl, "verify") == 0 ? 2 : 0;
+		if (m_bda_struct_log != 0) {
+			std::printf("Kyty BdaStructLog: %s (structure change = dirty-log pass over the new buffer's range)\n",
+			            m_bda_struct_log == 2 ? "VERIFY" : "ON");
+		}
 	}
 	m_bda_epoch_skip  = SyncEpoch::Enabled() && ParseEnvU64("KYTY_BDA_SYNC_EPOCH", 1) != 0;
 	// The verify mode tells guest writes from missed pages by the fault epoch, which the tracker
@@ -2306,6 +2362,7 @@ void BufferCache::CollectHotPages(Buffer& buffer, std::span<const GuestRange> ho
 		}
 	}
 	MemoryStats::Count(MemoryStats::Counter::HotUploadPages, visited);
+	m_findbuf_totals.hot_pages += visited;
 	MemoryStats::Count(MemoryStats::Counter::HotUploadSkipped, skipped);
 	if (settled != 0) {
 		Profiler::CountFrameEvent(Profiler::FrameEvent::HotPageCheckSettles, settled);
@@ -2948,6 +3005,7 @@ void BufferCache::ReadMemoryDrain(uint64_t vaddr, uint64_t size, bool is_write,
 	// nps5 faultcost: KYTY_FAULT_HOST_READBACK (see its definition).
 	if (const auto host_mode = g_fault_host_readback.Get(); is_write && host_mode != 0) {
 		auto&      hr              = FaultHostReadback();
+		ReportFaultHostReadback();
 		const auto start           = ReadFaultDiag::NowNs();
 		const auto bytes_in_window = window_end - window_begin;
 		hr.attempts.fetch_add(1, std::memory_order_relaxed);
@@ -4263,9 +4321,8 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		}
 		if (reserved != nullptr && total_size <= reserved_size && guest_copies == copies.size()) {
 			for (auto& copy: copies) {
-				std::memcpy(reserved + copy.srcOffset,
-				            LibKernel::Memory::GuestReadPtr(buffer.CpuAddress() + copy.dstOffset, copy.size),
-				            copy.size);
+				LibKernel::Memory::GuestReadCopy(reserved + copy.srcOffset,
+				                                 buffer.CpuAddress() + copy.dstOffset, copy.size);
 				copy.srcOffset += reserved_offset;
 			}
 			if (!copies.empty()) source = m_staging_buffer.Handle();
@@ -4569,6 +4626,9 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 			if (alias != nullptr) {
 				deferred->push_back({mapped + copy.srcOffset, static_cast<const uint8_t*>(alias),
 				                     copy.size, buffer.CpuAddress() + copy.dstOffset});
+			} else if (index < guest_copies) {
+				LibKernel::Memory::GuestReadCopy(mapped + copy.srcOffset,
+				                                 buffer.CpuAddress() + copy.dstOffset, copy.size);
 			} else {
 				std::memcpy(mapped + copy.srcOffset, source_of(index, copy), copy.size);
 			}
@@ -4583,8 +4643,13 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	PageManager::ApplyPendingProtects(); // KYTY_DEFER_PROTECTS: copied here
 	for (size_t index = 0; index < copies.size(); index++) {
 		const auto& copy = copies[index];
-		std::memcpy(temporary->Mapped().data() + copy.srcOffset, source_of(index, copy),
-		            copy.size);
+		if (index < guest_copies) {
+			LibKernel::Memory::GuestReadCopy(temporary->Mapped().data() + copy.srcOffset,
+			                                 buffer.CpuAddress() + copy.dstOffset, copy.size);
+		} else {
+			std::memcpy(temporary->Mapped().data() + copy.srcOffset, source_of(index, copy),
+			            copy.size);
+		}
 	}
 	temporary->Flush(0, total_size);
 	const auto handle = temporary->Handle();
@@ -4719,9 +4784,228 @@ bool BufferCache::VerifyRelaxedSnapshot(uint64_t vaddr, uint64_t size,
 	return false;
 }
 
+namespace {
+thread_local uint64_t t_watch_program = 0;
+thread_local int      t_watch_ring    = 0;
+uint64_t WatchConsumer() {
+	static const uint64_t consumer = [] {
+		const char* v = std::getenv("KYTY_WATCH_CONSUMER");
+		return v != nullptr ? std::strtoull(v, nullptr, 16) : 0ull;
+	}();
+	return consumer;
+}
+struct WatchRange {
+	uint64_t begin;
+	uint64_t end;
+	bool     written;
+};
+std::mutex                                     g_watch_mutex;
+std::vector<WatchRange>                        g_watch_ranges;
+std::vector<std::pair<uint64_t, uint64_t>>     g_watch_logged; // (program, range begin)
+std::atomic<uint64_t>                          g_watch_seq {0};
+void NoteWatchBinding(uint64_t vaddr, uint64_t size, bool is_written, uint64_t tick) {
+	const auto consumer = WatchConsumer();
+	const auto program  = t_watch_program;
+	if (consumer == 0 || program == 0) {
+		return;
+	}
+	const auto      seq = g_watch_seq.fetch_add(1, std::memory_order_relaxed);
+	std::scoped_lock lock(g_watch_mutex);
+	if (program == consumer) {
+		for (const auto& r: g_watch_ranges) {
+			if (r.begin == vaddr && r.end == vaddr + size) {
+				return;
+			}
+		}
+		if (g_watch_ranges.size() < 64) {
+			g_watch_ranges.push_back({vaddr, vaddr + size, is_written});
+			std::fprintf(stderr,
+			             "[memtrk] watch consumer %016llx ring %d binds 0x%016llx+0x%llx %s (tick %llu, seq %llu)\n",
+			             static_cast<unsigned long long>(program), t_watch_ring,
+			             static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
+			             is_written ? "written" : "read", static_cast<unsigned long long>(tick),
+			             static_cast<unsigned long long>(seq));
+		}
+		return;
+	}
+	if (!is_written) {
+		return;
+	}
+	for (const auto& r: g_watch_ranges) {
+		if (vaddr < r.end && r.begin < vaddr + size) {
+			for (const auto& l: g_watch_logged) {
+				if (l.first == program && l.second == r.begin) {
+					return;
+				}
+			}
+			if (g_watch_logged.size() < 256) {
+				g_watch_logged.emplace_back(program, r.begin);
+				std::fprintf(stderr,
+				             "[memtrk] watch writer %016llx ring %d writes 0x%016llx+0x%llx over consumer range "
+				             "0x%016llx+0x%llx (tick %llu, seq %llu)\n",
+				             static_cast<unsigned long long>(program), t_watch_ring,
+				             static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
+				             static_cast<unsigned long long>(r.begin),
+				             static_cast<unsigned long long>(r.end - r.begin),
+				             static_cast<unsigned long long>(tick), static_cast<unsigned long long>(seq));
+			}
+			return;
+		}
+	}
+}
+} // namespace
+
+void BufferCache::WatchScanWords(uint64_t program, std::span<const uint32_t> words, const char* kind,
+                                 uint64_t tick) noexcept {
+	const auto consumer = WatchConsumer();
+	if (consumer == 0 || program == 0 || program == consumer || words.size() < 2) {
+		return;
+	}
+	std::scoped_lock lock(g_watch_mutex);
+	if (g_watch_ranges.empty()) {
+		return;
+	}
+	for (size_t i = 0; i + 1 < words.size(); i++) {
+		const uint64_t pair = static_cast<uint64_t>(words[i]) | (static_cast<uint64_t>(words[i + 1]) << 32u);
+		const uint64_t vbase = static_cast<uint64_t>(words[i]) | (static_cast<uint64_t>(words[i + 1] & 0xffffu) << 32u);
+		for (const uint64_t value: {pair, vbase}) {
+			if (value < 0x10000u) {
+				continue;
+			}
+			for (const auto& r: g_watch_ranges) {
+				if (value < r.end && value + 0x10000u > r.begin) {
+					const uint64_t key = value ^ (static_cast<uint64_t>(i) << 56u);
+					bool seen = false;
+					for (const auto& l: g_watch_logged) {
+						seen = seen || (l.first == program && l.second == key);
+					}
+					if (seen || g_watch_logged.size() >= 256) {
+						goto next_word;
+					}
+					g_watch_logged.emplace_back(program, key);
+					std::fprintf(stderr,
+					             "[memtrk] watch pointer %016llx ring %d %s[%zu] = 0x%016llx (%s) near consumer range "
+					             "0x%016llx+0x%llx (tick %llu, seq %llu)\n",
+					             static_cast<unsigned long long>(program), t_watch_ring, kind, i,
+					             static_cast<unsigned long long>(value), value == pair ? "pair" : "v#",
+					             static_cast<unsigned long long>(r.begin),
+					             static_cast<unsigned long long>(r.end - r.begin),
+					             static_cast<unsigned long long>(tick),
+					             static_cast<unsigned long long>(g_watch_seq.fetch_add(1, std::memory_order_relaxed)));
+					goto next_word;
+				}
+			}
+		}
+	next_word:;
+	}
+}
+
+namespace {
+thread_local std::vector<std::pair<uint64_t, uint64_t>> t_dispatch_written;
+const std::vector<uint64_t>& FlagReadbackList() {
+	static const std::vector<uint64_t> list = [] {
+		std::vector<uint64_t> l;
+		const char*           v = std::getenv("KYTY_FLAG_READBACK");
+		while (v != nullptr && *v != '\0') {
+			char* end = nullptr;
+			l.push_back(std::strtoull(v, &end, 16));
+			v = (end != nullptr && *end == ',') ? end + 1 : nullptr;
+		}
+		return l;
+	}();
+	return list;
+}
+} // namespace
+
+void BufferCache::SetWatchProgram(uint64_t program, int ring) noexcept {
+	t_watch_program = program;
+	t_watch_ring    = ring;
+	t_dispatch_written.clear();
+}
+
+void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint32_t gy, uint32_t gz) {
+	const auto& list = FlagReadbackList();
+	if (list.empty() || std::find(list.begin(), list.end(), program) == list.end()) {
+		return;
+	}
+	static std::mutex                             count_mutex;
+	static std::unordered_map<uint64_t, uint32_t> counts;
+	uint32_t                                      ordinal = 0;
+	{
+		std::scoped_lock lock(count_mutex);
+		ordinal = counts[program]++;
+	}
+	if (ordinal >= 16 || t_dispatch_written.empty()) {
+		return;
+	}
+	struct Item {
+		uint64_t vaddr;
+		uint64_t bytes;
+		uint64_t offset;
+	};
+	std::vector<Item>          items;
+	std::vector<vk::BufferCopy> copies;
+	std::vector<vk::Buffer>     sources;
+	uint64_t                    total = 0;
+	for (const auto& [vaddr, size]: t_dispatch_written) {
+		if (items.size() >= 16) break;
+		const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
+		if (owner == nullptr || !*owner) continue;
+		auto& cached = m_slot_buffers[*owner];
+		const uint64_t bytes = std::min<uint64_t>(size, 128);
+		if (!cached.IsInBounds(vaddr, bytes) || cached.Handle() == nullptr) continue;
+		items.push_back({vaddr, bytes, total});
+		copies.push_back({cached.Offset(vaddr), total, bytes});
+		sources.push_back(cached.Handle());
+		total += (bytes + 15) & ~uint64_t {15};
+	}
+	if (items.empty()) {
+		return;
+	}
+	auto host = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
+	                                     vk::BufferUsageFlagBits::eTransferDst, total);
+	auto native = m_scheduler.Current().HelperSink();
+	vk::MemoryBarrier before {};
+	before.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+	before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, {}, 1,
+	                       &before, 0, nullptr, 0, nullptr);
+	for (size_t i = 0; i < items.size(); i++) {
+		native.copyBuffer(sources[i], host->Handle(), 1, &copies[i]);
+	}
+	vk::MemoryBarrier after {};
+	after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+	after.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, 1,
+	                       &after, 0, nullptr, 0, nullptr);
+	const auto tick = m_scheduler.CurrentTick();
+	m_scheduler.DeferOperation([host, items, program, ordinal, gx, gy, gz, tick]() mutable {
+		const auto* bytes = host->Mapped().data();
+		std::string out;
+		for (const auto& item: items) {
+			out += fmt::format("\n[memtrk]   0x{:016x}+0x{:x}:", item.vaddr, item.bytes);
+			for (uint64_t w = 0; w + 4 <= item.bytes; w += 4) {
+				uint32_t word = 0;
+				std::memcpy(&word, bytes + item.offset + w, 4);
+				out += fmt::format(" {:08x}", word);
+			}
+		}
+		std::fprintf(stderr, "[memtrk] flag readback CS %016llx dispatch %u grid %ux%ux%u tick %llu:%s\n",
+		             static_cast<unsigned long long>(program), ordinal, gx, gy, gz,
+		             static_cast<unsigned long long>(tick), out.c_str());
+		host.reset();
+	});
+}
+
 std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t size,
                                                        bool is_written, bool is_texel_buffer,
                                                        BufferId id) {
+	if (WatchConsumer() != 0) [[unlikely]] {
+		NoteWatchBinding(vaddr, size, is_written, m_scheduler.CurrentTick());
+	}
+	if (is_written && !FlagReadbackList().empty()) [[unlikely]] {
+		t_dispatch_written.emplace_back(vaddr, size);
+	}
 	auto& command = m_scheduler.Current();
 	if (command.IsInvalid() || !GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: buffer request requires a recording command buffer\n");
@@ -6704,7 +6988,21 @@ void BufferCache::ProcessFaultBuffer() {
 	m_fault_manager.ProcessFaultBuffer();
 }
 
+void BufferCache::NoteBdaStructure(uint64_t address, uint64_t size, bool complete) noexcept {
+	if (m_bda_struct_log == 0) {
+		return;
+	}
+	std::scoped_lock lock(m_bda_struct_mutex);
+	if (!complete || m_bda_struct_ranges.size() >= 256) {
+		m_bda_struct_incomplete = true;
+		return;
+	}
+	m_bda_struct_ranges.emplace_back(address, size);
+}
+
 void BufferCache::InvalidateBdaSynchronization() noexcept {
+	// A bump nobody logged a range for (GPU map/unmap): the full scan decides.
+	NoteBdaStructure(0, 0, false);
 	// Also without incremental synchronization: KYTY_BDA_SYNC_EPOCH skips a pass only while the
 	// registered buffers and GPU mappings are the ones its last pass scanned.
 	auto epoch = m_bda_structure_epoch.load(std::memory_order_relaxed);
@@ -6724,8 +7022,12 @@ void BufferCache::SynchronizeBdaBuffers(const RangeSet& mapped_ranges) {
 	const auto sync_epoch = SyncEpoch::Current();
 	const auto submission = SyncEpoch::CurrentSubmission();
 	const auto structure  = m_bda_structure_epoch.load(std::memory_order_acquire);
+	if (m_findbuf_stats) {
+		FindbufReport();
+	}
 	if (m_bda_epoch_skip && sync_epoch == m_bda_synced_epoch &&
 	    structure == m_bda_synced_structure) {
+		m_findbuf_totals.pass_count[5]++;
 		BufferLookupStats::AddPart(BufferLookupStats::Part::BdaSkip, 0);
 		Profiler::CountFrameEvent(Profiler::FrameEvent::BdaSyncEpochSkips);
 		m_bda_epoch_totals.skips++;
@@ -6746,6 +7048,7 @@ void BufferCache::SynchronizeBdaBuffers(const RangeSet& mapped_ranges) {
 	const bool same_submission = per_submission != 0 && submission == m_bda_synced_submission &&
 	                             structure == m_bda_synced_structure;
 	if (same_submission && per_submission == 1) {
+		m_findbuf_totals.pass_count[5]++;
 		Profiler::CountFrameEvent(Profiler::FrameEvent::BdaSyncSubmissionSkips);
 		m_bda_epoch_totals.submission_skips++;
 		ReportBdaSubmissionGate();
@@ -6755,7 +7058,20 @@ void BufferCache::SynchronizeBdaBuffers(const RangeSet& mapped_ranges) {
 	const auto uploaded_before = m_bda_pass_upload_bytes;
 	m_bda_count_uploads        = same_submission;
 	const auto pass_start      = BufferLookupStats::Now();
+	const auto findbuf_start   = m_findbuf_stats ? std::chrono::steady_clock::now()
+	                                             : std::chrono::steady_clock::time_point {};
 	SynchronizeBdaBuffersNow(mapped_ranges);
+	if (m_findbuf_stats) {
+		const auto kind = std::min<size_t>(
+		    4, static_cast<size_t>(m_bda_pass_kind) -
+		           static_cast<size_t>(BufferLookupStats::Part::BdaNone));
+		m_findbuf_totals.pass_count[kind]++;
+		m_findbuf_totals.pass_ns[kind] += static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
+		                                                         findbuf_start)
+		        .count());
+		m_findbuf_totals.pass_bytes[kind] += m_bda_pass_upload_bytes - uploaded_before;
+	}
 	if (pass_start != 0) {
 		BufferLookupStats::AddPart(static_cast<BufferLookupStats::Part>(m_bda_pass_kind),
 		                           BufferLookupStats::Now() - pass_start);
@@ -6928,6 +7244,49 @@ void BufferCache::SynchronizeBdaBuffersNow(const RangeSet& mapped_ranges) {
 		return;
 	}
 
+	// cphot 7: a structure change logged as ranges takes the dirty-log pass over them.
+	if (m_bda_struct_log != 0 && !structure_holds && m_bda_incremental_sync && cpu_epoch != UINT64_MAX &&
+	    structure_epoch != UINT64_MAX && m_bda_scanned_structure_epoch != 0) {
+		std::vector<std::pair<uint64_t, uint64_t>> struct_ranges;
+		bool                                       struct_incomplete;
+		{
+			// Taken after the epoch was read: a bump the epoch shows was logged before it.
+			std::scoped_lock lock(m_bda_struct_mutex);
+			struct_ranges.swap(m_bda_struct_ranges);
+			struct_incomplete       = m_bda_struct_incomplete;
+			m_bda_struct_incomplete = false;
+		}
+		if (!struct_incomplete && !struct_ranges.empty() && m_bda_dirty_log && log_complete && m_bda_log_baseline) {
+			for (const auto& [address, size]: struct_ranges) {
+				m_bda_dirtied.Add(address, size);
+			}
+			m_bda_pass_kind = static_cast<uint8_t>(LookupPart::BdaLog);
+			if (SynchronizeBdaDirtied(mapped_ranges)) {
+				FaultCost::NoteBdaPass(2, m_bda_last_pass_bytes);
+				m_bda_scanned_cpu_epoch       = cpu_epoch;
+				m_bda_scanned_structure_epoch = structure_epoch;
+				m_bda_struct_totals.passes++;
+				if (m_bda_struct_log == 2) {
+					m_bda_struct_totals.verify_checks++;
+					const auto missed = VerifyBdaFullScan(mapped_ranges, cpu_epoch, structure_epoch);
+					if (missed != 0) {
+						m_bda_struct_totals.verify_mismatch_pages += missed;
+						static std::atomic<uint32_t> logged {0};
+						if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+							std::fprintf(stderr,
+							             "BdaStructLogVerify: a structure-log pass missed %" PRIu64
+							             " CPU-dirty page(s)\n", missed);
+						}
+					}
+				}
+				ReportBdaStruct();
+				return;
+			}
+		}
+		m_bda_struct_totals.fallbacks++;
+		ReportBdaStruct();
+	}
+
 	BdaSyncStats stats;
 	m_bda_pass_kind = static_cast<uint8_t>(
 	    m_bda_incremental_sync && structure_epoch != m_bda_scanned_structure_epoch
@@ -6959,6 +7318,20 @@ void BufferCache::SynchronizeBdaBuffersNow(const RangeSet& mapped_ranges) {
 		Profiler::CountFrameEvent(Profiler::FrameEvent::BdaSyncUploadBytes, stats.upload_bytes);
 		Profiler::CountFrameEvent(Profiler::FrameEvent::BdaSyncUploadCopies, stats.upload_copies);
 	}
+}
+
+void BufferCache::ReportBdaStruct() {
+	static auto last = std::chrono::steady_clock::now();
+	const auto  now  = std::chrono::steady_clock::now();
+	if (now - last < std::chrono::seconds(10)) {
+		return;
+	}
+	last = now;
+	std::printf("BdaStructLog 10s totals: struct-log passes %" PRIu64 " full-scan fallbacks %" PRIu64
+	            " verify checks %" PRIu64 " missed pages %" PRIu64 "\n",
+	            m_bda_struct_totals.passes, m_bda_struct_totals.fallbacks, m_bda_struct_totals.verify_checks,
+	            m_bda_struct_totals.verify_mismatch_pages);
+	std::fflush(stdout);
 }
 
 bool BufferCache::SynchronizeBdaDirtied(const RangeSet& mapped_ranges) {
@@ -6996,14 +7369,54 @@ bool BufferCache::SynchronizeBdaDirtied(const RangeSet& mapped_ranges) {
 		stats.upload_copies += hot_stats.upload_copies;
 	}
 	m_bda_pass_upload_bytes += stats.upload_bytes;
-	for (const auto& range: found) {
-		const bool known =
-		    std::any_of(m_bda_hot_ranges.begin(), m_bda_hot_ranges.end(), [&](const auto& other) {
-			    return other.id == range.id && other.address == range.address &&
-			           other.size == range.size;
-		    });
-		if (!known) {
-			m_bda_hot_ranges.push_back(range);
+	const auto old_known = [this](const BdaHotRange& range) {
+		return std::any_of(m_bda_hot_ranges.begin(), m_bda_hot_ranges.end(), [&](const auto& other) {
+			return other.id == range.id && other.address == range.address && other.size == range.size;
+		});
+	};
+	if (m_findbuf_mode == 0 || found.empty()) {
+		for (const auto& range: found) {
+			if (!old_known(range)) {
+				m_bda_hot_ranges.push_back(range);
+			}
+		}
+	} else {
+		// nps5 findbuf: the same dedupe with a hash set (O(found + hot) instead of their product).
+		const auto key = [](const BdaHotRange& range) {
+			uint64_t h = (static_cast<uint64_t>(range.id.index) << 32u) | range.id.generation;
+			h ^= range.address + 0x9e3779b97f4a7c15ull + (h << 6u) + (h >> 2u);
+			h ^= range.size + 0x9e3779b97f4a7c15ull + (h << 6u) + (h >> 2u);
+			return h;
+		};
+		std::unordered_multimap<uint64_t, size_t> known;
+		known.reserve(m_bda_hot_ranges.size() + found.size());
+		for (size_t i = 0; i < m_bda_hot_ranges.size(); i++) {
+			known.emplace(key(m_bda_hot_ranges[i]), i);
+		}
+		for (const auto& range: found) {
+			const auto h          = key(range);
+			bool       fast_known = false;
+			for (auto [it, last] = known.equal_range(h); it != last; ++it) {
+				const auto& other = m_bda_hot_ranges[it->second];
+				if (other.id == range.id && other.address == range.address &&
+				    other.size == range.size) {
+					fast_known = true;
+					break;
+				}
+			}
+			if (m_findbuf_mode == 2) {
+				m_findbuf_totals.dedupe_checks++;
+				if (fast_known != old_known(range)) {
+					m_findbuf_totals.dedupe_mismatches++;
+					std::fprintf(stderr, "FindbufVerify: hot-run dedupe mismatch addr=0x%016" PRIx64
+					                     " size=0x%" PRIx64 "\n",
+					             range.address, range.size);
+				}
+			}
+			if (!fast_known) {
+				known.emplace(h, m_bda_hot_ranges.size());
+				m_bda_hot_ranges.push_back(range);
+			}
 		}
 	}
 	m_bda_log_totals.passes++;
@@ -7072,7 +7485,7 @@ bool BufferCache::SynchronizeBdaHotRanges(BdaSyncStats& stats) {
 	return true;
 }
 
-void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSyncStats* stats) {
+void BufferCache::SynchronizeBuffersInRangeAll(uint64_t vaddr, uint64_t size, BdaSyncStats* stats) {
 	const auto end = vaddr + size;
 	auto       it  = m_buffers.upper_bound(vaddr);
 	if (it != m_buffers.begin()) {
@@ -7087,9 +7500,176 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 				++stats->scanned_buffers;
 				stats->buffer_id = it->second;
 			}
+			m_findbuf_totals.old_visits++;
 			(void)SynchronizeBuffer(buffer, start, finish - start, false, false, stats);
 		}
 	}
+}
+
+void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSyncStats* stats) {
+	m_findbuf_totals.walks++;
+	// nps5 findbuf: the dirty walk leaves out exactly the calls whose SynchronizeBuffer would end
+	// at once in RelaxedNothingToUpload (read-only, relaxed queries on, GPU thread, not a verify
+	// scan, no relaxed verify), so only then.
+	const bool applies = m_findbuf_mode != 0 && m_relaxed_queries && GuestGpu::IsGpuThread() &&
+	                     RelaxedVerifyMode() == 0 &&
+	                     (stats == nullptr || stats->verify_fault_epoch == 0) && size != 0 &&
+	                     vaddr < TRACKER_ADDRESS_SIZE && size <= TRACKER_ADDRESS_SIZE - vaddr;
+	if (!applies) {
+		if (m_findbuf_mode != 0) {
+			m_findbuf_totals.fallback_walks++;
+		}
+		SynchronizeBuffersInRangeAll(vaddr, size, stats);
+		return;
+	}
+	const auto end    = vaddr + size;
+	const auto bounds = [this](BufferId id) {
+		const auto& buffer = m_slot_buffers[id];
+		return std::pair<uint64_t, uint64_t> {buffer.CpuAddress(),
+		                                      buffer.CpuAddress() + buffer.Size()};
+	};
+	const auto fault_before = m_memory_tracker.FaultMutationEpoch();
+	std::vector<BdaScanWalk::Visit> visits;
+	BdaScanWalk::CollectDirtyVisits(
+	    m_buffers, vaddr, end, bounds,
+	    [&](auto&& callback) {
+		    m_memory_tracker.ForEachCpuDirtyRunRelaxed(vaddr, size, [&](uint64_t begin, uint64_t finish) {
+			    m_findbuf_totals.runs++;
+			    callback(begin, finish);
+		    });
+	    },
+	    visits);
+	if (m_findbuf_mode == 1) {
+		m_findbuf_totals.fast_walks++;
+		for (const auto& visit: visits) {
+			const auto it = m_buffers.find(visit.key);
+			if (it == m_buffers.end()) {
+				continue; // not reached: SynchronizeBuffer does not change the buffer map
+			}
+			if (stats != nullptr) {
+				++stats->scanned_buffers;
+				stats->buffer_id = it->second;
+			}
+			m_findbuf_totals.fast_visits++;
+			(void)SynchronizeBuffer(m_slot_buffers[it->second], visit.start,
+			                        visit.finish - visit.start, false, false, stats);
+		}
+		return;
+	}
+	// KYTY_FINDBUF_VERIFY: the old walk does the work. Every buffer it visits whose range the
+	// relaxed query calls dirty or undecided must be in the dirty walk's list (with the same
+	// range), and the list may hold nothing else. A page turned CPU-dirty after the dirty walk read
+	// the mirrors moved the fault epoch: such a difference is a race, not a mismatch (the next
+	// pass's dirty log has the page).
+	m_findbuf_totals.verify_walks++;
+	size_t next    = 0;
+	size_t matched = 0;
+	BdaScanWalk::ForEachOverlapping(
+	    m_buffers, vaddr, end, bounds, [&](auto it, uint64_t start, uint64_t finish) {
+		    MemoryTracker::DirtyState state;
+		    bool                      cpu_only = false;
+		    const bool decided = QueryUploadSnapshot(m_memory_tracker, start, finish - start, state,
+		                                             cpu_only);
+		    const bool needs   = !decided || state.cpu;
+		    while (next < visits.size() && visits[next].key < it->first) {
+			    next++;
+		    }
+		    const bool listed = next < visits.size() && visits[next].key == it->first &&
+		                        visits[next].start == start && visits[next].finish == finish;
+		    if (listed) {
+			    matched++;
+		    }
+		    if (needs) {
+			    m_findbuf_totals.old_dirty_visits++;
+		    }
+		    if (needs && !listed) {
+			    if (m_memory_tracker.FaultMutationEpoch() == fault_before) {
+				    m_findbuf_totals.verify_mismatches++;
+				    static std::atomic<uint32_t> logged {0};
+				    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+					    std::fprintf(stderr,
+					                 "FindbufVerify: the dirty walk missed buffer 0x%016" PRIx64
+					                 " range 0x%016" PRIx64 "+0x%" PRIx64 " (walk 0x%016" PRIx64
+					                 "+0x%" PRIx64 ", decided %d)\n",
+					                 it->first, start, finish - start, vaddr, size, decided ? 1 : 0);
+				    }
+			    } else {
+				    m_findbuf_totals.verify_races++;
+			    }
+		    } else if (!needs && listed) {
+			    m_findbuf_totals.verify_extra++;
+		    }
+		    if (stats != nullptr) {
+			    ++stats->scanned_buffers;
+			    stats->buffer_id = it->second;
+		    }
+		    m_findbuf_totals.old_visits++;
+		    (void)SynchronizeBuffer(m_slot_buffers[it->second], start, finish - start, false, false,
+		                            stats);
+	    });
+	m_findbuf_totals.fast_visits += visits.size();
+	if (matched != visits.size()) {
+		// The dirty walk listed a buffer (or range) the old walk does not visit.
+		m_findbuf_totals.verify_mismatches += visits.size() - matched;
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+			std::fprintf(stderr,
+			             "FindbufVerify: the dirty walk listed %zu visit(s) the old walk does not make "
+			             "(walk 0x%016" PRIx64 "+0x%" PRIx64 ")\n",
+			             visits.size() - matched, vaddr, size);
+		}
+	}
+}
+
+void BufferCache::FindbufReport() {
+	if ((++m_findbuf_report_calls & 255u) != 0) {
+		return;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (m_findbuf_report_time == std::chrono::steady_clock::time_point {}) {
+		m_findbuf_report_time = now;
+		m_findbuf_reported    = m_findbuf_totals;
+		return;
+	}
+	const auto elapsed = std::chrono::duration<double>(now - m_findbuf_report_time).count();
+	if (elapsed < 10.0) {
+		return;
+	}
+	const auto& t = m_findbuf_totals;
+	const auto& r = m_findbuf_reported;
+	static const char* const kinds[6] = {"none", "hot", "log", "full", "fullnew", "skip"};
+	char        text[2048];
+	int         n = std::snprintf(text, sizeof(text), "Findbuf %.0fs (%s): passes", elapsed,
+	                              m_findbuf_mode == 2   ? "verify"
+	                              : m_findbuf_mode == 1 ? "fast"
+	                                                    : "off");
+	for (size_t k = 0; k < 6 && n > 0 && static_cast<size_t>(n) < sizeof(text); k++) {
+		const auto count = t.pass_count[k] - r.pass_count[k];
+		const auto ms    = static_cast<double>(t.pass_ns[k] - r.pass_ns[k]) / 1e6;
+		n += std::snprintf(text + n, sizeof(text) - static_cast<size_t>(n),
+		                   " %s %" PRIu64 " %.1fms (%.0fus/pass, %.1fMB)", kinds[k], count, ms,
+		                   count != 0 ? ms * 1000.0 / static_cast<double>(count) : 0.0,
+		                   static_cast<double>(t.pass_bytes[k] - r.pass_bytes[k]) / 1048576.0);
+	}
+	if (n > 0 && static_cast<size_t>(n) < sizeof(text)) {
+		std::snprintf(text + n, sizeof(text) - static_cast<size_t>(n),
+		              " | walks %" PRIu64 " fast %" PRIu64 " fallback %" PRIu64
+		              " | visits old %" PRIu64 " (dirty %" PRIu64 ") fast %" PRIu64 " runs %" PRIu64
+		              " | hot pages compared %" PRIu64 " | verify walks %" PRIu64
+		              " mismatches %" PRIu64 " races %" PRIu64 " extra %" PRIu64
+		              " dedupe %" PRIu64 "/%" PRIu64 " mismatched (total mismatches %" PRIu64 ")",
+		              t.walks - r.walks, t.fast_walks - r.fast_walks, t.fallback_walks - r.fallback_walks,
+		              t.old_visits - r.old_visits, t.old_dirty_visits - r.old_dirty_visits,
+		              t.fast_visits - r.fast_visits, t.runs - r.runs, t.hot_pages - r.hot_pages,
+		              t.verify_walks - r.verify_walks, t.verify_mismatches - r.verify_mismatches,
+		              t.verify_races - r.verify_races, t.verify_extra - r.verify_extra,
+		              t.dedupe_mismatches - r.dedupe_mismatches, t.dedupe_checks - r.dedupe_checks,
+		              t.verify_mismatches + t.dedupe_mismatches);
+	}
+	std::printf("%s\n", text);
+	std::fflush(stdout);
+	m_findbuf_report_time = now;
+	m_findbuf_reported    = t;
 }
 
 namespace {

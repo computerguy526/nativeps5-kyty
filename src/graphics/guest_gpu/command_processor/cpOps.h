@@ -106,6 +106,9 @@ enum class OpKind : uint16_t {
 	// KYTY_CP_SEQ_PREFETCH (P3c, transport): draw-prep window slots a speculative parse published
 	// that the real parse did not adopt; the resolver retires them without drawing.
 	SkipSlots,
+	// sarosbundle (KYTY_BUNDLE_COMPACT): the CPU HLE of the shader-bundle compaction kernel; stands in
+	// for its dispatch.
+	BundleCompact,
 	Count,
 };
 
@@ -420,6 +423,11 @@ struct SkipSlotsOp {
 	uint32_t reserved = 0;
 };
 
+// sarosbundle: the compaction kernel's user data (s0..s15) at its dispatch.
+struct BundleCompactOp {
+	uint32_t user_data[16] {};
+};
+
 template <typename T>
 inline constexpr bool IsPayload = std::is_trivially_copyable_v<T> && alignof(T) <= 8 &&
                                   (sizeof(T) % 8) == 0 &&
@@ -433,7 +441,8 @@ static_assert(IsPayload<DrawIndexOp> && IsPayload<DrawAutoOp> && IsPayload<DrawI
               IsPayload<WaitFlipDoneOp> && IsPayload<DumpConstRamOp> &&
               IsPayload<PredicationOp> && IsPayload<CondExecOp> && IsPayload<BranchOp> &&
               IsPayload<ReadCheckOp> && IsPayload<StreamBeginOp> && IsPayload<StreamEndOp> &&
-              IsPayload<HandoffOp> && IsPayload<LockstepReadOp> && IsPayload<SkipSlotsOp>);
+              IsPayload<HandoffOp> && IsPayload<LockstepReadOp> && IsPayload<SkipSlotsOp> &&
+              IsPayload<BundleCompactOp>);
 
 // The kind of each payload type (compile-time dispatch for Emit/Submit).
 template <typename T>
@@ -467,6 +476,7 @@ KYTY_CPSEQ_PAYLOAD(StreamEnd, StreamEndOp)
 KYTY_CPSEQ_PAYLOAD(Handoff, HandoffOp)
 KYTY_CPSEQ_PAYLOAD(LockstepRead, LockstepReadOp)
 KYTY_CPSEQ_PAYLOAD(SkipSlots, SkipSlotsOp)
+KYTY_CPSEQ_PAYLOAD(BundleCompact, BundleCompactOp)
 #undef KYTY_CPSEQ_PAYLOAD
 // DrawIndirectOp serves two kinds (DrawIndirect, DrawIndirectMulti): no KindOf.
 

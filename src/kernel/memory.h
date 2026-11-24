@@ -279,6 +279,9 @@ bool HostedProtect(uint64_t base, uint64_t size, uint32_t flags);
 // library's own page watches or on a neighbour's inside a 16 KiB host page), else the guest view
 // (guest + bias; also when memory is not hosted). Per-thread cache of the last range.
 [[nodiscard]] const void* GuestReadPtr(uint64_t vaddr, uint64_t size) noexcept;
+// GuestReadPtr's bytes copied to dst; a range spanning several registered ranges is copied piece by
+// piece through their aliases instead of the (possibly watch-protected) guest view (nps5 memtrk).
+void GuestReadCopy(void* dst, uint64_t vaddr, uint64_t size) noexcept;
 template <typename T>
 [[nodiscard]] inline const T* GuestRead(uint64_t vaddr, uint64_t size = sizeof(T)) noexcept {
 	return static_cast<const T*>(GuestReadPtr(vaddr, size));

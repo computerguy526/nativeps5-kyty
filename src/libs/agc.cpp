@@ -4098,8 +4098,18 @@ int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchAddress(uint32_t*             cmd,
 		cmd[2] = static_cast<uint32_t>(vaddr & 0xffffffffu);
 		cmd[3] = (cmd[3] & 0xffff0000u) | static_cast<uint32_t>((vaddr >> 32u) & 0xffffu);
 	} else {
-		EXIT("unsupported queueEndOfPipeAction packet for address patch: 0x%08" PRIx32 "\n",
-		     cmd[0]);
+		// nps5 memtrk (SAROS r67, header 0x00000000): the driver patches only end-of-pipe packets
+		// and returns kInvalidPacket for anything else, writing nothing (as PatchData here and
+		// upstream KytyPS5's helper; kyty5_snap ShaderRecompilerComputeTests "end-of-pipe patch
+		// helpers"). Used to EXIT, so no caller that ran before reaches this.
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+			std::fprintf(stderr,
+			             "[memtrk] AgcQueueEndOfPipeActionPatchAddress: cmd 0x%016" PRIx64
+			             " header 0x%08" PRIx32 " is not an end-of-pipe packet: kInvalidPacket, nothing written\n",
+			             Guest::Addr(cmd), cmd[0]);
+		}
+		return GRAPHICS5_ERROR_INVALID_PACKET;
 	}
 
 	return OK;

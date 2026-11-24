@@ -2,6 +2,7 @@
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_MEMORYTRACKER_H_
 
 #include "common/assert.h"
+#include "graphics/host_gpu/bitRuns.h"
 #include "graphics/host_gpu/cleanVerdictCache.h"
 #include "graphics/host_gpu/faultCost.h"
 #include "graphics/host_gpu/pageManager.h"
@@ -58,6 +59,25 @@ public:
 	// CPU half of QueryDirtyRelaxed, with the same missing-region and GPU-thread rules.
 	// Upload decisions need only this bit; GPU ownership is checked separately by their callers.
 	[[nodiscard]] bool QueryCpuDirtyRelaxed(uint64_t vaddr, uint64_t size, bool& dirty) const;
+	// nps5 findbuf (KYTY_FINDBUF_FAST): the parts of [vaddr, vaddr + size) for which
+	// QueryCpuDirtyRelaxed would not answer "clean", as ascending, merged runs func(begin, end)
+	// clipped to the range: every page whose CPU-dirty mirror bit is set, and every region that
+	// does not exist yet (QueryCpuDirtyRelaxed returns false there). So a sub-range [s, f) of the
+	// range gets "dirty or undecided" from QueryCpuDirtyRelaxed exactly when it intersects a run,
+	// for the same mirror contents. Same thread rules as QueryCpuDirtyRelaxed.
+	template <typename Func>
+	void ForEachCpuDirtyRunRelaxed(uint64_t vaddr, uint64_t size, Func&& func) const {
+		ValidateRange(vaddr, size);
+		ForEachDirtyOrMissingRun(
+		    vaddr, size, TRACKER_REGION_SIZE, TRACKER_PAGE_SIZE,
+		    [this](uint64_t index) -> const RegionManager* {
+			    return m_regions[index].load(std::memory_order_acquire);
+		    },
+		    [](const RegionManager* manager, size_t word) {
+			    return manager->CpuMirrorWordRelaxed(word);
+		    },
+		    func);
+	}
 	// IsRegionGpuModified without the region locks, on the regions' lock-free mirrors of their
 	// GPU-dirty bits (RegionManager::IsGpuModifiedRelaxed). Any thread. A hint: a transition racing
 	// it may or may not be seen, as with a locked query made a moment earlier or later.
@@ -408,10 +428,12 @@ private:
 	inline static thread_local const MemoryTracker* s_upload_owner = nullptr;
 
 	void CheckNotInUploadCallback() const noexcept {
-		if (s_upload_owner == this) {
-			EXIT("memory tracker re-entered from upload callback\n");
+		if (s_upload_owner == this) [[unlikely]] {
+			ReportUploadReentry(); // prints this thread's backtrace, then exits
 		}
 	}
+	// nps5 memtrk: the backtrace of a re-entry (cold; CheckNotInUploadCallback's failure path).
+	[[noreturn]] static void ReportUploadReentry() noexcept;
 
 	template <bool create, typename Func>
 	bool Iterate(uint64_t vaddr, uint64_t size, Func&& func) {

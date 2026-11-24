@@ -673,6 +673,14 @@ target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(cp_lead_bound_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CpLeadBoundTests.cpp")
 target_include_directories(cp_lead_bound_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# sarosbundle: CPU HLE of the shader-bundle compaction kernel (command_processor/bundleCompact.h), no GPU.
+add_executable(bundle_compact_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BundleCompactTests.cpp")
+target_include_directories(bundle_compact_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# naniteshade: KYTY_SAROS_NANITE_SHADE_STATS counters (header only), no GPU.
+add_executable(nanite_shade_stats_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/NaniteShadeStatsTests.cpp")
+target_include_directories(nanite_shade_stats_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5 kprogress2: on-screen compile progress state/animation timing (header only), no GPU.
 add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ProgressOverlayTests.cpp")
 target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
@@ -700,6 +708,13 @@ add_executable(hosted_ranges_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostedRan
 target_include_directories(hosted_ranges_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(hybrid_seam_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HybridSeamTests.cpp")
 target_include_directories(hybrid_seam_tests PRIVATE "${KYTY_SOURCE_DIR}")
+# nps5 kytyone: one Kyty for ASTRO/SAROS/Sparta: per-title seam export lists, title switch defaults (header only).
+add_executable(kyty_one_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/KytyOneTests.cpp")
+target_include_directories(kyty_one_tests PRIVATE "${KYTY_SOURCE_DIR}" "${KYTY_TESTS_DIR}")
+# nps5 uetrans: KYTY_WAVE64_WARPS_DENY/_ALLOW gate (CodegenOptions only, no GPU).
+add_executable(wave64_warps_acl_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Wave64WarpsAclTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp")
+target_include_directories(wave64_warps_acl_tests PRIVATE "${KYTY_SOURCE_DIR}")
 if(LINUX)
 	target_link_libraries(hosted_guard_tests Threads::Threads)
 	target_link_libraries(hosted_ranges_tests Threads::Threads)
@@ -1014,6 +1029,9 @@ target_include_directories(ime_dialog_tests PRIVATE ${inc_headers})
 add_executable(range_set_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RangeSetTests.cpp")
 target_link_libraries(range_set_tests common)
 target_include_directories(range_set_tests PRIVATE ${inc_headers})
+
+add_executable(bda_scan_walk_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BdaScanWalkTests.cpp")
+target_include_directories(bda_scan_walk_tests PRIVATE ${inc_headers})
 
 add_executable(memory_tracker_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/MemoryTrackerTests.cpp"
