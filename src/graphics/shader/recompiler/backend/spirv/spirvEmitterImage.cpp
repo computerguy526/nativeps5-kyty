@@ -1139,8 +1139,8 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			        // Everything else keeps the original emission order (byte-identical SPIR-V).
 			        const auto* handle = image_arg.ResolveInstruction();
 			        if (image.indirect_root == mem.resource && handle != nullptr &&
-					    handle->NumArgs() != 0u && state.flattened_srt_variable != 0 &&
-					    image.indirect_resources.size() >= 2u) {
+			            handle->NumArgs() != 0u && state.flattened_srt_variable != 0 &&
+			            image.indirect_resources.size() >= 2u) {
 				        const auto coord     = CoordU32(ctx, mem, *address, dimension);
 				        const auto EmitFetch = [&](uint32_t resource, uint32_t array_index = 0u) {
 					        const auto descriptor =
@@ -1151,7 +1151,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 						        state.builder.RequireCapability(
 						            spv::CapabilitySampledImageArrayNonUniformIndexing);
 						        state.builder.AddAnnotation(spv::OpDecorate, descriptor,
-								                            spv::DecorationNonUniform);
+						                                    spv::DecorationNonUniform);
 					        }
 					        const auto fetched = state.builder.AllocateId();
 					        if (dimension_info.multisampled != 0u) {
@@ -1159,7 +1159,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 						            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4),
 						            fetched, descriptor, coord, spv::ImageOperandsSampleMask,
 						            AddressU32(ctx, mem, *address,
-									           dimension_info.coordinate_components));
+						                       dimension_info.coordinate_components));
 					        } else {
 						        state.builder.AddFunction(
 						            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4),
@@ -1172,14 +1172,14 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 				            state, ctx.Def(handle->Arg(0)), image.indirect_mapping_offset,
 				            image.indirect_search_iterations, 0u);
 				        if (image.indirect_group != IR::ImageResource::NoIndirectImage &&
-						    image.resource_class == IR::ImageResourceClass::Sampled) {
+				            image.resource_class == IR::ImageResourceClass::Sampled) {
 					        // sarosperf2 (KYTY_SAROS_HS_DYNIDX): the group's candidates are fetched
-							// by one dynamic descriptor-array index per contiguous run, not one
-							// case each.
+					        // by one dynamic descriptor-array index per contiguous run, not one
+					        // case each.
 					        color = EmitIndirectRuns(state, image, mem.resource, selected,
-							                         BuildIndirectRuns(state, image, true),
-							                         ImageVectorType(state, numeric_class, 4),
-							                         EmitFetch);
+					                                 BuildIndirectRuns(state, image, true),
+					                                 ImageVectorType(state, numeric_class, 4),
+					                                 EmitFetch);
 				        } else {
 					        color = EmitIndexSwitch(
 					            state, selected,
@@ -1197,7 +1197,7 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 					            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4), color,
 					            descriptor, coord, spv::ImageOperandsSampleMask,
 					            AddressU32(ctx, mem, *address,
-								           dimension_info.coordinate_components));
+					                       dimension_info.coordinate_components));
 				        } else {
 					        state.builder.AddFunction(
 					            spv::OpImageFetch, ImageVectorType(state, numeric_class, 4), color,
@@ -1522,8 +1522,8 @@ void EmitImage(ValueEmitContext& ctx, const IR::Inst& inst) {
 			ctx.Fail(inst, "has no indirect image runtime mapping");
 			return;
 		}
-		const auto selected = EmitIndirectResourceIndex(
-		    state, key, image.indirect_mapping_offset, image.indirect_search_iterations, 0u);
+		const auto selected = EmitIndirectResourceIndex(state, key, image.indirect_mapping_offset,
+		                                                image.indirect_search_iterations, 0u);
 		// Dynamic sample offsets and GET_LOD_STATS records query or count the candidate itself, so
 		// those samples keep one case per candidate.
 		const bool native_runs = !sample_offset.dynamic &&

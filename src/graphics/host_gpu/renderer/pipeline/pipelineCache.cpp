@@ -2606,16 +2606,16 @@ struct PipelineCache::ProgramCache {
 		copy(params.back_code, back_code_words);
 		ProgramDiskCache::BuildSourceKey(
 		    {.stage                   = static_cast<uint32_t>(key.stage),
-			 .hash                    = key.hash,
-			 .user_data_count         = key.user_data_count,
-			 .code_size               = key.code_size,
-			 .static_state            = key.static_state,
-			 .wave_size               = options.wave_size,
-			 .user_data_base          = options.user_data_base,
-			 .plain_mip_stats_variant = options.plain_mip_stats_variant,
-			 .variant                 = SarosCacheVariant(options),
-			 .code                    = code_words,
-			 .back_code               = back_code_words},
+		     .hash                    = key.hash,
+		     .user_data_count         = key.user_data_count,
+		     .code_size               = key.code_size,
+		     .static_state            = key.static_state,
+		     .wave_size               = options.wave_size,
+		     .user_data_base          = options.user_data_base,
+		     .plain_mip_stats_variant = options.plain_mip_stats_variant,
+		     .variant                 = SarosCacheVariant(options),
+		     .code                    = code_words,
+		     .back_code               = back_code_words},
 		    disk_key);
 	}
 

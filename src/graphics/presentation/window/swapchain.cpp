@@ -919,15 +919,15 @@ public:
 			const bool blit =
 			    wanted && !info.IsDepth() && info.samples == 1 && !integer &&
 			    static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
-				                  vk::FormatFeatureFlagBits::eBlitSrc) &&
+			                      vk::FormatFeatureFlagBits::eBlitSrc) &&
 			    m_pending.size() < 256;
 			if (wanted) {
 				std::fprintf(
 				    stderr,
 				    "[kyty-target] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile "
-					"%u samples %u "
+				    "%u samples %u "
 				    "levels %u layers %u usage%s%s%s%s%s gpu-modified %d cpu-dirty %d "
-					"buffer-modified %d writes %llu "
+				    "buffer-modified %d writes %llu "
 				    "metadata %u 0x%llx clear-word 0x%08x%s\n",
 				    index, static_cast<unsigned long long>(m_flips),
 				    static_cast<unsigned long long>(info.data.address),

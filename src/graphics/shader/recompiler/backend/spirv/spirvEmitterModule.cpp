@@ -624,7 +624,7 @@ void DefineInputs(EmitterState& state) {
 					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation,
 					                            verts
 					                                ? SarosNaniteRawVertexLocation(location, vertex)
-													: SarosNaniteRawLocation(location));
+					                                : SarosNaniteRawLocation(location));
 					input.vertex_variable_ids[vertex] = variable;
 				}
 				if (!verts) {
@@ -644,7 +644,7 @@ void DefineInputs(EmitterState& state) {
 					                  : SarosNaniteRawLocation(location),
 					            verts || SarosNaniteRawAnd(location)
 					                ? ""
-									: " (NOT forwarded by the mesh program)");
+					                : " (NOT forwarded by the mesh program)");
 				}
 				continue;
 			}

@@ -980,7 +980,7 @@ private:
 			    SarosHandShader(m_program.shader_hash) && !read->Uses().empty() &&
 			    std::ranges::all_of(read->Uses(), [&](const Use& use) {
 				    return use.user->GetOpcode() == ValueOpcode::GetImageResource &&
-					       use.user->NumArgs() == 8u && use.operand == dword;
+				           use.user->NumArgs() == 8u && use.operand == dword;
 			    });
 			if (!shared_handles && !UsesOnly(*read, image_users)) {
 				// A T# word the shader also uses as a value stays a real read through the table;

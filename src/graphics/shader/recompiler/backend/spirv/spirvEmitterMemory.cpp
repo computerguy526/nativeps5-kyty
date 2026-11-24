@@ -629,7 +629,7 @@ void ForEachLocalFlatAccess(ValueEmitContext& ctx, const IR::Inst& inst, Fn&& em
 	    Binary(state, spv::OpShiftRightLogical, TypeU32(state), low, ConstantU32(state, 2));
 	const auto aligned =
 	    Binary(state, spv::OpIEqual, TypeBool(state), ConstantU32(state, 0),
-		       Binary(state, spv::OpBitwiseAnd, TypeU32(state), low, ConstantU32(state, 3)));
+	           Binary(state, spv::OpBitwiseAnd, TypeU32(state), low, ConstantU32(state, 3)));
 	for (const auto kind: {IR::ResourceKind::Scratch, IR::ResourceKind::Lds}) {
 		mem.kind            = kind;
 		const auto resource = PrepareMemoryResourceAccess(state, mem);
@@ -652,8 +652,8 @@ uint32_t LoadLocalFlat(ValueEmitContext& ctx, const IR::Inst& inst) {
 			    const auto value = EmitValueOrZeroIfCondition(
 			        ctx.state, valid, [&]() { return LoadWordInBounds(ctx, resource, index); });
 			    result = result == 0 ? value
-				                     : Binary(ctx.state, spv::OpBitwiseOr, TypeU32(ctx.state),
-				                              result, value);
+			                         : Binary(ctx.state, spv::OpBitwiseOr, TypeU32(ctx.state),
+			                                  result, value);
 		    });
 		return result;
 	});

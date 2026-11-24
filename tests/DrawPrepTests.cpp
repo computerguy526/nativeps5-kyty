@@ -2057,10 +2057,10 @@ int main(int argc, char** argv) {
 	TestGapLedgerPhasesAndNested();
         TestGapLedgerWaitSplit();
         TestGapLedgerFlushAndOverflow();
-	if (g_failures != 0) {
-		std::fprintf(stderr, "DrawPrepTests: %d failure(s)\n", g_failures);
-		return 1;
-	}
-	std::puts("DrawPrepTests: all cases passed");
-	return 0;
+        if (g_failures != 0) {
+          std::fprintf(stderr, "DrawPrepTests: %d failure(s)\n", g_failures);
+          return 1;
+        }
+        std::puts("DrawPrepTests: all cases passed");
+        return 0;
 }

@@ -1030,7 +1030,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 						    "[sarosuv] sh 0x%016" PRIx64
 						    " buf%u V#=%08x %08x %08x %08x base=0x%llx stride=%u rec=%u "
 						    "fmt=%u dsel=%u/%u/%u/%u idxstr=%u addtid=%u oob=%u | desc_fmt=%u "
-							"pstride=%u swz=0x%x maxext=%u",
+						    "pstride=%u swz=0x%x maxext=%u",
 						    prog.shader_hash, i, w[0], w[1], w[2], w[3],
 						    static_cast<unsigned long long>(base), stride, w[2], fmt, w[3] & 7u,
 						    (w[3] >> 3) & 7u, (w[3] >> 6) & 7u, (w[3] >> 9) & 7u, (w[3] >> 19) & 3u,
@@ -1065,7 +1065,7 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 						    "[sarosaddr] sh 0x%016" PRIx64
 						    " smp%u src=%x snap=%u S#=%08x %08x %08x %08x clamp x/y/z=%u/%u/%u "
 						    "unorm=%u trunc=%u filt xy=%u/%u mip=%u z=%u lod=%u..%u bias=0x%x "
-							"border=%u depthcmp=%u aniso=%u\n",
+						    "border=%u depthcmp=%u aniso=%u\n",
 						    prog.shader_hash, i,
 						    static_cast<unsigned>(prog.info.samplers[i].source), idx, d.fields[0],
 						    d.fields[1], d.fields[2], d.fields[3], d.ClampX(), d.ClampY(),
@@ -4709,7 +4709,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 					    hash, i, stage->images[i].image_id.index,
 					    stage->images[i].image_id.generation,
 					    image ? static_cast<void*>(static_cast<VkImage>(image->backing.image))
-						      : nullptr,
+					          : nullptr,
 					    image ? image->info.data.address : 0,
 					    image && image->IsGpuModified() ? 1 : 0,
 					    image && image->IsBufferModified() ? 1 : 0,

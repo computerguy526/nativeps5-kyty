@@ -538,13 +538,13 @@ std::string AnchorText(const AnchorRec& r) {
 	std::string text = fmt::format(
 	    "{} shader {:016x} output {} images:", r.kind == 'd' ? "draw" : "dispatch", r.hash,
 	    r.out.address != 0 ? fmt::format("{}x{}:{}@{:x}", r.out.w, r.out.h,
-		                                 vk::to_string(r.out.format), r.out.address)
-		                   : std::string("-"));
+	                                     vk::to_string(r.out.format), r.out.address)
+	                       : std::string("-"));
 	for (uint32_t i = 0; i < r.image_count; i++) {
 		const auto& m = r.images[i];
 		text += m.address != 0
 		            ? fmt::format(" {}x{}:{}@{:x}", m.w, m.h, vk::to_string(m.format), m.address)
-					: " -";
+		            : " -";
 	}
 	text += " buffers:";
 	for (uint32_t i = 0; i < r.buffer_count; i++) {
@@ -632,8 +632,8 @@ void FindAnchor(const char* kind, const PreparedBindings& bindings, TextureCache
 		const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
 		r.images[r.image_count++] =
 		    image != nullptr ? AnchorRec::Img {image->info.extent.width, image->info.extent.height,
-			                                   image->backing.format, image->info.data.address}
-			                 : AnchorRec::Img {};
+		                                       image->backing.format, image->info.data.address}
+		                     : AnchorRec::Img {};
 	}
 	for (const auto& source: bindings.buffer_sources) {
 		if (r.buffer_count == r.buffers.size()) {
@@ -1487,10 +1487,10 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 				                      static_cast<int64_t>(h) * target->info.extent.width;
 				fit +=
 				    (w < target->info.extent.width && h < target->info.extent.height && w >= 960 &&
-					 std::llabs(skew) <= static_cast<int64_t>(target->info.extent.width +
-					                                          target->info.extent.height))
+				     std::llabs(skew) <= static_cast<int64_t>(target->info.extent.width +
+				                                              target->info.extent.height))
 				        ? 1
-						: 0;
+				        : 0;
 			}
 			if (color_count != 1 || target == nullptr || target->info.extent.width < 2560 ||
 			    big != 1 || fit != 1) {

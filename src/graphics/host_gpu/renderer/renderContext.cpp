@@ -330,7 +330,7 @@ bool RenderContext::SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size) 
 				             vaddr, size,
 				             CpReadImageSync()
 				                 ? ": publishing it first (KYTY_CP_READ_IMAGE_SYNC)"
-								 : ": reading the guest view (stale if the image wrote it)");
+				                 : ": reading the guest view (stale if the image wrote it)");
 			}
 		}
 		if (!CpReadImageSync()) {

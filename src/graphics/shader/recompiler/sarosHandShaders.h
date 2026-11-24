@@ -116,7 +116,7 @@ inline uint32_t SarosNaniteRawEnvMask(const char* name, uint32_t fallback) {
 	const char* value = std::getenv(name);
 	return value != nullptr && value[0] != '\0'
 	           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0))
-			   : fallback;
+	           : fallback;
 }
 inline bool SarosNaniteRawAnd(uint32_t location) {
 	static const uint32_t mask = SarosNaniteRawEnvMask("KYTY_SAROS_NANITE_RAW_AND", 0x2u);

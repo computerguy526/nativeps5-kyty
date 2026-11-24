@@ -845,8 +845,8 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 			NoteSkippedProgram(
 			    options, bad_pc,
 			    fmt::format("has a scalar operand the decoder does not support (0x{:02x}; "
-				            "KYTY_SKIP_UNDECODABLE=1: this pass is not rendered)",
-				            bad_code));
+			                "KYTY_SKIP_UNDECODABLE=1: this pass is not rendered)",
+			                bad_code));
 			TranslateResult skipped;
 			skipped.skip_dispatch = true;
 			return skipped;

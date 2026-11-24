@@ -660,7 +660,7 @@ static void Capture(RenderContext& context, CommandBuffer& buffer, ImageId id, c
 		const auto* v = std::getenv("KYTY_PROBE_LAYERS");
 		return v != nullptr && v[0] != '\0'
 		           ? static_cast<uint32_t>(std::max<long>(std::strtol(v, nullptr, 10), 1))
-				   : 1u;
+		           : 1u;
 	}();
 	e.layers = image->info.IsVolume()
 	               ? 1u
@@ -1661,10 +1661,10 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 					             thread_group_z, static_cast<unsigned long long>(group_threads),
 					             thread_group_y == 1 && thread_group_z == 1
 					                 ? " -> x capped at "
-									 : ", not 1D: left at x=",
+					                 : ", not 1D: left at x=",
 					             thread_group_y == 1 && thread_group_z == 1
 					                 ? std::min(thread_group_x, limit.groups)
-									 : thread_group_x);
+					                 : thread_group_x);
 				}
 				if (thread_group_y == 1 && thread_group_z == 1 && limit.groups != 0) {
 					gx = std::min(gx, limit.groups);

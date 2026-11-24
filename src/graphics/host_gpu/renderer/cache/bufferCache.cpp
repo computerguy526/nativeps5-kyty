@@ -4852,7 +4852,7 @@ void NoteWatchBinding(uint64_t vaddr, uint64_t size, bool is_written, uint64_t t
 				std::fprintf(
 				    stderr,
 				    "[memtrk] watch writer %016llx ring %d writes 0x%016llx+0x%llx over consumer "
-					"range "
+				    "range "
 				    "0x%016llx+0x%llx (tick %llu, seq %llu)\n",
 				    static_cast<unsigned long long>(program), t_watch_ring,
 				    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
@@ -7084,12 +7084,12 @@ void BufferCache::SynchronizeBdaBuffers(const RangeSet& mapped_ranges) {
 	if (m_findbuf_stats) {
 		const auto kind =
 		    std::min<size_t>(4, static_cast<size_t>(m_bda_pass_kind) -
-			                        static_cast<size_t>(BufferLookupStats::Part::BdaNone));
+		                            static_cast<size_t>(BufferLookupStats::Part::BdaNone));
 		m_findbuf_totals.pass_count[kind]++;
 		m_findbuf_totals.pass_ns[kind] +=
 		    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
 		                              std::chrono::steady_clock::now() - findbuf_start)
-			                          .count());
+		                              .count());
 		m_findbuf_totals.pass_bytes[kind] += m_bda_pass_upload_bytes - uploaded_before;
 	}
 	if (pass_start != 0) {
@@ -7398,7 +7398,7 @@ bool BufferCache::SynchronizeBdaDirtied(const RangeSet& mapped_ranges) {
 		return std::any_of(m_bda_hot_ranges.begin(), m_bda_hot_ranges.end(),
 		                   [&](const auto& other) {
 			                   return other.id == range.id && other.address == range.address &&
-							          other.size == range.size;
+			                          other.size == range.size;
 		                   });
 	};
 	if (m_findbuf_mode == 0 || found.empty()) {
@@ -7562,7 +7562,7 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 	    m_buffers, vaddr, end, bounds,
 	    [&](auto&& callback) {
 		    m_memory_tracker.ForEachCpuDirtyRunRelaxed(vaddr, size,
-			                                           [&](uint64_t begin, uint64_t finish) {
+		                                               [&](uint64_t begin, uint64_t finish) {
 			                                               m_findbuf_totals.runs++;
 			                                               callback(begin, finish);
 		                                               });
@@ -7604,7 +7604,7 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 			    next++;
 		    }
 		    const bool listed = next < visits.size() && visits[next].key == it->first &&
-			                    visits[next].start == start && visits[next].finish == finish;
+		                        visits[next].start == start && visits[next].finish == finish;
 		    if (listed) {
 			    matched++;
 		    }
@@ -7617,11 +7617,11 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 				    static std::atomic<uint32_t> logged {0};
 				    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
 					    std::fprintf(stderr,
-						             "FindbufVerify: the dirty walk missed buffer 0x%016" PRIx64
-						             " range 0x%016" PRIx64 "+0x%" PRIx64 " (walk 0x%016" PRIx64
-						             "+0x%" PRIx64 ", decided %d)\n",
-						             it->first, start, finish - start, vaddr, size,
-						             decided ? 1 : 0);
+					                 "FindbufVerify: the dirty walk missed buffer 0x%016" PRIx64
+					                 " range 0x%016" PRIx64 "+0x%" PRIx64 " (walk 0x%016" PRIx64
+					                 "+0x%" PRIx64 ", decided %d)\n",
+					                 it->first, start, finish - start, vaddr, size,
+					                 decided ? 1 : 0);
 				    }
 			    } else {
 				    m_findbuf_totals.verify_races++;
@@ -7635,7 +7635,7 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 		    }
 		    m_findbuf_totals.old_visits++;
 		    (void)SynchronizeBuffer(m_slot_buffers[it->second], start, finish - start, false, false,
-			                        stats);
+		                            stats);
 	    });
 	m_findbuf_totals.fast_visits += visits.size();
 	if (matched != visits.size()) {
