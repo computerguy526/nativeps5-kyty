@@ -1560,6 +1560,10 @@ target_include_directories(image_clear_range_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(image_gpu_keep_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ImageGpuKeepTests.cpp")
 target_include_directories(image_gpu_keep_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# uppick4: D16 copy pair and MSAA resolve extent decisions (image/copyResolvePlan.h, header only), no GPU.
+add_executable(copy_resolve_plan_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CopyResolvePlanTests.cpp")
+target_include_directories(copy_resolve_plan_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # Register clear decoding (imageInfo.h, KYTY_CLEAR_REGISTER_WIDE); no Vulkan device.
 add_executable(clear_register_decode_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ClearRegisterDecodeTests.cpp")
 target_link_libraries(clear_register_decode_tests common fmt::fmt Vulkan::Headers)
@@ -1866,6 +1870,7 @@ if(BUILD_TESTING)
 	add_test(NAME image_clear_range COMMAND $<TARGET_FILE:image_clear_range_tests>)
 	add_test(NAME image_gpu_keep COMMAND $<TARGET_FILE:image_gpu_keep_tests>)
 	add_test(NAME clear_register_decode COMMAND $<TARGET_FILE:clear_register_decode_tests>)
+	add_test(NAME copy_resolve_plan COMMAND $<TARGET_FILE:copy_resolve_plan_tests>)
 	add_test(NAME ampr_counter_bank COMMAND $<TARGET_FILE:ampr_counter_bank_tests>)
 	add_test(NAME ampr_order COMMAND $<TARGET_FILE:ampr_order_tests>)
 	add_test(NAME draw_prep COMMAND $<TARGET_FILE:draw_prep_tests>)
@@ -3243,6 +3248,7 @@ if(BUILD_TESTING)
 		image_clear_range_tests
 		image_gpu_keep_tests
 		clear_register_decode_tests
+		copy_resolve_plan_tests
 		range_set_tests
 		memory_tracker_tests
 		page_manager_tests

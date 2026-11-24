@@ -28,6 +28,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/imgSide.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/copyResolvePlan.h"
 #include "graphics/host_gpu/renderer/image/dccClear.h"
 #include "graphics/host_gpu/renderer/image/gpuWriteRanges.h"
 #include "graphics/host_gpu/renderer/image/imageClearRange.h"
@@ -4587,11 +4588,12 @@ bool TextureCache::CopyD16(Image& destination, Image& source) {
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	// Converts guest D16 between a four-byte host depth aspect (D24/D32, stenciled) and two-byte
 	// color or native D16 depth (upstream 0685bffb2: D16 <-> D24/D32 depth copies exited).
-	const bool source_wide = DepthAspectTransferBytes(source.backing.format) == sizeof(uint32_t);
-	if (source_wide ==
-	    (DepthAspectTransferBytes(destination.backing.format) == sizeof(uint32_t))) {
+	const auto pair = CopyResolvePlan::ClassifyD16Pair(DepthAspectTransferBytes(source.backing.format),
+	                                                   DepthAspectTransferBytes(destination.backing.format));
+	if (!pair.convert) {
 		return false;
 	}
+	const bool source_wide = pair.source_wide;
 	const bool source_depth   = source_wide;
 	auto&      depth          = source_wide ? source : destination;
 	auto&      color          = source_wide ? destination : source;
