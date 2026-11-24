@@ -2397,10 +2397,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbWaitUntilSafeForRendering(CommandBuffer* buf,
 	return cmd;
 }
 
-// The asynchronous-compute form (sceAgcAcbWaitUntilSafeForRendering, PPSA28997): the same wait-for-flip packet in an
-// Acb command buffer.
-uint32_t* KYTY_SYSV_ABI AgcAcbWaitUntilSafeForRendering(CommandBuffer* buf, uint32_t video_out_handle,
-                                                        uint32_t display_buffer_index) {
+// The asynchronous-compute form (sceAgcAcbWaitUntilSafeForRendering, PPSA28997): the same
+// wait-for-flip packet in an Acb command buffer.
+uint32_t* KYTY_SYSV_ABI AgcAcbWaitUntilSafeForRendering(CommandBuffer* buf,
+                                                        uint32_t       video_out_handle,
+                                                        uint32_t       display_buffer_index) {
 	return AgcDcbWaitUntilSafeForRendering(buf, video_out_handle, display_buffer_index);
 }
 

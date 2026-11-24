@@ -146,7 +146,7 @@ uint32_t* KYTY_SYSV_ABI AgcDcbSetShRegistersIndirect(CommandBuffer*             
                                                      const volatile ShaderRegister* regs,
                                                      uint32_t                       num_regs);
 uint64_t KYTY_SYSV_ABI AgcDcbSetShRegistersIndirectGetSize();
-uint64_t KYTY_SYSV_ABI AgcDcbSetUcRegistersIndirectGetSize();
+uint64_t KYTY_SYSV_ABI  AgcDcbSetUcRegistersIndirectGetSize();
 uint32_t* KYTY_SYSV_ABI AgcDcbSetUcRegistersIndirect(CommandBuffer*                 buf,
                                                      const volatile ShaderRegister* regs,
                                                      uint32_t                       num_regs);
