@@ -623,8 +623,22 @@ list(APPEND check_headers
 	${KYTY_SOURCE_DIR}
 )
 
+# nps5 one: on an arm64 host the full-emulator tests take the source list kyty_gpu links (the x86-64-only
+# sources out, hybrid/arm64Stubs.cpp in), so they build next to the dylib.
+set(KYTY_GPU_X86_ONLY_SOURCES
+	"${KYTY_SOURCE_DIR}/libs/guestPrintf.cpp"
+	"${KYTY_SOURCE_DIR}/libs/libC.cpp"
+	"${KYTY_SOURCE_DIR}/loader/guestInstructionPatcher.cpp"
+	"${KYTY_SOURCE_DIR}/loader/x64InstructionEmulator.cpp"
+)
+set(kyty_full_test_src ${kyty_emulator_src})
+if(KYTY_HOST_ARM64)
+	list(REMOVE_ITEM kyty_full_test_src ${KYTY_GPU_X86_ONLY_SOURCES})
+	list(APPEND kyty_full_test_src "${KYTY_SOURCE_DIR}/hybrid/arm64Stubs.cpp")
+endif()
+
 function(add_kyty_full_emulator_test target source)
-	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${kyty_emulator_src})
+	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${kyty_full_test_src})
 	target_link_libraries(${target} ${kyty_emulator_link_libraries})
 	target_include_directories(${target} PRIVATE ${inc_headers})
 	if (WIN32)
@@ -655,6 +669,7 @@ add_kyty_full_emulator_test(sparse_residency_stress_tests "${KYTY_TESTS_DIR}/Spa
 
 add_executable(scalar_provenance_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ScalarProvenanceTests.cpp"
+	"${KYTY_TESTS_DIR}/support/GuestReadPtrStub.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
@@ -715,6 +730,12 @@ target_include_directories(hybrid_seam_tests PRIVATE "${KYTY_SOURCE_DIR}")
 # nps5 kytyone: one Kyty for ASTRO/SAROS/Sparta: per-title seam export lists, title switch defaults (header only).
 add_executable(kyty_one_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/KytyOneTests.cpp")
 target_include_directories(kyty_one_tests PRIVATE "${KYTY_SOURCE_DIR}" "${KYTY_TESTS_DIR}")
+# nps5 one: flat-pointer aperture scalar sources 0xEB-0xEE (decoder only, no GPU).
+file(GLOB kyty_decode_test_src CONFIGURE_DEPENDS "${KYTY_SOURCE_DIR}/graphics/shader/recompiler/frontend/decode/*.cpp")
+add_executable(flat_aperture_decode_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FlatApertureDecodeTests.cpp"
+	${kyty_decode_test_src})
+target_link_libraries(flat_aperture_decode_tests common fmt::fmt)
+target_include_directories(flat_aperture_decode_tests PRIVATE ${inc_headers})
 # nps5 uetrans: KYTY_WAVE64_WARPS_DENY/_ALLOW gate (CodegenOptions only, no GPU).
 add_executable(wave64_warps_acl_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Wave64WarpsAclTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp")
@@ -1055,6 +1076,7 @@ target_include_directories(shader_vertex_metadata_tests PRIVATE ${inc_headers})
 
 add_executable(resource_materialization_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ResourceMaterializationTests.cpp"
+	"${KYTY_TESTS_DIR}/support/GuestReadPtrStub.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp"
@@ -1071,6 +1093,7 @@ target_include_directories(resource_materialization_tests PRIVATE ${inc_headers}
 
 add_executable(resource_tracking_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ResourceTrackingTests.cpp"
+	"${KYTY_TESTS_DIR}/support/GuestReadPtrStub.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/guest_gpu/gpu_format.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/hostMemory.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/shaderPixelParameter.cpp"
@@ -2857,12 +2880,6 @@ endif()
 # src/hybrid/arm64Stubs.cpp stands in for what the rest still references from them.
 #   cmake --build <dir> --target kyty_gpu
 if(APPLE)
-	set(KYTY_GPU_X86_ONLY_SOURCES
-		"${KYTY_SOURCE_DIR}/libs/guestPrintf.cpp"
-		"${KYTY_SOURCE_DIR}/libs/libC.cpp"
-		"${KYTY_SOURCE_DIR}/loader/guestInstructionPatcher.cpp"
-		"${KYTY_SOURCE_DIR}/loader/x64InstructionEmulator.cpp"
-	)
 	set(kyty_gpu_src ${kyty_emulator_src})
 	if(KYTY_HOST_ARM64)
 		list(REMOVE_ITEM kyty_gpu_src ${KYTY_GPU_X86_ONLY_SOURCES})

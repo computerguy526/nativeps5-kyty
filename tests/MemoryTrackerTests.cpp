@@ -104,6 +104,10 @@ std::map<void *, size_t> &AllocationSizes() {
   return sizes;
 }
 
+#ifndef MAP_FIXED_NOREPLACE
+// macOS has no MAP_FIXED_NOREPLACE: the address is then a placement hint.
+#define MAP_FIXED_NOREPLACE 0
+#endif
 void *VirtualAlloc(void *address, size_t size, DWORD, uint32_t protection) {
   const int extra = address != nullptr ? MAP_FIXED_NOREPLACE : 0;
   void *raw = ::mmap(address, size, ToHostProt(protection),
@@ -2622,6 +2626,9 @@ void TestFullRegionGpuUnmarkBatching() {
   Release(memory);
 }
 
+#if defined(__APPLE__) && defined(PAGE_SIZE)
+#undef PAGE_SIZE // <mach/vm_param.h> macro, hides CleanVerdict::PAGE_SIZE
+#endif
 namespace CleanVerdict = Libs::Graphics::CleanVerdict;
 
 void TestCleanVerdictQuery() {
