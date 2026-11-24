@@ -1268,6 +1268,54 @@ void TestSpecializationCompat() {
     IR::EncodeSpecialization(oldback, reenc);
     Check(reenc == cur, "spec compat: a legacy blob re-encodes to the current bytes");
   }
+  // v1.4: the v1.3.x release layout (int21 image record + U32 indirect_group before `cube`) that
+  // the shipped pipeline lists and journals hold. Written by hand from those builds' encoder.
+  {
+    auto v13blob = [&](uint32_t group1) {
+      std::vector<uint8_t> out;
+      IR::CodecWriter w(out);
+      w.U32(static_cast<uint32_t>(spec.buffers.size()));
+      for (const auto &b : spec.buffers) {
+        w.U32(b.packed_stride);
+        w.U32(static_cast<uint32_t>(b.descriptor_format));
+        w.U32(b.descriptor_swizzle);
+        w.Bool(b.zero_stride_oob);
+      }
+      w.U32(static_cast<uint32_t>(spec.images.size()));
+      uint32_t n = 0;
+      for (const auto &i : spec.images) {
+        w.U32(static_cast<uint32_t>(i.numeric_class));
+        w.U32(static_cast<uint32_t>(i.dimension));
+        w.U32(i.mip_count);
+        w.U32(static_cast<uint32_t>(i.conversion_format));
+        w.U32(i.shader_swizzle);
+        w.U32(i.indirect_root);
+        w.U32(i.indirect_mapping_offset);
+        w.U32(i.indirect_search_iterations);
+        w.U32(n++ == 1 ? group1 : IR::ImageResource::NoIndirectImage);
+        w.Bool(i.cube);
+        w.Bool(i.fmask);
+      }
+      return out;
+    };
+    const auto           v13 = v13blob(IR::ImageResource::NoIndirectImage);
+    IR::ResourceSpecialization v13back;
+    bool                 v13legacy = false;
+    Check(!IR::DecodeSpecialization(v13, strict) && !IR::DecodeSpecializationInt21(v13, strict),
+          "spec compat: neither strict nor int21 decoders take a v1.3 blob");
+    Check(IR::DecodeSpecializationCompat(v13, v13back, &v13legacy) && v13legacy && v13back == spec,
+          "spec compat: a v1.3.x blob decodes to the same image fields");
+    std::vector<uint8_t> v13re;
+    IR::EncodeSpecialization(v13back, v13re);
+    Check(v13re == cur, "spec compat: a v1.3.x blob re-encodes to the current bytes (list identity)");
+    IR::ResourceSpecialization grouped = spec;
+    Check(!IR::DecodeSpecializationCompat(v13blob(2), grouped) && grouped == spec,
+          "spec compat: a v1.3.x image with an indirect group is refused (no groups in this build)");
+    for (size_t cut : {size_t{1}, size_t{5}}) {
+      std::vector<uint8_t> t(v13.begin(), v13.end() - static_cast<long>(cut));
+      Check(!IR::DecodeSpecializationCompat(t, grouped), "spec compat: a truncated v1.3 blob fails");
+    }
+  }
   IR::ResourceSpecialization keep = spec;
   for (size_t cut : {size_t{1}, size_t{3}, old.size() / 2}) {
     std::vector<uint8_t> t(old.begin(), old.end() - static_cast<long>(cut));

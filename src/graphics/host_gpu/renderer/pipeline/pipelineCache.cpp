@@ -9075,8 +9075,9 @@ void PipelineCache::InitializePipelineList() {
 		uint64_t specializations = 0;
 		for (auto& permutation: file.permutations) {
 			ShaderRecompiler::IR::ResourceSpecialization specialization;
-			if (ShaderRecompiler::IR::DecodeSpecialization(permutation.specialization, specialization) ||
-			    !ShaderRecompiler::IR::DecodeSpecializationInt21(permutation.specialization, specialization)) {
+			bool legacy = false;
+			if (!ShaderRecompiler::IR::DecodeSpecializationCompat(permutation.specialization, specialization, &legacy) ||
+			    !legacy) {
 				continue;
 			}
 			permutation.specialization.clear();

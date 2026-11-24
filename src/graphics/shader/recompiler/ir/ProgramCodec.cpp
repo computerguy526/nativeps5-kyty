@@ -1326,6 +1326,31 @@ bool DecodeSpecializationInt21(std::span<const uint8_t> bytes, ResourceSpecializ
 	return reader.AtEnd();
 }
 
+bool DecodeSpecializationV13(std::span<const uint8_t> bytes, ResourceSpecialization& value) {
+	CodecReader reader(bytes);
+	ResourceSpecialization out;
+	ReadVector(reader, out.buffers);
+	const auto count = reader.Count(1);
+	out.images.resize(count);
+	for (auto& v: out.images) {
+		v.numeric_class              = EnumFrom<Prospero::TextureNumericClass>(reader.U32());
+		v.dimension                  = EnumFrom<Decoder::ImageDimension>(reader.U32());
+		v.mip_count                  = reader.U32();
+		v.conversion_format          = EnumFrom<Prospero::BufferFormat>(reader.U32());
+		v.shader_swizzle             = reader.U32();
+		v.indirect_root              = reader.U32();
+		v.indirect_mapping_offset    = reader.U32();
+		v.indirect_search_iterations = reader.U32();
+		const uint32_t group         = reader.U32();
+		v.cube                       = reader.Bool();
+		v.fmask                      = reader.Bool();
+		if (reader.Failed() || group != ImageResource::NoIndirectImage) return false;
+	}
+	if (!reader.AtEnd()) return false;
+	value = std::move(out);
+	return true;
+}
+
 bool DecodeSpecializationCompat(std::span<const uint8_t> bytes, ResourceSpecialization& value,
                                 bool* legacy) {
 	if (legacy != nullptr) *legacy = false;
@@ -1336,7 +1361,7 @@ bool DecodeSpecializationCompat(std::span<const uint8_t> bytes, ResourceSpeciali
 	// int21 layout (image records end after `fmask`, the later fields read as their defaults). The
 	// two layouts differ in length per image record, so a blob with an image never decodes as both.
 	ResourceSpecialization old;
-	if (!DecodeSpecializationInt21(bytes, old)) return false;
+	if (!DecodeSpecializationInt21(bytes, old) && !DecodeSpecializationV13(bytes, old)) return false;
 	value = std::move(old);
 	if (legacy != nullptr) *legacy = true;
 	return true;
