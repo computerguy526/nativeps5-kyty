@@ -10,10 +10,19 @@ set -u
 range="${1:-origin/main..HEAD}"
 cd "$(git rev-parse --show-toplevel)" || exit 2
 rc=0
-bad=$(git log --format='%h %ae %ce' "$range" | awk '{for(i=2;i<=3;i++) if ($i !~ /@users\.noreply\.github\.com$/) {print $1, $i; break}}')
+# Upstream-authored picks keep their author's e-mail (the owner's choice): identity-allow.txt next to this script lists exact
+# "<full commit sha> <author e-mail>" pairs (# comments allowed). Only the AUTHOR of that exact commit is excused, never a
+# pattern, never another commit with the same e-mail, never the committer.
+allow="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/identity-allow.txt"; [ -f "$allow" ] || allow=/dev/null
+bad=$(git log --format='%H %ae %ce' "$range" | awk -v allow="$allow" '
+  BEGIN { while ((getline l < allow) > 0) { sub(/#.*/, "", l); if (split(l, a, " ") == 2) ok[a[1] " " a[2]] = 1 } }
+  { h = substr($1, 1, 10)
+    for (i = 2; i <= 3; i++) if ($i !~ /@users\.noreply\.github\.com$/) {
+      if (i == 2 && ($1 " " $i) in ok) continue
+      print h, $i; break } }')
 if [ -n "$bad" ]; then echo "identity: commit e-mail is not a GitHub noreply address:"; echo "$bad" | sed 's/^/  /'; rc=1; fi
 PLACE='(you|Library|your|user|username|name|me|example|someone|foo|bar|test|runner|nobody|shared|Shared|Public|Guest|<[^>]*>|\$[A-Za-z{]|\*|X+|x+|\.\.\.)'
-hits=$(git log -p --no-merges --format='commit %h' --no-color -U0 "$range" -- . ':!*check_identity.sh' ':!.github/workflows' |
+hits=$(git log -p --no-merges --format='commit %h' --no-color -U0 "$range" -- . ':!*check_identity.sh' ':!*identity-allow.txt' ':!.github/workflows' |
   awk '/^commit /{c=$2} /^\+\+\+ /{f=substr($0,7)} /^\+[^+]/{print c "\t" f "\t" substr($0,2)}' |
   grep -E "(/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/|[A-Za-z]:\\\\Users\\\\[A-Za-z0-9._-]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})" |
   grep -vE "/Users/${PLACE}(/|[^A-Za-z0-9._-])|/home/${PLACE}(/|[^A-Za-z0-9._-])|@users\.noreply\.github\.com|@(example\.(com|org|net)|localhost)|@[A-Za-z0-9.-]+\.(invalid|example)\b|git@github\.com|noreply@(anthropic\.com|github\.com)|[A-Za-z0-9._%+-]+@[0-9]" || true)
