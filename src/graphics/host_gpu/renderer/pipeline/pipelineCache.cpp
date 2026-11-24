@@ -5684,7 +5684,10 @@ struct PipelineCache::ProgramCache {
 		params.user_data_count = source.user_data_count;
 		params.hash            = source.hash;
 		ShaderRecompiler::IR::ResourceSpecialization specialization;
-		if (!ShaderRecompiler::IR::DecodeSpecialization(entry.specialization, specialization)) {
+		// Lists and journals recorded before ResourceSpecialization::Image::indirect_group hold image
+		// records four bytes shorter; the compat decoder reads them with "no indirect group" (what
+		// those builds meant), so the replay builds the permutation a draw would ask for.
+		if (!ShaderRecompiler::IR::DecodeSpecializationCompat(entry.specialization, specialization)) {
 			g_replay_skips.Note(ReplaySkipReason::Specialization, source.hash,
 			                    fmt::format("{} bytes", entry.specialization.size()));
 			return Outcome::Skipped;
