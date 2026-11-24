@@ -25,7 +25,8 @@ namespace Libs::Graphics::MipClamp {
 
 // floor(log2(max(w,h,d)))+1. `depth` is the volume depth (1 for 2D and array textures: array
 // layers do not add levels).
-[[nodiscard]] constexpr uint32_t MaxLevels(uint32_t width, uint32_t height, uint32_t depth) noexcept {
+[[nodiscard]] constexpr uint32_t MaxLevels(uint32_t width, uint32_t height,
+                                           uint32_t depth) noexcept {
 	const uint32_t m = std::max({width, height, depth, 1u});
 	return static_cast<uint32_t>(std::bit_width(m));
 }

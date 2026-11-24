@@ -1,7 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
-#include "graphics/host_gpu/renderer/image/mipClamp.h"
-
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -38,6 +36,7 @@
 #include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/mipClamp.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/inputProfileDraw.h"
@@ -971,13 +970,13 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	const auto type            = TextureType(descriptor);
 	const bool multisampled    = IsMultisampledTexture(type);
 	const auto max_mip         = resource.r128 ? last_level : descriptor.MaxMip();
-	auto physical_levels = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+	auto       physical_levels = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
 	// IMAGE_STORE addresses BASE_LEVEL; only IMAGE_STORE_MIP selects other view mips.
 	const bool single_storage_mip =
 	    storage && resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic;
 	auto view_levels = multisampled || single_storage_mip
-	                             ? 1u
-	                             : static_cast<uint32_t>(last_level - base_level) + 1u;
+	                       ? 1u
+	                       : static_cast<uint32_t>(last_level - base_level) + 1u;
 	auto levels =
 	    multisampled ? 1u : std::max(physical_levels, base_level + view_levels);
 	const auto tile       = descriptor.TileMode();
@@ -1015,7 +1014,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	                  address, width, height);
 	// KYTY_CLAMP_MIP_TO_EXTENT (mipClamp.h): a T# naming more levels than its extent holds would
 	// abort Metal at texture creation. Clamp before the image, views and mip_layout are derived.
-	uint32_t   clamp_base = base_level;
+	uint32_t       clamp_base        = base_level;
 	const uint32_t declared_physical = physical_levels; // the guest layout keeps the declared count
 	bool           mip_clamped       = false;
 	if (!multisampled && MipClamp::Enabled()) {
@@ -1025,10 +1024,11 @@ static TextureCache::ImageDesc BuildTextureDescription(
 		    base_level + view_levels > max_levels) {
 			static std::atomic_bool logged {false};
 			if (Common::LogOnce(logged)) {
-				std::printf("Warning: texture mip levels clamped to extent (KYTY_CLAMP_MIP_TO_EXTENT; "
-				            "logged once): %ux%u depth=%u physical=%u levels=%u view=%u+%u max=%u\n",
-				            width, height, depth, physical_levels, levels, base_level, view_levels,
-				            max_levels);
+				std::printf(
+				    "Warning: texture mip levels clamped to extent (KYTY_CLAMP_MIP_TO_EXTENT; "
+				    "logged once): %ux%u depth=%u physical=%u levels=%u view=%u+%u max=%u\n",
+				    width, height, depth, physical_levels, levels, base_level, view_levels,
+				    max_levels);
 			}
 			physical_levels = std::min(physical_levels, max_levels);
 			levels          = std::min(levels, max_levels);

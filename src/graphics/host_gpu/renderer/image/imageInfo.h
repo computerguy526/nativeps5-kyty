@@ -74,10 +74,10 @@ struct ImageInfo {
 	Prospero::TileMode           tile_mode       = Prospero::TileMode::kLinear;
 	bool                         bgra16          = false;
 	// nps5 mipclamp: the level count the guest T# declared when it is above what the host image can
-	// hold (resources.levels is clamped to the extent). The guest memory layout (slice stride, total
-	// size) follows the declared count; only the host image and its views use the clamped one.
-	// 0 = the declared count is resources.levels.
-	uint32_t                     layout_levels   = 0;
+	// hold (resources.levels is clamped to the extent). The guest memory layout (slice stride,
+	// total size) follows the declared count; only the host image and its views use the clamped
+	// one. 0 = the declared count is resources.levels.
+	uint32_t                     layout_levels = 0;
 	std::array<ImageMipInfo, 16> mip_layout {};
 
 	[[nodiscard]] ColorTransform GetColorTransform() const noexcept {
