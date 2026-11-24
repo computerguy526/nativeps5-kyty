@@ -4233,9 +4233,9 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 		}
 		// KYTY_DCC_KNOWN_FILL_ALIASED=1: a uniform recorded fill decides the clear even when images
 		// alias the metadata bytes (the CPU fallback would read back exactly this fill).
-		const auto fill_decision = DccKnownFill::Decide(
-		    static_cast<DccKnownFill::Mode>(m_dcc_known_fill_aliased), known.has_value(),
-		    known ? *known : 0u, unaliased);
+		const auto fill_decision =
+		    DccKnownFill::Decide(static_cast<DccKnownFill::Mode>(m_dcc_known_fill_aliased),
+		                         known.has_value(), known ? *known : 0u, unaliased);
 		const uint32_t known_byte    = fill_decision.known_byte;
 		const bool     uniform_known = fill_decision.uniform_known;
 		const bool     take_known    = fill_decision.take_known;

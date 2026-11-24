@@ -17,12 +17,12 @@
 #include "graphics/guest_gpu/command_processor/bundleCompact.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
 #include "graphics/guest_gpu/command_processor/cpLeadBound.h"
-#include "graphics/guest_gpu/command_processor/predicationDrain.h"
 #include "graphics/guest_gpu/command_processor/cpOps.h"
 #include "graphics/guest_gpu/command_processor/cpSequencer.h"
 #include "graphics/guest_gpu/command_processor/cpVerify.h"
 #include "graphics/guest_gpu/command_processor/naniteShadeStats.h"
 #include "graphics/guest_gpu/command_processor/pm4Dispatch.h"
+#include "graphics/guest_gpu/command_processor/predicationDrain.h"
 #include "graphics/guest_gpu/gpuTimestampScale.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
@@ -2667,9 +2667,9 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 					                                   sizeof(uint64_t)) != 0;
 					uint64_t probe = 0;
 					pred_label     = label;
-					pred_clean     = !label && LibKernel::Memory::TryReadGpuCleanBacking(
-					                               reinterpret_cast<uint64_t>(address), &probe,
-					                               sizeof(probe));
+					pred_clean =
+					    !label && LibKernel::Memory::TryReadGpuCleanBacking(
+					                  reinterpret_cast<uint64_t>(address), &probe, sizeof(probe));
 					smart_clean = !PredicationDrain::ShouldDrain(2, true, pred_label, pred_clean);
 					(smart_clean ? g_predication_counters.drain_skipped
 					             : g_predication_counters.drain_kept)
@@ -2681,7 +2681,8 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 					}
 				}
 			}
-			if (PredicationDrain::ShouldDrain(PredicationNoDrainMode(), wait_op != 0, pred_label, pred_clean)) {
+			if (PredicationDrain::ShouldDrain(PredicationNoDrainMode(), wait_op != 0, pred_label,
+			                                  pred_clean)) {
 				Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitPredication);
 				const auto                    wait_start = std::chrono::steady_clock::now();
 				BufferFlushAndWait();

@@ -74,7 +74,8 @@ void SetUnmappedBufferProbe(SrtMappedRange probe);
 // V#s specialized as null by that rule so far.
 [[nodiscard]] uint64_t UnmappedBufferNulls();
 
-// Unit-test entry of the KYTY_SAROS_HS_DYNIDX canonical-group layout (tests/ResourceMaterializationTests.cpp).
+// Unit-test entry of the KYTY_SAROS_HS_DYNIDX canonical-group layout
+// (tests/ResourceMaterializationTests.cpp).
 bool CanonicalizeIndirectGroupsForTest(const ResourcePlan& program, ResourceSnapshot& snapshot,
                                        ResourceSpecialization& specialization);
 

@@ -2,7 +2,8 @@
 #define EMULATOR_SRC_GRAPHICS_GUEST_GPU_COMMAND_PROCESSOR_PREDICATIONDRAIN_H_
 
 // KYTY_PREDICATION_NO_DRAIN decision (graphicsRun.cpp ExecPredication, memory predicate, op 0x03),
-// split out of the command processor so it can be unit tested alone (tests/PredicationDrainTests.cpp).
+// split out of the command processor so it can be unit tested alone
+// (tests/PredicationDrainTests.cpp).
 //
 //   mode 0 (default): a waiting SET_PREDICATION always flushes the GPU and waits before the read.
 //   mode 1 (upstream 840b9f575): never drains; the wait selector applies only to Z-pass queries.
