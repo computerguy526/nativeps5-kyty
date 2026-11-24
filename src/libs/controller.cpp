@@ -550,6 +550,7 @@ void NetPadRun(int listen_fd) {
 					setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
 					pending_size = 0;
 					have         = false;
+					NetPadApply(shown, NetPadState {});   // replaced sender: release whatever the old one held
 					std::printf("[netpad] sender connected\n");
 				}
 			}
