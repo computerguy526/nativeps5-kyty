@@ -791,18 +791,19 @@ bool Image::CopyViaBufferSupported(const Image& source) const noexcept {
 
 void Image::DescribeCopyMismatch(const Image& source, const char* what) const noexcept {
 	const auto describe = [](const char* role, const Image& image) {
-		std::fprintf(stderr,
-		             "[memtrk]   %s 0x%016" PRIx64 "+0x%" PRIx64 " %s guest_fmt=%u tile=%u pitch=%u"
-		             " %ux%ux%u type=%d mips=%u layers=%u samples=%u bytes_per_block=%u transfer_bytes=%u "
-		             "block=%u\n",
-		             role, image.info.data.address, image.info.data.size,
-		             vk::to_string(image.backing.format).c_str(),
-		             static_cast<uint32_t>(image.info.guest_format), static_cast<uint32_t>(image.info.tile_mode),
-		             image.info.pitch,
-		             image.backing.extent.width, image.backing.extent.height, image.backing.extent.depth,
-		             static_cast<int>(image.backing.image_type), image.backing.mip_levels,
-		             image.backing.layers, static_cast<uint32_t>(image.backing.samples),
-		             image.info.bytes_per_block, CopyTransferBytes(image), image.info.IsBlock() ? 4u : 1u);
+		std::fprintf(
+		    stderr,
+		    "[memtrk]   %s 0x%016" PRIx64 "+0x%" PRIx64 " %s guest_fmt=%u tile=%u pitch=%u"
+		    " %ux%ux%u type=%d mips=%u layers=%u samples=%u bytes_per_block=%u transfer_bytes=%u "
+		    "block=%u\n",
+		    role, image.info.data.address, image.info.data.size,
+		    vk::to_string(image.backing.format).c_str(),
+		    static_cast<uint32_t>(image.info.guest_format),
+		    static_cast<uint32_t>(image.info.tile_mode), image.info.pitch,
+		    image.backing.extent.width, image.backing.extent.height, image.backing.extent.depth,
+		    static_cast<int>(image.backing.image_type), image.backing.mip_levels,
+		    image.backing.layers, static_cast<uint32_t>(image.backing.samples),
+		    image.info.bytes_per_block, CopyTransferBytes(image), image.info.IsBlock() ? 4u : 1u);
 	};
 	std::fprintf(stderr, "[memtrk] %s: image copy between incompatible texel sizes\n", what);
 	describe("source", source);

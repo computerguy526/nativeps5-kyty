@@ -1,16 +1,15 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
-
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterRayTracing.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
 
-#include <cstdio>
-#include <cstring>
-#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <type_traits>
@@ -954,18 +953,20 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 	EmitLabel(state, dispatcher.select_label);
 	if (DispatcherTreeEnabled() && state.program.blocks.size() > 2) {
 		// nps5 memtrk: KYTY_DISPATCHER_TREE=1 (opt-in; codegen fingerprint text when on). The block
-		// switch as a binary tree of nested selections on pc. KosmicKrisp lowers an OpSwitch to a flat
-		// chain of `if (pc == k)` tests that the Metal compiler cannot see as exclusive; SAROS's CS
-		// e1b5f15e (192 blocks) replayed standalone at 130.7 ms as the chain, 16.9 ms as a tree and
-		// 10.1 ms as an MSL switch (mslh, M4 Pro, identical outputs). pc always holds a block id here
-		// (UINT32_MAX left the loop above), so the tree needs no default leg.
+		// switch as a binary tree of nested selections on pc. KosmicKrisp lowers an OpSwitch to a
+		// flat chain of `if (pc == k)` tests that the Metal compiler cannot see as exclusive;
+		// SAROS's CS e1b5f15e (192 blocks) replayed standalone at 130.7 ms as the chain, 16.9 ms as
+		// a tree and 10.1 ms as an MSL switch (mslh, M4 Pro, identical outputs). pc always holds a
+		// block id here (UINT32_MAX left the loop above), so the tree needs no default leg.
 		std::vector<std::pair<uint32_t, size_t>> cases;
 		for (size_t index = 1; index < state.program.blocks.size(); index++) {
 			cases.emplace_back(state.program.block_info[index].id, index);
 		}
 		std::sort(cases.begin(), cases.end());
-		std::fprintf(stderr, "[memtrk] KYTY_DISPATCHER_TREE: dispatcher of %zu blocks emitted as a selection tree\n",
-		             cases.size());
+		std::fprintf(
+		    stderr,
+		    "[memtrk] KYTY_DISPATCHER_TREE: dispatcher of %zu blocks emitted as a selection tree\n",
+		    cases.size());
 		struct Result {
 			uint32_t label;
 			uint32_t value;
@@ -973,28 +974,30 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 		// Emits the subtree for cases [lo, hi) starting at `header` (already allocated, not yet
 		// emitted, except for the root whose label is current); returns the block and next-pc value
 		// that reach the caller's merge. `merge` is where this subtree ends.
-		std::function<Result(size_t, size_t, uint32_t, bool)> node = [&](size_t lo, size_t hi, uint32_t merge,
-		                                                               bool header_emitted) -> Result {
+		std::function<Result(size_t, size_t, uint32_t, bool)> node =
+		    [&](size_t lo, size_t hi, uint32_t merge, bool header_emitted) -> Result {
 			if (hi - lo == 1) {
 				const auto index = cases[lo].second;
 				EmitBlock(ctx, state.program.blocks[index],
 				          [&](ValueEmitContext& lane, const IR::Inst& inst) {
 					          EmitDispatcherInstruction(lane, dispatcher, inst);
 				          });
-				const auto selected = EmitDispatcherNextPc(ctx, dispatcher, state.program.blocks[index],
-				                                           state.program.block_info[index]);
+				const auto selected = EmitDispatcherNextPc(
+				    ctx, dispatcher, state.program.blocks[index], state.program.block_info[index]);
 				const Result result {state.current_label, selected};
 				state.builder.AddFunction(spv::OpBranch, merge);
 				return result;
 			}
 			(void)header_emitted;
-			const auto mid      = (lo + hi) / 2;
-			const auto own      = state.builder.AllocateId();
-			const auto less     = state.builder.AllocateId();
-			const auto left_hdr = hi - lo == 2 || mid - lo == 1 ? ctx.Label(state.program.blocks[cases[lo].second])
-			                                                     : state.builder.AllocateId();
-			const auto right_hdr = hi - mid == 1 ? ctx.Label(state.program.blocks[cases[mid].second])
-			                                     : state.builder.AllocateId();
+			const auto mid       = (lo + hi) / 2;
+			const auto own       = state.builder.AllocateId();
+			const auto less      = state.builder.AllocateId();
+			const auto left_hdr  = hi - lo == 2 || mid - lo == 1
+			                           ? ctx.Label(state.program.blocks[cases[lo].second])
+			                           : state.builder.AllocateId();
+			const auto right_hdr = hi - mid == 1
+			                           ? ctx.Label(state.program.blocks[cases[mid].second])
+			                           : state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpULessThan, TypeBool(state), less, pc,
 			                          ConstantU32(state, cases[mid].first));
 			state.builder.AddFunction(spv::OpSelectionMerge, own, spv::SelectionControlMaskNone);
@@ -1009,8 +1012,8 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 			const auto right = node(mid, hi, own, true);
 			EmitLabel(state, own);
 			const auto value = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpPhi, TypeU32(state), value, left.value, left.label, right.value,
-			                          right.label);
+			state.builder.AddFunction(spv::OpPhi, TypeU32(state), value, left.value, left.label,
+			                          right.value, right.label);
 			const Result result {own, value};
 			state.builder.AddFunction(spv::OpBranch, merge);
 			return result;

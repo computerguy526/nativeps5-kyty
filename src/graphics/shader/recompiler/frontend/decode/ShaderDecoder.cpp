@@ -1,4 +1,3 @@
-#include <cstdlib>
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include "common/assert.h"
@@ -10,16 +9,17 @@
 
 #include <algorithm>
 #include <bit>
+#include <cstdlib>
 #include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
-// KYTY_SKIP_UNDECODABLE=1 (bring-up): a scalar operand the decoder does not know (e.g. SRC_SHARED_BASE,
-// which needs flat-aperture support) marks the program undecodable instead of ending the session;
-// TranslateProgram then skips its draws and dispatches.
+// KYTY_SKIP_UNDECODABLE=1 (bring-up): a scalar operand the decoder does not know (e.g.
+// SRC_SHARED_BASE, which needs flat-aperture support) marks the program undecodable instead of
+// ending the session; TranslateProgram then skips its draws and dispatches.
 static thread_local uint32_t t_undecodable_pc   = UINT32_MAX;
 static thread_local uint32_t t_undecodable_code = 0;
-bool SkipUndecodable() {
+bool                         SkipUndecodable() {
 	static const bool on = [] {
 		const char* v = std::getenv("KYTY_SKIP_UNDECODABLE");
 		return v != nullptr && v[0] == '1';
@@ -34,9 +34,9 @@ void NoteUndecodable(uint32_t pc, uint32_t code) {
 }
 bool TakeUndecodable(uint32_t& pc, uint32_t& code) {
 	if (t_undecodable_pc == UINT32_MAX) return false;
-	pc                 = t_undecodable_pc;
-	code               = t_undecodable_code;
-	t_undecodable_pc   = UINT32_MAX;
+	pc               = t_undecodable_pc;
+	code             = t_undecodable_code;
+	t_undecodable_pc = UINT32_MAX;
 	return true;
 }
 namespace {

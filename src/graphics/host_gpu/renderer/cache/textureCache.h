@@ -236,7 +236,7 @@ public:
 	[[nodiscard]] bool ExpandMeta(uint64_t address);
 	// KYTY_META_EXPORT_NOT_CLEAR: a storage binding of `image` stops overlapping HTILE being clear.
 	// Caller holds m_lock.
-	void ExpandMetaForStorageWriteLocked(const Image& image);
+	void               ExpandMetaForStorageWriteLocked(const Image& image);
 	[[nodiscard]] bool TouchMeta(uint64_t address, uint32_t slice, bool is_clear);
 
 	void UnmapMemory(uint64_t address, uint64_t size);

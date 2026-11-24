@@ -22,7 +22,6 @@
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/hostMemory.h"
-#include "graphics/host_gpu/renderer/inputProfileDraw.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
@@ -39,6 +38,7 @@
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tilerTrace.h"
+#include "graphics/host_gpu/renderer/inputProfileDraw.h"
 #include "graphics/host_gpu/renderer/lodStats.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -53,23 +53,23 @@
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
-#include <filesystem>
 #include <algorithm>
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h> // nps5 decalfix: KYTY_GBCOPY_REMAP=auto reads the recomp patch choices
+#include <filesystem>
 #include <fmt/format.h>
-#include <cinttypes>
 #include <limits>
 #include <map>
-#include <tuple>
 #include <mutex>
 #include <span>
 #include <string>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 #include <xxhash.h>
@@ -2725,10 +2725,10 @@ void NoteBdaUser(const char* kind, uint32_t stage, uint64_t hash, bool bda_write
 			       std::tie(o.kind, o.stage, o.hash, o.width, o.height, o.writes);
 		}
 	};
-	static std::mutex                 mutex;
-	static std::map<Key, uint64_t>    counts;
+	static std::mutex                            mutex;
+	static std::map<Key, uint64_t>               counts;
 	static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
-	std::scoped_lock                  lock(mutex);
+	std::scoped_lock                             lock(mutex);
 	++counts[Key {kind, stage, hash, width, height, bda_writes}];
 	const auto now = std::chrono::steady_clock::now();
 	if (now - last < std::chrono::seconds(10)) {
@@ -2737,9 +2737,10 @@ void NoteBdaUser(const char* kind, uint32_t stage, uint64_t hash, bool bda_write
 	const double secs = std::chrono::duration<double>(now - last).count();
 	last              = now;
 	for (const auto& [key, count]: counts) {
-		std::printf("BdaUser: %s stage=%u hash=0x%016" PRIx64 " pass=%ux%u bda_writes=%d count_per_s=%.1f\n",
-		            key.kind.c_str(), key.stage, key.hash, key.width, key.height, key.writes ? 1 : 0,
-		            static_cast<double>(count) / secs);
+		std::printf("BdaUser: %s stage=%u hash=0x%016" PRIx64
+		            " pass=%ux%u bda_writes=%d count_per_s=%.1f\n",
+		            key.kind.c_str(), key.stage, key.hash, key.width, key.height,
+		            key.writes ? 1 : 0, static_cast<double>(count) / secs);
 	}
 	counts.clear();
 }
@@ -2760,7 +2761,8 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 			if (info.uses_dma) {
 				const auto extent = colors.empty() ? vk::Extent2D {} : colors[0].Extent();
 				NoteBdaUser("draw", static_cast<uint32_t>(stage->runtime->program->stage),
-				            stage->runtime->program->shader_hash, info.bda_writes, extent.width, extent.height);
+				            stage->runtime->program->shader_hash, info.bda_writes, extent.width,
+				            extent.height);
 			}
 		}
 		const BufferLookupStats::PartScope stats_scope(BufferLookupStats::Part::PrepareBda);
@@ -3042,12 +3044,13 @@ private:
 
 } // namespace
 
-// nps5 memtrk: KYTY_CS_CAPTURE=<hex hash>[,<hex hash>...] with KYTY_CS_CAPTURE_AFTER_S=<s> (default 180)
-// and KYTY_CS_CAPTURE_DIR=<dir>: the first dispatch of each listed compute program after that many
-// seconds is captured once for a standalone replay. Before the dispatch (the inputs), the descriptor
-// writes' buffer ranges (each up to 64 MiB) are copied to host buffers; when the submission completes,
-// <dir>/<hash>/ receives meta.txt (bindings: binding, type, array index, size, file; image formats and
-// extents; push data in hex) and buf_<binding>_<index>.bin. Diagnostic only.
+// nps5 memtrk: KYTY_CS_CAPTURE=<hex hash>[,<hex hash>...] with KYTY_CS_CAPTURE_AFTER_S=<s> (default
+// 180) and KYTY_CS_CAPTURE_DIR=<dir>: the first dispatch of each listed compute program after that
+// many seconds is captured once for a standalone replay. Before the dispatch (the inputs), the
+// descriptor writes' buffer ranges (each up to 64 MiB) are copied to host buffers; when the
+// submission completes, <dir>/<hash>/ receives meta.txt (bindings: binding, type, array index,
+// size, file; image formats and extents; push data in hex) and buf_<binding>_<index>.bin.
+// Diagnostic only.
 void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderInfo& program,
                                     const PreparedBindings& prepared, const uint32_t* push_dwords,
                                     size_t push_bytes) {
@@ -3064,7 +3067,7 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 	if (list.empty() || std::find(list.begin(), list.end(), program.shader_hash) == list.end()) {
 		return;
 	}
-	static const auto start = std::chrono::steady_clock::now();
+	static const auto   start = std::chrono::steady_clock::now();
 	static const double after = [] {
 		const char* v = std::getenv("KYTY_CS_CAPTURE_AFTER_S");
 		return v != nullptr ? std::atof(v) : 180.0;
@@ -3080,10 +3083,11 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 			return;
 		}
 	}
-	const char* dir_env = std::getenv("KYTY_CS_CAPTURE_DIR");
-	const std::string dir = fmt::format("{}/{:016x}", dir_env != nullptr ? dir_env : "/tmp/kyty_cs_capture",
-	                                    program.shader_hash);
-	std::string meta = fmt::format("hash {:016x}\npush_bytes {}\npush", program.shader_hash, push_bytes);
+	const char*       dir_env = std::getenv("KYTY_CS_CAPTURE_DIR");
+	const std::string dir     = fmt::format(
+	    "{}/{:016x}", dir_env != nullptr ? dir_env : "/tmp/kyty_cs_capture", program.shader_hash);
+	std::string meta =
+	    fmt::format("hash {:016x}\npush_bytes {}\npush", program.shader_hash, push_bytes);
 	for (size_t i = 0; i < push_bytes / 4; i++) {
 		meta += fmt::format(" {:08x}", push_dwords[i]);
 	}
@@ -3099,8 +3103,8 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 	uint64_t                    total = 0;
 	for (const auto& write: m_descriptor_writes) {
 		const auto type = write.descriptorType;
-		meta += fmt::format("write binding {} type {} count {}\n", write.dstBinding, vk::to_string(type),
-		                    write.descriptorCount);
+		meta += fmt::format("write binding {} type {} count {}\n", write.dstBinding,
+		                    vk::to_string(type), write.descriptorCount);
 		if (write.pBufferInfo == nullptr) {
 			continue;
 		}
@@ -3127,35 +3131,40 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 			continue;
 		}
 		const auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
-		meta += fmt::format("image {} format {} extent {}x{}x{} levels {} layers {} storage {}\n", i,
-		                    vk::to_string(image.backing.format), image.backing.extent.width,
-		                    image.backing.extent.height, image.backing.extent.depth, image.backing.mip_levels,
-		                    image.backing.layers,
+		meta += fmt::format("image {} format {} extent {}x{}x{} levels {} layers {} storage {}\n",
+		                    i, vk::to_string(image.backing.format), image.backing.extent.width,
+		                    image.backing.extent.height, image.backing.extent.depth,
+		                    image.backing.mip_levels, image.backing.layers,
 		                    binding.desc.type == TextureCache::BindingType::Storage ? 1 : 0);
 	}
 	std::shared_ptr<Buffer> host;
 	if (total != 0) {
 		host = std::make_shared<Buffer>(m_context.GetGraphics(), m_context.GetCommandScheduler(),
-		                                MemoryUsage::Download, 0, vk::BufferUsageFlagBits::eTransferDst, total);
+		                                MemoryUsage::Download, 0,
+		                                vk::BufferUsageFlagBits::eTransferDst, total);
 		auto              native = m_context.GetCommandScheduler().Current().HelperSink();
 		vk::MemoryBarrier before {};
-		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite |
-		                       vk::AccessFlagBits::eHostWrite;
+		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite |
+		                       vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eHostWrite;
 		before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
-		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, 1,
-		                       &before, 0, nullptr, 0, nullptr);
+		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                       vk::PipelineStageFlagBits::eTransfer, {}, 1, &before, 0, nullptr, 0,
+		                       nullptr);
 		for (size_t i = 0; i < regions.size(); i++) {
 			native.copyBuffer(sources[i], host->Handle(), 1, &regions[i]);
 		}
 		vk::MemoryBarrier after {};
 		after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
 		after.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
-		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, 1,
-		                       &after, 0, nullptr, 0, nullptr);
+		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                       vk::PipelineStageFlagBits::eAllCommands, {}, 1, &after, 0, nullptr,
+		                       0, nullptr);
 	}
-	std::fprintf(stderr, "[memtrk] KYTY_CS_CAPTURE: CS %016llx captured (%zu buffer ranges, %llu bytes) -> %s\n",
-	             static_cast<unsigned long long>(program.shader_hash), copies.size(),
-	             static_cast<unsigned long long>(total), dir.c_str());
+	std::fprintf(
+	    stderr,
+	    "[memtrk] KYTY_CS_CAPTURE: CS %016llx captured (%zu buffer ranges, %llu bytes) -> %s\n",
+	    static_cast<unsigned long long>(program.shader_hash), copies.size(),
+	    static_cast<unsigned long long>(total), dir.c_str());
 	m_context.GetCommandScheduler().DeferOperation([host, copies, meta, dir]() mutable {
 		std::filesystem::create_directories(dir);
 		if (std::FILE* f = std::fopen((dir + "/meta.txt").c_str(), "wb")) {

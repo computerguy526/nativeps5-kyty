@@ -123,11 +123,12 @@ struct CodegenOptions {
 	// exchange the halves through workgroup memory; a branch whose region holds no exchange or
 	// barrier is decided by each half on its own lanes. KYTY_LANE_LOCAL programs stay as they are.
 	bool wave64_warps = false;
-	// KYTY_WAVE64_WARPS_DENY=<file> / KYTY_WAVE64_WARPS_ALLOW=<file> (uetrans; hex guest shader hashes, one per
-	// line, '#' comments): per-shader gate of KYTY_WAVE64_WARPS for bisecting it on UE5 titles (SAROS/Cronos:
-	// ~80 % of their wave64 compute programs are one-wave workgroups). DENY: listed programs keep two lanes per
-	// invocation. ALLOW: ONLY listed programs split (ALLOW and not DENY). No effect without KYTY_WAVE64_WARPS=1.
-	// Sorted; part of the codegen fingerprint only when wave64_warps is on and a list is set.
+	// KYTY_WAVE64_WARPS_DENY=<file> / KYTY_WAVE64_WARPS_ALLOW=<file> (uetrans; hex guest shader
+	// hashes, one per line, '#' comments): per-shader gate of KYTY_WAVE64_WARPS for bisecting it on
+	// UE5 titles (SAROS/Cronos: ~80 % of their wave64 compute programs are one-wave workgroups).
+	// DENY: listed programs keep two lanes per invocation. ALLOW: ONLY listed programs split (ALLOW
+	// and not DENY). No effect without KYTY_WAVE64_WARPS=1. Sorted; part of the codegen fingerprint
+	// only when wave64_warps is on and a list is set.
 	std::vector<uint64_t> wave64_warps_deny;
 	std::vector<uint64_t> wave64_warps_allow;
 	bool                  wave64_warps_allow_set = false;
@@ -494,7 +495,7 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 // lanes or waves have left can stall the pollers (UE5 persistent culling; nxnative's PRAGMATA
 // MEMBAR fix 6dad3406). Part of the codegen fingerprint only when on. Not a CodegenOptions field,
 // so the options layout is unchanged.
-[[nodiscard]] bool StoreCompletionFence();
+[[nodiscard]] bool                  StoreCompletionFence();
 [[nodiscard]] const CodegenOptions& GetCodegenOptions();
 // KYTY_LOD_STATS_PLAIN_VARIANT's value means "on" (the renderer's default).
 [[nodiscard]] bool LodStatsPlainVariantOn(const char* value);

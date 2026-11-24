@@ -42,8 +42,8 @@ struct OutputBinding : IR::StageOutput {
 	uint32_t mesh_data_variable = 0;
 	// sarosnanite (KYTY_SAROS_NANITE_RAW): a mesh Parameter's per-vertex copy in workgroup memory
 	// and its per-primitive AND output.
-	uint32_t saros_raw_shared    = 0;
-	uint32_t saros_raw_primitive = 0;
+	uint32_t                saros_raw_shared    = 0;
+	uint32_t                saros_raw_primitive = 0;
 	std::array<uint32_t, 3> saros_raw_vertices {};
 };
 

@@ -109,11 +109,13 @@ std::vector<uint8_t> CodegenFingerprint() {
 	b.U8(options.volatile_loads ? 1u : 0u);
 	b.U8(static_cast<uint8_t>(options.wave32_clusters));
 	b.U8(static_cast<uint8_t>(options.lds_waitcnt_barrier));
-	if (const char* tree = std::getenv("KYTY_DISPATCHER_TREE"); tree != nullptr && std::strcmp(tree, "1") == 0) {
+	if (const char* tree = std::getenv("KYTY_DISPATCHER_TREE");
+	    tree != nullptr && std::strcmp(tree, "1") == 0) {
 		b.Text("dispatcher_tree"); // nps5 memtrk: only when on
 	}
 	if (StoreCompletionFence()) {
-		b.Text("store_completion_fence/2"); // nps5 memtrk: only when on (off keeps the fingerprint); /2: split waves keep the barrier
+		b.Text("store_completion_fence/2"); // nps5 memtrk: only when on (off keeps the
+		                                    // fingerprint); /2: split waves keep the barrier
 	}
 	b.U8(static_cast<uint8_t>(options.lds_device_buffer));
 	b.U32(options.lds_limit_override);

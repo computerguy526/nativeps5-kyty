@@ -36,14 +36,15 @@ inline void NoteVertex(BufferCache& cache, const ShaderVertexInputInfo& info) no
 	}
 }
 
-// A direct mesh draw (geom2/mval): kind 'M' = the draw contract (index count, instances, index size,
-// workgroups, restart segments, threads, LDS dwords, vertices|primitives per group; up to 4 distinct)
-// with the index buffer bytes as data; plus the draw's vertex buffers ('V').
+// A direct mesh draw (geom2/mval): kind 'M' = the draw contract (index count, instances, index
+// size, workgroups, restart segments, threads, LDS dwords, vertices|primitives per group; up to 4
+// distinct) with the index buffer bytes as data; plus the draw's vertex buffers ('V').
 inline void NoteMesh(BufferCache& cache, const ShaderVertexInputInfo& info, uint32_t index_count,
-                     uint32_t instances, uint64_t index_address, uint32_t index_size, uint32_t groups,
-                     uint32_t segments) noexcept {
+                     uint32_t instances, uint64_t index_address, uint32_t index_size,
+                     uint32_t groups, uint32_t segments) noexcept {
 	if (InputProfile::On()) [[unlikely]] {
-		NoteMeshImpl(cache, info, index_count, instances, index_address, index_size, groups, segments);
+		NoteMeshImpl(cache, info, index_count, instances, index_address, index_size, groups,
+		             segments);
 		NoteVertexImpl(cache, info);
 	}
 }

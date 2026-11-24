@@ -190,10 +190,10 @@ Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
 	Value                           invariant;
 	std::vector<Value>              pending {value};
 	std::unordered_set<const Inst*> visited;
-	// saroslights (KYTY_SAROS_HANDSHADERS, listed hashes only): a register the shader initialises on
-	// one branch only (SAROS 905b: the constant sampler s36..s39 is built in the first light loop and
-	// read by the second) reaches the other branch's loop phi as the entry's zero default. With the
-	// switch an immediate-zero incoming is ignored when the remaining incomings agree.
+	// saroslights (KYTY_SAROS_HANDSHADERS, listed hashes only): a register the shader initialises
+	// on one branch only (SAROS 905b: the constant sampler s36..s39 is built in the first light
+	// loop and read by the second) reaches the other branch's loop phi as the entry's zero default.
+	// With the switch an immediate-zero incoming is ignored when the remaining incomings agree.
 	const bool ignore_entry_zero = SarosHandShader(program.shader_hash);
 	bool       saw_zero          = false;
 	while (!pending.empty()) {

@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 
 #include "common/assert.h"
@@ -33,6 +32,7 @@
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "graphics/host_gpu/renderer/pipeline/launchPhase.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCompileQueue.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h"
@@ -47,12 +47,12 @@
 #include "graphics/host_gpu/renderer/pipeline/stagePrepWorker.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
-#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/recompiler/CodegenFingerprint.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/shaderCompiler.h"
 #include "graphics/shader/shaderVertexAliases.h"
 #include "kernel/fileSystem.h"
@@ -601,14 +601,19 @@ struct ProgramCompileTimes {
 // sarosperf: KYTY_SPEC_DIFF_LOG=1 (default off): for a new specialization of an already compiled
 // source, one stderr line with how it differs from the closest existing one (fields counted over
 // the image/buffer slots), to see which descriptor property drives permutation churn.
-std::string SpecDiffLine(uint64_t hash, const ShaderRecompiler::IR::ResourceSpecialization& now,
-                         const std::vector<const ShaderRecompiler::IR::ResourceSpecialization*>& old) {
+std::string
+SpecDiffLine(uint64_t hash, const ShaderRecompiler::IR::ResourceSpecialization& now,
+             const std::vector<const ShaderRecompiler::IR::ResourceSpecialization*>& old) {
 	using Spec = ShaderRecompiler::IR::ResourceSpecialization;
-	struct Diff { size_t ind_root = 0, ind_off = 0, ind_iter = 0; size_t total = 0, cls = 0, dim = 0, mip = 0, fmt = 0, swz = 0, ind = 0, cube = 0, fmask = 0, bufs = 0, extra = 0; };
-	Diff   best;
-	bool   have = false;
+	struct Diff {
+		size_t ind_root = 0, ind_off = 0, ind_iter = 0;
+		size_t total = 0, cls = 0, dim = 0, mip = 0, fmt = 0, swz = 0, ind = 0, cube = 0, fmask = 0,
+		       bufs = 0, extra = 0;
+	};
+	Diff best;
+	bool have = false;
 	for (const auto* prev: old) {
-		Diff d;
+		Diff       d;
 		const auto n = std::min(now.images.size(), prev->images.size());
 		d.extra      = std::max(now.images.size(), prev->images.size()) - n;
 		for (size_t i = 0; i < n; i++) {
@@ -620,8 +625,10 @@ std::string SpecDiffLine(uint64_t hash, const ShaderRecompiler::IR::ResourceSpec
 			d.mip += a.mip_count != b.mip_count;
 			d.fmt += a.conversion_format != b.conversion_format;
 			d.swz += a.shader_swizzle != b.shader_swizzle;
-			d.ind += a.indirect_root != b.indirect_root || a.indirect_mapping_offset != b.indirect_mapping_offset ||
-			         a.indirect_search_iterations != b.indirect_search_iterations || a.indirect_group != b.indirect_group;
+			d.ind += a.indirect_root != b.indirect_root ||
+			         a.indirect_mapping_offset != b.indirect_mapping_offset ||
+			         a.indirect_search_iterations != b.indirect_search_iterations ||
+			         a.indirect_group != b.indirect_group;
 			d.ind_root += a.indirect_root != b.indirect_root;
 			d.ind_off += a.indirect_mapping_offset != b.indirect_mapping_offset;
 			d.ind_iter += a.indirect_search_iterations != b.indirect_search_iterations;
@@ -629,13 +636,18 @@ std::string SpecDiffLine(uint64_t hash, const ShaderRecompiler::IR::ResourceSpec
 			d.fmask += a.fmask != b.fmask;
 		}
 		d.bufs = now.buffers.size() != prev->buffers.size();
-		for (size_t i = 0; i < std::min(now.buffers.size(), prev->buffers.size()); i++) d.bufs += !(now.buffers[i] == prev->buffers[i]);
-		d.total = d.cls + d.dim + d.mip + d.fmt + d.swz + d.ind + d.cube + d.fmask + d.bufs + d.extra;
+		for (size_t i = 0; i < std::min(now.buffers.size(), prev->buffers.size()); i++)
+			d.bufs += !(now.buffers[i] == prev->buffers[i]);
+		d.total =
+		    d.cls + d.dim + d.mip + d.fmt + d.swz + d.ind + d.cube + d.fmask + d.bufs + d.extra;
 		if (!have || d.total < best.total) best = d, have = true;
 	}
-	return fmt::format("Kyty spec diff: {:016x} images {} buffers {} vs closest of {}: total {} class {} dim {} mip {} fmt {} swz {} indirect {} (root {} offset {} iterations {}) cube {} fmask {} buf {} count {}\n",
-	                   hash, now.images.size(), now.buffers.size(), old.size(), best.total, best.cls, best.dim, best.mip,
-	                   best.fmt, best.swz, best.ind, best.ind_root, best.ind_off, best.ind_iter, best.cube, best.fmask, best.bufs, best.extra);
+	return fmt::format("Kyty spec diff: {:016x} images {} buffers {} vs closest of {}: total {} "
+	                   "class {} dim {} mip {} fmt {} swz {} indirect {} (root {} offset {} "
+	                   "iterations {}) cube {} fmask {} buf {} count {}\n",
+	                   hash, now.images.size(), now.buffers.size(), old.size(), best.total,
+	                   best.cls, best.dim, best.mip, best.fmt, best.swz, best.ind, best.ind_root,
+	                   best.ind_off, best.ind_iter, best.cube, best.fmask, best.bufs, best.extra);
 }
 
 // Permutation churn report (stderr): once per second, the shaders that compiled new
@@ -2293,7 +2305,8 @@ struct PipelineCache::ProgramCache {
 			// instead of ending the emulator. The reason was already logged by the materializer.
 			static std::atomic_uint64_t unmaterializable {0};
 			const auto count = unmaterializable.fetch_add(1, std::memory_order_relaxed) + 1u;
-			// nps5 nanite: KYTY_INDIRECT_LOG=1 names each shader whose stage cannot materialize (once).
+			// nps5 nanite: KYTY_INDIRECT_LOG=1 names each shader whose stage cannot materialize
+			// (once).
 			static const bool name_log = [] {
 				const auto* value = std::getenv("KYTY_INDIRECT_LOG");
 				return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
@@ -2301,16 +2314,21 @@ struct PipelineCache::ProgramCache {
 			if (name_log) {
 				static std::mutex                   name_mutex;
 				static std::unordered_set<uint64_t> named;
-				const uint64_t key = source.resource_plan.shader_hash ^ static_cast<uint64_t>(source.resource_plan.stage);
+				const uint64_t key   = source.resource_plan.shader_hash ^
+				                       static_cast<uint64_t>(source.resource_plan.stage);
 				bool           first = false;
 				{
 					std::scoped_lock name_lock(name_mutex);
 					first = named.insert(key).second;
 				}
 				if (first) {
-					std::fprintf(stderr, "[nanite] unmaterializable %s shader 0x%016" PRIx64 " (reads %u, native-dcc %d)\n",
-					             ProgramStageName(source.resource_plan.stage), source.resource_plan.shader_hash,
-					             static_cast<unsigned>(read_attempt.count), NativeDccEnabled() ? 1 : 0);
+					std::fprintf(stderr,
+					             "[nanite] unmaterializable %s shader 0x%016" PRIx64
+					             " (reads %u, native-dcc %d)\n",
+					             ProgramStageName(source.resource_plan.stage),
+					             source.resource_plan.shader_hash,
+					             static_cast<unsigned>(read_attempt.count),
+					             NativeDccEnabled() ? 1 : 0);
 				}
 			}
 			if (count <= 4u || (count & 2047u) == 0u) {
@@ -2487,9 +2505,10 @@ struct PipelineCache::ProgramCache {
 	// Shader logging and the debug dumps describe a translation while it runs; they bypass the
 	// persistent cache.
 	// sarosperf: the SAROS hand-shader / Nanite-raw switches change a translation, so they used to
-	// bypass this cache. They are cacheable when the switch state is part of the key: SarosCacheVariant
-	// is 0 (key bytes unchanged) unless one of them applies to the program. KYTY_SAROS_PROGRAM_CACHE=1
-	// turns it on (default off = the old bypass; only reachable with the SAROS switches set).
+	// bypass this cache. They are cacheable when the switch state is part of the key:
+	// SarosCacheVariant is 0 (key bytes unchanged) unless one of them applies to the program.
+	// KYTY_SAROS_PROGRAM_CACHE=1 turns it on (default off = the old bypass; only reachable with the
+	// SAROS switches set).
 	static bool SarosCacheBypass() {
 		static const bool bypass = [] {
 			const auto* v = std::getenv("KYTY_SAROS_PROGRAM_CACHE");
@@ -2503,7 +2522,7 @@ struct PipelineCache::ProgramCache {
 		constexpr uint64_t kSarosVariantVersion = 1;
 		uint64_t           variant              = 0;
 		const auto         mix                  = [&variant](uint64_t v) {
-            variant = (variant ^ v) * 0x100000001b3ull + 0x9e3779b97f4a7c15ull;
+			variant = (variant ^ v) * 0x100000001b3ull + 0x9e3779b97f4a7c15ull;
 		};
 		if (ShaderRecompiler::SarosHandShader(options.shader_hash)) {
 			static const auto* keystride = std::getenv("KYTY_SAROS_KEYSTRIDE");
@@ -2512,8 +2531,10 @@ struct PipelineCache::ProgramCache {
 			mix(keystride != nullptr && std::strcmp(keystride, "0") == 0 ? 0 : 1);
 			// sarosperf2: only when on, so no existing key changes. MAP_PAD changes the layout too.
 			static const auto* map_pad = std::getenv("KYTY_SAROS_MAP_PAD");
-			if (ShaderRecompiler::SarosHsDynIdx()) mix(6);
-			else if (map_pad != nullptr && std::strcmp(map_pad, "1") == 0) mix(7);
+			if (ShaderRecompiler::SarosHsDynIdx())
+				mix(6);
+			else if (map_pad != nullptr && std::strcmp(map_pad, "1") == 0)
+				mix(7);
 		}
 		if (ShaderRecompiler::SarosSampleLod0(options.shader_hash)) {
 			mix(4);
@@ -2585,16 +2606,16 @@ struct PipelineCache::ProgramCache {
 		copy(params.back_code, back_code_words);
 		ProgramDiskCache::BuildSourceKey(
 		    {.stage                   = static_cast<uint32_t>(key.stage),
-		     .hash                    = key.hash,
-		     .user_data_count         = key.user_data_count,
-		     .code_size               = key.code_size,
-		     .static_state            = key.static_state,
-		     .wave_size               = options.wave_size,
-		     .user_data_base          = options.user_data_base,
-		     .plain_mip_stats_variant = options.plain_mip_stats_variant,
-		     .variant                 = SarosCacheVariant(options),
-		     .code                    = code_words,
-		     .back_code               = back_code_words},
+			 .hash                    = key.hash,
+			 .user_data_count         = key.user_data_count,
+			 .code_size               = key.code_size,
+			 .static_state            = key.static_state,
+			 .wave_size               = options.wave_size,
+			 .user_data_base          = options.user_data_base,
+			 .plain_mip_stats_variant = options.plain_mip_stats_variant,
+			 .variant                 = SarosCacheVariant(options),
+			 .code                    = code_words,
+			 .back_code               = back_code_words},
 		    disk_key);
 	}
 
@@ -4513,7 +4534,7 @@ struct PipelineCache::FastFirstState {
 		const auto                  outer = Common::CrashContext::Current();
 		Common::CrashContext::Scope note("compute pipeline unoptimized build (CS)", outer.a);
 		const auto begin  = CompileClockNs();
-		const KkTagScope kk_tag_scope(fast_info.stage.module);
+		const KkTagScope            kk_tag_scope(fast_info.stage.module);
 		const auto result = device.createComputePipelines(nullptr, 1, &fast_info, nullptr, pipeline);
 		if (result != vk::Result::eSuccess || *pipeline == nullptr) {
 			scheduler.Release();
@@ -4931,7 +4952,8 @@ bool SarosAsyncCompute(uint64_t hash) {
 	return on && ShaderRecompiler::SarosHandShader(hash);
 }
 uint32_t SarosAsyncComputeWaitMs() {
-	static const uint32_t ms = static_cast<uint32_t>(std::min<uint64_t>(EnvU64("KYTY_SAROS_ASYNC_CS_WAIT_MS", 0), 600000));
+	static const uint32_t ms =
+	    static_cast<uint32_t>(std::min<uint64_t>(EnvU64("KYTY_SAROS_ASYNC_CS_WAIT_MS", 0), 600000));
 	return ms;
 }
 
@@ -4954,7 +4976,7 @@ struct PipelineCache::RtState {
 		bool                                       asked        = false; // a dispatch has asked
 		bool                                       consumed     = false; // published or failed
 		bool                                       logged_skip  = false;
-		bool                                       bvh          = true;  // false: a SAROS hand-shader kernel (SarosAsyncCompute)
+		bool bvh = true; // false: a SAROS hand-shader kernel (SarosAsyncCompute)
 	};
 	struct BuildContext {
 		PipelineCache*                cache  = nullptr;
@@ -7881,8 +7903,9 @@ PipelineCache::SpeculativeResult PipelineCache::PrepareGraphicsProgramsSpeculati
 	return result;
 }
 
-// sarosbundle2: KYTY_INDIRECT_LOG=1 (diagnostic): once per code address, the guest shader hash of a compute
-// dispatch that got no program (maps the "[nanite] CS dropped ... va" lines to programs.bin hashes).
+// sarosbundle2: KYTY_INDIRECT_LOG=1 (diagnostic): once per code address, the guest shader hash of a
+// compute dispatch that got no program (maps the "[nanite] CS dropped ... va" lines to programs.bin
+// hashes).
 static void NoteNoProgramHash(uint64_t va, uint64_t hash, const char* why) {
 	static const bool on = [] {
 		const auto* v = std::getenv("KYTY_INDIRECT_LOG");
@@ -7895,7 +7918,9 @@ static void NoteNoProgramHash(uint64_t va, uint64_t hash, const char* why) {
 		std::scoped_lock lock(mutex);
 		if (!seen.insert(va).second) return;
 	}
-	std::fprintf(stderr, "[nanite] no-program cs va 0x%010" PRIx64 " guest hash 0x%016" PRIx64 " (%s)\n", va, hash, why);
+	std::fprintf(stderr,
+	             "[nanite] no-program cs va 0x%010" PRIx64 " guest hash 0x%016" PRIx64 " (%s)\n",
+	             va, hash, why);
 }
 
 ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
@@ -7946,7 +7971,9 @@ ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs
 		const auto result = m_program_cache->Get(params, input_info, stage_prep, push_data_cursor,
 		                                         read_attempt, scratch, evaluation);
 		if (!read_attempt.materialization_failed) {
-			if (!result) NoteNoProgramHash(regs.cs_regs.data_addr, params.hash, "translation verdict / null program");
+			if (!result)
+				NoteNoProgramHash(regs.cs_regs.data_addr, params.hash,
+				                  "translation verdict / null program");
 			return result;
 		}
 		if (!read_attempt.Synchronize()) {

@@ -202,8 +202,11 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 					}
 					// A FlatLocal access keeps its (unused) address handle without DMA.
 					if (inst.NumArgs() != 2 ||
-					    (!program.info.uses_dma && !std::any_of(program.memory_info.begin(), program.memory_info.end(),
-					         [](const IR::MemoryInfo& m) { return m.kind == IR::ResourceKind::FlatLocal; }))) {
+					    (!program.info.uses_dma &&
+					     !std::any_of(program.memory_info.begin(), program.memory_info.end(),
+					                  [](const IR::MemoryInfo& m) {
+						                  return m.kind == IR::ResourceKind::FlatLocal;
+					                  }))) {
 						Fail(program, "typed address handle has invalid DMA metadata");
 					}
 					break;
@@ -647,8 +650,8 @@ std::vector<uint32_t> EmitProgram(const IR::Program& program,
 	if (state.lane_count == 2 && Wave64WarpsShaderAllowed(program.shader_hash) &&
 	    program.stage == ShaderType::Compute && !program.dispatcher_fallback &&
 	    // BVH node counts (KYTY_RT_NODE_BUDGET/STATS) report per two-lane invocation.
-	    !IR::UsesBvhNodeCount(program) &&
-	    !state.requirements.compute_derivatives && !state.requirements.shared_int64_atomics &&
+	    !IR::UsesBvhNodeCount(program) && !state.requirements.compute_derivatives &&
+	    !state.requirements.shared_int64_atomics &&
 	    state.lds_storage_class == spv::StorageClassWorkgroup) {
 		// KYTY_WAVE64_WARPS: the workgroup must be exactly the one wave (its barriers then
 		// synchronize the wave, and every lane exists).

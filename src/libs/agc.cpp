@@ -4106,7 +4106,8 @@ int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchAddress(uint32_t*             cmd,
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 			std::fprintf(stderr,
 			             "[memtrk] AgcQueueEndOfPipeActionPatchAddress: cmd 0x%016" PRIx64
-			             " header 0x%08" PRIx32 " is not an end-of-pipe packet: kInvalidPacket, nothing written\n",
+			             " header 0x%08" PRIx32
+			             " is not an end-of-pipe packet: kInvalidPacket, nothing written\n",
 			             Guest::Addr(cmd), cmd[0]);
 		}
 		return GRAPHICS5_ERROR_INVALID_PACKET;

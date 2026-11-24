@@ -328,8 +328,9 @@ bool RenderContext::SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size) 
 				             "[memtrk] CP read 0x%016" PRIx64 "+0x%" PRIx64
 				             " covered by a GPU-modified image%s\n",
 				             vaddr, size,
-				             CpReadImageSync() ? ": publishing it first (KYTY_CP_READ_IMAGE_SYNC)"
-				                               : ": reading the guest view (stale if the image wrote it)");
+				             CpReadImageSync()
+				                 ? ": publishing it first (KYTY_CP_READ_IMAGE_SYNC)"
+								 : ": reading the guest view (stale if the image wrote it)");
 			}
 		}
 		if (!CpReadImageSync()) {

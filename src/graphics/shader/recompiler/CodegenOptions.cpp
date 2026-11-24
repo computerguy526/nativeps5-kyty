@@ -206,11 +206,13 @@ CodegenOptions FromEnvironment() {
 	    path != nullptr && path[0] != '\0') {
 		options.fast_math_allow = ReadHashFile(path, &options.fast_math_allow_set);
 	}
-	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_DENY"); path != nullptr && path[0] != '\0') {
+	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_DENY");
+	    path != nullptr && path[0] != '\0') {
 		bool ok                   = false;
 		options.wave64_warps_deny = ReadHashFile(path, &ok);
 	}
-	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_ALLOW"); path != nullptr && path[0] != '\0') {
+	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_ALLOW");
+	    path != nullptr && path[0] != '\0') {
 		// A missing file leaves the set flag false (no list), as for KYTY_FAST_MATH_ALLOW.
 		options.wave64_warps_allow = ReadHashFile(path, &options.wave64_warps_allow_set);
 	}
@@ -380,8 +382,10 @@ bool Wave64WarpsShaderAllowed(uint64_t shader_hash) {
 	const auto& options = Storage();
 	return options.wave64_warps &&
 	       (!options.wave64_warps_allow_set ||
-	        std::binary_search(options.wave64_warps_allow.begin(), options.wave64_warps_allow.end(), shader_hash)) &&
-	       !std::binary_search(options.wave64_warps_deny.begin(), options.wave64_warps_deny.end(), shader_hash);
+	        std::binary_search(options.wave64_warps_allow.begin(), options.wave64_warps_allow.end(),
+	                           shader_hash)) &&
+	       !std::binary_search(options.wave64_warps_deny.begin(), options.wave64_warps_deny.end(),
+	                           shader_hash);
 }
 
 bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage) {

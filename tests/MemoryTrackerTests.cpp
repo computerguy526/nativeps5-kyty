@@ -2124,9 +2124,10 @@ void TestRangeSignatureAcrossRegions() {
   Release(memory);
 }
 
-// nps5 findbuf: MemoryTracker::ForEachCpuDirtyRunRelaxed reports ascending, disjoint, merged runs
-// clipped to its range, and a sub-range intersects one exactly when QueryCpuDirtyRelaxed answers
-// "dirty" or cannot decide (a missing region), across bit words and regions.
+// nps5 findbuf: MemoryTracker::ForEachCpuDirtyRunRelaxed reports ascending,
+// disjoint, merged runs clipped to its range, and a sub-range intersects one
+// exactly when QueryCpuDirtyRelaxed answers "dirty" or cannot decide (a missing
+// region), across bit words and regions.
 void TestCpuDirtyRunsMatchRelaxedQuery() {
   constexpr uintptr_t base = 0x0000000205000000ull;
   constexpr uint64_t region_size = Libs::Graphics::TRACKER_REGION_SIZE;
@@ -2145,9 +2146,9 @@ void TestCpuDirtyRunsMatchRelaxedQuery() {
   std::vector<std::pair<uint64_t, uint64_t>> runs;
   const auto collect = [&](uint64_t address, uint64_t size) {
     runs.clear();
-    tracker.ForEachCpuDirtyRunRelaxed(address, size, [&](uint64_t begin, uint64_t end) {
-      runs.emplace_back(begin, end);
-    });
+    tracker.ForEachCpuDirtyRunRelaxed(
+        address, size,
+        [&](uint64_t begin, uint64_t end) { runs.emplace_back(begin, end); });
     for (size_t i = 0; i < runs.size(); i++) {
       Check(runs[i].first < runs[i].second && runs[i].first >= address &&
                 runs[i].second <= address + size,
@@ -2165,31 +2166,35 @@ void TestCpuDirtyRunsMatchRelaxedQuery() {
     return false;
   };
   for (int round = 0; round < 6; round++) {
-    // Dirty a few random page runs (some across bit words and the region 0/1 boundary is left
-    // to the missing region), then upload a few back to clean.
+    // Dirty a few random page runs (some across bit words and the region 0/1
+    // boundary is left to the missing region), then upload a few back to clean.
     for (int i = 0; i < 12; i++) {
       const uint64_t region = (rng() % 2) * 2;
       const uint64_t page = rng() % (region_size / page_size);
       const uint64_t pages = 1 + rng() % 70;
       const auto address = base + region * region_size + page * page_size;
-      const auto size = std::min<uint64_t>(pages * page_size,
-                                           base + (region + 1) * region_size - address);
+      const auto size = std::min<uint64_t>(
+          pages * page_size, base + (region + 1) * region_size - address);
       tracker.MarkRegionAsCpuModified(address, size);
     }
     for (int i = 0; i < 4; i++) {
       const uint64_t region = (rng() % 2) * 2;
       const uint64_t page = rng() % (region_size / page_size);
       const auto address = base + region * region_size + page * page_size;
-      UploadAll(tracker, address,
-                std::min<uint64_t>(page_size * (1 + rng() % 40),
-                                   base + (region + 1) * region_size - address));
+      UploadAll(
+          tracker, address,
+          std::min<uint64_t>(page_size * (1 + rng() % 40),
+                             base + (region + 1) * region_size - address));
     }
     for (int q = 0; q < 300; q++) {
-      // An enclosing walk range and a sub-range of it, at byte (not page) granularity.
+      // An enclosing walk range and a sub-range of it, at byte (not page)
+      // granularity.
       uint64_t a = base + rng() % (span_end - base);
       uint64_t b = base + rng() % (span_end - base);
-      if (a > b) std::swap(a, b);
-      if (a == b) b = a + 1;
+      if (a > b)
+        std::swap(a, b);
+      if (a == b)
+        b = a + 1;
       collect(a, b - a);
       uint64_t s = a + rng() % (b - a);
       uint64_t f = s + 1 + rng() % (b - s);
@@ -2205,7 +2210,8 @@ void TestCpuDirtyRunsMatchRelaxedQuery() {
             runs[0].second == base + region_size * 2,
         "the missing region is not reported as one run");
   bool missing_dirty = false;
-  Check(!tracker.QueryCpuDirtyRelaxed(base + region_size, page_size, missing_dirty),
+  Check(!tracker.QueryCpuDirtyRelaxed(base + region_size, page_size,
+                                      missing_dirty),
         "the missing region was created");
   tracker.UntrackMemory(base, region_size);
   tracker.UntrackMemory(base + region_size * 2, region_size);

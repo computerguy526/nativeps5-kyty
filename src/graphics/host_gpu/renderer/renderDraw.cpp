@@ -1,19 +1,12 @@
-#include <chrono>
-#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
-#include "graphics/host_gpu/renderer/inputProfileDraw.h"
-#include "graphics/host_gpu/renderer/nanProbe.h"
-#include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
-#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/renderDraw.h"
 
-#include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
-
 #include "common/assert.h"
-#include "common/liveSwitch.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "common/hangTrace.h"
+#include "common/liveSwitch.h"
 #include "common/logging/log.h"
 #include "common/onceValue.h"
 #include "common/profiler.h"
@@ -29,16 +22,22 @@
 #include "graphics/host_gpu/renderer/cpCommit.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
-#include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/dlss.h"
-#include "graphics/host_gpu/renderer/metalfx.h"
-#include "graphics/host_gpu/renderer/frameGen.h"
+#include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
+#include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
+#include "graphics/host_gpu/renderer/frameGen.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
+#include "graphics/host_gpu/renderer/inputProfileDraw.h"
+#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 #include "graphics/host_gpu/renderer/meshIndirect.h"
+#include "graphics/host_gpu/renderer/metalfx.h"
+#include "graphics/host_gpu/renderer/nanProbe.h"
+#include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -54,12 +53,12 @@
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -924,8 +923,9 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		const auto* value = std::getenv("KYTY_DRAW_BIND_LOG");
 		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 	}();
-	// sarosclay: KYTY_DRAW_BIND_LOG=2 also prints each image's shader source/first-use pc ("@src/pc") and
-	// re-logs every shader combination once per 30 s bucket (a texture that streams in shows up later).
+	// sarosclay: KYTY_DRAW_BIND_LOG=2 also prints each image's shader source/first-use pc
+	// ("@src/pc") and re-logs every shader combination once per 30 s bucket (a texture that streams
+	// in shows up later).
 	static const bool draw_bind_detail = [] {
 		const auto* value = std::getenv("KYTY_DRAW_BIND_LOG");
 		return value != nullptr && std::strcmp(value, "2") == 0;
@@ -934,13 +934,17 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		uint64_t key = 0x9e3779b97f4a7c15ull;
 		if (draw_bind_detail) {
 			static const auto t0 = std::chrono::steady_clock::now();
-			key ^= static_cast<uint64_t>(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() / 30.0) *
-			       0xff51afd7ed558ccdull;
+			key ^=
+			    static_cast<uint64_t>(
+			        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() /
+			        30.0) *
+			    0xff51afd7ed558ccdull;
 		}
 		for (const auto* stage: stages) {
-			const auto hash = stage != nullptr && stage->runtime != nullptr && stage->runtime->program != nullptr
-			                      ? stage->runtime->program->shader_hash
-			                      : 0;
+			const auto hash =
+			    stage != nullptr && stage->runtime != nullptr && stage->runtime->program != nullptr
+			        ? stage->runtime->program->shader_hash
+			        : 0;
 			key = (key ^ hash) * 0x100000001b3ull;
 		}
 		static std::mutex                   draw_log_mutex;
@@ -954,21 +958,27 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			std::string line;
 			char        part[200];
 			for (const auto* stage: stages) {
-				if (stage == nullptr || stage->runtime == nullptr || stage->runtime->program == nullptr) continue;
-				std::snprintf(part, sizeof(part), " | sh 0x%016" PRIx64 ":", stage->runtime->program->shader_hash);
+				if (stage == nullptr || stage->runtime == nullptr ||
+				    stage->runtime->program == nullptr)
+					continue;
+				std::snprintf(part, sizeof(part), " | sh 0x%016" PRIx64 ":",
+				              stage->runtime->program->shader_hash);
 				line += part;
 				uint32_t image_index = 0;
 				for (const auto& binding: stage->images) {
 					const auto& info = binding.desc.info;
 					std::snprintf(part, sizeof(part), " 0x%010llx:f%u:%ux%u:%s",
 					              static_cast<unsigned long long>(info.data.address),
-					              static_cast<unsigned>(info.guest_format), info.extent.width, info.extent.height,
-					              binding.desc.type == TextureCache::BindingType::Storage ? "st" : "tx");
+					              static_cast<unsigned>(info.guest_format), info.extent.width,
+					              info.extent.height,
+					              binding.desc.type == TextureCache::BindingType::Storage ? "st"
+					                                                                      : "tx");
 					line += part;
-					if (draw_bind_detail && image_index < stage->runtime->program->info.images.size()) {
+					if (draw_bind_detail &&
+					    image_index < stage->runtime->program->info.images.size()) {
 						const auto& resource = stage->runtime->program->info.images[image_index];
-						std::snprintf(part, sizeof(part), "@%x/%x/m%u", resource.source, resource.first_use_pc,
-						              info.resources.levels);
+						std::snprintf(part, sizeof(part), "@%x/%x/m%u", resource.source,
+						              resource.first_use_pc, info.resources.levels);
 						line += part;
 					}
 					image_index++;
@@ -978,72 +988,91 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 				const auto& info = colors[i].desc.info;
 				std::snprintf(part, sizeof(part), " rt%u=0x%010llx:f%u:%ux%u", i,
 				              static_cast<unsigned long long>(info.data.address),
-				              static_cast<unsigned>(info.guest_format), info.extent.width, info.extent.height);
+				              static_cast<unsigned>(info.guest_format), info.extent.width,
+				              info.extent.height);
 				line += part;
 			}
 			if (depth.image_id) {
 				const auto& info = depth.desc.info;
-				std::snprintf(part, sizeof(part), " ds=0x%010llx:%ux%u clr%d zt%d st%d f%u ref0x%x cmp0x%x wr0x%x",
-				              static_cast<unsigned long long>(info.data.address), info.extent.width, info.extent.height,
-				              depth.depth_clear_enable ? 1 : 0, depth.depth_test_enable ? 1 : 0,
-				              depth.stencil_test_enable ? 1 : 0, static_cast<unsigned>(depth.stencil_front.compareOp),
-				              depth.stencil_front.reference, depth.stencil_front.compareMask, depth.stencil_front.writeMask);
+				std::snprintf(part, sizeof(part),
+				              " ds=0x%010llx:%ux%u clr%d zt%d st%d f%u ref0x%x cmp0x%x wr0x%x",
+				              static_cast<unsigned long long>(info.data.address), info.extent.width,
+				              info.extent.height, depth.depth_clear_enable ? 1 : 0,
+				              depth.depth_test_enable ? 1 : 0, depth.stencil_test_enable ? 1 : 0,
+				              static_cast<unsigned>(depth.stencil_front.compareOp),
+				              depth.stencil_front.reference, depth.stencil_front.compareMask,
+				              depth.stencil_front.writeMask);
 				line += part;
 			}
 			std::fprintf(stderr, "[memtrk] draw bind%s\n", line.c_str());
-			// sarosuv: KYTY_DRAW_BIND_LOG=2 also logs each formatted/vertex-fetch V# of every stage: raw words,
-			// decoded base/stride/records/format/dst_sel, the translator's descriptor_format/packed_stride and
-			// the first 4 elements' raw dwords from guest memory (the character UV stream, VS s24).
+			// sarosuv: KYTY_DRAW_BIND_LOG=2 also logs each formatted/vertex-fetch V# of every
+			// stage: raw words, decoded base/stride/records/format/dst_sel, the translator's
+			// descriptor_format/packed_stride and the first 4 elements' raw dwords from guest
+			// memory (the character UV stream, VS s24).
 			if (draw_bind_detail) {
 				for (const auto* stage: stages) {
-					if (stage == nullptr || stage->runtime == nullptr || stage->runtime->program == nullptr ||
-					    stage->runtime->resources == nullptr) continue;
+					if (stage == nullptr || stage->runtime == nullptr ||
+					    stage->runtime->program == nullptr || stage->runtime->resources == nullptr)
+						continue;
 					const auto& prog = *stage->runtime->program;
 					const auto& snap = *stage->runtime->resources;
-					for (uint32_t i = 0; i < prog.info.buffers.size() && i < snap.buffers.size(); i++) {
+					for (uint32_t i = 0; i < prog.info.buffers.size() && i < snap.buffers.size();
+					     i++) {
 						const auto& res = prog.info.buffers[i];
 						if (!res.formatted) continue;
-						const auto* w     = snap.buffers[i].dwords.data();
+						const auto*    w    = snap.buffers[i].dwords.data();
 						const uint64_t base = (static_cast<uint64_t>(w[1] & 0xffffu) << 32) | w[0];
 						const uint32_t stride = (w[1] >> 16) & 0x3fffu;
-						const uint32_t fmt = (w[3] >> 12) & 0x7fu;
-						char uvline[700];
-						std::snprintf(uvline, sizeof(uvline),
-						              "[sarosuv] sh 0x%016" PRIx64 " buf%u V#=%08x %08x %08x %08x base=0x%llx stride=%u rec=%u "
-						              "fmt=%u dsel=%u/%u/%u/%u idxstr=%u addtid=%u oob=%u | desc_fmt=%u pstride=%u swz=0x%x maxext=%u",
-						              prog.shader_hash, i, w[0], w[1], w[2], w[3], static_cast<unsigned long long>(base),
-						              stride, w[2], fmt, w[3] & 7u, (w[3] >> 3) & 7u, (w[3] >> 6) & 7u, (w[3] >> 9) & 7u,
-						              (w[3] >> 19) & 3u, (w[3] >> 21) & 1u, (w[3] >> 28) & 3u,
-						              static_cast<unsigned>(res.descriptor_format), res.packed_stride, res.descriptor_swizzle,
-						              res.max_byte_extent);
+						const uint32_t fmt    = (w[3] >> 12) & 0x7fu;
+						char           uvline[700];
+						std::snprintf(
+						    uvline, sizeof(uvline),
+						    "[sarosuv] sh 0x%016" PRIx64
+						    " buf%u V#=%08x %08x %08x %08x base=0x%llx stride=%u rec=%u "
+						    "fmt=%u dsel=%u/%u/%u/%u idxstr=%u addtid=%u oob=%u | desc_fmt=%u "
+							"pstride=%u swz=0x%x maxext=%u",
+						    prog.shader_hash, i, w[0], w[1], w[2], w[3],
+						    static_cast<unsigned long long>(base), stride, w[2], fmt, w[3] & 7u,
+						    (w[3] >> 3) & 7u, (w[3] >> 6) & 7u, (w[3] >> 9) & 7u, (w[3] >> 19) & 3u,
+						    (w[3] >> 21) & 1u, (w[3] >> 28) & 3u,
+						    static_cast<unsigned>(res.descriptor_format), res.packed_stride,
+						    res.descriptor_swizzle, res.max_byte_extent);
 						std::string elems;
 						if (base != 0 && stride != 0) {
-							const auto* g = Guest::Ptr<const uint32_t>(base);
+							const auto*    g  = Guest::Ptr<const uint32_t>(base);
 							const uint32_t dw = std::min<uint32_t>(stride / 4u, 4u);
 							for (uint32_t e = 0; e < 4 && e < w[2]; e++) {
 								elems += " e" + std::to_string(e) + "=";
 								for (uint32_t d = 0; d < dw; d++) {
 									char h[16];
-									std::snprintf(h, sizeof(h), "%08x%s", g[e * (stride / 4u) + d], d + 1 < dw ? "," : "");
+									std::snprintf(h, sizeof(h), "%08x%s", g[e * (stride / 4u) + d],
+									              d + 1 < dw ? "," : "");
 									elems += h;
 								}
 							}
 						}
 						std::fprintf(stderr, "%s%s\n", uvline, elems.c_str());
 					}
-					// sarosaddr: the final S# dwords of every sampler of the stage and the decoded address modes.
+					// sarosaddr: the final S# dwords of every sampler of the stage and the decoded
+					// address modes.
 					for (uint32_t i = 0; i < prog.info.samplers.size(); i++) {
 						const auto idx = prog.info.samplers[i].snapshot_index;
-						if (idx >= snap.samplers.size() || snap.samplers[idx].dword_count < 4u) continue;
+						if (idx >= snap.samplers.size() || snap.samplers[idx].dword_count < 4u)
+							continue;
 						const auto d = NativeSamplerDescriptor(prog, i, snap.samplers[idx]);
-						std::fprintf(stderr,
-						             "[sarosaddr] sh 0x%016" PRIx64 " smp%u src=%x snap=%u S#=%08x %08x %08x %08x clamp x/y/z=%u/%u/%u "
-						             "unorm=%u trunc=%u filt xy=%u/%u mip=%u z=%u lod=%u..%u bias=0x%x border=%u depthcmp=%u aniso=%u\n",
-						             prog.shader_hash, i, static_cast<unsigned>(prog.info.samplers[i].source), idx,
-						             d.fields[0], d.fields[1], d.fields[2], d.fields[3], d.ClampX(), d.ClampY(), d.ClampZ(),
-						             d.ForceUnormCoords() ? 1u : 0u, d.TruncCoord() ? 1u : 0u, d.XyMagFilter(), d.XyMinFilter(),
-						             d.MipFilter(), d.ZFilter(), d.MinLod(), d.MaxLod(), d.LodBias(), d.BorderColorType(),
-						             d.DepthCompareFunc(), d.MaxAnisoRatio());
+						std::fprintf(
+						    stderr,
+						    "[sarosaddr] sh 0x%016" PRIx64
+						    " smp%u src=%x snap=%u S#=%08x %08x %08x %08x clamp x/y/z=%u/%u/%u "
+						    "unorm=%u trunc=%u filt xy=%u/%u mip=%u z=%u lod=%u..%u bias=0x%x "
+							"border=%u depthcmp=%u aniso=%u\n",
+						    prog.shader_hash, i,
+						    static_cast<unsigned>(prog.info.samplers[i].source), idx, d.fields[0],
+						    d.fields[1], d.fields[2], d.fields[3], d.ClampX(), d.ClampY(),
+						    d.ClampZ(), d.ForceUnormCoords() ? 1u : 0u, d.TruncCoord() ? 1u : 0u,
+						    d.XyMagFilter(), d.XyMinFilter(), d.MipFilter(), d.ZFilter(),
+						    d.MinLod(), d.MaxLod(), d.LodBias(), d.BorderColorType(),
+						    d.DepthCompareFunc(), d.MaxAnisoRatio());
 					}
 				}
 			}
@@ -1107,8 +1136,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 		    metadata.kind == ImageMetadataKind::Htile &&
 		    cache.IsMetaCleared(metadata.range.address, depth.desc.view_info.base_layer);
 		if (meta_clear && !depth.depth_clear_enable) {
-			// memtrk: KYTY_META_CLEAR_LOG=1 prints the first 64 depth binds that load with CLEAR only
-			// because the HTILE clear state is set (no clear in this draw's own state).
+			// memtrk: KYTY_META_CLEAR_LOG=1 prints the first 64 depth binds that load with CLEAR
+			// only because the HTILE clear state is set (no clear in this draw's own state).
 			static const bool meta_log = [] {
 				const auto* value = std::getenv("KYTY_META_CLEAR_LOG");
 				return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
@@ -1117,7 +1146,8 @@ RenderState RenderExecutor::AcquireRenderTargets(CommandBuffer& buffer, RenderCo
 			if (meta_log && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
 				const auto& bound = cache.GetImage(depth.image_id);
 				std::fprintf(stderr,
-				             "[memtrk] depth bind loads CLEAR from HTILE state: depth 0x%llx %ux%u HTILE 0x%llx "
+				             "[memtrk] depth bind loads CLEAR from HTILE state: depth 0x%llx %ux%u "
+				             "HTILE 0x%llx "
 				             "layer %u gpu-modified %d writes %llu\n",
 				             static_cast<unsigned long long>(depth.desc.info.data.address),
 				             depth.desc.info.extent.width, depth.desc.info.extent.height,
@@ -4176,10 +4206,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		} else {
 			mesh_segments.push_back({0, draw.index_count, mesh_groups});
 		}
-		InputProfileDraw::NoteMesh(m_context.GetBufferCache(), state.vertex_info[0], draw.index_count,
-		                           draw.instance_count, draw.IsIndexed() ? index_source.address : 0,
-		                           draw.IsIndexed() ? index_source.guest_element_size : 0, mesh_groups,
-		                           static_cast<uint32_t>(mesh_segments.size()));
+		InputProfileDraw::NoteMesh(m_context.GetBufferCache(), state.vertex_info[0],
+		                           draw.index_count, draw.instance_count,
+		                           draw.IsIndexed() ? index_source.address : 0,
+		                           draw.IsIndexed() ? index_source.guest_element_size : 0,
+		                           mesh_groups, static_cast<uint32_t>(mesh_segments.size()));
 		const auto& limits = m_context.GetGraphics().mesh_shader_properties;
 		uint64_t total_groups = 0;
 		for (const auto& segment: mesh_segments) {
@@ -4528,8 +4559,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (planned_pipeline != nullptr && !plan_verify) {
 		pipeline_cache.NotePlannedPipeline(state.depth_info, ps_input);
 	} else {
-		const bool warm_only = (draw.index_count == 0 || draw.instance_count == 0) && UnityWarmupNoSkip();
-		const bool skippable = !warm_only && planned_pipeline == nullptr && pipeline_cache.PipelineSkipEnabled() &&
+		const bool warm_only =
+		    (draw.index_count == 0 || draw.instance_count == 0) && UnityWarmupNoSkip();
+		const bool skippable = !warm_only && planned_pipeline == nullptr &&
+		                       pipeline_cache.PipelineSkipEnabled() &&
 		                       DrawOnlyChangesPicture(m_context, state, vertex_stages, mesh_active);
 		pipeline_object = pipeline_cache.TryGetGraphicsPipeline(
 		    colors_span, state.depth_info, vertex_stages, buffer, ps_input, topology,
@@ -4654,27 +4687,35 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 	}
 	CommitStats::StepMark(CommitStats::Step::Acquire);
-	// nps5 nanite probes (nanProbe.h): identity log of the listed stages' images; KYTY_DRAW_PROBE arms
-	// a copy of the matching draw's storage images at the next direct dispatch.
+	// nps5 nanite probes (nanProbe.h): identity log of the listed stages' images; KYTY_DRAW_PROBE
+	// arms a copy of the matching draw's storage images at the next direct dispatch.
 	if (NanProbe::Armed()) [[unlikely]] {
 		auto& cache = m_context.GetTextureCache();
 		for (const auto* stage: stages) {
-			if (stage == nullptr || stage->runtime == nullptr || stage->runtime->program == nullptr) continue;
+			if (stage == nullptr || stage->runtime == nullptr || stage->runtime->program == nullptr)
+				continue;
 			const auto hash = stage->runtime->program->shader_hash;
 			if (NanProbe::IdHash(hash)) {
 				for (uint32_t i = 0; i < stage->images.size(); i++) {
-					if (stage->images[i].desc.type != TextureCache::BindingType::Storage || !NanProbe::TakeLine()) continue;
+					if (stage->images[i].desc.type != TextureCache::BindingType::Storage ||
+					    !NanProbe::TakeLine())
+						continue;
 					auto* image = cache.TryGetImage(stage->images[i].image_id);
-					std::fprintf(stderr,
-					             "[nanprobe] id draw 0x%016" PRIx64 " img%u st slot %u:%u vk %p guest 0x%010" PRIx64
-					             " gpu-mod %d buf-mod %d cpu-dirty %d owner %d writes %llu%s\n",
-					             hash, i, stage->images[i].image_id.index, stage->images[i].image_id.generation,
-					             image ? static_cast<void*>(static_cast<VkImage>(image->backing.image)) : nullptr,
-					             image ? image->info.data.address : 0, image && image->IsGpuModified() ? 1 : 0,
-					             image && image->IsBufferModified() ? 1 : 0, image && image->IsCpuDirty() ? 1 : 0,
-					             image && image->alias_owner ? 1 : 0,
-					             image ? static_cast<unsigned long long>(image->DefiniteWrites()) : 0ull,
-					             image ? "" : " FREED");
+					std::fprintf(
+					    stderr,
+					    "[nanprobe] id draw 0x%016" PRIx64
+					    " img%u st slot %u:%u vk %p guest 0x%010" PRIx64
+					    " gpu-mod %d buf-mod %d cpu-dirty %d owner %d writes %llu%s\n",
+					    hash, i, stage->images[i].image_id.index,
+					    stage->images[i].image_id.generation,
+					    image ? static_cast<void*>(static_cast<VkImage>(image->backing.image))
+						      : nullptr,
+					    image ? image->info.data.address : 0,
+					    image && image->IsGpuModified() ? 1 : 0,
+					    image && image->IsBufferModified() ? 1 : 0,
+					    image && image->IsCpuDirty() ? 1 : 0, image && image->alias_owner ? 1 : 0,
+					    image ? static_cast<unsigned long long>(image->DefiniteWrites()) : 0ull,
+					    image ? "" : " FREED");
 				}
 			}
 			auto& draw = NanProbe::Draw();

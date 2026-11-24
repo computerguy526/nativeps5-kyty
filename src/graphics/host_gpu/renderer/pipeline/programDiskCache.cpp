@@ -109,7 +109,8 @@ void ProgramDiskCache::BuildSourceKey(const SourceKeyInputs& inputs, SourceKey& 
 	Put<uint32_t>(bytes, inputs.wave_size);
 	Put<uint32_t>(bytes, inputs.user_data_base);
 	Put<uint8_t>(bytes, inputs.plain_mip_stats_variant ? 1u : 0u);
-	if (inputs.variant != 0) Put<uint64_t>(bytes, inputs.variant); // sarosperf: absent for variant 0
+	if (inputs.variant != 0)
+		Put<uint64_t>(bytes, inputs.variant); // sarosperf: absent for variant 0
 	PutWords(bytes, inputs.code);
 	PutWords(bytes, inputs.back_code);
 	const auto digest = XXH3_128bits(bytes.data(), bytes.size());

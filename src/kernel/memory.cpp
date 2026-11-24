@@ -1,15 +1,15 @@
 #include "kernel/memory.h"
-#include "common/guestAddress.h"
-#include "common/prepPhases.h"
 
 #include "common/assert.h"
+#include "common/guestAddress.h"
 #include "common/hangTrace.h"
 #include "common/logging/log.h"
 #include "common/platform/uffdWriteWatch.h"
+#include "common/prepPhases.h"
 #include "common/profiler.h"
-#include "common/skipInvalid.h"
 #include "common/ramStats.h"
 #include "common/rendererBatch.h"
+#include "common/skipInvalid.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/virtualMemory.h"
@@ -20,16 +20,17 @@
 #include "graphics/host_gpu/renderer/drawPrep/readSet.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/shader.h"
+#include "kernel/hostedGuard.h"
+#include "kernel/hostedRanges.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
-#include <pthread.h>
-#include <chrono>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
 #include <bitset>
+#include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdio>
@@ -40,9 +41,8 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <pthread.h>
 #include <shared_mutex>
-#include "kernel/hostedGuard.h"
-#include "kernel/hostedRanges.h"
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1347,10 +1347,10 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 // nps5 memtrk: KYTY_GUEST_WRITE_JOURNAL=1 (diagnostic, default off). Every backing write Kyty makes
 // into guest memory (buffer/image write-backs and readbacks, CP-read publications, label/EOP and
 // DMA/copy-data packets that write through the backing) is recorded in a ring of the last 65536
-// {address, size, time, caller return address, thread}. kyty_guest_write_journal_lookup() (exported,
-// no allocation, tolerates a torn ring) reports the newest entries overlapping a range, for the
-// SAROS heap-corruption crash handler (saros2). Writes through the guest view or by the GPU in place
-// (zero-copy) are not seen.
+// {address, size, time, caller return address, thread}. kyty_guest_write_journal_lookup()
+// (exported, no allocation, tolerates a torn ring) reports the newest entries overlapping a range,
+// for the SAROS heap-corruption crash handler (saros2). Writes through the guest view or by the GPU
+// in place (zero-copy) are not seen.
 namespace WriteJournal {
 struct Entry {
 	std::atomic<uint64_t> seq {0}; // 0 = empty; written last
@@ -1360,10 +1360,10 @@ struct Entry {
 	uint64_t              ra   = 0;
 	uint64_t              tid  = 0;
 };
-constexpr uint32_t    kEntries = 65536;
-static Entry          g_ring[kEntries];
+constexpr uint32_t           kEntries = 65536;
+static Entry                 g_ring[kEntries];
 static std::atomic<uint64_t> g_next {1};
-static bool Enabled() {
+static bool                  Enabled() {
 	static const bool on = [] {
 		const char* v = std::getenv("KYTY_GUEST_WRITE_JOURNAL");
 		return v != nullptr && std::strcmp(v, "1") == 0;
@@ -1379,10 +1379,10 @@ static void Record(uint64_t addr, uint64_t size, uint64_t ra) {
 	const auto seq = g_next.fetch_add(1, std::memory_order_relaxed);
 	auto&      e   = g_ring[seq % kEntries];
 	e.seq.store(0, std::memory_order_relaxed);
-	e.addr = addr;
-	e.size = size;
-	e.ns   = NowNs();
-	e.ra   = ra;
+	e.addr       = addr;
+	e.size       = size;
+	e.ns         = NowNs();
+	e.ra         = ra;
 	uint64_t tid = 0;
 	pthread_threadid_np(nullptr, &tid);
 	e.tid = tid;
@@ -2260,39 +2260,44 @@ const void* GuestReadPtr(uint64_t vaddr, uint64_t size) noexcept {
 // (SAROS maps adjacent 64 KiB direct-memory chunks, each with its own alias) has no single host
 // pointer, and GuestReadPtr returns the guest view for it, which can be watch-protected: a Kyty
 // thread copying through it faults on its own (or a neighbour's) page watch. On the GPU thread
-// inside a tracker upload callback that fault re-enters the memory tracker (CheckNotInUploadCallback,
-// SAROS r42/r43 exit 65). Here every piece is copied through its own alias instead: the same bytes
-// (alias and guest view share the backing), without the fault. Unregistered bytes, and memory that
-// is not hosted, are copied from GuestReadPtr exactly as before.
+// inside a tracker upload callback that fault re-enters the memory tracker
+// (CheckNotInUploadCallback, SAROS r42/r43 exit 65). Here every piece is copied through its own
+// alias instead: the same bytes (alias and guest view share the backing), without the fault.
+// Unregistered bytes, and memory that is not hosted, are copied from GuestReadPtr exactly as
+// before.
 void GuestReadCopy(void* dst, uint64_t vaddr, uint64_t size) noexcept {
 	if (size == 0) {
 		return;
 	}
 	if (Hosted::g_active && vaddr != 0 && UINT64_MAX - vaddr >= size &&
-	    !GuestReadCacheHolds(t_guest_read_cache, Hosted::g_map_generation.load(std::memory_order_acquire),
-	                         vaddr, size)) {
+	    !GuestReadCacheHolds(t_guest_read_cache,
+	                         Hosted::g_map_generation.load(std::memory_order_acquire), vaddr,
+	                         size)) {
 		auto*    out     = static_cast<uint8_t*>(dst);
 		uint32_t pieces  = 0;
 		bool     spanned = false;
 		{
 			const Hosted::SharedGuard lock;
 			if (Hosted::FindSingleRangeUnlocked(vaddr, size) == nullptr &&
-			    Hosted::ForEachPieceUnlocked(vaddr, size, [](uint64_t, const uint8_t*, uint64_t) {})) {
-				(void)Hosted::ForEachPieceUnlocked(vaddr, size, [&](uint64_t piece, const uint8_t* host, uint64_t bytes) {
-					std::memcpy(out + (piece - vaddr), host, bytes);
-					pieces++;
-				});
+			    Hosted::ForEachPieceUnlocked(vaddr, size,
+			                                 [](uint64_t, const uint8_t*, uint64_t) {})) {
+				(void)Hosted::ForEachPieceUnlocked(
+				    vaddr, size, [&](uint64_t piece, const uint8_t* host, uint64_t bytes) {
+					    std::memcpy(out + (piece - vaddr), host, bytes);
+					    pieces++;
+				    });
 				spanned = true;
 			}
 		}
 		if (spanned) {
 			static std::atomic<uint64_t> spanning {0};
 			if (spanning.fetch_add(1, std::memory_order_relaxed) == 0) {
-				std::fprintf(stderr,
-				             "[memtrk] guest read 0x%016" PRIx64 "+0x%" PRIx64
-				             " spans %u registered ranges: copied piece by piece through their aliases "
-				             "(logged once)\n",
-				             vaddr, size, pieces);
+				std::fprintf(
+				    stderr,
+				    "[memtrk] guest read 0x%016" PRIx64 "+0x%" PRIx64
+				    " spans %u registered ranges: copied piece by piece through their aliases "
+				    "(logged once)\n",
+				    vaddr, size, pieces);
 			}
 			return;
 		}
@@ -5729,8 +5734,8 @@ DebugStats GetDebugStats() {
 } // namespace Libs::LibKernel::Memory
 
 // nps5 memtrk: see WriteJournal in Libs::LibKernel::Memory.
-extern "C" __attribute__((visibility("default"))) int kyty_guest_write_journal_lookup(uint64_t guest_addr, uint64_t len,
-                                                                                    char* out, size_t out_len) {
+extern "C" __attribute__((visibility("default"))) int
+kyty_guest_write_journal_lookup(uint64_t guest_addr, uint64_t len, char* out, size_t out_len) {
 	using namespace Libs::LibKernel::Memory::WriteJournal;
 	if (out != nullptr && out_len != 0) {
 		out[0] = '\0';
@@ -5754,11 +5759,12 @@ extern "C" __attribute__((visibility("default"))) int kyty_guest_write_journal_l
 		}
 		found++;
 		if (found <= 8 && out != nullptr && used + 1 < out_len) {
-			const int n = std::snprintf(out + used, out_len - used,
-			                            "kind=backing_write addr=0x%llx size=0x%llx age_ms=%llu caller=0x%llx tid=%llu\n",
-			                            static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
-			                            static_cast<unsigned long long>(now > ns ? (now - ns) / 1000000u : 0u),
-			                            static_cast<unsigned long long>(ra), static_cast<unsigned long long>(tid));
+			const int n = std::snprintf(
+			    out + used, out_len - used,
+			    "kind=backing_write addr=0x%llx size=0x%llx age_ms=%llu caller=0x%llx tid=%llu\n",
+			    static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
+			    static_cast<unsigned long long>(now > ns ? (now - ns) / 1000000u : 0u),
+			    static_cast<unsigned long long>(ra), static_cast<unsigned long long>(tid));
 			if (n > 0) {
 				used = std::min(out_len - 1, used + static_cast<size_t>(n));
 			}

@@ -1,7 +1,7 @@
-#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include "common/assert.h"
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "common/liveSwitch.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -142,8 +142,9 @@ bool IsRuntimeSelect(ValueOpcode op) {
 	       op == ValueOpcode::SelectF32;
 }
 
-// nps5 kytyone (port of upstream KytyPS5 8d0ebb8f, shadowbeat070): KYTY_SRT_SMIN=1 lets the SRT walker
-// evaluate S_MIN_I32 in runtime descriptor values (SAROS bindless T#). Default off: ASTRO's plans unchanged.
+// nps5 kytyone (port of upstream KytyPS5 8d0ebb8f, shadowbeat070): KYTY_SRT_SMIN=1 lets the SRT
+// walker evaluate S_MIN_I32 in runtime descriptor values (SAROS bindless T#). Default off: ASTRO's
+// plans unchanged.
 bool SrtSignedMin() {
 	static const bool on = [] {
 		const char* value = std::getenv("KYTY_SRT_SMIN");
@@ -1519,9 +1520,11 @@ void SrtWalker::NoteUnmappedRead(uint64_t address) const {
 			for (size_t i = 0; i < user.size() && i < 16; i++) {
 				words += fmt::format(" {:08x}", user[i]);
 			}
-			std::fprintf(stderr, "[memtrk] SRT unmapped read: %s 0x%016llx addr 0x%llx; user data (%zu):%s\n",
-			             StageName(m_program.stage), static_cast<unsigned long long>(m_program.shader_hash),
-			             static_cast<unsigned long long>(address), user.size(), words.c_str());
+			std::fprintf(
+			    stderr,
+			    "[memtrk] SRT unmapped read: %s 0x%016llx addr 0x%llx; user data (%zu):%s\n",
+			    StageName(m_program.stage), static_cast<unsigned long long>(m_program.shader_hash),
+			    static_cast<unsigned long long>(address), user.size(), words.c_str());
 		}
 	}
 	static std::mutex                   mutex;
@@ -1755,7 +1758,8 @@ bool SrtWalker::EvaluateInstWithOperands(const Inst& inst, uint64_t& result, Rea
 			return false;
 		case ValueOpcode::SMin32:
 			if (binary()) {
-				result = static_cast<uint32_t>(std::min(static_cast<int32_t>(a), static_cast<int32_t>(b)));
+				result = static_cast<uint32_t>(
+				    std::min(static_cast<int32_t>(a), static_cast<int32_t>(b)));
 				return true;
 			}
 			return false;

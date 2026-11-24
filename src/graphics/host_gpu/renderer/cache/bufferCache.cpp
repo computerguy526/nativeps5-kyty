@@ -762,22 +762,24 @@ void ReportFaultHostReadback() {
 	if (now - last < 10'000'000'000ull || !report_ns.compare_exchange_strong(last, now)) {
 		return;
 	}
-	const auto take = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
-		auto&      hr       = FaultHostReadback();
-		const auto attempts = take(hr.attempts);
-		const auto refused5 = take(hr.refused[5]);
-		const auto ticks5   = take(hr.queued_ticks);
-		const auto done     = take(hr.done);
-		std::printf("Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64 ", done %" PRIu64
-		            " (%.1f KiB, %" PRIu64 " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
-		            ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64 ", queued writer %" PRIu64
-		            " (%.1f ticks ahead avg), map %" PRIu64 "\n",
-		            static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
-		            static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
-		            static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]), take(hr.refused[1]),
-		            take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]), refused5,
-		            refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
-		            take(hr.refused[6]));
+	const auto take     = [](std::atomic<uint64_t>& counter) { return counter.exchange(0); };
+	auto&      hr       = FaultHostReadback();
+	const auto attempts = take(hr.attempts);
+	const auto refused5 = take(hr.refused[5]);
+	const auto ticks5   = take(hr.queued_ticks);
+	const auto done     = take(hr.done);
+	std::printf("Kyty fault host readback 10s (mode %d): drains %" PRIu64 ", eligible %" PRIu64
+	            ", done %" PRIu64 " (%.1f KiB, %" PRIu64
+	            " ranges, %.2f ms); refused: unbounded %" PRIu64 ", pending publication %" PRIu64
+	            ", image %" PRIu64 ", no dirty %" PRIu64 ", current recording %" PRIu64
+	            ", queued writer %" PRIu64 " (%.1f ticks ahead avg), map %" PRIu64 "\n",
+	            static_cast<int>(g_fault_host_readback.Get()), attempts, take(hr.eligible), done,
+	            static_cast<double>(take(hr.bytes)) / 1024.0, take(hr.ranges),
+	            static_cast<double>(take(hr.done_ns)) / 1e6, take(hr.refused[0]),
+	            take(hr.refused[1]), take(hr.refused[2]), take(hr.refused[3]), take(hr.refused[4]),
+	            refused5,
+	            refused5 != 0 ? static_cast<double>(ticks5) / static_cast<double>(refused5) : 0.0,
+	            take(hr.refused[6]));
 }
 
 void ReportReadFaultPublished(uint32_t frame) {
@@ -1688,8 +1690,9 @@ void BufferCache::ChangeRegister(BufferId id) {
 		NoteBdaStructure(logged.CpuAddress(), logged.Size(), insert);
 		auto epoch = m_bda_structure_epoch.load(std::memory_order_relaxed);
 		while (epoch != UINT64_MAX &&
-		       !m_bda_structure_epoch.compare_exchange_weak(epoch, epoch + 1, std::memory_order_release,
-		                                                    std::memory_order_relaxed)) {}
+		       !m_bda_structure_epoch.compare_exchange_weak(
+		           epoch, epoch + 1, std::memory_order_release, std::memory_order_relaxed)) {
+		}
 	}
 	EnsureBdaPageTableInitialized();
 	auto& buffer = m_slot_buffers[id];
@@ -2052,10 +2055,14 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 		m_bda_log_verify = BdaDirtyLogVerifyMode();
 	}
 	if (m_bda_dirty_log) {
-		const auto* sl = std::getenv("KYTY_BDA_STRUCT_LOG");
-		m_bda_struct_log = sl == nullptr ? 0 : std::strcmp(sl, "1") == 0 ? 1 : std::strcmp(sl, "verify") == 0 ? 2 : 0;
+		const auto* sl   = std::getenv("KYTY_BDA_STRUCT_LOG");
+		m_bda_struct_log = sl == nullptr                    ? 0
+		                   : std::strcmp(sl, "1") == 0      ? 1
+		                   : std::strcmp(sl, "verify") == 0 ? 2
+		                                                    : 0;
 		if (m_bda_struct_log != 0) {
-			std::printf("Kyty BdaStructLog: %s (structure change = dirty-log pass over the new buffer's range)\n",
+			std::printf("Kyty BdaStructLog: %s (structure change = dirty-log pass over the new "
+			            "buffer's range)\n",
 			            m_bda_struct_log == 2 ? "VERIFY" : "ON");
 		}
 	}
@@ -4787,7 +4794,7 @@ bool BufferCache::VerifyRelaxedSnapshot(uint64_t vaddr, uint64_t size,
 namespace {
 thread_local uint64_t t_watch_program = 0;
 thread_local int      t_watch_ring    = 0;
-uint64_t WatchConsumer() {
+uint64_t              WatchConsumer() {
 	static const uint64_t consumer = [] {
 		const char* v = std::getenv("KYTY_WATCH_CONSUMER");
 		return v != nullptr ? std::strtoull(v, nullptr, 16) : 0ull;
@@ -4799,17 +4806,17 @@ struct WatchRange {
 	uint64_t end;
 	bool     written;
 };
-std::mutex                                     g_watch_mutex;
-std::vector<WatchRange>                        g_watch_ranges;
-std::vector<std::pair<uint64_t, uint64_t>>     g_watch_logged; // (program, range begin)
-std::atomic<uint64_t>                          g_watch_seq {0};
+std::mutex                                 g_watch_mutex;
+std::vector<WatchRange>                    g_watch_ranges;
+std::vector<std::pair<uint64_t, uint64_t>> g_watch_logged; // (program, range begin)
+std::atomic<uint64_t>                      g_watch_seq {0};
 void NoteWatchBinding(uint64_t vaddr, uint64_t size, bool is_written, uint64_t tick) {
 	const auto consumer = WatchConsumer();
 	const auto program  = t_watch_program;
 	if (consumer == 0 || program == 0) {
 		return;
 	}
-	const auto      seq = g_watch_seq.fetch_add(1, std::memory_order_relaxed);
+	const auto       seq = g_watch_seq.fetch_add(1, std::memory_order_relaxed);
 	std::scoped_lock lock(g_watch_mutex);
 	if (program == consumer) {
 		for (const auto& r: g_watch_ranges) {
@@ -4820,10 +4827,12 @@ void NoteWatchBinding(uint64_t vaddr, uint64_t size, bool is_written, uint64_t t
 		if (g_watch_ranges.size() < 64) {
 			g_watch_ranges.push_back({vaddr, vaddr + size, is_written});
 			std::fprintf(stderr,
-			             "[memtrk] watch consumer %016llx ring %d binds 0x%016llx+0x%llx %s (tick %llu, seq %llu)\n",
+			             "[memtrk] watch consumer %016llx ring %d binds 0x%016llx+0x%llx %s (tick "
+			             "%llu, seq %llu)\n",
 			             static_cast<unsigned long long>(program), t_watch_ring,
-			             static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
-			             is_written ? "written" : "read", static_cast<unsigned long long>(tick),
+			             static_cast<unsigned long long>(vaddr),
+			             static_cast<unsigned long long>(size), is_written ? "written" : "read",
+			             static_cast<unsigned long long>(tick),
 			             static_cast<unsigned long long>(seq));
 		}
 		return;
@@ -4840,14 +4849,16 @@ void NoteWatchBinding(uint64_t vaddr, uint64_t size, bool is_written, uint64_t t
 			}
 			if (g_watch_logged.size() < 256) {
 				g_watch_logged.emplace_back(program, r.begin);
-				std::fprintf(stderr,
-				             "[memtrk] watch writer %016llx ring %d writes 0x%016llx+0x%llx over consumer range "
-				             "0x%016llx+0x%llx (tick %llu, seq %llu)\n",
-				             static_cast<unsigned long long>(program), t_watch_ring,
-				             static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
-				             static_cast<unsigned long long>(r.begin),
-				             static_cast<unsigned long long>(r.end - r.begin),
-				             static_cast<unsigned long long>(tick), static_cast<unsigned long long>(seq));
+				std::fprintf(
+				    stderr,
+				    "[memtrk] watch writer %016llx ring %d writes 0x%016llx+0x%llx over consumer "
+					"range "
+				    "0x%016llx+0x%llx (tick %llu, seq %llu)\n",
+				    static_cast<unsigned long long>(program), t_watch_ring,
+				    static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size),
+				    static_cast<unsigned long long>(r.begin),
+				    static_cast<unsigned long long>(r.end - r.begin),
+				    static_cast<unsigned long long>(tick), static_cast<unsigned long long>(seq));
 			}
 			return;
 		}
@@ -4855,8 +4866,8 @@ void NoteWatchBinding(uint64_t vaddr, uint64_t size, bool is_written, uint64_t t
 }
 } // namespace
 
-void BufferCache::WatchScanWords(uint64_t program, std::span<const uint32_t> words, const char* kind,
-                                 uint64_t tick) noexcept {
+void BufferCache::WatchScanWords(uint64_t program, std::span<const uint32_t> words,
+                                 const char* kind, uint64_t tick) noexcept {
 	const auto consumer = WatchConsumer();
 	if (consumer == 0 || program == 0 || program == consumer || words.size() < 2) {
 		return;
@@ -4866,16 +4877,18 @@ void BufferCache::WatchScanWords(uint64_t program, std::span<const uint32_t> wor
 		return;
 	}
 	for (size_t i = 0; i + 1 < words.size(); i++) {
-		const uint64_t pair = static_cast<uint64_t>(words[i]) | (static_cast<uint64_t>(words[i + 1]) << 32u);
-		const uint64_t vbase = static_cast<uint64_t>(words[i]) | (static_cast<uint64_t>(words[i + 1] & 0xffffu) << 32u);
+		const uint64_t pair =
+		    static_cast<uint64_t>(words[i]) | (static_cast<uint64_t>(words[i + 1]) << 32u);
+		const uint64_t vbase = static_cast<uint64_t>(words[i]) |
+		                       (static_cast<uint64_t>(words[i + 1] & 0xffffu) << 32u);
 		for (const uint64_t value: {pair, vbase}) {
 			if (value < 0x10000u) {
 				continue;
 			}
 			for (const auto& r: g_watch_ranges) {
 				if (value < r.end && value + 0x10000u > r.begin) {
-					const uint64_t key = value ^ (static_cast<uint64_t>(i) << 56u);
-					bool seen = false;
+					const uint64_t key  = value ^ (static_cast<uint64_t>(i) << 56u);
+					bool           seen = false;
 					for (const auto& l: g_watch_logged) {
 						seen = seen || (l.first == program && l.second == key);
 					}
@@ -4884,14 +4897,17 @@ void BufferCache::WatchScanWords(uint64_t program, std::span<const uint32_t> wor
 					}
 					g_watch_logged.emplace_back(program, key);
 					std::fprintf(stderr,
-					             "[memtrk] watch pointer %016llx ring %d %s[%zu] = 0x%016llx (%s) near consumer range "
+					             "[memtrk] watch pointer %016llx ring %d %s[%zu] = 0x%016llx (%s) "
+					             "near consumer range "
 					             "0x%016llx+0x%llx (tick %llu, seq %llu)\n",
 					             static_cast<unsigned long long>(program), t_watch_ring, kind, i,
-					             static_cast<unsigned long long>(value), value == pair ? "pair" : "v#",
+					             static_cast<unsigned long long>(value),
+					             value == pair ? "pair" : "v#",
 					             static_cast<unsigned long long>(r.begin),
 					             static_cast<unsigned long long>(r.end - r.begin),
 					             static_cast<unsigned long long>(tick),
-					             static_cast<unsigned long long>(g_watch_seq.fetch_add(1, std::memory_order_relaxed)));
+					             static_cast<unsigned long long>(
+					                 g_watch_seq.fetch_add(1, std::memory_order_relaxed)));
 					goto next_word;
 				}
 			}
@@ -4902,7 +4918,7 @@ void BufferCache::WatchScanWords(uint64_t program, std::span<const uint32_t> wor
 
 namespace {
 thread_local std::vector<std::pair<uint64_t, uint64_t>> t_dispatch_written;
-const std::vector<uint64_t>& FlagReadbackList() {
+const std::vector<uint64_t>&                            FlagReadbackList() {
 	static const std::vector<uint64_t> list = [] {
 		std::vector<uint64_t> l;
 		const char*           v = std::getenv("KYTY_FLAG_READBACK");
@@ -4923,7 +4939,8 @@ void BufferCache::SetWatchProgram(uint64_t program, int ring) noexcept {
 	t_dispatch_written.clear();
 }
 
-void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint32_t gy, uint32_t gz) {
+void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint32_t gy,
+                                            uint32_t gz) {
 	const auto& list = FlagReadbackList();
 	if (list.empty() || std::find(list.begin(), list.end(), program) == list.end()) {
 		return;
@@ -4943,7 +4960,7 @@ void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint3
 		uint64_t bytes;
 		uint64_t offset;
 	};
-	std::vector<Item>          items;
+	std::vector<Item>           items;
 	std::vector<vk::BufferCopy> copies;
 	std::vector<vk::Buffer>     sources;
 	uint64_t                    total = 0;
@@ -4951,8 +4968,8 @@ void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint3
 		if (items.size() >= 16) break;
 		const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
 		if (owner == nullptr || !*owner) continue;
-		auto& cached = m_slot_buffers[*owner];
-		const uint64_t bytes = std::min<uint64_t>(size, 128);
+		auto&          cached = m_slot_buffers[*owner];
+		const uint64_t bytes  = std::min<uint64_t>(size, 128);
 		if (!cached.IsInBounds(vaddr, bytes) || cached.Handle() == nullptr) continue;
 		items.push_back({vaddr, bytes, total});
 		copies.push_back({cached.Offset(vaddr), total, bytes});
@@ -4962,22 +4979,24 @@ void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint3
 	if (items.empty()) {
 		return;
 	}
-	auto host = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
-	                                     vk::BufferUsageFlagBits::eTransferDst, total);
+	auto host   = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
+	                                       vk::BufferUsageFlagBits::eTransferDst, total);
 	auto native = m_scheduler.Current().HelperSink();
 	vk::MemoryBarrier before {};
 	before.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
 	before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
-	native.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eTransfer, {}, 1,
-	                       &before, 0, nullptr, 0, nullptr);
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+	                       vk::PipelineStageFlagBits::eTransfer, {}, 1, &before, 0, nullptr, 0,
+	                       nullptr);
 	for (size_t i = 0; i < items.size(); i++) {
 		native.copyBuffer(sources[i], host->Handle(), 1, &copies[i]);
 	}
 	vk::MemoryBarrier after {};
 	after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
 	after.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
-	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eComputeShader, {}, 1,
-	                       &after, 0, nullptr, 0, nullptr);
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                       vk::PipelineStageFlagBits::eComputeShader, {}, 1, &after, 0, nullptr, 0,
+	                       nullptr);
 	const auto tick = m_scheduler.CurrentTick();
 	m_scheduler.DeferOperation([host, items, program, ordinal, gx, gy, gz, tick]() mutable {
 		const auto* bytes = host->Mapped().data();
@@ -4990,7 +5009,8 @@ void BufferCache::FlagReadbackAfterDispatch(uint64_t program, uint32_t gx, uint3
 				out += fmt::format(" {:08x}", word);
 			}
 		}
-		std::fprintf(stderr, "[memtrk] flag readback CS %016llx dispatch %u grid %ux%ux%u tick %llu:%s\n",
+		std::fprintf(stderr,
+		             "[memtrk] flag readback CS %016llx dispatch %u grid %ux%ux%u tick %llu:%s\n",
 		             static_cast<unsigned long long>(program), ordinal, gx, gy, gz,
 		             static_cast<unsigned long long>(tick), out.c_str());
 		host.reset();
@@ -7062,14 +7082,14 @@ void BufferCache::SynchronizeBdaBuffers(const RangeSet& mapped_ranges) {
 	                                             : std::chrono::steady_clock::time_point {};
 	SynchronizeBdaBuffersNow(mapped_ranges);
 	if (m_findbuf_stats) {
-		const auto kind = std::min<size_t>(
-		    4, static_cast<size_t>(m_bda_pass_kind) -
-		           static_cast<size_t>(BufferLookupStats::Part::BdaNone));
+		const auto kind =
+		    std::min<size_t>(4, static_cast<size_t>(m_bda_pass_kind) -
+			                        static_cast<size_t>(BufferLookupStats::Part::BdaNone));
 		m_findbuf_totals.pass_count[kind]++;
-		m_findbuf_totals.pass_ns[kind] += static_cast<uint64_t>(
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
-		                                                         findbuf_start)
-		        .count());
+		m_findbuf_totals.pass_ns[kind] +=
+		    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                              std::chrono::steady_clock::now() - findbuf_start)
+			                          .count());
 		m_findbuf_totals.pass_bytes[kind] += m_bda_pass_upload_bytes - uploaded_before;
 	}
 	if (pass_start != 0) {
@@ -7245,8 +7265,9 @@ void BufferCache::SynchronizeBdaBuffersNow(const RangeSet& mapped_ranges) {
 	}
 
 	// cphot 7: a structure change logged as ranges takes the dirty-log pass over them.
-	if (m_bda_struct_log != 0 && !structure_holds && m_bda_incremental_sync && cpu_epoch != UINT64_MAX &&
-	    structure_epoch != UINT64_MAX && m_bda_scanned_structure_epoch != 0) {
+	if (m_bda_struct_log != 0 && !structure_holds && m_bda_incremental_sync &&
+	    cpu_epoch != UINT64_MAX && structure_epoch != UINT64_MAX &&
+	    m_bda_scanned_structure_epoch != 0) {
 		std::vector<std::pair<uint64_t, uint64_t>> struct_ranges;
 		bool                                       struct_incomplete;
 		{
@@ -7256,7 +7277,8 @@ void BufferCache::SynchronizeBdaBuffersNow(const RangeSet& mapped_ranges) {
 			struct_incomplete       = m_bda_struct_incomplete;
 			m_bda_struct_incomplete = false;
 		}
-		if (!struct_incomplete && !struct_ranges.empty() && m_bda_dirty_log && log_complete && m_bda_log_baseline) {
+		if (!struct_incomplete && !struct_ranges.empty() && m_bda_dirty_log && log_complete &&
+		    m_bda_log_baseline) {
 			for (const auto& [address, size]: struct_ranges) {
 				m_bda_dirtied.Add(address, size);
 			}
@@ -7268,14 +7290,16 @@ void BufferCache::SynchronizeBdaBuffersNow(const RangeSet& mapped_ranges) {
 				m_bda_struct_totals.passes++;
 				if (m_bda_struct_log == 2) {
 					m_bda_struct_totals.verify_checks++;
-					const auto missed = VerifyBdaFullScan(mapped_ranges, cpu_epoch, structure_epoch);
+					const auto missed =
+					    VerifyBdaFullScan(mapped_ranges, cpu_epoch, structure_epoch);
 					if (missed != 0) {
 						m_bda_struct_totals.verify_mismatch_pages += missed;
 						static std::atomic<uint32_t> logged {0};
 						if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
 							std::fprintf(stderr,
 							             "BdaStructLogVerify: a structure-log pass missed %" PRIu64
-							             " CPU-dirty page(s)\n", missed);
+							             " CPU-dirty page(s)\n",
+							             missed);
 						}
 					}
 				}
@@ -7327,10 +7351,11 @@ void BufferCache::ReportBdaStruct() {
 		return;
 	}
 	last = now;
-	std::printf("BdaStructLog 10s totals: struct-log passes %" PRIu64 " full-scan fallbacks %" PRIu64
-	            " verify checks %" PRIu64 " missed pages %" PRIu64 "\n",
-	            m_bda_struct_totals.passes, m_bda_struct_totals.fallbacks, m_bda_struct_totals.verify_checks,
-	            m_bda_struct_totals.verify_mismatch_pages);
+	std::printf("BdaStructLog 10s totals: struct-log passes %" PRIu64
+	            " full-scan fallbacks %" PRIu64 " verify checks %" PRIu64 " missed pages %" PRIu64
+	            "\n",
+	            m_bda_struct_totals.passes, m_bda_struct_totals.fallbacks,
+	            m_bda_struct_totals.verify_checks, m_bda_struct_totals.verify_mismatch_pages);
 	std::fflush(stdout);
 }
 
@@ -7370,9 +7395,11 @@ bool BufferCache::SynchronizeBdaDirtied(const RangeSet& mapped_ranges) {
 	}
 	m_bda_pass_upload_bytes += stats.upload_bytes;
 	const auto old_known = [this](const BdaHotRange& range) {
-		return std::any_of(m_bda_hot_ranges.begin(), m_bda_hot_ranges.end(), [&](const auto& other) {
-			return other.id == range.id && other.address == range.address && other.size == range.size;
-		});
+		return std::any_of(m_bda_hot_ranges.begin(), m_bda_hot_ranges.end(),
+		                   [&](const auto& other) {
+			                   return other.id == range.id && other.address == range.address &&
+							          other.size == range.size;
+		                   });
 	};
 	if (m_findbuf_mode == 0 || found.empty()) {
 		for (const auto& range: found) {
@@ -7408,8 +7435,9 @@ bool BufferCache::SynchronizeBdaDirtied(const RangeSet& mapped_ranges) {
 				m_findbuf_totals.dedupe_checks++;
 				if (fast_known != old_known(range)) {
 					m_findbuf_totals.dedupe_mismatches++;
-					std::fprintf(stderr, "FindbufVerify: hot-run dedupe mismatch addr=0x%016" PRIx64
-					                     " size=0x%" PRIx64 "\n",
+					std::fprintf(stderr,
+					             "FindbufVerify: hot-run dedupe mismatch addr=0x%016" PRIx64
+					             " size=0x%" PRIx64 "\n",
 					             range.address, range.size);
 				}
 			}
@@ -7528,15 +7556,16 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 		return std::pair<uint64_t, uint64_t> {buffer.CpuAddress(),
 		                                      buffer.CpuAddress() + buffer.Size()};
 	};
-	const auto fault_before = m_memory_tracker.FaultMutationEpoch();
+	const auto                      fault_before = m_memory_tracker.FaultMutationEpoch();
 	std::vector<BdaScanWalk::Visit> visits;
 	BdaScanWalk::CollectDirtyVisits(
 	    m_buffers, vaddr, end, bounds,
 	    [&](auto&& callback) {
-		    m_memory_tracker.ForEachCpuDirtyRunRelaxed(vaddr, size, [&](uint64_t begin, uint64_t finish) {
-			    m_findbuf_totals.runs++;
-			    callback(begin, finish);
-		    });
+		    m_memory_tracker.ForEachCpuDirtyRunRelaxed(vaddr, size,
+			                                           [&](uint64_t begin, uint64_t finish) {
+			                                               m_findbuf_totals.runs++;
+			                                               callback(begin, finish);
+		                                               });
 	    },
 	    visits);
 	if (m_findbuf_mode == 1) {
@@ -7568,14 +7597,14 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 	    m_buffers, vaddr, end, bounds, [&](auto it, uint64_t start, uint64_t finish) {
 		    MemoryTracker::DirtyState state;
 		    bool                      cpu_only = false;
-		    const bool decided = QueryUploadSnapshot(m_memory_tracker, start, finish - start, state,
-		                                             cpu_only);
-		    const bool needs   = !decided || state.cpu;
+		    const bool                decided =
+		        QueryUploadSnapshot(m_memory_tracker, start, finish - start, state, cpu_only);
+		    const bool needs = !decided || state.cpu;
 		    while (next < visits.size() && visits[next].key < it->first) {
 			    next++;
 		    }
 		    const bool listed = next < visits.size() && visits[next].key == it->first &&
-		                        visits[next].start == start && visits[next].finish == finish;
+			                    visits[next].start == start && visits[next].finish == finish;
 		    if (listed) {
 			    matched++;
 		    }
@@ -7588,10 +7617,11 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 				    static std::atomic<uint32_t> logged {0};
 				    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
 					    std::fprintf(stderr,
-					                 "FindbufVerify: the dirty walk missed buffer 0x%016" PRIx64
-					                 " range 0x%016" PRIx64 "+0x%" PRIx64 " (walk 0x%016" PRIx64
-					                 "+0x%" PRIx64 ", decided %d)\n",
-					                 it->first, start, finish - start, vaddr, size, decided ? 1 : 0);
+						             "FindbufVerify: the dirty walk missed buffer 0x%016" PRIx64
+						             " range 0x%016" PRIx64 "+0x%" PRIx64 " (walk 0x%016" PRIx64
+						             "+0x%" PRIx64 ", decided %d)\n",
+						             it->first, start, finish - start, vaddr, size,
+						             decided ? 1 : 0);
 				    }
 			    } else {
 				    m_findbuf_totals.verify_races++;
@@ -7605,7 +7635,7 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 		    }
 		    m_findbuf_totals.old_visits++;
 		    (void)SynchronizeBuffer(m_slot_buffers[it->second], start, finish - start, false, false,
-		                            stats);
+			                        stats);
 	    });
 	m_findbuf_totals.fast_visits += visits.size();
 	if (matched != visits.size()) {
@@ -7613,10 +7643,11 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size, BdaSy
 		m_findbuf_totals.verify_mismatches += visits.size() - matched;
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-			std::fprintf(stderr,
-			             "FindbufVerify: the dirty walk listed %zu visit(s) the old walk does not make "
-			             "(walk 0x%016" PRIx64 "+0x%" PRIx64 ")\n",
-			             visits.size() - matched, vaddr, size);
+			std::fprintf(
+			    stderr,
+			    "FindbufVerify: the dirty walk listed %zu visit(s) the old walk does not make "
+			    "(walk 0x%016" PRIx64 "+0x%" PRIx64 ")\n",
+			    visits.size() - matched, vaddr, size);
 		}
 	}
 }
@@ -7635,14 +7666,14 @@ void BufferCache::FindbufReport() {
 	if (elapsed < 10.0) {
 		return;
 	}
-	const auto& t = m_findbuf_totals;
-	const auto& r = m_findbuf_reported;
+	const auto&              t        = m_findbuf_totals;
+	const auto&              r        = m_findbuf_reported;
 	static const char* const kinds[6] = {"none", "hot", "log", "full", "fullnew", "skip"};
-	char        text[2048];
-	int         n = std::snprintf(text, sizeof(text), "Findbuf %.0fs (%s): passes", elapsed,
-	                              m_findbuf_mode == 2   ? "verify"
-	                              : m_findbuf_mode == 1 ? "fast"
-	                                                    : "off");
+	char                     text[2048];
+	int n = std::snprintf(text, sizeof(text), "Findbuf %.0fs (%s): passes", elapsed,
+	                      m_findbuf_mode == 2   ? "verify"
+	                      : m_findbuf_mode == 1 ? "fast"
+	                                            : "off");
 	for (size_t k = 0; k < 6 && n > 0 && static_cast<size_t>(n) < sizeof(text); k++) {
 		const auto count = t.pass_count[k] - r.pass_count[k];
 		const auto ms    = static_cast<double>(t.pass_ns[k] - r.pass_ns[k]) / 1e6;
@@ -7656,15 +7687,15 @@ void BufferCache::FindbufReport() {
 		              " | walks %" PRIu64 " fast %" PRIu64 " fallback %" PRIu64
 		              " | visits old %" PRIu64 " (dirty %" PRIu64 ") fast %" PRIu64 " runs %" PRIu64
 		              " | hot pages compared %" PRIu64 " | verify walks %" PRIu64
-		              " mismatches %" PRIu64 " races %" PRIu64 " extra %" PRIu64
-		              " dedupe %" PRIu64 "/%" PRIu64 " mismatched (total mismatches %" PRIu64 ")",
-		              t.walks - r.walks, t.fast_walks - r.fast_walks, t.fallback_walks - r.fallback_walks,
-		              t.old_visits - r.old_visits, t.old_dirty_visits - r.old_dirty_visits,
-		              t.fast_visits - r.fast_visits, t.runs - r.runs, t.hot_pages - r.hot_pages,
-		              t.verify_walks - r.verify_walks, t.verify_mismatches - r.verify_mismatches,
-		              t.verify_races - r.verify_races, t.verify_extra - r.verify_extra,
-		              t.dedupe_mismatches - r.dedupe_mismatches, t.dedupe_checks - r.dedupe_checks,
-		              t.verify_mismatches + t.dedupe_mismatches);
+		              " mismatches %" PRIu64 " races %" PRIu64 " extra %" PRIu64 " dedupe %" PRIu64
+		              "/%" PRIu64 " mismatched (total mismatches %" PRIu64 ")",
+		              t.walks - r.walks, t.fast_walks - r.fast_walks,
+		              t.fallback_walks - r.fallback_walks, t.old_visits - r.old_visits,
+		              t.old_dirty_visits - r.old_dirty_visits, t.fast_visits - r.fast_visits,
+		              t.runs - r.runs, t.hot_pages - r.hot_pages, t.verify_walks - r.verify_walks,
+		              t.verify_mismatches - r.verify_mismatches, t.verify_races - r.verify_races,
+		              t.verify_extra - r.verify_extra, t.dedupe_mismatches - r.dedupe_mismatches,
+		              t.dedupe_checks - r.dedupe_checks, t.verify_mismatches + t.dedupe_mismatches);
 	}
 	std::printf("%s\n", text);
 	std::fflush(stdout);

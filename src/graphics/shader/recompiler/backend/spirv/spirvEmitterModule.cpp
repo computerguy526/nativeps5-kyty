@@ -1,13 +1,11 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/recompiler/LodStatsEarlyTests.h"
-
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
-#include <atomic>
-#include <cstdio>
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cinttypes>
 #include <cstdio>
@@ -621,10 +619,12 @@ void DefineInputs(EmitterState& state) {
 					    state, TypeU32Vector(state, 4), spv::StorageClassInput,
 					    fmt::format("{}_prim{}", input.debug_name, vertex).c_str());
 					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
-					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationPerPrimitiveEXT);
+					state.builder.AddAnnotation(spv::OpDecorate, variable,
+					                            spv::DecorationPerPrimitiveEXT);
 					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation,
-					                            verts ? SarosNaniteRawVertexLocation(location, vertex)
-					                                  : SarosNaniteRawLocation(location));
+					                            verts
+					                                ? SarosNaniteRawVertexLocation(location, vertex)
+													: SarosNaniteRawLocation(location));
 					input.vertex_variable_ids[vertex] = variable;
 				}
 				if (!verts) {
@@ -635,12 +635,16 @@ void DefineInputs(EmitterState& state) {
 				input.saros_raw_u32 = true;
 				static std::atomic<uint32_t> logged {0};
 				if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-					std::printf("[sarosnanite] ps 0x%016llx param %u (location %u) reads per-primitive raw %s "
+					std::printf("[sarosnanite] ps 0x%016llx param %u (location %u) reads "
+					            "per-primitive raw %s "
 					            "at location %u%s\n",
-					            static_cast<unsigned long long>(state.program.shader_hash), input.location,
-					            location, verts ? "vertices" : "AND",
-					            verts ? SarosNaniteRawVertexLocation(location, 0) : SarosNaniteRawLocation(location),
-					            verts || SarosNaniteRawAnd(location) ? "" : " (NOT forwarded by the mesh program)");
+					            static_cast<unsigned long long>(state.program.shader_hash),
+					            input.location, location, verts ? "vertices" : "AND",
+					            verts ? SarosNaniteRawVertexLocation(location, 0)
+					                  : SarosNaniteRawLocation(location),
+					            verts || SarosNaniteRawAnd(location)
+					                ? ""
+									: " (NOT forwarded by the mesh program)");
 				}
 				continue;
 			}

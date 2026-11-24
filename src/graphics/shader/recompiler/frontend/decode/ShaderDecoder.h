@@ -928,9 +928,9 @@ Program DecodeFrontProgram(std::span<const uint32_t> front);
 void DecodeProgram(std::span<const uint32_t> code, Program& program, bool decode_bvh = false);
 // KYTY_SKIP_UNDECODABLE=1: unknown scalar operands decode as Null and are recorded; TakeUndecodable
 // returns (and clears) the first one of this thread since the last call.
-bool SkipUndecodable();
-void NoteUndecodable(uint32_t pc, uint32_t code);
-bool TakeUndecodable(uint32_t& pc, uint32_t& code);
+bool               SkipUndecodable();
+void               NoteUndecodable(uint32_t pc, uint32_t code);
+bool               TakeUndecodable(uint32_t& pc, uint32_t& code);
 [[nodiscard]] bool IsBvhIntersect(const Instruction& inst);
 bool IsConditionalBranch(Opcode opcode);
 bool IsDirectBranch(Opcode opcode);

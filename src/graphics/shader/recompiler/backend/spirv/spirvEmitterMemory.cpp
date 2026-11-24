@@ -616,27 +616,29 @@ void StoreWordInBounds(ValueEmitContext& ctx, const MemoryResourceAccess& resour
 // reads zero / ignores the store. Unaligned or out-of-range accesses are inactive.
 template <typename Fn>
 void ForEachLocalFlatAccess(ValueEmitContext& ctx, const IR::Inst& inst, Fn&& emit) {
-	auto& state = ctx.state;
-	auto  mem   = ctx.Memory(inst);
-	auto  high  = ctx.Arg(inst, 2);
+	auto&      state     = ctx.state;
+	auto       mem       = ctx.Memory(inst);
+	auto       high      = ctx.Arg(inst, 2);
 	const auto immediate = static_cast<int32_t>(mem.offset);
 	uint32_t   low       = ctx.Arg(inst, 1);
 	if (immediate != 0) {
 		low = AddU64Low(state, low, high, ConstantU32(state, static_cast<uint32_t>(immediate)),
 		                ConstantU32(state, immediate < 0 ? UINT32_MAX : 0u), high);
 	}
-	const auto index   = Binary(state, spv::OpShiftRightLogical, TypeU32(state), low,
-	                            ConstantU32(state, 2));
-	const auto aligned = Binary(state, spv::OpIEqual, TypeBool(state), ConstantU32(state, 0),
-	    Binary(state, spv::OpBitwiseAnd, TypeU32(state), low, ConstantU32(state, 3)));
+	const auto index =
+	    Binary(state, spv::OpShiftRightLogical, TypeU32(state), low, ConstantU32(state, 2));
+	const auto aligned =
+	    Binary(state, spv::OpIEqual, TypeBool(state), ConstantU32(state, 0),
+		       Binary(state, spv::OpBitwiseAnd, TypeU32(state), low, ConstantU32(state, 3)));
 	for (const auto kind: {IR::ResourceKind::Scratch, IR::ResourceKind::Lds}) {
 		mem.kind            = kind;
 		const auto resource = PrepareMemoryResourceAccess(state, mem);
 		const auto aperture = kind == IR::ResourceKind::Scratch ? Decoder::PrivateApertureHigh
-		                                                       : Decoder::SharedApertureHigh;
-		const auto selected = Binary(state, spv::OpIEqual, TypeBool(state), high,
-		                             ConstantU32(state, aperture));
-		const auto valid = AndCondition(state, aligned,
+		                                                        : Decoder::SharedApertureHigh;
+		const auto selected =
+		    Binary(state, spv::OpIEqual, TypeBool(state), high, ConstantU32(state, aperture));
+		const auto valid = AndCondition(
+		    state, aligned,
 		    AndCondition(state, selected, EmitMemoryElementInBounds(state, resource, index)));
 		emit(resource, index, valid);
 	}
@@ -645,24 +647,26 @@ void ForEachLocalFlatAccess(ValueEmitContext& ctx, const IR::Inst& inst, Fn&& em
 uint32_t LoadLocalFlat(ValueEmitContext& ctx, const IR::Inst& inst) {
 	return EmitValueOrZeroIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
 		uint32_t result = 0;
-		ForEachLocalFlatAccess(ctx, inst, [&](const auto& resource, uint32_t index, uint32_t valid) {
-			const auto value = EmitValueOrZeroIfCondition(ctx.state, valid, [&]() {
-				return LoadWordInBounds(ctx, resource, index);
-			});
-			result = result == 0 ? value
-			                     : Binary(ctx.state, spv::OpBitwiseOr, TypeU32(ctx.state), result, value);
-		});
+		ForEachLocalFlatAccess(
+		    ctx, inst, [&](const auto& resource, uint32_t index, uint32_t valid) {
+			    const auto value = EmitValueOrZeroIfCondition(
+			        ctx.state, valid, [&]() { return LoadWordInBounds(ctx, resource, index); });
+			    result = result == 0 ? value
+				                     : Binary(ctx.state, spv::OpBitwiseOr, TypeU32(ctx.state),
+				                              result, value);
+		    });
 		return result;
 	});
 }
 
 void StoreLocalFlat(ValueEmitContext& ctx, const IR::Inst& inst) {
 	EmitIfCondition(ctx.state, ctx.Arg(inst, inst.NumArgs() - 1), [&]() {
-		ForEachLocalFlatAccess(ctx, inst, [&](const auto& resource, uint32_t index, uint32_t valid) {
-			EmitIfCondition(ctx.state, valid, [&]() {
-				StoreWordInBounds(ctx, resource, index, ctx.Arg(inst, inst.NumArgs() - 2));
-			});
-		});
+		ForEachLocalFlatAccess(
+		    ctx, inst, [&](const auto& resource, uint32_t index, uint32_t valid) {
+			    EmitIfCondition(ctx.state, valid, [&]() {
+				    StoreWordInBounds(ctx, resource, index, ctx.Arg(inst, inst.NumArgs() - 2));
+			    });
+		    });
 	});
 }
 
@@ -1732,8 +1736,8 @@ uint32_t EmitAtomic32(ValueEmitContext& ctx, const IR::Inst& inst) {
 }
 
 // One 64-bit buffer atomic on `pointer`. The forms of atomic64Lowering.h (a store whose result is
-// unused, a load of the unchanged word) are always emitted as plain aligned 64-bit accesses: exact on
-// any device, and the only forms KosmicKrisp could not take natively even with its opt-in
+// unused, a load of the unchanged word) are always emitted as plain aligned 64-bit accesses: exact
+// on any device, and the only forms KosmicKrisp could not take natively even with its opt-in
 // shaderBufferInt64Atomics (NPS5_KK_BUFFER_INT64=1, int64img: Metal has only result-less 64-bit
 // min/max). Without the feature SpirvEmitter.cpp refuses a program with any other form.
 uint32_t EmitAtomic64Operation(ValueEmitContext& ctx, const IR::Inst& inst, uint32_t pointer) {

@@ -30,25 +30,27 @@ struct Fsr3Frame {
 			return false;
 		}
 	}
-	if (w[0] > w[8] || w[1] > w[9] || w[4] != w[10] || w[5] != w[11] || w[0] > w[4] || w[1] > w[5]) {
+	if (w[0] > w[8] || w[1] > w[9] || w[4] != w[10] || w[5] != w[11] || w[0] > w[4] ||
+	    w[1] > w[5]) {
 		return false;
 	}
 	float f[24];
 	std::memcpy(f, w, sizeof(f));
-	if (!std::isfinite(f[16]) || !std::isfinite(f[17]) || std::fabs(f[16]) > 1.0f || std::fabs(f[17]) > 1.0f ||
-	    !std::isfinite(f[20]) || !std::isfinite(f[21]) || f[20] == 0.0f || f[21] == 0.0f) {
+	if (!std::isfinite(f[16]) || !std::isfinite(f[17]) || std::fabs(f[16]) > 1.0f ||
+	    std::fabs(f[17]) > 1.0f || !std::isfinite(f[20]) || !std::isfinite(f[21]) ||
+	    f[20] == 0.0f || f[21] == 0.0f) {
 		return false;
 	}
 	if (std::fabs(f[22] - static_cast<float>(w[0]) / static_cast<float>(w[4])) > 0.01f ||
 	    std::fabs(f[23] - static_cast<float>(w[1]) / static_cast<float>(w[5])) > 0.01f) {
 		return false;
 	}
-	out.in_w  = w[0];
-	out.in_h  = w[1];
-	out.out_w = w[4];
-	out.out_h = w[5];
-	out.max_w = w[8];
-	out.max_h = w[9];
+	out.in_w        = w[0];
+	out.in_h        = w[1];
+	out.out_w       = w[4];
+	out.out_h       = w[5];
+	out.max_w       = w[8];
+	out.max_h       = w[9];
 	out.jitter[0]   = f[16];
 	out.jitter[1]   = f[17];
 	out.mv_scale[0] = f[20];

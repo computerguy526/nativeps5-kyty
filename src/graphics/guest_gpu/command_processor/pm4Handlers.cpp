@@ -1495,7 +1495,10 @@ KYTY_CP_OP_PARSER(CpOpCondExec) {
 			uint32_t dispatches = 0, indirect = 0, draws = 0, packets = 0, ibs = 0;
 			for (uint32_t i = payload_dw; i < payload_dw + exec_count;) {
 				const uint32_t header = buffer[i];
-				if ((header >> 30u) != 3u) { i++; continue; }
+				if ((header >> 30u) != 3u) {
+					i++;
+					continue;
+				}
 				const uint32_t opcode = (header >> 8u) & 0xffu;
 				packets++;
 				if (opcode == Pm4::IT_DISPATCH_DIRECT) dispatches++;
@@ -1503,16 +1506,18 @@ KYTY_CP_OP_PARSER(CpOpCondExec) {
 				if (opcode == Pm4::IT_INDIRECT_BUFFER) ibs++;
 				if (opcode == Pm4::IT_DRAW_INDEX_2 || opcode == Pm4::IT_DRAW_INDEX_AUTO ||
 				    opcode == Pm4::IT_DRAW_INDEX_OFFSET_2 || opcode == Pm4::IT_DRAW_INDIRECT ||
-				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT || opcode == Pm4::IT_DRAW_INDIRECT_MULTI ||
+				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT ||
+				    opcode == Pm4::IT_DRAW_INDIRECT_MULTI ||
 				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT_MULTI) {
 					draws++;
 				}
 				i += KYTY_PM4_LEN(header);
 			}
 			std::fprintf(stderr,
-			             "[sarosn] condexec guard addr 0x%010llx %u dw: %u packets, %u dispatch, %u dispatch-indirect, %u draws, %u ib -> %s\n",
-			             static_cast<unsigned long long>(addr), exec_count, packets, dispatches, indirect, draws, ibs,
-			             exec ? "exec" : "SKIP");
+			             "[sarosn] condexec guard addr 0x%010llx %u dw: %u packets, %u dispatch, "
+			             "%u dispatch-indirect, %u draws, %u ib -> %s\n",
+			             static_cast<unsigned long long>(addr), exec_count, packets, dispatches,
+			             indirect, draws, ibs, exec ? "exec" : "SKIP");
 		}
 	}
 	if (!exec) {

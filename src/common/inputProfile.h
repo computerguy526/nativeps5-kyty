@@ -41,14 +41,14 @@ namespace InputProfile {
 
 // Value class bits of one dword.
 enum : uint32_t {
-	kZero     = 1u << 0u,  // 0
-	kSmallInt = 1u << 1u,  // 1..255
-	kInt16    = 1u << 2u,  // 256..65535
-	kNegInt   = 1u << 3u,  // -65536..-1 as int32
-	kFloatPos = 1u << 4u,  // normal float > 0 with |exponent| <= 40
-	kFloatNeg = 1u << 5u,  // normal float < 0 with |exponent| <= 40
-	kFloatBig = 1u << 6u,  // normal float outside that exponent range (and not an int class above)
-	kDenorm   = 1u << 7u,  // f32 denormal (not an int class above)
+	kZero     = 1u << 0u, // 0
+	kSmallInt = 1u << 1u, // 1..255
+	kInt16    = 1u << 2u, // 256..65535
+	kNegInt   = 1u << 3u, // -65536..-1 as int32
+	kFloatPos = 1u << 4u, // normal float > 0 with |exponent| <= 40
+	kFloatNeg = 1u << 5u, // normal float < 0 with |exponent| <= 40
+	kFloatBig = 1u << 6u, // normal float outside that exponent range (and not an int class above)
+	kDenorm   = 1u << 7u, // f32 denormal (not an int class above)
 	kNan      = 1u << 8u,
 	kInf      = 1u << 9u,
 	kNegZero  = 1u << 10u, // 0x80000000
@@ -67,42 +67,42 @@ struct DwordStat {
 	float    fmin    = 0.0f; // valid when flags has a float class
 	float    fmax    = 0.0f;
 	uint32_t last    = 0;
-	uint32_t changes = 0;     // samples whose value differs from the previous sample
+	uint32_t changes = 0; // samples whose value differs from the previous sample
 
 	void Add(uint32_t v) noexcept;
 };
 
 struct Config {
-	bool        on            = false;
-	std::string out           = "kyty_input_profile.jsonl";
-	uint32_t    first         = 8;
-	uint32_t    max_samples   = 64;
-	uint32_t    interval_ms   = 1000;
-	uint32_t    stat_bytes    = 4096;      // per-position statistics
-	uint32_t    read_bytes    = 64 * 1024; // whole read window (blocks after stat_bytes)
-	uint32_t    raw_bytes     = 16 * 1024; // raw snapshot length
-	uint32_t    raw           = 2;
-	uint64_t    raw_budget    = uint64_t {128} * 1024 * 1024;
-	uint32_t    max_slots     = 20000;
-	uint32_t    flush_s       = 30;
-	uint32_t    vertex_count  = 64;
+	bool        on           = false;
+	std::string out          = "kyty_input_profile.jsonl";
+	uint32_t    first        = 8;
+	uint32_t    max_samples  = 64;
+	uint32_t    interval_ms  = 1000;
+	uint32_t    stat_bytes   = 4096;      // per-position statistics
+	uint32_t    read_bytes   = 64 * 1024; // whole read window (blocks after stat_bytes)
+	uint32_t    raw_bytes    = 16 * 1024; // raw snapshot length
+	uint32_t    raw          = 2;
+	uint64_t    raw_budget   = uint64_t {128} * 1024 * 1024;
+	uint32_t    max_slots    = 20000;
+	uint32_t    flush_s      = 30;
+	uint32_t    vertex_count = 64;
 
 	static Config FromEnv();
 };
 
 // One input slot of one shader.
 struct Slot {
-	std::vector<DwordStat>             dw;  // per dword position (stat window)
-	std::vector<DwordStat>             blk; // per kBlockDwords block after the stat window
-	uint32_t                           samples   = 0;
-	uint32_t                           unread    = 0; // samples without readable bytes (GPU-modified, unmapped)
-	uint64_t                           bytes_max = 0; // largest bound size seen
-	uint32_t                           info      = 0; // kind-specific flags
-	uint32_t                           stride    = 0; // 'V': fold stride in bytes (0 = linear)
-	std::vector<std::vector<uint32_t>> metas;         // distinct descriptor/meta words (up to 4)
-	std::vector<std::string>           raw;           // raw snapshots (bytes)
-	bool                               dirty     = true;
-	std::string                        line;          // cached serialisation
+	std::vector<DwordStat> dw;  // per dword position (stat window)
+	std::vector<DwordStat> blk; // per kBlockDwords block after the stat window
+	uint32_t               samples   = 0;
+	uint32_t               unread    = 0; // samples without readable bytes (GPU-modified, unmapped)
+	uint64_t               bytes_max = 0; // largest bound size seen
+	uint32_t               info      = 0; // kind-specific flags
+	uint32_t               stride    = 0; // 'V': fold stride in bytes (0 = linear)
+	std::vector<std::vector<uint32_t>> metas; // distinct descriptor/meta words (up to 4)
+	std::vector<std::string>           raw;   // raw snapshots (bytes)
+	bool                               dirty = true;
+	std::string                        line; // cached serialisation
 };
 
 // Statistics registry (thread-safe). Production code uses Global(); tests make their own.
@@ -116,13 +116,15 @@ public:
 
 	// Adds one sample of a data slot. data may be null (meta only, counted as unread).
 	// stride != 0 folds the bytes by stride (vertex buffers). valid_chunks: bit c set = bytes
-	// [c * kChunkBytes, (c + 1) * kChunkBytes) are readable (others are skipped; bit 31 covers the rest).
+	// [c * kChunkBytes, (c + 1) * kChunkBytes) are readable (others are skipped; bit 31 covers the
+	// rest).
 	void AddData(uint64_t hash, uint32_t stage, char kind, uint32_t slot, const void* data,
 	             size_t bytes, uint64_t bound_bytes, const uint32_t* meta, uint32_t meta_n,
 	             uint32_t info, uint32_t stride = 0, uint32_t valid_chunks = ~0u);
 	// Descriptor-only slot ('T', 'S', 'W').
-	void AddDescriptor(uint64_t hash, uint32_t stage, char kind, uint32_t slot, const uint32_t* meta,
-	                   uint32_t meta_n, uint64_t bound_bytes = 0, uint32_t info = 0);
+	void AddDescriptor(uint64_t hash, uint32_t stage, char kind, uint32_t slot,
+	                   const uint32_t* meta, uint32_t meta_n, uint64_t bound_bytes = 0,
+	                   uint32_t info = 0);
 
 	// Whole profile as JSON lines (re-serialises only the slots changed since the last call).
 	[[nodiscard]] std::string Serialize();
@@ -139,16 +141,16 @@ private:
 		uint32_t samples = 0;
 		uint64_t last_ms = 0;
 	};
-	Slot* Find(const Key& key);
+	Slot*       Find(const Key& key);
 	static void AddMeta(Slot& s, const uint32_t* meta, uint32_t meta_n);
 	void        SerializeSlot(const Key& key, Slot& s);
 
-	Config                                                 m_cfg;
-	std::mutex                                             m_mutex;
-	std::map<Key, std::unique_ptr<Slot>>                   m_slots;
+	Config                                                   m_cfg;
+	std::mutex                                               m_mutex;
+	std::map<Key, std::unique_ptr<Slot>>                     m_slots;
 	std::map<std::tuple<uint64_t, uint32_t, uint32_t>, Gate> m_gates;
-	std::atomic<uint64_t>                                  m_raw_bytes {0};
-	uint32_t                                               m_dropped = 0;
+	std::atomic<uint64_t>                                    m_raw_bytes {0};
+	uint32_t                                                 m_dropped = 0;
 };
 
 namespace Detail {

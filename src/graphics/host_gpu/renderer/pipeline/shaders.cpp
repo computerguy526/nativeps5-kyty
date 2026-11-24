@@ -1,14 +1,14 @@
-#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "common/assert.h"
-#include "graphics/compileProgress.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
+#include "graphics/compileProgress.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -16,22 +16,22 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/perVertexShader.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
-#include "graphics/shader/perVertexShader.h"
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
-#include <unordered_map>
 #include <mutex>
+#include <unordered_map>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
-#include <dlfcn.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <dlfcn.h>
 #include <limits>
 #include <span>
 #include <vector>
@@ -825,7 +825,8 @@ KkTagFn KkTagFunction() {
 			}
 		}
 #endif
-		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n", sym != nullptr ? "found" : "NOT found");
+		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n",
+		             sym != nullptr ? "found" : "NOT found");
 		return reinterpret_cast<KkTagFn>(sym);
 	}();
 	return fn;
@@ -839,7 +840,8 @@ void KkTagRegisterModule(vk::ShaderModule module, uint64_t program_hash) {
 		return;
 	}
 	std::scoped_lock lock(g_kk_tag_mutex);
-	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] = program_hash;
+	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] =
+	    program_hash;
 }
 
 KkTagScope::KkTagScope(vk::ShaderModule module) {
@@ -850,7 +852,8 @@ KkTagScope::KkTagScope(vk::ShaderModule module) {
 	uint64_t hash = 0;
 	{
 		std::scoped_lock lock(g_kk_tag_mutex);
-		const auto it = g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
+		const auto       it =
+		    g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
 		if (it != g_kk_tag_modules.end()) {
 			hash = it->second;
 		}

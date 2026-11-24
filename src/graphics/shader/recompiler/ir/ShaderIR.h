@@ -37,7 +37,8 @@ enum class ResourceKind {
 	Gds,
 	Image,
 	Sampler,
-	FlatLocal // FLAT whose aperture tag is a constant LDS/scratch tag (appended: keeps values stable)
+	FlatLocal // FLAT whose aperture tag is a constant LDS/scratch tag (appended: keeps values
+	          // stable)
 };
 
 [[nodiscard]] constexpr bool IsAddressResourceKind(ResourceKind kind) {
@@ -214,9 +215,10 @@ struct ImageResource {
 	uint32_t                      indirect_root     = NoIndirectImage;
 	uint32_t                      indirect_mapping_offset   = 0;
 	uint32_t                      indirect_search_iterations = 0;
-	// sarosperf2 (KYTY_SAROS_HS_DYNIDX): the group head of a canonical candidate group; NoIndirectImage
-	// otherwise. Every slot of the group (roots, children, padding) is a candidate of each root of it.
-	uint32_t                      indirect_group    = NoIndirectImage;
+	// sarosperf2 (KYTY_SAROS_HS_DYNIDX): the group head of a canonical candidate group;
+	// NoIndirectImage otherwise. Every slot of the group (roots, children, padding) is a candidate
+	// of each root of it.
+	uint32_t                      indirect_group = NoIndirectImage;
 	std::vector<uint32_t>         indirect_resources;
 
 	bool operator==(const ImageResource& other) const = default;

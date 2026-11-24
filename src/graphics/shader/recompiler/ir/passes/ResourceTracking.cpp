@@ -73,9 +73,11 @@ Value CanonicalizeSampleAdjustDword3(Value value) {
 bool IsNoncanonicalFlatAddress(Value high, Value active) {
 	high   = high.Resolve();
 	active = active.Resolve();
-	// A predicated VGPR write supplies its new value on exactly the lanes which execute this access.
+	// A predicated VGPR write supplies its new value on exactly the lanes which execute this
+	// access.
 	while (const auto* select = high.TryInstruction()) {
-		if (select->GetOpcode() != ValueOpcode::SelectU32 || select->Arg(0).Resolve() != active) break;
+		if (select->GetOpcode() != ValueOpcode::SelectU32 || select->Arg(0).Resolve() != active)
+			break;
 		high = select->Arg(1).Resolve();
 	}
 	uint32_t lower = 0, upper = UINT32_MAX;
@@ -88,8 +90,12 @@ bool IsNoncanonicalFlatAddress(Value high, Value active) {
 		for (size_t index = 0; index < inst->NumArgs(); ++index) {
 			const auto value = inst->Arg(index).Resolve();
 			if (!value.IsImmediate() || value.GetType() != Type::U32) continue;
-			if (count++ == 0) lower = upper = value.U32();
-			else { lower = std::min(lower, value.U32()); upper = std::max(upper, value.U32()); }
+			if (count++ == 0)
+				lower = upper = value.U32();
+			else {
+				lower = std::min(lower, value.U32());
+				upper = std::max(upper, value.U32());
+			}
 		}
 		if (count < 2) return false;
 	}
@@ -918,7 +924,8 @@ private:
 	bool RejectIndirect(int line, uint32_t pc) const {
 		static const bool log = std::getenv("KYTY_SAROS_HANDSHADERS_LOG") != nullptr;
 		if (log && SarosHandShader(m_program.shader_hash)) {
-			std::fprintf(stderr, "[sarosshade] 0x%016llx pc=0x%x indirect image refused at line %d\n",
+			std::fprintf(stderr,
+			             "[sarosshade] 0x%016llx pc=0x%x indirect image refused at line %d\n",
 			             static_cast<unsigned long long>(m_program.shader_hash), pc, line);
 		}
 		return false;
@@ -969,11 +976,11 @@ private:
 			// sarosshade (listed hashes only): one heap T# feeds several image operations, each
 			// through its own handle built from the same eight reads. Every such handle gets the
 			// same plan, so the read is still used by handles only.
-			const bool shared_handles = SarosHandShader(m_program.shader_hash) &&
-			    !read->Uses().empty() &&
+			const bool shared_handles =
+			    SarosHandShader(m_program.shader_hash) && !read->Uses().empty() &&
 			    std::ranges::all_of(read->Uses(), [&](const Use& use) {
 				    return use.user->GetOpcode() == ValueOpcode::GetImageResource &&
-				           use.user->NumArgs() == 8u && use.operand == dword;
+					       use.user->NumArgs() == 8u && use.operand == dword;
 			    });
 			if (!shared_handles && !UsesOnly(*read, image_users)) {
 				// A T# word the shader also uses as a value stays a real read through the table;
@@ -1024,7 +1031,8 @@ private:
 				return RejectIndirect(__LINE__, pc);
 			}
 			if ((table_offset & 3u) != 0u ||
-			    (bitscan && table_offset > UINT32_MAX - (32u * 32u - 1u))) return RejectIndirect(__LINE__, pc);
+			    (bitscan && table_offset > UINT32_MAX - (32u * 32u - 1u)))
+				return RejectIndirect(__LINE__, pc);
 		} else {
 			auto* material_read = key.Resolve().TryInstruction();
 			uint32_t material_memory_index = 0;
@@ -1367,10 +1375,12 @@ private:
 			}
 			if (memory.kind == ResourceKind::Flat && memory.address_is_full &&
 			    IsNoncanonicalFlatAddress(inst.Arg(2), inst.Arg(inst.NumArgs() - 1))) {
-				// Flat pointer into the LDS/scratch aperture: lowered by the emitter per aperture tag.
+				// Flat pointer into the LDS/scratch aperture: lowered by the emitter per aperture
+				// tag.
 				ValidateAddressHandle(inst.Arg(0), flags.pc);
 				if (memory.data_bits != 32u || m_program.scratch_dwords == 0) {
-					Fail(flags.pc, "local FLAT access requires DWORD data and per-thread scratch storage");
+					Fail(flags.pc,
+					     "local FLAT access requires DWORD data and per-thread scratch storage");
 				}
 				m_program.memory_info[flags.index].kind = ResourceKind::FlatLocal;
 				return;

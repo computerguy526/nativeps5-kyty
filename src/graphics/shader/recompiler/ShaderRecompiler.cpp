@@ -1,14 +1,13 @@
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
-#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/Tessellation.h"
-#include "graphics/shader/recompiler/backend/spirv/atomic64Lowering.h"
 #include "graphics/shader/recompiler/backend/msl/MslBindingFromIr.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/backend/spirv/atomic64Lowering.h"
 #include "graphics/shader/recompiler/frontend/cfg/ShaderCFG.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/frontend/translate/Translate.h"
@@ -25,6 +24,7 @@
 #include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 #include "graphics/shader/recompiler/ir/passes/SsaRewrite.h"
 #include "graphics/shader/recompiler/ir/passes/WriteRangeAnalysis.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <algorithm>
 #include <array>
@@ -560,11 +560,12 @@ Decoder::Program DecodeFusedProgram(std::span<const uint32_t> front, std::span<c
 // a descriptor it computes at runtime that has no BDA path (see TrackResources; without the switch
 // its flat SRT slots fail to evaluate and its dispatches or draws are dropped just the same), or an
 // S_SWAPPC_B64 call (without the switch, the CFG build exits).
-// KYTY_ATOMIC64_IMAGE=skip (bring-up, devices without shaderImageInt64Atomics such as KosmicKrisp): a
-// program with a 64-bit image atomic (UE5 Nanite's visibility buffer) is skipped like any unsupported
-// program (its draws and dispatches are dropped) instead of ending the session when its image is bound.
-// That pass is not rendered. Not part of the codegen fingerprint: use a separate program cache with it.
-// =skipbuf: only the 64-bit buffer read-modify-writes (a device with image but without buffer int64 atomics).
+// KYTY_ATOMIC64_IMAGE=skip (bring-up, devices without shaderImageInt64Atomics such as KosmicKrisp):
+// a program with a 64-bit image atomic (UE5 Nanite's visibility buffer) is skipped like any
+// unsupported program (its draws and dispatches are dropped) instead of ending the session when its
+// image is bound. That pass is not rendered. Not part of the codegen fingerprint: use a separate
+// program cache with it. =skipbuf: only the 64-bit buffer read-modify-writes (a device with image
+// but without buffer int64 atomics).
 static int Atomic64SkipMode() { // 0 off, 1 images and buffers, 2 buffers only
 	static const int mode = [] {
 		const char* v = std::getenv("KYTY_ATOMIC64_IMAGE");
@@ -574,7 +575,9 @@ static int Atomic64SkipMode() { // 0 off, 1 images and buffers, 2 buffers only
 	}();
 	return mode;
 }
-static bool Atomic64ImageSkip() { return Atomic64SkipMode() != 0; }
+static bool Atomic64ImageSkip() {
+	return Atomic64SkipMode() != 0;
+}
 
 static void NoteSkippedProgram(const CompileOptions& options, uint32_t pc, std::string_view reason) {
 	static std::mutex                   mutex;
@@ -839,10 +842,11 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 	if (Decoder::SkipUndecodable()) {
 		uint32_t bad_pc = 0, bad_code = 0;
 		if (Decoder::TakeUndecodable(bad_pc, bad_code)) {
-			NoteSkippedProgram(options, bad_pc,
-			                   fmt::format("has a scalar operand the decoder does not support (0x{:02x}; "
-			                               "KYTY_SKIP_UNDECODABLE=1: this pass is not rendered)",
-			                               bad_code));
+			NoteSkippedProgram(
+			    options, bad_pc,
+			    fmt::format("has a scalar operand the decoder does not support (0x{:02x}; "
+				            "KYTY_SKIP_UNDECODABLE=1: this pass is not rendered)",
+				            bad_code));
 			TranslateResult skipped;
 			skipped.skip_dispatch = true;
 			return skipped;
@@ -994,11 +998,13 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 	}
 	IR::EliminateDeadCode(ir.blocks);
 	if (Atomic64ImageSkip()) {
-		const auto a64 = std::ranges::find_if(ir.info.images, [](const IR::ImageResource& image) { return image.atomic64; });
+		const auto a64 = std::ranges::find_if(
+		    ir.info.images, [](const IR::ImageResource& image) { return image.atomic64; });
 		if (Atomic64SkipMode() == 1 && a64 != ir.info.images.end()) {
-			NoteSkippedProgram(options, 0,
-			                   "uses a 64-bit image atomic (KYTY_ATOMIC64_IMAGE=skip: the device has no "
-			                   "shaderImageInt64Atomics; this pass is not rendered)");
+			NoteSkippedProgram(
+			    options, 0,
+			    "uses a 64-bit image atomic (KYTY_ATOMIC64_IMAGE=skip: the device has no "
+			    "shaderImageInt64Atomics; this pass is not rendered)");
 			TranslateResult skipped;
 			skipped.skip_dispatch = true;
 			return skipped;
@@ -1012,8 +1018,10 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 					    inst.GetType() == IR::Type::U64 &&
 					    Spirv::ClassifyBufferAtomic64(inst) == Spirv::BufferAtomic64Form::Native) {
 						NoteSkippedProgram(options, 0,
-						                   "uses a 64-bit buffer atomic read-modify-write (KYTY_ATOMIC64_IMAGE=skip: "
-						                   "the device has no shaderBufferInt64Atomics; this pass is not rendered)");
+						                   "uses a 64-bit buffer atomic read-modify-write "
+						                   "(KYTY_ATOMIC64_IMAGE=skip: "
+						                   "the device has no shaderBufferInt64Atomics; this pass "
+						                   "is not rendered)");
 						TranslateResult skipped;
 						skipped.skip_dispatch = true;
 						return skipped;
@@ -1139,7 +1147,8 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 		}
 	}
 	if (ir.stage == ShaderType::Pixel && options.input_info.pixel != nullptr &&
-	    ShaderPixelRawVertexUnpack(*options.input_info.pixel) && !SarosNaniteRawPs(ir.shader_hash)) {
+	    ShaderPixelRawVertexUnpack(*options.input_info.pixel) &&
+	    !SarosNaniteRawPs(ir.shader_hash)) {
 		// (sarosnanite: the KYTY_SAROS_NANITE_RAW pixel shaders keep their raw reads.)
 		// KYTY_PS_PER_VERTEX=unpack: raw-vertex reads take host-interpolated fields.
 		if (IR::UnpackRawVertexParameters(ir, *options.input_info.pixel).Any()) {
