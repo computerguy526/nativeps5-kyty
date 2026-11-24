@@ -777,6 +777,12 @@ add_executable(resident_trim_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(resident_trim_tests PRIVATE ${inc_headers})
 
+# nps5 mipclamp: clamp T# mip levels to the extent (mipClamp.h), no GPU.
+add_executable(mip_clamp_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/MipClampTests.cpp"
+)
+target_include_directories(mip_clamp_tests PRIVATE ${inc_headers})
+
 # nps5 kshaders: KosmicKrisp fallbacks (64-bit buffer atomic forms, min-LOD view range), no GPU.
 add_executable(kk_lowering_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/KkLoweringTests.cpp"

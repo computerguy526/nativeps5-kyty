@@ -1,5 +1,7 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
+#include "graphics/host_gpu/renderer/image/mipClamp.h"
+
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -969,11 +971,11 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	const auto type            = TextureType(descriptor);
 	const bool multisampled    = IsMultisampledTexture(type);
 	const auto max_mip         = resource.r128 ? last_level : descriptor.MaxMip();
-	const auto physical_levels = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
+	auto physical_levels = multisampled ? 1u : static_cast<uint32_t>(max_mip) + 1u;
 	// IMAGE_STORE addresses BASE_LEVEL; only IMAGE_STORE_MIP selects other view mips.
 	const bool single_storage_mip =
 	    storage && resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic;
-	const auto view_levels = multisampled || single_storage_mip
+	auto view_levels = multisampled || single_storage_mip
 	                             ? 1u
 	                             : static_cast<uint32_t>(last_level - base_level) + 1u;
 	auto levels =
@@ -1011,6 +1013,26 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	GbCopyRemapExtent(format,
 	                  !multisampled && type == Prospero::ImageType::kColor2D && max_mip == 0,
 	                  address, width, height);
+	// KYTY_CLAMP_MIP_TO_EXTENT (mipClamp.h): a T# naming more levels than its extent holds would
+	// abort Metal at texture creation. Clamp before the image, views and mip_layout are derived.
+	uint32_t   clamp_base = base_level;
+	if (!multisampled && MipClamp::Enabled()) {
+		const uint32_t max_levels =
+		    MipClamp::MaxLevels(width, height, type == Prospero::ImageType::kColor3D ? depth : 1u);
+		if (physical_levels > max_levels || levels > max_levels ||
+		    base_level + view_levels > max_levels) {
+			static std::atomic_bool logged {false};
+			if (Common::LogOnce(logged)) {
+				std::printf("Warning: texture mip levels clamped to extent (KYTY_CLAMP_MIP_TO_EXTENT; "
+				            "logged once): %ux%u depth=%u physical=%u levels=%u view=%u+%u max=%u\n",
+				            width, height, depth, physical_levels, levels, base_level, view_levels,
+				            max_levels);
+			}
+			physical_levels = std::min(physical_levels, max_levels);
+			levels          = std::min(levels, max_levels);
+			MipClamp::ClampView(max_levels, clamp_base, view_levels);
+		}
+	}
 	if (skip) {
 		// (TextureGetSurfaceFormatInfo exits over it; a format without a texel layout leaves
 		// TileGetTextureSize's size 0, the invalid-footprint path below.)
@@ -1034,7 +1056,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	                             type == Prospero::ImageType::kColor2DArray ||
 	                             type == Prospero::ImageType::kColor2DMsaaArray;
 	const auto    image_layers = layered ? depth : 1u;
-	auto          view_base    = static_cast<uint32_t>(base_level);
+	auto          view_base    = clamp_base;
 	if (levels > physical_levels) {
 		const TileSurfaceDescription physical {
 		    format, tile, volume ? TileSurfaceDimension::Dim3D : TileSurfaceDimension::Dim2D,
