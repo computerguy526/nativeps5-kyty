@@ -2811,17 +2811,23 @@ TextureCache::TextureTransfer TextureCache::BuildTextureTransfer(const ImageInfo
 		}
 	}
 
+	// nps5 mipclamp: the guest layout (slice stride) follows the declared level count; the copies of
+	// levels the host image does not have are dropped below.
+	const uint32_t layout_levels = info.GuestLevels();
 	if (!upload && !TextureUploadLayoutSupported(format, info.extent.width, info.extent.height,
-	                                             info.resources.levels, layers, info.tile_mode,
+	                                             layout_levels, layers, info.tile_mode,
 	                                             allow_depth_tile, volume)) {
 		// Not downloadable (e.g. a colour view of depth-tiled memory): report an invalid transfer
 		// so callers keep their exact fallback instead of stopping the emulator.
 		return transfer;
 	}
 	transfer.layout  = TextureCalcUploadLayout(format, info.extent.width, info.extent.height,
-	                                       info.resources.levels, layers, info.tile_mode,
+	                                       layout_levels, layers, info.tile_mode,
 	                                       info.data.size, allow_depth_tile, volume, owner);
 	transfer.regions = TextureBuildImageCopies(transfer.layout);
+	if (layout_levels > info.resources.levels) {
+		TextureDropLevels(transfer.regions, info.resources.levels);
+	}
 	if (info.IsDepth()) {
 		for (auto& region: transfer.regions) {
 			region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eDepth;

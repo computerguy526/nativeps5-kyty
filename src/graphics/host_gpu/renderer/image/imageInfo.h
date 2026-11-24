@@ -73,6 +73,11 @@ struct ImageInfo {
 	uint32_t                     samples         = 1;
 	Prospero::TileMode           tile_mode       = Prospero::TileMode::kLinear;
 	bool                         bgra16          = false;
+	// nps5 mipclamp: the level count the guest T# declared when it is above what the host image can
+	// hold (resources.levels is clamped to the extent). The guest memory layout (slice stride, total
+	// size) follows the declared count; only the host image and its views use the clamped one.
+	// 0 = the declared count is resources.levels.
+	uint32_t                     layout_levels   = 0;
 	std::array<ImageMipInfo, 16> mip_layout {};
 
 	[[nodiscard]] ColorTransform GetColorTransform() const noexcept {
@@ -94,6 +99,9 @@ struct ImageInfo {
 	[[nodiscard]] bool IsTiled() const noexcept { return tile_mode != Prospero::TileMode::kLinear; }
 	[[nodiscard]] constexpr bool IsVolume() const noexcept {
 		return type == Prospero::ImageType::kColor3D;
+	}
+	[[nodiscard]] constexpr uint32_t GuestLevels() const noexcept {
+		return layout_levels > resources.levels ? layout_levels : resources.levels;
 	}
 	[[nodiscard]] constexpr uint32_t TransferLayers() const noexcept {
 		return IsVolume() ? extent.depth : resources.layers;

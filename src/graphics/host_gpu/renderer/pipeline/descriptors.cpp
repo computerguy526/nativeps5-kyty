@@ -1016,6 +1016,8 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	// KYTY_CLAMP_MIP_TO_EXTENT (mipClamp.h): a T# naming more levels than its extent holds would
 	// abort Metal at texture creation. Clamp before the image, views and mip_layout are derived.
 	uint32_t   clamp_base = base_level;
+	const uint32_t declared_physical = physical_levels; // the guest layout keeps the declared count
+	bool           mip_clamped       = false;
 	if (!multisampled && MipClamp::Enabled()) {
 		const uint32_t max_levels =
 		    MipClamp::MaxLevels(width, height, type == Prospero::ImageType::kColor3D ? depth : 1u);
@@ -1030,6 +1032,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 			}
 			physical_levels = std::min(physical_levels, max_levels);
 			levels          = std::min(levels, max_levels);
+			mip_clamped     = true;
 			MipClamp::ClampView(max_levels, clamp_base, view_levels);
 		}
 	}
@@ -1094,7 +1097,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	} else {
 		pitch = TileGetTexturePitch(format, width, tile);
 		TileGetTextureTotalSize(format, width, height, volume ? depth : image_layers,
-		                        physical_levels, tile, volume, size);
+		                        declared_physical, tile, volume, size);
 	}
 	if (size.size == 0 || size.align == 0 ||
 	    (address & (static_cast<uint64_t>(size.align) - 1u)) != 0) {
@@ -1154,6 +1157,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	desc.info.type         = TextureBaseType(type);
 	desc.info.extent       = {width, height, volume ? depth : 1u};
 	desc.info.resources    = {levels, image_layers};
+	desc.info.layout_levels = mip_clamped && declared_physical > levels ? declared_physical : 0u;
 	desc.info.pitch        = pitch;
 	desc.info.bytes_per_block =
 	    block_bytes != 0 ? block_bytes : Prospero::NumBytesPerElement(format);
@@ -1163,7 +1167,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	    !desc.info.IsDepth()) {
 		TileSizeAlign metadata_size {};
 		(void)TileGetDccSize(width, height, volume ? depth : image_layers,
-		                     desc.info.bytes_per_block, physical_levels, tile, metadata_size,
+		                     desc.info.bytes_per_block, declared_physical, tile, metadata_size,
 		                     std::countr_zero(samples));
 		desc.info.metadata.kind          = ImageMetadataKind::Dcc;
 		desc.info.metadata.range         = {descriptor.MetaAddr() << 8u, metadata_size.size};

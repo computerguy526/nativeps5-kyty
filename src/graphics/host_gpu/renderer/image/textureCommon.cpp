@@ -325,6 +325,12 @@ std::vector<vk::BufferImageCopy> TextureBuildImageCopies(const TextureUploadLayo
 	return regions;
 }
 
+void TextureDropLevels(std::vector<vk::BufferImageCopy>& regions, uint32_t levels) {
+	std::erase_if(regions, [levels](const vk::BufferImageCopy& region) {
+		return region.imageSubresource.mipLevel >= levels;
+	});
+}
+
 bool TextureBuildGpuTileInfos(uint64_t tiled_size, const std::vector<vk::BufferImageCopy>& regions,
                               const TextureUploadLayout& layout, uint32_t levels,
                               std::vector<GpuTileInfo>& out_tile_infos) {

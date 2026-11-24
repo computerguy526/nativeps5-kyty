@@ -57,6 +57,9 @@ TextureUploadLayout    TextureCalcUploadLayout(Prospero::BufferFormat format, ui
                                                bool allow_depth_tile, bool volume_texture,
                                                const char* owner);
 std::vector<vk::BufferImageCopy> TextureBuildImageCopies(const TextureUploadLayout& layout);
+// nps5 mipclamp: removes the copies of levels >= `levels` (a layout built for the guest's declared
+// level count, applied to a host image with fewer).
+void TextureDropLevels(std::vector<vk::BufferImageCopy>& regions, uint32_t levels);
 bool TextureBuildGpuTileInfos(uint64_t tiled_size, const std::vector<vk::BufferImageCopy>& regions,
                               const TextureUploadLayout& layout, uint32_t levels,
                               std::vector<GpuTileInfo>& out_tile_infos);
