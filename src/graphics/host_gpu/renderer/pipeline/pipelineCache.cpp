@@ -3,6 +3,7 @@
 #include "common/flightRec.h"
 #include "common/guestAddress.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/replaySkipStats.h"
 
 #include "common/assert.h"
 #include "common/compileWatch.h"
@@ -419,6 +420,9 @@ uint64_t CompileClockNs() {
 	                                 std::chrono::steady_clock::now().time_since_epoch())
 	                                 .count());
 }
+
+// nps5 skipfix: why replay entries were skipped (one summary line when the replay ends).
+ReplaySkipStats g_replay_skips;
 
 struct CompileTotals {
 	std::atomic<uint64_t> programs {0};
@@ -5580,7 +5584,11 @@ struct PipelineCache::ProgramCache {
 	                                      ShaderRecompiler::IR::ResourceSpecialization specialization) {
 		using Outcome = ShaderPrecompiler::Outcome;
 		constexpr auto stored = ShaderStoredInputInfoSize<InputInfo>();
-		if (source.input_info.size() != stored) return Outcome::Skipped;
+		if (source.input_info.size() != stored) {
+			g_replay_skips.Note(ReplaySkipReason::InputSize, source.hash,
+			                    fmt::format("stored {} this build {}", source.input_info.size(), stored));
+			return Outcome::Skipped;
+		}
 		std::memcpy(static_cast<void*>(&input_info), source.input_info.data(), stored);
 		input_info.stage = {};
 		ShaderSanitizeStoredInputInfo(input_info);
@@ -5598,10 +5606,26 @@ struct PipelineCache::ProgramCache {
 		// The journal's key must be what this build derives from the stored input info.
 		if (key.stage != static_cast<ShaderType>(source.stage) || key.static_state != source.static_state ||
 		    key.code_size != source.code_size) {
+			const char* kind = std::is_same_v<InputInfo, ShaderVertexInputInfo>  ? "vs"
+			                   : std::is_same_v<InputInfo, ShaderPixelInputInfo> ? "ps"
+			                                                                     : "cs";
+			if (key.stage != static_cast<ShaderType>(source.stage)) {
+				g_replay_skips.Note(ReplaySkipReason::KeyStage, source.hash,
+				                    fmt::format("{} stored {} built {}", kind, source.stage, static_cast<uint32_t>(key.stage)));
+			} else if (key.static_state != source.static_state) {
+				g_replay_skips.Note(ReplaySkipReason::KeyStatic, source.hash,
+				                    ReplaySkipStats::DescribeStaticKey(kind, source.static_state, key.static_state));
+			} else {
+				g_replay_skips.Note(ReplaySkipReason::KeyCodeSize, source.hash,
+				                    fmt::format("{} stored {} built {}", kind, source.code_size, key.code_size));
+			}
 			return Outcome::Skipped;
 		}
 		if (const auto* existing = FindSource(key)) {
-			if (existing->skip_dispatch.load(std::memory_order_relaxed)) return Outcome::Skipped;
+			if (existing->skip_dispatch.load(std::memory_order_relaxed)) {
+				g_replay_skips.Note(ReplaySkipReason::SkipDispatch, source.hash);
+				return Outcome::Skipped;
+			}
 			if (FindPermutation(*existing, specialization, entry.push_data_cursor)) {
 				return Outcome::Present;
 			}
@@ -5619,7 +5643,10 @@ struct PipelineCache::ProgramCache {
 		    CompileAndPublish(params, input_info, entry.push_data_cursor, key, runtime,
 		                      ShaderRecompiler::IR::ThreadEvaluationScratch(), scratch, prep,
 		                      attempt, true, false, true);
-		if (!scratch.published_new) return Outcome::Skipped;
+		if (!scratch.published_new) {
+			g_replay_skips.Note(ReplaySkipReason::NotPublished, source.hash);
+			return Outcome::Skipped;
+		}
 		g_compile_totals.replayed.fetch_add(1, std::memory_order_relaxed);
 		if (published != nullptr) {
 			const auto before = std::atomic_ref<uint8_t>(published->use).fetch_or(1u, std::memory_order_relaxed);
@@ -5647,6 +5674,9 @@ struct PipelineCache::ProgramCache {
 		if (source.code.empty() || source.code.size() != source.code_size ||
 		    source.user_data_count > params.user_data.size() ||
 		    MergedSourceHash(source.code, source.back_code) != source.hash) {
+			g_replay_skips.Note(ReplaySkipReason::SourceCode, source.hash,
+			                    fmt::format("code {} of {} user_data {}", source.code.size(), source.code_size,
+			                                source.user_data_count));
 			return Outcome::Skipped;
 		}
 		params.code            = source.code;
@@ -5655,6 +5685,8 @@ struct PipelineCache::ProgramCache {
 		params.hash            = source.hash;
 		ShaderRecompiler::IR::ResourceSpecialization specialization;
 		if (!ShaderRecompiler::IR::DecodeSpecialization(entry.specialization, specialization)) {
+			g_replay_skips.Note(ReplaySkipReason::Specialization, source.hash,
+			                    fmt::format("{} bytes", entry.specialization.size()));
 			return Outcome::Skipped;
 		}
 		switch (source.kind) {
@@ -10351,6 +10383,9 @@ void PipelineCache::InitializeShaderPrecompile() {
 	CompileWatch::NotePrecompile(0, replay_total);
 	replay.on_finished = [this, replay_total] {
 		CompileWatch::NotePrecompile(replay_total, replay_total);
+		if (g_replay_skips.Total() != 0) {
+			PipelineCacheLog("Shader precompile: {} entries skipped: {}", g_replay_skips.Total(), g_replay_skips.Summary());
+		}
 		m_shader_journal->ReleaseLoaded();
 	};
 	if (g_used_permutations.Enabled()) {
