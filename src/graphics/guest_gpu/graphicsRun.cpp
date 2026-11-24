@@ -2516,13 +2516,54 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 // selector applies only to Z-pass query readiness, so a boolean (memory) predicate is read
 // without draining the GPU first. ReadGuestForCp still synchronizes GPU-written bytes, but labels
 // deferred to completion are not run before the read.
-static bool PredicationNoDrain() {
-	static const bool enabled = [] {
+//
+// KYTY_PREDICATION_NO_DRAIN=2 (nps5 saroscp, default off): the same, but only when nothing can
+// still be writing the predicate: no label deferred to completion covers it and the guest view
+// of the 8 bytes is clean (no GPU-dirty bytes, no pending publication, no GPU-modified image).
+// Anything else keeps the full flush-and-wait. SAROS (UE 5.5) issues ~22 bool predications a
+// frame (sarosnormals: addr = DCB chunk + 0xeb10, value 0, no predicated op follows) and each
+// one drained the GPU. Counters at exit: "[predication]" line.
+static int PredicationNoDrainMode() {
+	static const int mode = [] {
 		const auto* value = std::getenv("KYTY_PREDICATION_NO_DRAIN");
-		return value != nullptr && std::strcmp(value, "1") == 0;
+		if (value == nullptr) {
+			return 0;
+		}
+		return std::strcmp(value, "1") == 0 ? 1 : std::strcmp(value, "2") == 0 ? 2 : 0;
 	}();
-	return enabled;
+	return mode;
 }
+static bool PredicationNoDrain() {
+	return PredicationNoDrainMode() == 1;
+}
+
+namespace {
+struct PredicationCounters {
+	std::atomic<uint64_t> bool_waits {0};   // op 0x03 with wait_op != 0
+	std::atomic<uint64_t> drain_skipped {0}; // mode 2: read without the drain
+	std::atomic<uint64_t> drain_kept {0};    // mode 2: drained (deferred label, dirty, not clean)
+	std::atomic<uint64_t> kept_label {0};
+	std::atomic<uint64_t> kept_dirty {0};
+	std::atomic<uint64_t> nonzero {0};       // predicate read as nonzero (skip when condition 0)
+	std::atomic<uint64_t> wait_ns {0};       // time in the kept drains
+	~PredicationCounters() {
+		if (PredicationNoDrainMode() == 0 && bool_waits.load() == 0) {
+			return;
+		}
+		std::fprintf(stderr,
+		             "[predication] mode=%d bool_waits=%llu drain_skipped=%llu drain_kept=%llu "
+		             "(deferred_label=%llu not_clean=%llu) nonzero=%llu kept_wait_ms=%.1f\n",
+		             PredicationNoDrainMode(), static_cast<unsigned long long>(bool_waits.load()),
+		             static_cast<unsigned long long>(drain_skipped.load()),
+		             static_cast<unsigned long long>(drain_kept.load()),
+		             static_cast<unsigned long long>(kept_label.load()),
+		             static_cast<unsigned long long>(kept_dirty.load()),
+		             static_cast<unsigned long long>(nonzero.load()),
+		             static_cast<double>(wait_ns.load()) * 1e-6);
+	}
+};
+PredicationCounters g_predication_counters;
+} // namespace
 
 CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payload) {
 	const auto  condition = payload.condition;
@@ -2560,9 +2601,34 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 				value += end - begin;
 			}
 		} break;
-		case 0x03:
-			if (wait_op != 0 && !PredicationNoDrain()) {
+		case 0x03: {
+			bool smart_clean = false;
+			if (wait_op != 0) {
+				g_predication_counters.bool_waits.fetch_add(1, std::memory_order_relaxed);
+				if (PredicationNoDrainMode() == 2) {
+					// Mode 2: skip the drain only when no deferred label covers the predicate and
+					// a strict clean read succeeds (it does not synchronize, drain or wait).
+					const bool label =
+					    g_gpu_state != nullptr &&
+					    g_gpu_state->DeferredLabelTick(reinterpret_cast<uint64_t>(address),
+					                                   sizeof(uint64_t)) != 0;
+					uint64_t probe = 0;
+					smart_clean    = !label &&
+					              LibKernel::Memory::TryReadGpuCleanBacking(
+					                  reinterpret_cast<uint64_t>(address), &probe, sizeof(probe));
+					(smart_clean ? g_predication_counters.drain_skipped
+					             : g_predication_counters.drain_kept)
+					    .fetch_add(1, std::memory_order_relaxed);
+					if (!smart_clean) {
+						(label ? g_predication_counters.kept_label
+						       : g_predication_counters.kept_dirty)
+						    .fetch_add(1, std::memory_order_relaxed);
+					}
+				}
+			}
+			if (wait_op != 0 && !PredicationNoDrain() && !smart_clean) {
 				Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitPredication);
+				const auto                    wait_start = std::chrono::steady_clock::now();
 				BufferFlushAndWait();
 				// Labels deferred to completion (defer-label / KYTY_LABEL_MODE=completion) are
 				// written by commands the completion runner posts: run them before reading.
@@ -2572,10 +2638,18 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 					GetScheduler().WaitPriorityOperations(GetScheduler().CurrentTick());
 					g_gpu_state->ProcessCommands();
 				}
+				g_predication_counters.wait_ns.fetch_add(
+				    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				                              std::chrono::steady_clock::now() - wait_start)
+				                              .count()),
+				    std::memory_order_relaxed);
 			}
 			EXIT_NOT_IMPLEMENTED(address == nullptr);
 			value = ReadGuestForCp<uint64_t>(reinterpret_cast<uint64_t>(address));
-			break;
+			if (value != 0) {
+				g_predication_counters.nonzero.fetch_add(1, std::memory_order_relaxed);
+			}
+		} break;
 		default: EXIT("unknown predication op: 0x%08" PRIx32 "\n", op);
 	}
 	bool skip = false;
@@ -3755,6 +3829,27 @@ static bool GdsEopDeferEnabled() {
 	return enabled;
 }
 
+// nps5 saroscp: the GDS end-of-pipe reads that still drain the GPU (KYTY_GDS_EOP_MODE=defer
+// turns them into deferred labels). Counted always; "[gdswait]" at exit with KYTY_GDS_EOP_STATS=1
+// (first 32 reads by GDS offset/size/dst are logged).
+static void GdsWaitNote(uint32_t dw_offset, uint32_t dw_size, uint64_t dst) {
+	static std::atomic<uint64_t> calls {0};
+	static const bool            stats = [] {
+        const auto* v = std::getenv("KYTY_GDS_EOP_STATS");
+        const bool  on = v != nullptr && std::strcmp(v, "1") == 0;
+        if (on) {
+            std::atexit([] { std::fprintf(stderr, "[gdswait] total gds eop sync reads=%llu\n", static_cast<unsigned long long>(calls.load())); });
+        }
+        return on;
+	}();
+	const auto n = calls.fetch_add(1, std::memory_order_relaxed);
+	if (stats && n < 32) {
+		std::fprintf(stderr, "[gdswait] #%llu gds_dw_off=%u dw=%u dst=0x%llx\n",
+		             static_cast<unsigned long long>(n), dw_offset, dw_size,
+		             static_cast<unsigned long long>(dst));
+	}
+}
+
 bool CommandProcessor::TryDeferGdsRead(uint32_t* dst, uint32_t dw_offset, uint32_t dw_size,
                                        bool interrupt, uint32_t interrupt_context_id) {
 	if (!GdsEopDeferEnabled() || dst == nullptr || dw_size == 0) {
@@ -3988,6 +4083,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 						return;
 					}
 					Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitGds);
+					GdsWaitNote(value & 0xffffu, value >> 16u, reinterpret_cast<uint64_t>(dst));
 					SynchronizeGpu();
 					StreamCopyDefer::NoteGuestWrite(reinterpret_cast<uint64_t>(dst), uint64_t {value >> 16u} * 4u);
 					Sync::ReadGds(*m_renderer.GetBufferCache().GetGdsBuffer(), dst, value & 0xffffu,

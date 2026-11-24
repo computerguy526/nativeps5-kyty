@@ -78,9 +78,9 @@ void MasterSemaphore::Wait(uint64_t tick) {
 			case Profiler::FrameWait::GpuWaitSideCopy: return CpGaps::Cat::GpuWaitSideCopy;
 			case Profiler::FrameWait::GpuWaitStreamWrap: return CpGaps::Cat::GpuWaitStreamWrap;
 			case Profiler::FrameWait::GpuWaitLodStats: return CpGaps::Cat::GpuWaitLodStats;
-			case Profiler::FrameWait::GpuWaitUnmap:
-			case Profiler::FrameWait::GpuWaitPredication:
-			case Profiler::FrameWait::GpuWaitGds: return CpGaps::Cat::GpuWaitMisc;
+			case Profiler::FrameWait::GpuWaitUnmap: return CpGaps::Cat::GpuWaitUnmap;
+			case Profiler::FrameWait::GpuWaitPredication: return CpGaps::Cat::GpuWaitPredication;
+			case Profiler::FrameWait::GpuWaitGds: return CpGaps::Cat::GpuWaitGds;
 			default: return CpGaps::Cat::GpuWaitOther;
 		}
 	}();

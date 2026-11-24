@@ -1241,6 +1241,7 @@ endif()
 
 add_executable(draw_prep_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/DrawPrepTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/drawPrep/cpGaps.cpp" # CatName (nps5 saroscp test)
 )
 target_include_directories(draw_prep_tests PRIVATE ${inc_headers})
 # ReadSet digest certificates hash with XXH3.

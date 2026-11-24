@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -332,6 +333,49 @@ void RenderContext::MapMemory(uint64_t vaddr, uint64_t size) {
 	SyncEpoch::Advance();
 }
 
+// nps5 saroscp: counters of the GPU round trips the guest unmaps force (printed at exit, and the
+// first KYTY_UNMAP_LOG_MAX = 48 unmaps by address/size when KYTY_UNMAP_STATS=1). Always counted
+// (two atomics per unmap that already costs a drain); the exit line needs KYTY_UNMAP_STATS=1.
+namespace {
+struct UnmapStatsT {
+	std::atomic<uint64_t> calls {0};
+	std::atomic<uint64_t> bytes {0};
+	std::atomic<uint64_t> ns {0};
+	std::atomic<uint64_t> big {0}; // >= 1 MiB
+	void Note(uint64_t vaddr, uint64_t size, uint64_t wait_ns) {
+		static const bool log = [] {
+			const auto* v = std::getenv("KYTY_UNMAP_STATS");
+			return v != nullptr && std::strcmp(v, "1") == 0;
+		}();
+		const auto n = calls.fetch_add(1, std::memory_order_relaxed);
+		bytes.fetch_add(size, std::memory_order_relaxed);
+		ns.fetch_add(wait_ns, std::memory_order_relaxed);
+		if (size >= (1ull << 20)) {
+			big.fetch_add(1, std::memory_order_relaxed);
+		}
+		if (log && n < 48) {
+			std::fprintf(stderr, "[unmapstat] #%llu addr=0x%llx size=0x%llx wait_us=%.0f\n",
+			             static_cast<unsigned long long>(n), static_cast<unsigned long long>(vaddr),
+			             static_cast<unsigned long long>(size), static_cast<double>(wait_ns) * 1e-3);
+		}
+	}
+	~UnmapStatsT() {
+		const auto* v = std::getenv("KYTY_UNMAP_STATS");
+		if (v == nullptr || std::strcmp(v, "1") != 0 || calls.load() == 0) {
+			return;
+		}
+		std::fprintf(stderr, "[unmapstat] total drained_unmaps=%llu bytes=%llu big=%llu wait_ms=%.1f\n",
+		             static_cast<unsigned long long>(calls.load()),
+		             static_cast<unsigned long long>(bytes.load()),
+		             static_cast<unsigned long long>(big.load()), static_cast<double>(ns.load()) * 1e-6);
+	}
+};
+UnmapStatsT& UnmapStats() {
+	static UnmapStatsT stats;
+	return stats;
+}
+} // namespace
+
 void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 	if (CommandScheduler::InDeferredOperation()) {
 		EXIT("unsupported memory unmap from an asynchronous GPU completion, "
@@ -351,8 +395,13 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		if (m_command_scheduler.Active()) {
 			Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitUnmap);
 			const auto                    tick = m_command_scheduler.CurrentTick();
+			const auto                    t0   = std::chrono::steady_clock::now();
 			m_command_scheduler.Finish();
 			m_command_scheduler.WaitPriorityOperations(tick);
+			UnmapStats().Note(vaddr, size,
+			                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                                            std::chrono::steady_clock::now() - t0)
+			                                            .count()));
 		}
 		m_buffer_cache.InvalidateMemory(vaddr, size);
 		m_texture_cache.UnmapMemory(vaddr, size);
