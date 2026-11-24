@@ -17,6 +17,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/dccKnownFill.h"
 #include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 #include "graphics/host_gpu/renderer/cache/texelImageLookup.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -488,9 +489,7 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 	}
 	// cphot 1b: KYTY_DCC_KNOWN_FILL_ALIASED=1|verify, KYTY_CMASK_GPU_REFRESH=1 (default off).
 	if (const auto* known = std::getenv("KYTY_DCC_KNOWN_FILL_ALIASED"); known != nullptr) {
-		m_dcc_known_fill_aliased = std::strcmp(known, "1") == 0        ? 1
-		                           : std::strcmp(known, "verify") == 0 ? 2
-		                                                               : 0;
+		m_dcc_known_fill_aliased = static_cast<int>(DccKnownFill::ParseMode(known));
 	}
 	{
 		const auto* cmask_refresh = std::getenv("KYTY_CMASK_GPU_REFRESH");
@@ -4232,12 +4231,15 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 			unaliased = FindImagesInRegion(range.address, range.size, false).empty();
 			pages     = noop != nullptr && CaptureMetadataPages(range, decided);
 		}
-		const uint32_t known_byte = known ? (*known & 0xffu) : 0u;
-		const bool     uniform_known = known && *known == known_byte * 0x01010101u;
 		// KYTY_DCC_KNOWN_FILL_ALIASED=1: a uniform recorded fill decides the clear even when images
 		// alias the metadata bytes (the CPU fallback would read back exactly this fill).
-		const bool take_known = uniform_known && (unaliased || m_dcc_known_fill_aliased == 1);
-		if (uniform_known && !unaliased && m_dcc_known_fill_aliased == 2) {
+		const auto fill_decision = DccKnownFill::Decide(
+		    static_cast<DccKnownFill::Mode>(m_dcc_known_fill_aliased), known.has_value(),
+		    known ? *known : 0u, unaliased);
+		const uint32_t known_byte    = fill_decision.known_byte;
+		const bool     uniform_known = fill_decision.uniform_known;
+		const bool     take_known    = fill_decision.take_known;
+		if (fill_decision.verify) {
 			verify_known = static_cast<uint8_t>(known_byte);
 		}
 		if (known && !unaliased) {

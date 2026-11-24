@@ -1113,6 +1113,45 @@ void TestEmitterModes() {
         "mode: catalogue");
 }
 
+// onereg T2: PS_UINT32 / SINT export modes. A raw 32-bit MRT export of a pixel program with
+// target_output_mode 7 (UINT) / 10 (SINT) declares a uint4 / int4 colour output and stores bit
+// casts of the exported registers; mode 0 stays float4 (text unchanged).
+void TestPixelOutputModes() {
+  const std::vector<uint32_t> code = {0xf800080fu, 0x03020100u, // exp mrt0 v0, v1, v2, v3 done
+                                      0xbf810000u};             // s_endpgm
+  const auto emit = [&](uint32_t mode) {
+    ShaderPixelInputInfo pinfo;
+    pinfo.target_output_mode[0] = mode;
+    SR::CompileOptions options;
+    options.stage = ShaderType::Pixel;
+    options.wave_size = 64;
+    options.dump_ir = false;
+    options.emit_msl = true;
+    options.emit_spirv = false;
+    std::vector<uint32_t> ud(16, 0);
+    options.user_data = ud;
+    options.input_info.pixel = &pinfo;
+    auto translated = SR::TranslateProgram(code, options);
+    SR::IR::ResourceSpecialization spec;
+    return SR::CompileProgram(std::move(translated), options, spec, 0).msl;
+  };
+  const auto m0 = emit(0), m7 = emit(7), m10 = emit(10);
+  Check(!m0.empty() && !m7.empty() && !m10.empty(), "pixel output modes: MSL emitted");
+  Check(m0.find("float4 c0 [[color(0)]]") != std::string::npos &&
+            m0.find("uint4 c0") == std::string::npos && m0.find("int4 c0") == std::string::npos,
+        "pixel output modes: mode 0 stays float4");
+  Check(m7.find("uint4 c0 [[color(0)]]") != std::string::npos &&
+            m7.find("float4 c0") == std::string::npos,
+        "pixel output modes: mode 7 (UINT) declares uint4");
+  Check(m10.find("int4 c0 [[color(0)]]") != std::string::npos &&
+            m10.find("uint4 c0") == std::string::npos && m10.find("float4 c0") == std::string::npos,
+        "pixel output modes: mode 10 (SINT) declares int4");
+  Check(m7.find("as_type<") != std::string::npos || m7.find("uint4(") != std::string::npos,
+        "pixel output modes: mode 7 stores a bit cast / uint4 value");
+  Check(m10.find("as_type<int") != std::string::npos || m10.find("int4(") != std::string::npos,
+        "pixel output modes: mode 10 stores a bit cast / int4 value");
+}
+
 int main() {
   TestBuilder();
   TestAluGolden();
@@ -1135,6 +1174,7 @@ int main() {
   TestBoundsLim();
   TestGuardExit();
   TestEmitterModes();
+  TestPixelOutputModes();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

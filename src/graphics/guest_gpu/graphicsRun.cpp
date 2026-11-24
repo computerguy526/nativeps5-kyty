@@ -17,6 +17,7 @@
 #include "graphics/guest_gpu/command_processor/bundleCompact.h"
 #include "graphics/guest_gpu/command_processor/commandProcessor.h"
 #include "graphics/guest_gpu/command_processor/cpLeadBound.h"
+#include "graphics/guest_gpu/command_processor/predicationDrain.h"
 #include "graphics/guest_gpu/command_processor/cpOps.h"
 #include "graphics/guest_gpu/command_processor/cpSequencer.h"
 #include "graphics/guest_gpu/command_processor/cpVerify.h"
@@ -2582,16 +2583,9 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 // one drained the GPU. Counters at exit: "[predication]" line.
 static int PredicationNoDrainMode() {
 	static const int mode = [] {
-		const auto* value = std::getenv("KYTY_PREDICATION_NO_DRAIN");
-		if (value == nullptr) {
-			return 0;
-		}
-		return std::strcmp(value, "1") == 0 ? 1 : std::strcmp(value, "2") == 0 ? 2 : 0;
+		return PredicationDrain::ParseMode(std::getenv("KYTY_PREDICATION_NO_DRAIN"));
 	}();
 	return mode;
-}
-static bool PredicationNoDrain() {
-	return PredicationNoDrainMode() == 1;
 }
 
 namespace {
@@ -2660,6 +2654,8 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 		} break;
 		case 0x03: {
 			bool smart_clean = false;
+			bool pred_label  = false;
+			bool pred_clean  = false;
 			if (wait_op != 0) {
 				g_predication_counters.bool_waits.fetch_add(1, std::memory_order_relaxed);
 				if (PredicationNoDrainMode() == 2) {
@@ -2670,9 +2666,11 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 					    g_gpu_state->DeferredLabelTick(reinterpret_cast<uint64_t>(address),
 					                                   sizeof(uint64_t)) != 0;
 					uint64_t probe = 0;
-					smart_clean =
-					    !label && LibKernel::Memory::TryReadGpuCleanBacking(
-					                  reinterpret_cast<uint64_t>(address), &probe, sizeof(probe));
+					pred_label     = label;
+					pred_clean     = !label && LibKernel::Memory::TryReadGpuCleanBacking(
+					                               reinterpret_cast<uint64_t>(address), &probe,
+					                               sizeof(probe));
+					smart_clean = !PredicationDrain::ShouldDrain(2, true, pred_label, pred_clean);
 					(smart_clean ? g_predication_counters.drain_skipped
 					             : g_predication_counters.drain_kept)
 					    .fetch_add(1, std::memory_order_relaxed);
@@ -2683,7 +2681,7 @@ CpSeq::Result CommandProcessor::ExecPredication(const CpSeq::PredicationOp& payl
 					}
 				}
 			}
-			if (wait_op != 0 && !PredicationNoDrain() && !smart_clean) {
+			if (PredicationDrain::ShouldDrain(PredicationNoDrainMode(), wait_op != 0, pred_label, pred_clean)) {
 				Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitPredication);
 				const auto                    wait_start = std::chrono::steady_clock::now();
 				BufferFlushAndWait();

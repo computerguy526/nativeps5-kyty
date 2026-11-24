@@ -930,6 +930,11 @@ static bool CanonicalizeIndirectGroups(const ResourcePlan& program, ResourceSnap
 	return true;
 }
 
+bool CanonicalizeIndirectGroupsForTest(const ResourcePlan& program, ResourceSnapshot& snapshot,
+                                       ResourceSpecialization& specialization) {
+	return CanonicalizeIndirectGroups(program, snapshot, specialization);
+}
+
 static bool BuildResourceSpecialization(const ResourcePlan& program, ResourceSnapshot& snapshot,
                                         ResourceSpecialization& specialization, bool buffers_ready) {
 	if (!buffers_ready) {

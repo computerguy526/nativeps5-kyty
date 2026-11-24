@@ -60,6 +60,24 @@ jobs:
       - name: Game data, secrets, personal paths, commit e-mails and added lines (copy of the entry repository's gate, .github/nps5-ci)
         run: .github/nps5-ci/privacy.sh
 
+  unit-tests-arm64:
+    name: header-only unit tests (macOS arm64)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { persist-credentials: false }
+      - name: Build and run the stand-alone header-only tests (no submodules, no GPU)
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/ut"
+          for t in CpLeadBound PredicationDrain DccKnownFill FaultClass FastTicks; do
+            clang++ -std=c++20 -O2 -Isrc "tests/${t}Tests.cpp" -o "$RUNNER_TEMP/ut/$t"
+            "$RUNNER_TEMP/ut/$t"
+          done
+          clang++ -std=c++17 -O1 -Isrc/graphics/presentation tests/AutoCapTests.cpp -o "$RUNNER_TEMP/ut/AutoCap"
+          "$RUNNER_TEMP/ut/AutoCap"
+
   workflows:
     name: workflow syntax (actionlint)
     runs-on: ubuntu-24.04

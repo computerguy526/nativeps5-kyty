@@ -13288,6 +13288,36 @@ void TestNewShaderRecompilerPerInvocationU64Complement() {
         "per-invocation s_not_b64 emitted raw complemented mask words");
 }
 
+
+// onereg T1: the flat-pointer aperture sources (0xEB-0xEE, SAROS port S1) recompile: a compute
+// program that reads SRC_SHARED_BASE / SRC_PRIVATE_BASE and then does a FLAT load lowers to valid
+// SPIR-V (the GPU case FlatStackApertures needs the full compute test binary, which does not build
+// on arm64 macOS: it uses exceptions).
+void TestFlatApertureLowering() {
+  const uint32_t shader[] = {
+      EncodeSMovB32(8, 0xEB),  // s8 = SRC_SHARED_BASE
+      EncodeSMovB32(9, 0xED),  // s9 = SRC_PRIVATE_BASE
+      EncodeSMovB32(10, 0xEC), // s10 = SRC_SHARED_LIMIT
+      EncodeSMovB32(11, 0xEE), // s11 = SRC_PRIVATE_LIMIT
+      EncodeFlat0(0x0c, 0, 0),
+      EncodeFlat1(9, 0x7d, 0, 1), // flat_load_dword v9, v[1:2]
+      0xbf810000u,
+  };
+  for (uint32_t wave : {32u, 64u}) {
+    auto options = MakeCompileOptions(ShaderType::Compute);
+    options.dump_ir = true;
+    options.wave_size = wave;
+    auto result = RecompileForTest(shader, options);
+    Check(!result.spirv.empty(), "flat apertures: no SPIR-V produced");
+    // All six instructions decode into one block with no CFG failure (a decoder without the
+    // aperture operands ends the session with "unsupported scalar source operand").
+    Check(result.ir_dump.find("failure=None") != std::string::npos &&
+              result.ir_dump.find("inst=[0,6)") != std::string::npos,
+          "flat apertures: program did not decode into one clean block");
+    CheckSpirvBinaryValidates(result.spirv);
+  }
+}
+
 void TestNewShaderRecompilerExpPixelOutputs() {
   const uint32_t shader[] = {
       EncodeExp0(0x00, 0xf),
@@ -16038,6 +16068,11 @@ int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--wave-reduction-only") == 0) {
     TestWaveRowReduction();
     std::printf("shader_cfg --wave-reduction-only: ok\n");
+    return 0;
+  }
+  if (argc == 2 && std::strcmp(argv[1], "--flat-aperture-only") == 0) {
+    TestFlatApertureLowering();
+    std::printf("shader_cfg --flat-aperture-only: ok\n");
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--pixel-outputs-only") == 0) {

@@ -768,6 +768,111 @@ void DbgExit(int) { std::abort(); }
 
 } // namespace Common
 
+// onereg T5: KYTY_SAROS_HS_DYNIDX canonical groups (4b35833f, 23549187). Eight roots of one image
+// class with five identical child descriptors each (sf3: 8 roots x 5 children = 40 slots for 5
+// distinct images) must fit the group's share (5 slots used, was overflow), every table entry must
+// resolve to its own descriptor; with more distinct children than the share, the dropped candidates
+// must read their OWN root (not the group head's image: another root's material).
+struct CanonCase {
+  Libs::Graphics::ShaderRecompiler::IR::ResourcePlan plan;
+  Libs::Graphics::ShaderRecompiler::IR::ResourceSnapshot snapshot;
+  Libs::Graphics::ShaderRecompiler::IR::ResourceSpecialization spec;
+  uint32_t base = 0;
+};
+
+Libs::Graphics::ShaderRecompiler::IR::DescriptorValue Desc(uint32_t v) {
+  Libs::Graphics::ShaderRecompiler::IR::DescriptorValue d;
+  d.dword_count = 8;
+  d.dwords[0] = v;
+  return d;
+}
+
+// roots: roots_a of class A (Float) then roots_b of class B (Uint), `children` per root;
+// child_value(root, c) is the descriptor value of child c of `root`.
+CanonCase BuildCanon(uint32_t roots_a, uint32_t roots_b, uint32_t children,
+                     uint32_t (*child_value)(uint32_t, uint32_t)) {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  using Libs::Graphics::Prospero::TextureNumericClass;
+  CanonCase c;
+  c.base = roots_a + roots_b;
+  c.plan.info.images.resize(c.base);
+  c.spec.images.resize(c.base);
+  c.snapshot.images.resize(c.base);
+  for (uint32_t r = 0; r < c.base; r++) {
+    c.plan.info.images[r].resource_class = ImageResourceClass::Sampled;
+    c.spec.images[r].numeric_class =
+        r < roots_a ? TextureNumericClass::Float : TextureNumericClass::Uint;
+    c.spec.images[r].indirect_root = r;
+    c.snapshot.images[r] = Desc(100 + r);
+  }
+  const uint32_t table = 1 + 2 * children;
+  c.snapshot.flattened_srt.assign(c.base * table, 0);
+  for (uint32_t r = 0; r < c.base; r++) {
+    c.spec.images[r].indirect_mapping_offset = r * table;
+    c.snapshot.flattened_srt[r * table] = children;
+    for (uint32_t k = 0; k < children; k++) {
+      c.snapshot.flattened_srt[r * table + 1 + 2 * k] = k;         // heap key
+      c.snapshot.flattened_srt[r * table + 2 + 2 * k] = k + 1;     // old ordinal (0 = the root)
+      ResourceSpecialization::Image child = c.spec.images[r];
+      child.indirect_mapping_offset = 0;
+      c.spec.images.push_back(child);
+      c.snapshot.images.push_back(Desc(child_value(r, k)));
+    }
+  }
+  return c;
+}
+
+// The descriptor a root's table entry resolves to after canonicalization: the ordinal is the
+// position in the group list = the entry-th slot (ascending) whose indirect_group is the head.
+uint32_t ResolveEntry(const CanonCase &c, uint32_t root, uint32_t entry, uint32_t children) {
+  const uint32_t table = 1 + 2 * children;
+  const uint32_t ordinal =
+      c.snapshot.flattened_srt[c.spec.images[root].indirect_mapping_offset + 2 + 2 * entry];
+  const uint32_t head = c.spec.images[root].indirect_group;
+  (void)table;
+  uint32_t seen = 0;
+  for (uint32_t s = 0; s < c.spec.images.size(); s++) {
+    if (c.spec.images[s].indirect_group != head) continue;
+    if (seen++ == ordinal) return c.snapshot.images[s].dwords[0];
+  }
+  return UINT32_MAX;
+}
+
+void TestHsDynIdxCanonicalGroups() {
+  using namespace Libs::Graphics::ShaderRecompiler::IR;
+  // (a) 8 roots x 5 identical children: fits, 5 distinct slots, each entry reads its own child.
+  {
+    auto c = BuildCanon(8, 0, 5, [](uint32_t, uint32_t k) -> uint32_t { return 1000 + k; });
+    Check(CanonicalizeIndirectGroupsForTest(c.plan, c.snapshot, c.spec), "canon: ok");
+    Check(c.spec.images.size() == ShaderInfo::MaxImages, "canon: image count is MaxImages");
+    uint32_t distinct_children = 0;
+    for (uint32_t s = c.base; s < c.spec.images.size(); s++) {
+      const auto v = c.snapshot.images[s].dwords[0];
+      if (v >= 1000 && v < 1005) distinct_children++;
+    }
+    Check(distinct_children == 5, "canon: 40 identical-descriptor children use 5 slots");
+    for (uint32_t r = 0; r < 8; r++)
+      for (uint32_t k = 0; k < 5; k++)
+        Check(ResolveEntry(c, r, k, 5) == 1000 + k, "canon: entry reads its own child descriptor");
+  }
+  // (b) two groups (share 28 each), 8 roots x 5 DISTINCT children = 40 > 28: the over-share
+  // candidates read their own root, never the group head's image.
+  {
+    auto c = BuildCanon(8, 1, 5, [](uint32_t r, uint32_t k) -> uint32_t { return 2000 + r * 10 + k; });
+    Check(CanonicalizeIndirectGroupsForTest(c.plan, c.snapshot, c.spec), "canon over-share: ok");
+    uint32_t kept = 0, own_root = 0;
+    for (uint32_t r = 0; r < 8; r++)
+      for (uint32_t k = 0; k < 5; k++) {
+        const auto v = ResolveEntry(c, r, k, 5);
+        if (v == 2000 + r * 10 + k) kept++;
+        else if (v == 100 + r) own_root++;
+        else Check(false, "canon over-share: entry must read its child or its own root");
+      }
+    Check(kept == 28, "canon over-share: exactly the share (28) of candidates is kept");
+    Check(own_root == 12, "canon over-share: the 12 over-share candidates read their own root");
+  }
+}
+
 int main() {
   for (const char* state : {"KYTY_BUFFER_REFRESH_FUSION=0\n", "KYTY_BUFFER_REFRESH_FUSION=1\n", "KYTY_BUFFER_REFRESH_FUSION=0\n"}) {
     Live::Testing::StageText(state);
@@ -781,6 +886,7 @@ int main() {
   TestSpeculativeRuntimeMatchesSerial();
   TestRecordedPreparationCertifies();
   TestTraceReplayMatchesWalk();
+  TestHsDynIdxCanonicalGroups();
   }
   std::puts("ResourceMaterializationTests: all cases passed");
   return 0;

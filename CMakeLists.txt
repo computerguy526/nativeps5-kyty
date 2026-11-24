@@ -693,6 +693,26 @@ target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(cp_lead_bound_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CpLeadBoundTests.cpp")
 target_include_directories(cp_lead_bound_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# onereg T8: unit tests that had no CMake target (all stand-alone, no GPU).
+add_executable(fault_class_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FaultClassTests.cpp")
+target_include_directories(fault_class_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(fast_ticks_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FastTicksTests.cpp")
+target_include_directories(fast_ticks_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(auto_cap_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AutoCapTests.cpp")
+target_include_directories(auto_cap_tests PRIVATE "${KYTY_SOURCE_DIR}" "${KYTY_SOURCE_DIR}/graphics/presentation")
+add_executable(input_profile_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/InputProfileTests.cpp" "${KYTY_SOURCE_DIR}/common/inputProfile.cpp")
+target_include_directories(input_profile_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(flight_rec_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FlightRecTests.cpp" "${KYTY_SOURCE_DIR}/common/flightRec.cpp")
+target_include_directories(flight_rec_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# onereg: KYTY_DCC_KNOWN_FILL_ALIASED decision (cache/dccKnownFill.h, header only), no GPU.
+add_executable(dcc_known_fill_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DccKnownFillTests.cpp")
+target_include_directories(dcc_known_fill_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# onereg: KYTY_PREDICATION_NO_DRAIN decision (command_processor/predicationDrain.h, header only), no GPU.
+add_executable(predication_drain_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PredicationDrainTests.cpp")
+target_include_directories(predication_drain_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # sarosbundle: CPU HLE of the shader-bundle compaction kernel (command_processor/bundleCompact.h), no GPU.
 add_executable(bundle_compact_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BundleCompactTests.cpp")
 target_include_directories(bundle_compact_tests PRIVATE "${KYTY_SOURCE_DIR}")
