@@ -1,5 +1,5 @@
 # "<full commit sha> <author e-mail>" pairs (exact) of upstream-authored picks that keep their author (owner's choice).
 # Only the AUTHOR of that exact commit is excused. Picks are listed by the sha as committed on nps5-one-kyty.
-e79680169ca6ca21e9d00946ffb6014723a19fe8 59046009+Jetsku@users.noreply.github.com
-f2d44181dfff2ba6fdd0df4347b0f49b7bf9fd72 59046009+Jetsku@users.noreply.github.com
-08929e892583263a41ab4eb87f7c0c072eff7299 59046009+Jetsku@users.noreply.github.com
+eb33ab09ac23681c82e722ce238e58775a4fd85b 59046009+Jetsku@users.noreply.github.com
+988cad8a6cd3d8d9f83f1347c10bdcf774736a7a 59046009+Jetsku@users.noreply.github.com
+c0d481f18a7b22066a671d5598a3d0dd74d21fe8 59046009+Jetsku@users.noreply.github.com
