@@ -735,6 +735,14 @@ target_include_directories(load_card_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(launch_phase_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LaunchPhaseTests.cpp")
 target_include_directories(launch_phase_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5 levelprep: shader level database, save-slot tiers, background prepare queue (header only), no GPU.
+add_executable(level_db_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelDbTests.cpp")
+target_include_directories(level_db_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(level_tier_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelTierTests.cpp")
+target_include_directories(level_tier_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(bg_queue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BgQueueTests.cpp")
+target_include_directories(bg_queue_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5: per-page per-frame served-read-fault counter (header only).
 add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")
 target_include_directories(read_fault_frame_burst_tests PRIVATE "${KYTY_SOURCE_DIR}")

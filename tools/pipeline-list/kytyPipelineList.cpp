@@ -9,11 +9,13 @@
 //   info <list>                         Header, counts, levels, section sizes.
 //   check <list> --game <app0 dir> [--exe <executable>]
 //       Resolves the list against a game copy, as the emulator does at start-up.
+//   scenedb build|merge|info|query|tiers|check ...   the shader level database (sceneDbCommands.h)
 //   verify <list> --game <app0 dir> [--exe <executable>] [--shaders <shader journal>]...
 //       The no-code proof: no 64-byte window of the listed shaders' code (read from the executable)
 //       or of any journaled shader's code occurs in the file or in any decompressed section.
 //       Exit code 1 when one does.
 #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
+#include "sceneDbCommands.h"
 
 #include <chrono>
 #include <cstdio>
@@ -385,6 +387,7 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 	args.command = argv[1];
+	if (args.command == "scenedb") return SceneDbTool::Main(std::vector<std::string>(argv + 2, argv + argc));
 	for (int i = 2; i < argc; i++) {
 		const std::string arg   = argv[i];
 		const auto        value = [&]() -> std::string { return i + 1 < argc ? argv[++i] : std::string(); };
