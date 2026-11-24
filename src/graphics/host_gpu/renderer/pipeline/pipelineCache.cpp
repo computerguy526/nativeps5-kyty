@@ -29,6 +29,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/readSet.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/pipeline/blendMapping.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/launchPhase.h"
@@ -7419,6 +7420,67 @@ void ApplyDualSourceBlending(const HW::Context& context, ShaderPixelInputInfo& p
 	}
 }
 
+// sarosclay: KYTY_PS_UINT32_TARGETS=1 (default off). A pixel export in a raw 32-bit SPI_SHADER_COL_FORMAT
+// (1 32_R, 2 32_GR, 3 32_AR, 9 32_ABGR) to a UINT colour target stores the export's bits. The emitter declares
+// such an output float4 (only mode 7, UINT16_ABGR, gets a uint4 output), and a float fragment output on an
+// integer attachment is undefined in Vulkan and Metal (SAROS: the 192x128 R32G32B32A32Uint virtual-texture page
+// table received garbage, so every VT material sampled one physical texel = the flat "clay" character).
+// With the switch the export's mode becomes 7 for such a target: uint4 output, raw bits (an uncompressed export
+// under mode 7 already takes the raw dwords). The mode is part of the pixel stage's static key.
+static bool PsUint32TargetsEnabled() {
+	static const bool enabled = [] {
+		const char* v = std::getenv("KYTY_PS_UINT32_TARGETS");
+		return v != nullptr && v[0] == '1';
+	}();
+	return enabled;
+}
+
+static bool IsUintColorFormat(vk::Format format) {
+	switch (format) {
+		case vk::Format::eR8Uint:
+		case vk::Format::eR8G8Uint:
+		case vk::Format::eR8G8B8A8Uint:
+		case vk::Format::eR16Uint:
+		case vk::Format::eR16G16Uint:
+		case vk::Format::eR16G16B16A16Uint:
+		case vk::Format::eR32Uint:
+		case vk::Format::eR32G32Uint:
+		case vk::Format::eR32G32B32A32Uint:
+		case vk::Format::eA2B10G10R10UintPack32: return true;
+		default: return false;
+	}
+}
+
+void ApplyUint32Targets(const HW::Context& context, ShaderPixelInputInfo& pixel_info) {
+	if (!PsUint32TargetsEnabled()) {
+		return;
+	}
+	for (uint32_t i = 0; i < 8; i++) {
+		const auto mode = pixel_info.target_output_mode[i];
+		if (mode != 1 && mode != 2 && mode != 3 && mode != 9) {
+			continue;
+		}
+		const auto slot = ShaderPixelExportTarget(pixel_info.target_shader_mask, i);
+		if (slot >= 8) {
+			continue;
+		}
+		const auto& rt = context.GetRenderTarget(slot);
+		if (rt.base.addr == 0 || rt.info.format == Prospero::ChannelLayout::kInvalid) {
+			continue;
+		}
+		const auto format =
+		    TextureGetRenderTargetFormat(rt.info.format, rt.info.channel_type, rt.info.channel_order).format;
+		if (IsUintColorFormat(format)) {
+			pixel_info.target_output_mode[i] = 7;
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+				std::fprintf(stderr, "[uint32targets] export %u -> slot %u %s: mode %u -> uint output\n", i, slot,
+				             vk::to_string(format).c_str(), mode);
+			}
+		}
+	}
+}
+
 void ApplyClipSpace(const GraphicContext& graphics, const HW::Context& context,
                     ShaderVertexInputInfo& last_vertex_stage, bool tess_active = false,
                     bool rect_list = false) {
@@ -7494,6 +7556,7 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 		pixel_params = PrepareProgram(pixel_regs, sh, target_export_mapping, pixel_info);
 		ApplyPixelParameterMode(context, user_config, mesh_active, tess_active, pixel_info);
 		ApplyDualSourceBlending(context, pixel_info);
+		ApplyUint32Targets(context, pixel_info);
 	}
 	ApplyClipSpace(m_graphics, context, vertex_info[tess_active ? 2u : 0u], tess_active,
 	               Prospero::IsRectList(user_config.GetPrimType()));
@@ -7597,6 +7660,7 @@ PipelineCache::SpeculativeResult PipelineCache::PrepareGraphicsProgramsSpeculati
 		ApplyPixelParameterMode(context, user_config, vertex_info.logical_stage == ShaderType::Mesh,
 		                        false, pixel_info);
 		ApplyDualSourceBlending(context, pixel_info);
+		ApplyUint32Targets(context, pixel_info);
 	}
 	ApplyClipSpace(m_graphics, context, vertex_info, false,
 	               Prospero::IsRectList(user_config.GetPrimType()));
