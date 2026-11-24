@@ -1788,7 +1788,7 @@ target_include_directories(gpu_blit_shader_tests PRIVATE ${inc_headers})
 
 # These tests use exceptions.
 if(NOT KYTY_CLANG_CL)
-	foreach(kyty_exception_test scalar_provenance_tests lane_local_tests resource_tracking_tests
+	foreach(kyty_exception_test scalar_provenance_tests lane_local_tests resource_tracking_tests shader_precompile_tests
 			virtual_memory_allocation_tests)
 		target_compile_options(${kyty_exception_test} PRIVATE -fexceptions)
 	endforeach()
