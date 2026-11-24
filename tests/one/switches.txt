@@ -37,3 +37,5 @@ KYTY_SAROS_SAMPLE_DBG        # sarosuv experiment: listed pixel shaders (or all)
 KYTY_SAROS_SAMPLE_FRACT      # sarosaddr experiment: listed pixel shaders (or all) sample 2D float images with fract(coord) (software wrap; default off)
 KYTY_SAROS_HS_DYNIDX         # SAROS hand shaders: canonical indirect image groups (one permutation per shader), needs KYTY_SAROS_HANDSHADERS
 KYTY_PS_UINT32_TARGETS       # SAROS sarosclay: raw 32-bit PS exports to UINT colour targets get a uint4 output (VT page table; default off)
+# Controller forwarding (padfwd, USER playtest convenience)
+NPS5_PAD_NET                 # NetPad loopback forwarder
