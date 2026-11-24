@@ -80,12 +80,49 @@ void TestUnchangedFormats() {
 	      "block-compressed formats stay undecoded");
 }
 
+// Picked upstream fix 4e7c65ce (b2c9ec76): R8 / RG8 / R16_UINT targets decode
+// their CMASK fast-clear colour and DWORD fill (the clear used to be dropped,
+// leaving stale contents).
+void TestNarrowIntegerClears() {
+  vk::ClearColorValue clear{};
+  Check(DecodePackedColorClear(vk::Format::eR8Uint, 0xffffff05u, clear) &&
+            clear.uint32[0] == 5u,
+        "R8_UINT keeps only the low byte");
+  Check(DecodePackedColorClear(vk::Format::eR8G8Uint, 0xffff0a05u, clear) &&
+            clear.uint32[0] == 5u && clear.uint32[1] == 10u,
+        "RG8_UINT splits the low two bytes");
+  Check(DecodePackedColorClear(vk::Format::eR16Uint, 0xffff1234u, clear) &&
+            clear.uint32[0] == 0x1234u,
+        "R16_UINT keeps only the low half");
+  Check(DecodePackedColorClear(vk::Format::eR8Unorm, 0xffffff80u, clear) &&
+            Near(clear.float32[0], 128.0f / 255.0f),
+        "R8_UNORM decodes the low byte");
+  // DWORD fill: a word repeats across pixels only when every pixel in it is
+  // equal.
+  Check(!DecodeColorDwordFill(vk::Format::eR8Uint, 0x01020304u, clear),
+        "R8 with differing pixels is no uniform fill");
+  Check(DecodeColorDwordFill(vk::Format::eR8Uint, 0x07070707u, clear) &&
+            clear.uint32[0] == 7u,
+        "R8 with equal pixels is a uniform fill");
+  Check(!DecodeColorDwordFill(vk::Format::eR8G8Unorm, 0x00ff00feu, clear),
+        "RG8 with differing pixels is no uniform fill");
+  Check(DecodeColorDwordFill(vk::Format::eR8G8Unorm, 0x00ff00ffu, clear) &&
+            Near(clear.float32[0], 1.0f) && Near(clear.float32[1], 0.0f),
+        "RG8 with equal pixels is a uniform fill");
+  Check(!DecodeColorDwordFill(vk::Format::eR16Uint, 0x12340000u, clear),
+        "R16_UINT with differing pixels is no uniform fill");
+  Check(DecodeColorDwordFill(vk::Format::eR16Uint, 0x12341234u, clear) &&
+            clear.uint32[0] == 0x1234u,
+        "R16_UINT with equal pixels is a uniform fill");
+}
+
 } // namespace
 
 int main() {
 	TestRgba16FloatUsesBothWords();
 	TestNarrowFormats();
 	TestUnchangedFormats();
-	std::printf("ClearRegisterDecodeTests: all passed\n");
+        TestNarrowIntegerClears();
+        std::printf("ClearRegisterDecodeTests: all passed\n");
 	return 0;
 }
