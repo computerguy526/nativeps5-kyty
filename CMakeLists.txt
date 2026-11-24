@@ -783,6 +783,12 @@ add_executable(mip_clamp_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(mip_clamp_tests PRIVATE ${inc_headers})
 
+# nps5 skipfix: replay skip-reason counters (replaySkipStats.h), no GPU.
+add_executable(replay_skip_stats_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/ReplaySkipStatsTests.cpp"
+)
+target_include_directories(replay_skip_stats_tests PRIVATE ${inc_headers})
+
 # nps5 kshaders: KosmicKrisp fallbacks (64-bit buffer atomic forms, min-LOD view range), no GPU.
 add_executable(kk_lowering_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/KkLoweringTests.cpp"
