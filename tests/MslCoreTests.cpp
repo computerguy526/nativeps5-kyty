@@ -1261,6 +1261,13 @@ void TestSpecializationCompat() {
             !oldback.images[1].clamp_half_float,
         "spec compat: the int21 layout decodes to the same image fields, "
         "buffer strides kept, the int22 tail at its defaults");
+  // skipfix: the replay re-encodes a legacy blob in the current layout (what a draw publishes), so
+  // permutation identities match modules built today.
+  {
+    std::vector<uint8_t> reenc;
+    IR::EncodeSpecialization(oldback, reenc);
+    Check(reenc == cur, "spec compat: a legacy blob re-encodes to the current bytes");
+  }
   IR::ResourceSpecialization keep = spec;
   for (size_t cut : {size_t{1}, size_t{3}, old.size() / 2}) {
     std::vector<uint8_t> t(old.begin(), old.end() - static_cast<long>(cut));

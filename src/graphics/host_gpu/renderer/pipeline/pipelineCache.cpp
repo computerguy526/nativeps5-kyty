@@ -421,6 +421,19 @@ uint64_t CompileClockNs() {
 	                                 .count());
 }
 
+// A recorded specialization blob in this build's encoding: the bytes themselves when they decode,
+// else (a blob from before ResourceSpecialization::Image::indirect_group) the older layout decoded
+// and re-encoded, so identities and replayed permutations agree with what a draw publishes today.
+// Undecodable blobs are returned unchanged.
+std::vector<uint8_t> CurrentSpecializationBytes(const std::vector<uint8_t>& recorded) {
+	ShaderRecompiler::IR::ResourceSpecialization value;
+	bool                                         legacy = false;
+	if (!ShaderRecompiler::IR::DecodeSpecializationCompat(recorded, value, &legacy) || !legacy) return recorded;
+	std::vector<uint8_t> out;
+	ShaderRecompiler::IR::EncodeSpecialization(value, out);
+	return out;
+}
+
 // nps5 skipfix: why replay entries were skipped (one summary line when the replay ends).
 ReplaySkipStats g_replay_skips;
 
@@ -9105,8 +9118,15 @@ void PipelineCache::InitializePipelineList() {
 	for (size_t k = 0; k < resolved.entries.size(); k++) {
 		const auto& entry = resolved.entries[k];
 		if (!resolved.usable[entry.source]) continue;
+		// The identity hashes the encoded specialization; a list recorded before indirect_group
+		// holds the older bytes, whose hash no published module carries: hash the current encoding.
+		const auto& src = resolved.sources[entry.source];
+		const auto  bytes = CurrentSpecializationBytes(entry.specialization);
 		state->wave_sizes[resolved.entry_permutation[k]] = source_waves[entry.source];
-		state->identities[resolved.entry_permutation[k]] = PermutationIdentity(resolved.sources[entry.source], entry);
+		state->identities[resolved.entry_permutation[k]] =
+		    PermutationIdentity(src.stage, src.hash, src.user_data_count, src.code_size, src.wave_size,
+		                        src.user_data_base, src.plain_mip_stats_variant, entry.push_data_cursor,
+		                        src.static_state, bytes);
 		state->entries.push_back(entry);
 	}
 	uint64_t pipelines = 0;
