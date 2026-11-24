@@ -14,10 +14,18 @@ void                     WindowRun();
 void                     WindowRunBegin();
 [[nodiscard]] bool       WindowRunStep(int max_wait_ms);
 void                     WindowRunEnd();
-// mainhang: WindowRunEnd gave up on a stuck close-time pipeline cache save
-// (KYTY_CLOSE_SAVE_TIMEOUT_MS).
+// mainhang: WindowRunEnd gave up on a stuck close-time pipeline cache save (KYTY_CLOSE_SAVE_TIMEOUT_MS).
 [[nodiscard]] bool       WindowCloseSaveAbandoned();
 void                     WindowShutdown();
+
+// Nits of the display showing the game window; the defaults apply when the host reports none.
+struct DisplayLuminance {
+	float max_full_frame = 80.0f;
+	float max            = 1000.0f;
+	float min            = 0.0f;
+};
+
+[[nodiscard]] DisplayLuminance WindowGetDisplayLuminance();
 
 } // namespace Libs::Graphics
 

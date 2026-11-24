@@ -1,8 +1,7 @@
-#include "graphics/shader/shader.h"
-
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/shader.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -21,6 +20,14 @@ bool ShaderCbShaderMaskExports() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_CB_SHADER_MASK_EXPORTS");
 		return value != nullptr && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+	}();
+	return enabled;
+}
+
+bool ShaderObjprimIdEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_OBJPRIM_ID");
+		return value != nullptr && value[0] == '1' && value[1] == '\0';
 	}();
 	return enabled;
 }
@@ -159,13 +166,12 @@ bool ShaderPixelHasFieldSlots(const ShaderPixelInputInfo& info) {
 	return false;
 }
 
-std::vector<ShaderParameterFieldSlot> ShaderPixelFieldSlots(const ShaderPixelInputInfo& info,
-                                                            std::span<const uint32_t> active_inputs,
-                                                            std::span<const ShaderParameterField> fields,
-                                                            uint32_t* dropped) {
+std::vector<ShaderParameterFieldSlot>
+ShaderPixelFieldSlots(const ShaderPixelInputInfo& info, std::span<const uint32_t> active_inputs,
+                      std::span<const ShaderParameterField> fields, uint32_t* dropped) {
 	std::array<bool, 32> used {};
 	for (const auto input: active_inputs) {
-		used[ShaderPixelParameterMappedLocation(info, input) & 31u]             = true;
+		used[ShaderPixelParameterMappedLocation(info, input) & 31u]          = true;
 		used[ShaderPixelParameterLocation(info, active_inputs, input) & 31u] = true;
 	}
 	std::vector<ShaderParameterField> sorted(fields.begin(), fields.end());
@@ -176,7 +182,8 @@ std::vector<ShaderParameterFieldSlot> ShaderPixelFieldSlots(const ShaderPixelInp
 		if (a_raw != b_raw) return b_raw;
 		// Channel, word, kind.
 		const auto key = [](uint32_t code) {
-			return (ShaderParameterFieldCodeChannel(code) << 4u) | (ShaderParameterFieldCodeWord(code) << 3u) |
+			return (ShaderParameterFieldCodeChannel(code) << 4u) |
+			       (ShaderParameterFieldCodeWord(code) << 3u) |
 			       static_cast<uint32_t>(ShaderParameterFieldCodeKind(code));
 		};
 		return key(a.code) < key(b.code);
@@ -190,8 +197,8 @@ std::vector<ShaderParameterFieldSlot> ShaderPixelFieldSlots(const ShaderPixelInp
 		if (ShaderParameterFieldCodeKind(field.code) == ShaderParameterFieldKind::None) {
 			continue;
 		}
-		const bool raw   = ShaderParameterFieldCodeKind(field.code) == ShaderParameterFieldKind::Raw;
-		auto*      slot  = slots.empty() ? nullptr : &slots.back();
+		const bool raw  = ShaderParameterFieldCodeKind(field.code) == ShaderParameterFieldKind::Raw;
+		auto*      slot = slots.empty() ? nullptr : &slots.back();
 		uint32_t   index = 0;
 		if (slot != nullptr && slot->input == field.input && slot->Flat() == raw) {
 			while (index < 4u && slot->codes[index] != 0) {
@@ -228,16 +235,17 @@ bool ShaderPixelParameterIsFlat(const ShaderPixelInputInfo& info, uint32_t input
 bool ShaderPixelRawVertexInputs(const ShaderPixelInputInfo& info) {
 	// KYTY_PS_PER_VERTEX=unpack: no raw vertices either (the reads take unpacked fields), so the
 	// interface is laid out as with KYTY_PS_PER_VERTEX=0.
-	if (!ShaderRecompiler::GetCodegenOptions().ps_per_vertex || ShaderRecompiler::PsPerVertexUnpack()) {
+	if (!ShaderRecompiler::GetCodegenOptions().ps_per_vertex ||
+	    ShaderRecompiler::PsPerVertexUnpack()) {
 		return false;
 	}
 	return !(ShaderRecompiler::PsPerVertexGeometry() &&
 	         info.parameter_mode == ShaderPixelParameterMode::Rectangle);
 }
 
-std::vector<ShaderPerVertexSlot> ShaderPixelPerVertexSlots(const ShaderPixelInputInfo& info,
-                                                           std::span<const uint32_t> active_inputs,
-                                                           std::span<const uint32_t> per_vertex_inputs) {
+std::vector<ShaderPerVertexSlot>
+ShaderPixelPerVertexSlots(const ShaderPixelInputInfo& info, std::span<const uint32_t> active_inputs,
+                          std::span<const uint32_t> per_vertex_inputs) {
 	std::array<bool, ShaderMaxPerVertexLocations> used {};
 	for (const auto input: active_inputs) {
 		used[ShaderPixelParameterMappedLocation(info, input) & 31u] = true;

@@ -15,6 +15,16 @@ HostGeometryGuard GetHostGeometryGuard() { return {}; }
 HostShaderClock GetHostShaderClock() { return {}; }
 HostWaveClusters GetHostWaveClusters() { return {}; }
 bool WaveClustersActive(const IR::Program &) { return false; }
+// Upstream int22 host-feature queries the recompiler reads: the defaults of an unconfigured
+// device (as the real ones before SetHost* runs) and no KYTY_* switch (metal.clean_env).
+bool GetHostBufferPairAtomics() { return false; }
+bool GetHostMeshLayerDrop() { return false; }
+bool GetHostFragmentInterlock() { return false; }
+bool GetHostComputeDerivativesLinear() { return false; }
+uint64_t IndirectFormatCountAddress() { return 0; }
+CoherentLoadMode GetCoherentLoadMode() { return CoherentLoadMode::Plain; }
+const char *CoherentLoadModeName(CoherentLoadMode) { return "plain"; }
+const char *MeshPassesUnsupported(const IR::Program &) { return nullptr; }
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv
 
 namespace Libs::LibKernel::Memory {

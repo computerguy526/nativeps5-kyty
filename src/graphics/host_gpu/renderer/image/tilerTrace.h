@@ -39,6 +39,11 @@ void EventWithReason(const char* prefix, const Image& image, uint64_t bytes) noe
 // buffer fills by caller (fill.<who>) and the tiler's image-pass dispatches (dispatch.store /
 // dispatch.load, bytes = threads).
 void Count(const char* what, uint64_t n, uint64_t bytes) noexcept;
+// A buffer-mode pass (TileManager::Detile / Tile / TileImage): "buf" lines per window keyed by op,
+// caller reason, element size, block family and the first info's extent; infos = tile infos of the
+// call, bytes = linear bytes the call covers.
+void NoteBuffer(const char* op, uint32_t element, uint32_t family, uint32_t width, uint32_t height,
+                uint32_t depth, uint64_t infos, uint64_t bytes) noexcept;
 
 } // namespace TilerTrace
 } // namespace Libs::Graphics

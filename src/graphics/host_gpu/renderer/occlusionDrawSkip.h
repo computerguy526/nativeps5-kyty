@@ -18,7 +18,7 @@ namespace Libs::Graphics::OcclusionDrawSkip {
 struct DrawFacts {
 	bool     occlusion_accurate = false; // KYTY_GPU_OCCLUSION=1: the draw's samples are counted
 	bool     mesh               = false;
-	uint32_t color_count        = 0;     // colour targets the draw writes
+	uint32_t color_count        = 0; // colour targets the draw writes
 	bool     depth_write        = false;
 	bool     depth_clear        = false;
 	bool     stencil_write      = false; // stencil test enabled with a nonzero write mask

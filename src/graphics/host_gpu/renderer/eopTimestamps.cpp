@@ -1,6 +1,6 @@
-#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "graphics/host_gpu/renderer/eopTimestamps.h"
 
+#include "common/guestAddress.h" // nps5: guest bytes are at guest + bias
 #include "common/hangTrace.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
@@ -96,10 +96,14 @@ Mode GetMode() {
 		if (std::strcmp(value, "gpu-verify") == 0) {
 			return Mode::GpuVerify;
 		}
+		if (std::strcmp(value, "busy") == 0) {
+			return Mode::Busy;
+		}
 		if (std::strcmp(value, "cbtime") == 0) {
 			return Mode::CbTime;
 		}
-		std::printf("KYTY_EOP_TIMESTAMPS must be record, gpu, gpu-verify or cbtime (got '%s'): record\n",
+		std::printf("KYTY_EOP_TIMESTAMPS must be record, gpu, gpu-verify, busy or cbtime (got "
+		            "'%s'): record\n",
 		            value);
 		return Mode::Record;
 	}();
@@ -115,6 +119,7 @@ uint64_t VerifyMismatches() {
 EopTimestampRing::EopTimestampRing(GraphicContext& graphics, uint32_t capacity)
     : m_graphics(graphics), m_ring(capacity) {
 	m_verify = EopTimestamps::GetMode() == EopTimestamps::Mode::GpuVerify;
+	m_busy   = EopTimestamps::GetMode() == EopTimestamps::Mode::Busy;
 	uint32_t family_count = 0;
 	graphics.physical_device.getQueueFamilyProperties(&family_count, nullptr);
 	std::vector<vk::QueueFamilyProperties> families(family_count);
@@ -210,12 +215,33 @@ void EopTimestampRing::Recalibrate(uint64_t now_ns, bool force) {
 	m_calibrated_ns = now_ns;
 }
 
-void EopTimestampRing::BeginCommand(const CommandSink& sink) {
+void EopTimestampRing::BeginCommand(const CommandSink& sink, uint64_t tick) {
 	if (!Valid()) {
 		return;
 	}
 	(void)m_ring.ResetConsumed(
 	    [&](uint32_t first, uint32_t count) { sink.resetQueryPool(m_pool, first, count); });
+	if (m_busy && tick != UINT64_MAX) {
+		QueueMarker(sink, tick, BeginMarker, true);
+	}
+}
+
+void EopTimestampRing::EndCommand(const CommandSink& sink, uint64_t tick) {
+	if (Valid() && m_busy) {
+		QueueMarker(sink, tick, EndMarker, false);
+	}
+}
+
+void EopTimestampRing::QueueMarker(const CommandSink& sink, uint64_t tick, uint64_t marker,
+                                   bool top_of_pipe) {
+	const auto slot = m_ring.Allocate();
+	if (slot == NoSlot) {
+		return; // a missing marker only makes that gap count as busy
+	}
+	sink.writeTimestamp2(top_of_pipe ? vk::PipelineStageFlagBits2::eTopOfPipe
+	                                 : vk::PipelineStageFlagBits2::eAllCommands,
+	                     m_pool, slot);
+	m_queue.push_back({tick, marker, 0, slot});
 }
 
 uint32_t EopTimestampRing::RecordQuery(const CommandSink& sink) {
@@ -243,6 +269,22 @@ void EopTimestampRing::Queue(uint32_t slot, uint64_t tick, uint64_t address,
 }
 
 void EopTimestampRing::PublishEntry(const Entry& entry, bool available, uint64_t device_raw) {
+	if (m_busy) {
+		if (entry.address == BeginMarker || entry.address == EndMarker) {
+			if (available) {
+				// A buffer that starts after everything before it ended: the gap was idle.
+				if (entry.address == BeginMarker && m_last_raw != 0 && device_raw > m_last_raw) {
+					m_idle_raw.fetch_add(device_raw - m_last_raw, std::memory_order_relaxed);
+				}
+				m_last_raw = std::max(m_last_raw, device_raw);
+			}
+			return;
+		}
+		if (available) {
+			m_last_raw = std::max(m_last_raw, device_raw);
+			device_raw -= std::min(device_raw, m_idle_raw.load(std::memory_order_relaxed));
+		}
+	}
 	uint64_t published = 0;
 	if (!available || !EopTimestamps::ToReference(m_map, device_raw, published)) {
 		Profiler::CountFrameEvent(Profiler::FrameEvent::EopTimestampsUnavailable);
@@ -338,6 +380,10 @@ uint64_t EopTimestampRing::TakeDeferred(uint32_t slot, uint64_t record_value) {
 		map = m_map;
 	}
 	uint64_t published = 0;
+	if (m_busy) {
+		// busy: the idle time measured so far (markers not published yet are not in it).
+		result[0] -= std::min(result[0], m_idle_raw.load(std::memory_order_relaxed));
+	}
 	const bool ok = (status == vk::Result::eSuccess || status == vk::Result::eNotReady) &&
 	                result[1] != 0 && EopTimestamps::ToReference(map, result[0], published);
 	m_ring.Consume(slot);
@@ -479,8 +525,8 @@ uint64_t EopCompletionClock::DeferredValue(uint64_t tick, uint64_t record_value)
 				found = true;
 				m_deferred_spans.pop_front();
 			}
-			m_deferred_group = EopTimestamps::CompletionGroup::Make(m_deferred_previous_end,
-			                                                        first, last, now);
+			m_deferred_group =
+			    EopTimestamps::CompletionGroup::Make(m_deferred_previous_end, first, last, now);
 			m_deferred_previous_end = m_deferred_group.gpu_end;
 			m_deferred_group_tick   = tick;
 			m_deferred_groups++;
@@ -496,9 +542,10 @@ uint64_t EopCompletionClock::DeferredValue(uint64_t tick, uint64_t record_value)
 				             " deferred clock writes, shift mean %.2f ms max %.2f ms, group spans "
 				             "%.0f%% of the time\n",
 				             seconds, m_deferred_groups, m_deferred_writes,
-				             m_deferred_writes != 0 ? static_cast<double>(m_deferred_shift_sum) /
-				                                          static_cast<double>(m_deferred_writes) / 1e5
-				                                    : 0.0,
+				             m_deferred_writes != 0
+				                 ? static_cast<double>(m_deferred_shift_sum) /
+				                       static_cast<double>(m_deferred_writes) / 1e5
+				                 : 0.0,
 				             static_cast<double>(m_deferred_shift_max) / 1e5,
 				             static_cast<double>(m_deferred_span_sum) / 1e8 / seconds * 100.0);
 				m_deferred_report_at = now;
@@ -509,7 +556,7 @@ uint64_t EopCompletionClock::DeferredValue(uint64_t tick, uint64_t record_value)
 				m_deferred_span_sum  = 0;
 			}
 		}
-		value = m_deferred_group.Value(record_value);
+		value            = m_deferred_group.Value(record_value);
 		const auto shift = value - record_value;
 		m_deferred_writes++;
 		m_deferred_shift_sum += shift;
@@ -522,8 +569,7 @@ uint64_t EopCompletionClock::DeferredValue(uint64_t tick, uint64_t record_value)
 }
 
 void EopCompletionClock::Publish() {
-	if (m_queue.empty() ||
-	    m_queue.front().tick > m_observed_tick.load(std::memory_order_acquire)) {
+	if (m_queue.empty() || m_queue.front().tick > m_observed_tick.load(std::memory_order_acquire)) {
 		return;
 	}
 	Profiler::ScopedFrameWait wait(Profiler::FrameWait::EopTimestampPublish);
@@ -533,7 +579,7 @@ void EopCompletionClock::Publish() {
 		std::lock_guard lock(m_mutex);
 		m_taken.swap(m_observations);
 	}
-	for (const auto& observation : m_taken) {
+	for (const auto& observation: m_taken) {
 		size_t count = 0;
 		while (count < m_queue.size() && m_queue[count].tick <= observation.tick) {
 			count++;
@@ -603,17 +649,17 @@ void EopCompletionClock::Report(uint64_t now) {
 	}
 	const double seconds = static_cast<double>(now - m_report_at) / 1e9;
 	// Reference-clock ticks are 10 ns.
-	std::fprintf(stderr,
-	             "[cbtime] %.1f s: %" PRIu64 " groups, %" PRIu64 " clock writes rewritten, %" PRIu64
-	             " kept (guest rewrote), shift mean %.2f ms max %.2f ms, group spans %.0f%% of the time, "
-	             "%" PRIu64 " observations merged\n",
-	             seconds, m_groups, m_rewritten, m_skipped,
-	             m_rewritten != 0
-	                 ? static_cast<double>(m_shift_sum) / static_cast<double>(m_rewritten) / 1e5
-	                 : 0.0,
-	             static_cast<double>(m_shift_max) / 1e5,
-	             static_cast<double>(m_gpu_span_sum) / 1e8 / seconds * 100.0,
-	             m_dropped.exchange(0, std::memory_order_relaxed));
+	std::fprintf(
+	    stderr,
+	    "[cbtime] %.1f s: %" PRIu64 " groups, %" PRIu64 " clock writes rewritten, %" PRIu64
+	    " kept (guest rewrote), shift mean %.2f ms max %.2f ms, group spans %.0f%% of the time, "
+	    "%" PRIu64 " observations merged\n",
+	    seconds, m_groups, m_rewritten, m_skipped,
+	    m_rewritten != 0 ? static_cast<double>(m_shift_sum) / static_cast<double>(m_rewritten) / 1e5
+	                     : 0.0,
+	    static_cast<double>(m_shift_max) / 1e5,
+	    static_cast<double>(m_gpu_span_sum) / 1e8 / seconds * 100.0,
+	    m_dropped.exchange(0, std::memory_order_relaxed));
 	m_report_at    = now;
 	m_groups       = 0;
 	m_rewritten    = 0;

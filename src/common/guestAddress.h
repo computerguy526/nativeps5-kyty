@@ -13,14 +13,17 @@
 
 namespace Guest {
 
-extern uint64_t g_bias; // set once by the hybrid bridge before the renderer starts (guestAddress.cpp)
+extern uint64_t
+    g_bias; // set once by the hybrid bridge before the renderer starts (guestAddress.cpp)
 
-// Calls the guest function at guest address `function` (up to six integer arguments, System V order)
-// and returns its RAX. Null where guest code is called directly (kyty_emulator, AstroHybrid).
+// Calls the guest function at guest address `function` (up to six integer arguments, System V
+// order) and returns its RAX. Null where guest code is called directly (kyty_emulator,
+// AstroHybrid).
 extern uint64_t (*g_call_guest)(uint64_t function, const uint64_t* args6);
 
-[[nodiscard]] inline uint64_t CallGuest(uint64_t function, uint64_t a0 = 0, uint64_t a1 = 0, uint64_t a2 = 0,
-                                        uint64_t a3 = 0, uint64_t a4 = 0, uint64_t a5 = 0) {
+[[nodiscard]] inline uint64_t CallGuest(uint64_t function, uint64_t a0 = 0, uint64_t a1 = 0,
+                                        uint64_t a2 = 0, uint64_t a3 = 0, uint64_t a4 = 0,
+                                        uint64_t a5 = 0) {
 	const uint64_t args[6] = {a0, a1, a2, a3, a4, a5};
 	return g_call_guest(function, args);
 }

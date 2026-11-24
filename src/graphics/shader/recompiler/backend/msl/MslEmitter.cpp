@@ -1580,6 +1580,24 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		result.unsupported = ctx.unsupported;
 		return result;
 	}
+	// int22 bindless image tables (ImageResource::bindless: a slot of the descriptor-set-1 image
+	// arrays, runtime = T# dwords loaded by the shader) have no MSL binding model here: refuse by
+	// name instead of binding a guess (the kyty_msl_dump exit code 5 reports "refused:" entries).
+	for (size_t i = 0; i < program.info.images.size(); i++) {
+		if (program.info.images[i].bindless) {
+			ctx.unsupported[fmt::format("refused: bindless image table (image {}{})", i,
+			                            program.info.images[i].runtime ? ", runtime" : "")]++;
+		}
+	}
+	if (!ctx.unsupported.empty() && !mesh_stage) {
+		for (const auto& [reason, count]: ctx.unsupported) {
+			if (reason.rfind("refused:", 0) == 0) {
+				result.source = PreludeText(fuse_mad) + "// refused: " + reason + "\n";
+				result.unsupported = ctx.unsupported;
+				return result;
+			}
+		}
+	}
 	if (gfx_stage) { // graphics: one guest lane per Metal thread (see MslStageIo.cpp)
 		ctx.lanes = lanes     = 1;
 		result.lanes          = 1;

@@ -116,7 +116,7 @@ Registry::Registry(Config cfg): m_cfg(std::move(cfg)) {}
 
 bool Registry::BeginSample(uint64_t hash, uint32_t stage, uint32_t gate, uint64_t now_ms) {
 	std::lock_guard lock(m_mutex);
-	auto&           g = m_gates[{hash, stage, gate}];
+	auto& g = m_gates[{hash, stage, gate}];
 	g.draws++;
 	bool take = false;
 	if (g.samples < m_cfg.first) {
@@ -163,7 +163,7 @@ void Registry::AddData(uint64_t hash, uint32_t stage, char kind, uint32_t slot, 
                        size_t bytes, uint64_t bound_bytes, const uint32_t* meta, uint32_t meta_n,
                        uint32_t info, uint32_t stride, uint32_t valid_chunks) {
 	std::lock_guard lock(m_mutex);
-	Slot*           s = Find({hash, stage, kind, slot});
+	Slot* s = Find({hash, stage, kind, slot});
 	if (s == nullptr) {
 		return;
 	}
@@ -242,7 +242,7 @@ void Registry::AddDescriptor(uint64_t hash, uint32_t stage, char kind, uint32_t 
                              const uint32_t* meta, uint32_t meta_n, uint64_t bound_bytes,
                              uint32_t info) {
 	std::lock_guard lock(m_mutex);
-	Slot*           s = Find({hash, stage, kind, slot});
+	Slot* s = Find({hash, stage, kind, slot});
 	if (s == nullptr) {
 		return;
 	}
@@ -296,8 +296,7 @@ void Registry::SerializeSlot(const Key& key, Slot& s) {
 	o.reserve(64 + s.dw.size() * 40);
 	char head[160];
 	std::snprintf(head, sizeof(head),
-	              "{\"h\":\"%016" PRIx64
-	              "\",\"st\":%u,\"k\":\"%c\",\"s\":%u,\"n\":%u,\"unread\":%u,\"sz\":%" PRIu64
+	              "{\"h\":\"%016" PRIx64 "\",\"st\":%u,\"k\":\"%c\",\"s\":%u,\"n\":%u,\"unread\":%u,\"sz\":%" PRIu64
 	              ",\"info\":%u,\"stride\":%u",
 	              hash, stage, kind, slot, s.samples, s.unread, s.bytes_max, s.info, s.stride);
 	o += head;
@@ -340,8 +339,7 @@ void Registry::SerializeSlot(const Key& key, Slot& s) {
 			o += ']';
 		}
 	};
-	// Trailing never-seen positions trimmed. Per position/block: flags,umin,umax,fmin bits,fmax
-	// bits,changes,n.
+	// Trailing never-seen positions trimmed. Per position/block: flags,umin,umax,fmin bits,fmax bits,changes,n.
 	o += ",\"dw\":[";
 	stats(s.dw);
 	o += "],\"blk\":[";
@@ -368,19 +366,16 @@ std::string Registry::Serialize() {
 		}
 		char head[256];
 		std::snprintf(head, sizeof(head),
-		              "{\"k\":\"hdr\",\"version\":1,\"first\":%u,\"max\":%u,\"interval_ms\":%u,"
-		              "\"read_bytes\":%u,"
-		              "\"stat_bytes\":%u,\"block_dwords\":%u,\"slots\":%zu,\"dropped\":%u,\"raw_"
-		              "bytes\":%" PRIu64 "}\n",
-		              m_cfg.first, m_cfg.max_samples, m_cfg.interval_ms, m_cfg.read_bytes,
-		              m_cfg.stat_bytes, kBlockDwords, m_slots.size(), m_dropped, RawBytes());
+		              "{\"k\":\"hdr\",\"version\":1,\"first\":%u,\"max\":%u,\"interval_ms\":%u,\"read_bytes\":%u,"
+		              "\"stat_bytes\":%u,\"block_dwords\":%u,\"slots\":%zu,\"dropped\":%u,\"raw_bytes\":%" PRIu64 "}\n",
+		              m_cfg.first, m_cfg.max_samples, m_cfg.interval_ms, m_cfg.read_bytes, m_cfg.stat_bytes, kBlockDwords, m_slots.size(),
+		              m_dropped, RawBytes());
 		out += head;
 		for (auto& [k, g]: m_gates) {
 			const auto& [hash, stage, gate] = k;
 			char line[160];
 			std::snprintf(line, sizeof(line),
-			              "{\"h\":\"%016" PRIx64
-			              "\",\"st\":%u,\"k\":\"P\",\"gate\":%u,\"draws\":%" PRIu64 ",\"n\":%u}\n",
+			              "{\"h\":\"%016" PRIx64 "\",\"st\":%u,\"k\":\"P\",\"gate\":%u,\"draws\":%" PRIu64 ",\"n\":%u}\n",
 			              hash, stage, gate, g.draws, g.samples);
 			out += line;
 		}
@@ -431,21 +426,19 @@ static void FlushNow(const char* why) {
 	}
 	const auto t0 = NowMs();
 	const bool ok = g_registry->WriteFile(g_registry->Cfg().out);
-	std::fprintf(stderr, "[inprof] %s flush %s: %zu slots, raw %" PRIu64 " KiB, %" PRIu64 " ms\n",
-	             why, ok ? "ok" : "FAILED", g_registry->SlotCount(), g_registry->RawBytes() / 1024,
-	             NowMs() - t0);
+	std::fprintf(stderr, "[inprof] %s flush %s: %zu slots, raw %" PRIu64 " KiB, %" PRIu64 " ms\n", why,
+	             ok ? "ok" : "FAILED", g_registry->SlotCount(), g_registry->RawBytes() / 1024, NowMs() - t0);
 }
 
 Registry& Global() {
 	static Registry* reg = [] {
-		auto* r = new Registry(Config::FromEnv()); // never destroyed: the exit flush may run late
+		auto* r    = new Registry(Config::FromEnv()); // never destroyed: the exit flush may run late
 		g_registry = r;
-		std::fprintf(
-		    stderr,
-		    "[inprof] KYTY_INPUT_PROFILE on (LOCAL research capture): out %s, first %u, max %u, "
-		    "interval %u ms, read %u B, raw %u, flush %u s\n",
-		    r->Cfg().out.c_str(), r->Cfg().first, r->Cfg().max_samples, r->Cfg().interval_ms,
-		    r->Cfg().read_bytes, r->Cfg().raw, r->Cfg().flush_s);
+		std::fprintf(stderr,
+		             "[inprof] KYTY_INPUT_PROFILE on (LOCAL research capture): out %s, first %u, max %u, "
+		             "interval %u ms, read %u B, raw %u, flush %u s\n",
+		             r->Cfg().out.c_str(), r->Cfg().first, r->Cfg().max_samples, r->Cfg().interval_ms,
+		             r->Cfg().read_bytes, r->Cfg().raw, r->Cfg().flush_s);
 		std::atexit([] { FlushNow("exit"); });
 		if (r->Cfg().flush_s > 0) {
 			std::thread([s = r->Cfg().flush_s] {

@@ -17,12 +17,7 @@
 #include <utility>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
 #include <windows.h>
-#undef min
-#undef max
 #undef MemoryBarrier
 #elif defined(__APPLE__)
 #include <pthread.h>
@@ -92,12 +87,7 @@ class RegionManager final {
 public:
 	RegionManager(PageManager& page_manager, uint64_t cpu_addr)
 	    : m_page_manager(page_manager), m_cpu_addr(cpu_addr) {
-		if (m_cpu_addr % TRACKER_REGION_SIZE != 0) {
-			EXIT("invalid region tracking manager construction\n");
-		}
 		m_cpu_dirty.Fill();
-		m_writable.Fill();
-		m_readable.Fill();
 		PublishCpuMirror();
 	}
 
@@ -155,6 +145,14 @@ public:
 		});
 	}
 
+	// KYTY_TRACKER_DIRTY_WALK: whether any page of the region is CPU-dirty, without `lock`, from
+	// the count of non-zero CPU mirror words (published with the mirror, under `lock`, before any
+	// page it makes CPU-dirty becomes writable). False means an upload collection of any range of
+	// the region would find nothing (hot pages are always CPU-dirty).
+	[[nodiscard]] bool AnyCpuModifiedRelaxed() const noexcept {
+		return m_cpu_dirty_words.load(std::memory_order_acquire) != 0;
+	}
+
 	// One 64-page word of the CPU-dirty mirror, read as IsCpuModifiedRelaxed reads it (nps5
 	// findbuf: MemoryTracker::ForEachCpuDirtyRunRelaxed).
 	[[nodiscard]] uint64_t CpuMirrorWordRelaxed(size_t word) const noexcept {
@@ -184,17 +182,14 @@ public:
 				EXIT("CPU dirty state conflicts with GPU dirty state\n");
 			}
 		}
-		if constexpr (source == DirtySource::Gpu && enable) {
-			if (m_cpu_dirty.AnyInRange(start, end)) {
-				EXIT("GPU dirty state conflicts with CPU dirty state\n");
-			}
-		}
 		auto& bits = GetBits<source>();
+		// The pages whose bit flips (upstream 79a04b9a1: protection follows the changed pages
+		// instead of a shadow copy of the last applied protection).
+		RegionBits changed = enable ? RegionBits(~bits, start, end) : RegionBits(bits, start, end);
 		{
-			const RegionBits current(bits, start, end);
-			const bool       changes = enable ? current.Count() != end - start : current.Any();
+			const bool changes = !changed.None();
 			if (changes ||
-			    (source == DirtySource::Gpu && RegionBits(m_readback_pending, start, end).Any())) {
+			    (source == DirtySource::Gpu && m_readback_pending.AnyInRange(start, end))) {
 				Bump();
 			}
 			if (source == DirtySource::Cpu && enable && changes) {
@@ -213,14 +208,12 @@ public:
 			// Any GPU ownership transition supersedes an outstanding side readback: a newer
 			// writer (enable) or an explicit download/unmark (disable) now owns these pages.
 			m_readback_pending.UnsetRange(start, end);
-			// nps5 faultwin: a new GPU writer (or an unmark) ends a relaxed read of these pages.
-			m_relaxed_read.UnsetRange(start, end);
 			PublishGpuMirror(start, end);
 		}
 		if constexpr (source == DirtySource::Cpu) {
-			UpdateProtection<!enable, false>();
+			UpdateProtection<!enable, false>(changed);
 		} else {
-			UpdateProtection<enable, true>();
+			UpdateProtection<enable, true>(changed);
 		}
 	}
 
@@ -243,11 +236,11 @@ public:
 			bits.UnsetRange(start, end);
 			if constexpr (source == DirtySource::Cpu) {
 				PublishCpuMirror(start, end);
-				UpdateProtection<true, false>();
+				UpdateProtection<true, false>(mask);
 			} else {
 				m_readback_pending.UnsetRange(start, end);
 				PublishGpuMirror(start, end);
-				UpdateProtection<false, true>();
+				UpdateProtection<false, true>(mask);
 			}
 		}
 		for (const auto [first, last]: mask) {
@@ -272,6 +265,12 @@ public:
 		uint32_t hot_max     = 0;
 		// Written uploads copy with no region lock held (MemoryTracker::ForEachWrittenUploadRange).
 		bool copy_outside_lock = false;
+		// KYTY_FAULT_AHEAD_SEQUENTIAL (MemoryTracker::SetSequentialAhead): the window opens only for a
+		// sequential fill, i.e. when the page below the faulting ones is CPU-dirty already, and then
+		// covers the `ahead_pages` pages from the faulting page on (forward, within the region). Any
+		// other fault makes only its own pages CPU-dirty. Adapted from TheCruZ/KytyPS5-GTA
+		// (InvalidateFaultedPage).
+		bool sequential_ahead = false;
 	};
 	struct FaultResult {
 		uint64_t ahead_pages   = 0;
@@ -296,15 +295,23 @@ public:
 		// another watcher (an image) and are not part of a fault/reprotect cycle.
 		const RegionBits already_dirty(m_cpu_dirty, start, end);
 		result.already_dirty = already_dirty.Any();
+		// The pages that become CPU-dirty here, for the protection update (79a04b9a1).
+		RegionBits changed(~m_cpu_dirty, start, end);
+		const bool sequential = start > 0 && m_cpu_dirty.Get(start - 1);
 		m_cpu_dirty.SetRange(start, end);
 		// The pages whose CPU-dirty bits may change: the faulting ones and the fault-ahead window.
 		size_t changed_begin = start;
 		size_t changed_end   = end;
-		if (policy.ahead_pages > 1) {
-			const size_t window_begin = start / policy.ahead_pages * policy.ahead_pages;
-			const size_t window_end = std::min<size_t>((end + policy.ahead_pages - 1) /
-			                                               policy.ahead_pages * policy.ahead_pages,
-			                                           TRACKER_REGION_PAGES);
+		if (policy.ahead_pages > 1 && (!policy.sequential_ahead || sequential)) {
+			const size_t window_begin = policy.sequential_ahead
+			                                ? start
+			                                : start / policy.ahead_pages * policy.ahead_pages;
+			const size_t window_end =
+			    policy.sequential_ahead
+			        ? std::min<size_t>(std::max<size_t>(start + policy.ahead_pages, end), TRACKER_REGION_PAGES)
+			        : std::min<size_t>((end + policy.ahead_pages - 1) / policy.ahead_pages *
+			                               policy.ahead_pages,
+			                           TRACKER_REGION_PAGES);
 			changed_begin           = std::min(changed_begin, window_begin);
 			changed_end             = std::max(changed_end, window_end);
 			RegionBits all;
@@ -313,6 +320,7 @@ public:
 			    RegionBits(all, window_begin, window_end) & ~m_gpu_dirty & ~m_cpu_dirty;
 			result.ahead_pages = window.Count();
 			m_cpu_dirty |= window;
+			changed |= window;
 			for (const auto [first, last]: window) {
 				on_ahead(m_cpu_addr + first * TRACKER_PAGE_SIZE,
 				         (last - first) * TRACKER_PAGE_SIZE);
@@ -320,7 +328,7 @@ public:
 		}
 		// Published before the pages become writable: a guest write can only land after it.
 		PublishCpuMirror(changed_begin, changed_end);
-		UpdateProtection<false, false>();
+		UpdateProtection<false, false>(changed);
 		if (policy.hot_frames == 0) {
 			return result;
 		}
@@ -385,11 +393,11 @@ public:
 			}
 		}
 		// Hot pages are always CPU-dirty, so `normal` holds exactly the pages to clear.
-		const RegionBits normal = RegionBits(m_cpu_dirty, start, end) & ~hot;
+		RegionBits normal = RegionBits(m_cpu_dirty, start, end) & ~hot;
 		if (normal.Any()) {
 			m_cpu_dirty ^= normal;
 			PublishCpuMirror(start, end);
-			UpdateProtection<true, false>();
+			UpdateProtection<true, false>(normal);
 		}
 		for (const auto [first, last]: normal) {
 			func(m_cpu_addr + first * TRACKER_PAGE_SIZE, (last - first) * TRACKER_PAGE_SIZE, false);
@@ -422,8 +430,8 @@ public:
 	uint32_t SettleHot(uint64_t vaddr, uint64_t size, std::atomic_uint32_t& hot_count,
 	                   Func&& func) {
 		const auto [start, end] = GetPageRange(vaddr, size);
-		const RegionBits hot(m_hot, start, end);
-		const auto       settled = static_cast<uint32_t>(hot.Count());
+		RegionBits hot(m_hot, start, end);
+		const auto settled = static_cast<uint32_t>(hot.Count());
 		if (settled == 0) {
 			return 0;
 		}
@@ -432,7 +440,7 @@ public:
 		hot_count.fetch_sub(settled, std::memory_order_relaxed);
 		m_cpu_dirty ^= hot;
 		PublishCpuMirror(start, end);
-		UpdateProtection<true, false>();
+		UpdateProtection<true, false>(hot);
 		for (const auto [first, last]: hot) {
 			for (auto page = first; page < last; page++) {
 				func(m_cpu_addr + page * TRACKER_PAGE_SIZE);
@@ -484,48 +492,38 @@ public:
 	// Side readbacks (BufferCache::ReadMemory). Pending marks the GPU-dirty pages of a range whose
 	// exact dirty bytes were handed to one side-copy publication. Any later GPU transition of a
 	// page clears its mark, so completion unprotects only pages that no newer writer re-owned.
-	// nps5 faultwin (KYTY_READ_RELAX): drops the read watch of the GPU-dirty pages of a range
-	// (they stay GPU-dirty and write-watched); the next GPU transition of a page re-arms it.
-	// Returns the pages relaxed now.
-	uint64_t RelaxRead(uint64_t vaddr, uint64_t size) {
-		const auto [start, end] = GetPageRange(vaddr, size);
-		const RegionBits dirty(m_gpu_dirty, start, end);
-		const RegionBits relax = dirty & ~m_relaxed_read;
-		uint64_t         pages = 0;
-		for (const auto [first, last]: relax) {
-			m_relaxed_read.SetRange(first, last);
-			pages += last - first;
-		}
-		if (pages != 0) {
-			UpdateProtection<false, true>();
-		}
-		return pages;
-	}
-
 	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): the pages of a range stay readable across GPU
-	// ownership changes (they stay write-watched while not CPU-dirty) until CloseRead. Unlike a
-	// relaxed read, a new GPU writer does not re-arm the read watch: the caller (BufferCache)
-	// keeps a page open only while readbacks keep publishing it. Returns the pages opened now.
+	// ownership changes (they stay write-watched while not CPU-dirty) until CloseRead: an open page
+	// carries no read watch (UpdateProtection leaves it out). The caller (BufferCache) keeps a page
+	// open only while readbacks keep publishing it. Returns the pages opened now.
+	// (Rebased onto upstream's changed-bit watcher updates, 79a04b9a1: the GPU-dirty pages that
+	// open drop their read watch here, and get it back at CloseRead.)
 	uint64_t OpenRead(uint64_t vaddr, uint64_t size) {
 		const auto [start, end] = GetPageRange(vaddr, size);
-		const RegionBits open(m_open_read, start, end);
-		const uint64_t   pages = (end - start) - open.Count();
+		RegionBits     opening(~m_open_read, start, end);
+		const uint64_t pages = opening.Count();
 		if (pages != 0) {
+			RegionBits unwatch = opening & m_gpu_dirty;
 			m_open_read.SetRange(start, end);
-			UpdateProtection<false, true>();
+			if (!unwatch.None()) {
+				m_page_manager.UpdatePageWatchersForRegion<false, true>(m_cpu_addr, unwatch);
+			}
 		}
 		return pages;
 	}
 
-	// Ends OpenRead: GPU-dirty pages of the range that are not relaxed become access-watched again.
-	// Returns the pages closed now.
+	// Ends OpenRead: GPU-dirty pages of the range become read-watched again. Returns the pages
+	// closed now.
 	uint64_t CloseRead(uint64_t vaddr, uint64_t size) {
 		const auto [start, end] = GetPageRange(vaddr, size);
-		const RegionBits open(m_open_read, start, end);
-		const uint64_t   pages = open.Count();
+		RegionBits     closing(m_open_read, start, end);
+		const uint64_t pages = closing.Count();
 		if (pages != 0) {
+			RegionBits rewatch = closing & m_gpu_dirty;
 			m_open_read.UnsetRange(start, end);
-			UpdateProtection<true, true>();
+			if (!rewatch.None()) {
+				m_page_manager.UpdatePageWatchersForRegion<true, true>(m_cpu_addr, rewatch);
+			}
 		}
 		return pages;
 	}
@@ -554,6 +552,8 @@ public:
 		if (pending.Any()) {
 			Bump();
 		}
+		// The GPU-dirty pages that become clean here, for the protection update (79a04b9a1).
+		RegionBits changed = pending & m_gpu_dirty;
 		for (const auto [first, last]: pending) {
 			m_gpu_dirty.UnsetRange(first, last);
 			m_readback_pending.UnsetRange(first, last);
@@ -568,7 +568,7 @@ public:
 			retained += last - first;
 		}
 		if (cleared != 0) {
-			UpdateProtection<false, true>();
+			UpdateProtection<false, true>(changed);
 		}
 		return {cleared, retained};
 	}
@@ -577,7 +577,28 @@ public:
 
 private:
 	// Callers hold `lock`: the serial advances before the bits it describes change.
-	void Bump() noexcept { m_serial.fetch_add(1, std::memory_order_release); }
+	void Bump() noexcept {
+		m_serial.fetch_add(1, std::memory_order_release);
+		if (s_any_serial_on.load(std::memory_order_seq_cst)) {
+			s_any_serial.fetch_add(1, std::memory_order_seq_cst);
+		}
+	}
+
+public:
+	// KYTY_KEEP_BINDINGS (descriptors.cpp, BufferCache::KeepReadBinding): once enabled (sticky),
+	// every serial advance of any region also advances this process-wide token, so a token read
+	// before a RangeSignature and unchanged later proves that no region serial moved in between.
+	// A Bump that read the flag as unset completed its serial advance (a locked RMW) before the
+	// flag store became visible, so a signature read after enabling includes it.
+	static void EnableAnySerial() noexcept { s_any_serial_on.store(true, std::memory_order_seq_cst); }
+	[[nodiscard]] static bool AnySerialEnabled() noexcept {
+		return s_any_serial_on.load(std::memory_order_acquire);
+	}
+	[[nodiscard]] static uint64_t AnySerial() noexcept { return s_any_serial.load(std::memory_order_acquire); }
+
+private:
+	static inline std::atomic<bool>     s_any_serial_on {false};
+	static inline std::atomic<uint64_t> s_any_serial {1};
 	// Callers hold `lock`, before pages become CPU-dirty (Dirtied).
 	void BumpDirtied() noexcept { m_dirtied.fetch_add(1, std::memory_order_release); }
 
@@ -594,26 +615,34 @@ private:
 	// (IsCpuModifiedRelaxed). Only the mirror words of those pages are stored, as above: a write
 	// fault no longer rewrites both mirror cache lines the GPU thread reads.
 	void PublishCpuMirror(size_t first = 0, size_t last = TRACKER_REGION_PAGES) noexcept {
+		uint32_t dirty_words = m_cpu_dirty_words.load(std::memory_order_relaxed);
 		for (size_t word = first / 64u; word < (last + 63u) / 64u; word++) {
-			m_cpu_mirror[word].store(m_cpu_dirty.Word(word), std::memory_order_release);
+			const uint64_t bits     = m_cpu_dirty.Word(word);
+			const uint64_t previous = m_cpu_mirror[word].load(std::memory_order_relaxed);
+			dirty_words += static_cast<uint32_t>(bits != 0);
+			dirty_words -= static_cast<uint32_t>(previous != 0);
+			m_cpu_mirror[word].store(bits, std::memory_order_release);
 		}
+		m_cpu_dirty_words.store(dirty_words, std::memory_order_release);
 	}
 
+	// CPU-dirty pages are not write-watched; GPU-dirty pages are read-watched. `changed` holds the
+	// pages whose bit just flipped (upstream 79a04b9a1 dropped the shadow protection bitsets).
 	template <bool track, bool is_read>
-	void UpdateProtection() {
+	void UpdateProtection(RegionBits& changed) {
 		if constexpr (is_read) {
-			// nps5 faultwin: relaxed reads only ever cover GPU-dirty pages.
-			m_relaxed_read = m_relaxed_read & m_gpu_dirty;
+			// nps5 zerocopy4: read-open pages carry no read watch (OpenRead / CloseRead).
+			if (m_open_read.Any()) {
+				RegionBits masked = changed & ~m_open_read;
+				if (!masked.None()) {
+					m_page_manager.UpdatePageWatchersForRegion<track, is_read>(m_cpu_addr, masked);
+				}
+				return;
+			}
 		}
-		const auto protection =
-		    is_read ? (~m_gpu_dirty | m_relaxed_read | m_open_read) : m_cpu_dirty;
-		auto&      previous   = is_read ? m_readable : m_writable;
-		auto       mask       = protection ^ previous;
-		if (mask.None()) {
-			return;
+		if (!changed.None()) {
+			m_page_manager.UpdatePageWatchersForRegion<track, is_read>(m_cpu_addr, changed);
 		}
-		previous = protection;
-		m_page_manager.UpdatePageWatchersForRegion<track, is_read>(m_cpu_addr, mask);
 	}
 
 	template <DirtySource source>
@@ -634,11 +663,8 @@ private:
 		}
 	}
 
+	// Callers pass a range inside this region (upstream 25fb20e53 dropped the range check).
 	[[nodiscard]] std::pair<size_t, size_t> GetPageRange(uint64_t vaddr, uint64_t size) const {
-		if (size == 0 || vaddr < m_cpu_addr || vaddr >= m_cpu_addr + TRACKER_REGION_SIZE ||
-		    size > m_cpu_addr + TRACKER_REGION_SIZE - vaddr) {
-			EXIT("range lies outside its tracking region\n");
-		}
 		const auto offset = vaddr - m_cpu_addr;
 		return {static_cast<size_t>(offset / TRACKER_PAGE_SIZE),
 		        static_cast<size_t>((offset + size + TRACKER_PAGE_SIZE - 1) / TRACKER_PAGE_SIZE)};
@@ -656,14 +682,9 @@ private:
 	RegionBits   m_cpu_dirty;
 	RegionBits   m_gpu_dirty;
 	RegionBits   m_readback_pending;
-	// nps5 faultwin (KYTY_READ_RELAX): GPU-dirty pages whose read watch was dropped (they stay
-	// write-watched) until their next GPU ownership change.
-	RegionBits   m_relaxed_read;
 	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN): pages kept readable whatever their GPU-dirty bit
 	// (OpenRead / CloseRead). Only the read watch looks at it; no dirty state depends on it.
-	RegionBits   m_open_read;
-	RegionBits   m_writable;
-	RegionBits   m_readable;
+	RegionBits m_open_read;
 	// Hot pages: always a subset of m_cpu_dirty (never GPU-dirty).
 	RegionBits                    m_hot;
 	std::unique_ptr<FaultHistory> m_history;
@@ -672,6 +693,8 @@ private:
 	// Lock-free copies of m_gpu_dirty and m_cpu_dirty (Publish*Mirror), on their own cache lines.
 	alignas(64) std::array<std::atomic<uint64_t>, RegionBits::Words> m_gpu_mirror {};
 	alignas(64) std::array<std::atomic<uint64_t>, RegionBits::Words> m_cpu_mirror {};
+	// Non-zero words of m_cpu_mirror (PublishCpuMirror, AnyCpuModifiedRelaxed).
+	std::atomic<uint32_t> m_cpu_dirty_words {0};
 };
 
 } // namespace Libs::Graphics

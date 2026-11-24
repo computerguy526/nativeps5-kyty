@@ -31,8 +31,9 @@ Builder::Builder(uint32_t version): m_version(version) {
 // The subgroup operation at m_functions[offset] as its one-lane result (EnableSingleLane), with
 // the same result id. Operations without a rule here stay as they are.
 void Builder::RewriteSingleLane(size_t offset) {
-	const std::vector<uint32_t> words(m_functions.begin() + static_cast<std::ptrdiff_t>(offset), m_functions.end());
-	const auto opcode = static_cast<spv::Op>(words[0] & spv::OpCodeMask);
+	const std::vector<uint32_t> words(m_functions.begin() + static_cast<std::ptrdiff_t>(offset),
+	                                  m_functions.end());
+	const auto                  opcode = static_cast<spv::Op>(words[0] & spv::OpCodeMask);
 	if (words.size() < 4) {
 		return;
 	}
@@ -80,12 +81,14 @@ void Builder::RewriteSingleLane(size_t offset) {
 			m_functions.resize(offset);
 			emit({spv::OpCopyObject, type, result, words[4]});
 			break;
-		case spv::OpGroupNonUniformBallot: { // (scope, predicate): uvec4(predicate ? 1 : 0, 0, 0, 0)
+		case spv::OpGroupNonUniformBallot: { // (scope, predicate): uvec4(predicate ? 1 : 0, 0, 0,
+			                                 // 0)
 			m_functions.resize(offset);
 			const auto bit = AllocateId();
-			emit({spv::OpSelect, m_single_lane_u32_type, bit, words[4], m_single_lane_one, m_single_lane_zero});
-			emit({spv::OpCompositeConstruct, type, result, bit, m_single_lane_zero, m_single_lane_zero,
+			emit({spv::OpSelect, m_single_lane_u32_type, bit, words[4], m_single_lane_one,
 			      m_single_lane_zero});
+			emit({spv::OpCompositeConstruct, type, result, bit, m_single_lane_zero,
+			      m_single_lane_zero, m_single_lane_zero});
 			break;
 		}
 		case spv::OpGroupNonUniformBallotFindLSB: { // (scope, ballot): 0 with the bit, else ~0
@@ -145,49 +148,35 @@ uint32_t Builder::Import(const char* name) {
 	return id;
 }
 
-uint32_t Builder::DeclareType(spv::Op opcode, std::vector<uint32_t> key) {
-	if (const auto it = m_declaration_ids.find(key); it != m_declaration_ids.end()) {
-		return it->second;
-	}
-	const auto id = AllocateId();
-	AppendInstruction(m_declarations, opcode, id, std::span<const uint32_t>(key).subspan(2));
-	m_declaration_ids.emplace(std::move(key), id);
-	return id;
-}
-
-uint32_t Builder::DeclareDecoratedType(spv::Op opcode, std::vector<uint32_t> key,
-                                       std::initializer_list<TypeAnnotation> annotations) {
-	if (annotations.size() == 0) {
-		return DeclareType(opcode, std::move(key));
-	}
-	const auto operand_count = key[1];
-	key.push_back(static_cast<uint32_t>(annotations.size()));
+uint32_t Builder::DeclareType(spv::Op opcode, std::initializer_list<TypeAnnotation> annotations) {
+	const auto operand_count = m_key[1];
+	m_key.push_back(static_cast<uint32_t>(annotations.size()));
 	for (const auto& annotation: annotations) {
-		AppendOperand(key, annotation.opcode);
-		key.push_back(static_cast<uint32_t>(annotation.operands.size()));
-		key.insert(key.end(), annotation.operands.begin(), annotation.operands.end());
+		AppendOperand(m_key, annotation.opcode);
+		m_key.push_back(static_cast<uint32_t>(annotation.operands.size()));
+		m_key.insert(m_key.end(), annotation.operands.begin(), annotation.operands.end());
 	}
-	if (const auto it = m_declaration_ids.find(key); it != m_declaration_ids.end()) {
+	if (const auto it = m_declaration_ids.find(m_key); it != m_declaration_ids.end()) {
 		return it->second;
 	}
 	const auto id = AllocateId();
 	AppendInstruction(m_declarations, opcode, id,
-	                  std::span<const uint32_t>(key).subspan(2, operand_count));
-	m_declaration_ids.emplace(std::move(key), id);
+	                  std::span<const uint32_t>(m_key).subspan(2, operand_count));
+	m_declaration_ids.emplace(m_key, id);
 	for (const auto& annotation: annotations) {
 		AppendInstruction(m_annotations, annotation.opcode, id, annotation.operands);
 	}
 	return id;
 }
 
-uint32_t Builder::DeclareConstant(spv::Op opcode, std::vector<uint32_t> key) {
-	if (const auto it = m_declaration_ids.find(key); it != m_declaration_ids.end()) {
+uint32_t Builder::DeclareConstant(spv::Op opcode) {
+	if (const auto it = m_declaration_ids.find(m_key); it != m_declaration_ids.end()) {
 		return it->second;
 	}
 	const auto id = AllocateId();
-	AppendInstruction(m_declarations, opcode, key[1], id,
-	                  std::span<const uint32_t>(key).subspan(2));
-	m_declaration_ids.emplace(std::move(key), id);
+	AppendInstruction(m_declarations, opcode, m_key[1], id,
+	                  std::span<const uint32_t>(m_key).subspan(2));
+	m_declaration_ids.emplace(m_key, id);
 	return id;
 }
 
@@ -200,6 +189,13 @@ uint32_t Builder::DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass 
 void Builder::DefineGlobalVariable(uint32_t id, uint32_t pointer_type,
                                    spv::StorageClass storage_class) {
 	AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class);
+}
+
+uint32_t Builder::DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass storage_class,
+                                       uint32_t initializer) {
+	const auto id = AllocateId();
+	AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class, initializer);
+	return id;
 }
 
 void Builder::AppendString(std::vector<uint32_t>& words, const char* text) {

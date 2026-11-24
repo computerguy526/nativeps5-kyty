@@ -150,7 +150,8 @@ public:
 	void NoteFreed(uint64_t address, uint64_t frame) noexcept {
 		m_table[Slot(address)] = {address, frame + 1};
 	}
-	// An image was created at `address`; true when the collector freed one there within ChurnWindow.
+	// An image was created at `address`; true when the collector freed one there within
+	// ChurnWindow.
 	bool NoteCreated(uint64_t address, uint64_t frame) noexcept {
 		auto& e = m_table[Slot(address)];
 		if (e.frame_plus_one == 0 || e.address != address) {
@@ -161,8 +162,8 @@ public:
 		if (frame < freed || frame - freed > ChurnWindow) {
 			return false;
 		}
-		m_floor     = std::min(MaxFloor, std::max(MinFloor, m_floor * 2));
-		m_changed   = frame;
+		m_floor   = std::min(MaxFloor, std::max(MinFloor, m_floor * 2));
+		m_changed = frame;
 		++m_hits;
 		return true;
 	}

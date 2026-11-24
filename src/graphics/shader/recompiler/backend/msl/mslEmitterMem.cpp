@@ -616,8 +616,8 @@ bool AppendConsume(Em& e, ValueOpcode op) {
 // Physical-address memory through a 64-bit guest address (GetAddressResource base + offset).
 bool AddressOp(Em& e, ValueOpcode op) {
 	const auto& mem = e.Mem();
-	if (mem.kind == IR::ResourceKind::Scratch || mem.kind == IR::ResourceKind::IndirectBuffer ||
-	    mem.kind == IR::ResourceKind::FlatLocal) // FlatLocal: SPIR-V path only
+	// (nps5-one-kyty also refuses ResourceKind::FlatLocal here; int22 has no such kind.)
+	if (mem.kind == IR::ResourceKind::Scratch || mem.kind == IR::ResourceKind::IndirectBuffer)
 		return false;
 	const bool is_load = op == ValueOpcode::LoadAddressU8 || op == ValueOpcode::LoadAddressU16 ||
 	                     op == ValueOpcode::LoadAddressU32;

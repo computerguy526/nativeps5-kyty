@@ -4,6 +4,7 @@
 KYTY_CP_LEAD_MAX_MS          # ASTRO cpusurvey
 KYTY_ALIAS_REBUILD_PARTIAL   # ASTRO tilerfix
 KYTY_METALFX                 # ASTRO MetalFX
+KYTY_METALFX_REACTIVE        # SAROS MetalFX reactive mask in the FSR3 slot (default off until USER OK)
 KYTY_TEX_MIP_SKIP            # ASTRO mipskip
 # SAROS (nps5-kyty-memtrk line)
 KYTY_SAROS_HANDSHADERS       # SAROS bindless lighting CS hand list
@@ -14,7 +15,6 @@ KYTY_SKIP_UNDECODABLE        # SAROS bring-up
 KYTY_ATOMIC64_IMAGE          # SAROS bring-up (skip/skipbuf)
 KYTY_CP_READ_IMAGE_SYNC      # SAROS
 KYTY_CONDEXEC_SYNC           # SAROS
-KYTY_DEPTH_STENCIL_ALIAS_SYNC # SAROS nanite
 KYTY_HTILE_CS_EXPAND         # SAROS memtrk
 KYTY_META_EXPORT_NOT_CLEAR   # SAROS memtrk
 KYTY_CS_MAX_GROUPS           # SAROS memtrk
@@ -25,7 +25,6 @@ KYTY_SAROS_NANITE_RAW_AND    # location mask for the NANITE_RAW AND param
 KYTY_SAROS_NANITE_RAW_VERTS  # location mask for the NANITE_RAW vertex params
 KYTY_SAROS_KEYSTRIDE         # SAROS hand shaders only; =0 restores old heap key probing
 KYTY_SAROS_PROGRAM_CACHE     # SAROS hand/nanite-raw programs use the persistent program cache with the switch state in the key (=1; default off = bypass)
-KYTY_SAROS_ASYNC_CS          # SAROS hand-shader kernels: pipeline built on the RT background path, dispatch skipped meanwhile (=1; default off)
 KYTY_SAROS_MAP_PAD           # SAROS hand shaders: key-table regions padded to the search tier so the baked mapping offsets stop churning permutations (=1; default off)
 KYTY_SAROS_SAMPLE_LOD0       # sarosmip experiment: IMAGE_SAMPLE_D of the listed shader hashes (or all) uses explicit LOD 0 (default off)
 KYTY_SPEC_DIFF_LOG           # diagnostic: how a new specialization differs from the closest existing one (=1; default off)
@@ -35,7 +34,7 @@ KYTY_UNITY_WARMUP_NOSKIP     # Unity zero-count warm-up draws build their pipeli
 KYTY_SRT_SMIN                # SAROS: SRT walker S_MIN_I32 (upstream 8d0ebb8f)
 KYTY_SAROS_SAMPLE_DBG        # sarosuv experiment: listed pixel shaders (or all) return (coord.x, coord.y, 0, 1) from 2D float image samples (default off)
 KYTY_SAROS_SAMPLE_FRACT      # sarosaddr experiment: listed pixel shaders (or all) sample 2D float images with fract(coord) (software wrap; default off)
-KYTY_SAROS_HS_DYNIDX         # SAROS hand shaders: canonical indirect image groups (one permutation per shader), needs KYTY_SAROS_HANDSHADERS
 KYTY_PS_UINT32_TARGETS       # SAROS sarosclay: raw 32-bit PS exports to UINT colour targets get a uint4 output (VT page table; default off)
+# upbase: not on this base (skipped series): KYTY_DEPTH_STENCIL_ALIAS_SYNC (int22: KYTY_STENCIL_DEPTH_ALIAS), KYTY_SAROS_ASYNC_CS, KYTY_SAROS_HS_DYNIDX (hand-shader chain, series A)
 # Controller forwarding (padfwd, USER playtest convenience)
 NPS5_PAD_NET                 # NetPad loopback forwarder

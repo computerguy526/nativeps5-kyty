@@ -9,6 +9,7 @@
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
+#include "common/hangWatchdog.h"
 #include "common/latTrace.h"
 #include "common/logging/log.h"
 #include "common/presentInterval.h"
@@ -17,7 +18,9 @@
 #include "gpu_blit_shaders/gpu_blit_fs_triangle_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_downscale_spv.h"
 #include "gpu_blit_shaders/gpu_video_out_overlay_spv.h"
+#include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -27,6 +30,13 @@
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
 #include "graphics/presentation/systemOverlay.h"
+#include "graphics/loadCard.h"
+#include <chrono>
+#include <vulkan/vulkan_format_traits.hpp>
+#include <dlfcn.h>
+#include <thread>
+#include <mutex>
+#include "graphics/progressOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/lowLatency.h"
 #include "graphics/presentation/window/windowInternal.h"
@@ -41,15 +51,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <string>
+#include <sys/stat.h>
 #include <thread>
 #include <vector>
 #include <vulkan/vk_platform.h>
-#include <vulkan/vulkan_format_traits.hpp>
 
 // IWYU pragma: no_include <intrin.h>
 
@@ -179,13 +191,7 @@ public:
 	KYTY_CLASS_NO_COPY(FramePool);
 
 	void Initialize(uint32_t count, vk::Format format) {
-		if (count == 0 || format == vk::Format::eUndefined) {
-			EXIT("prepared-frame pool requires at least one frame\n");
-		}
 		Common::LockGuard lock(m_mutex);
-		if (!m_frames.empty()) {
-			EXIT("prepared-frame pool was initialized twice\n");
-		}
 		m_format = format;
 		m_frames.reserve(count);
 		m_free.reserve(count);
@@ -197,26 +203,17 @@ public:
 	}
 
 	void SetFormat(vk::Format format) {
-		if (format == vk::Format::eUndefined) {
-			EXIT("prepared-frame pool requires a presentation format\n");
-		}
 		Common::LockGuard lock(m_mutex);
 		m_format = format;
 	}
 
 	vk::Format GetFormat() {
 		Common::LockGuard lock(m_mutex);
-		if (m_format == vk::Format::eUndefined) {
-			EXIT("prepared-frame pool has no presentation format\n");
-		}
 		return m_format;
 	}
 
 	Presenter::Frame* Acquire(vk::Extent2D extent, vk::Format format) {
 		m_mutex.Lock();
-		if (m_frames.empty()) {
-			EXIT("prepared-frame pool was used before swapchain initialization\n");
-		}
 		// A synchronized flip may need more frames than the swapchain has images.
 		// Queue capacity bounds growth; waiting here can prevent its master from recording.
 		if (m_free.empty()) {
@@ -233,9 +230,6 @@ public:
 			*compatible = m_free.back();
 		}
 		m_free.pop_back();
-		if (frame->busy) {
-			EXIT("prepared-frame pool returned an invalid frame\n");
-		}
 		frame->busy = true;
 		m_mutex.Unlock();
 
@@ -243,17 +237,7 @@ public:
 		return frame;
 	}
 
-	void ValidateForPresent(Presenter::Frame* frame) {
-		Common::LockGuard lock(m_mutex);
-		if (frame == nullptr || !frame->busy) {
-			EXIT("prepared frame has invalid presentation ownership\n");
-		}
-	}
-
 	void Release(Presenter::Frame* frame) {
-		if (frame == nullptr) {
-			EXIT("cannot release a null prepared frame\n");
-		}
 		Common::LockGuard lock(m_mutex);
 		if (!frame->busy) {
 			EXIT("prepared frame was released twice\n");
@@ -350,7 +334,6 @@ void Presenter::Frame::Transit(vk::CommandBuffer command, vk::ImageLayout layout
 	dependency.pImageMemoryBarriers    = &barrier;
 	command.pipelineBarrier2(dependency);
 	image.state = {stage, access, layout};
-	image.subresource_states.clear();
 }
 
 void Presenter::Frame::CopyFrom(CommandBuffer& command_buffer, Image& source) {
@@ -377,12 +360,13 @@ void Presenter::Frame::Clear(CommandBuffer& command_buffer, const vk::ClearColor
 	command.clearColorImage(image.image, vk::ImageLayout::eTransferDstOptimal, &color, 1, &range);
 }
 
-// nps5 load card: "is the game frame black?" probe. The presented game frame is blitted to a 32x18 RGBA8 image and copied
-// to a host buffer on the present command buffer; the result is read at the next present (after the tick of the
-// previous one completed: never a stall). The card then also covers the game's own black loading frames and stops on
-// the first frame with content (LoadCard::NoteGameFlip(black)). Probed every present while the state is unknown/black,
-// every 16th otherwise. Skipped for the filtered present path (state stays unknown: flips count as content after
-// kUnknownFlips).
+// nps5 load card: "is the game frame black?" probe. The presented game frame is blitted to a 32x18
+// RGBA8 image and copied to a host buffer on the present command buffer; the result is read at the
+// next present (after the tick of the previous one completed: never a stall). The card then also
+// covers the game's own black loading frames and stops on the first frame with content
+// (LoadCard::NoteGameFlip(black)). Probed every present while the state is unknown/black, every
+// 16th otherwise. Skipped for the filtered present path (state stays unknown: flips count as
+// content after kUnknownFlips).
 class LumaProbe final {
 public:
 	static LumaProbe& Instance() {
@@ -396,15 +380,17 @@ public:
 			return;
 		}
 		scheduler.Wait(m_tick);
-		m_pending = false;
+		m_pending       = false;
 		const auto* px  = static_cast<const uint8_t*>(m_mapped);
 		unsigned    max = 0;
 		for (uint32_t i = 0; i < kW * kH * 4u; i += 4) {
 			max = std::max<unsigned>(max, std::max({px[i], px[i + 1], px[i + 2]}));
 		}
 		const bool black = LoadCard::FrameIsBlack(max);
-		if (LoadCard::LogEnabled() && LoadCard::State().probe_state.load(std::memory_order_relaxed) != (black ? 1 : 2)) {
-			std::fprintf(stderr, "[loadcard] probe: game frame is %s (max %u)\n", black ? "black" : "content", max);
+		if (LoadCard::LogEnabled() &&
+		    LoadCard::State().probe_state.load(std::memory_order_relaxed) != (black ? 1 : 2)) {
+			std::fprintf(stderr, "[loadcard] probe: game frame is %s (max %u)\n",
+			             black ? "black" : "content", max);
 		}
 		LoadCard::NoteProbe(black);
 	}
@@ -415,7 +401,8 @@ public:
 		const auto state = LoadCard::State().probe_state.load(std::memory_order_relaxed);
 		return state != 2 || (++m_count % 16) == 0 || LoadCard::Active();
 	}
-	void Record(GraphicContext& graphics, vk::CommandBuffer command, vk::Image source, vk::Extent2D source_extent) {
+	void Record(GraphicContext& graphics, vk::CommandBuffer command, vk::Image source,
+	            vk::Extent2D source_extent) {
 		Ensure(graphics);
 		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 		vk::ImageMemoryBarrier          barrier {};
@@ -426,25 +413,29 @@ public:
 		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barrier.image               = m_image;
 		barrier.subresourceRange    = range;
-		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
-		                        vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &barrier);
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
+		                        nullptr, 0, nullptr, 1, &barrier);
 		vk::ImageBlit region {};
 		region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
-		region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(source_extent.width), static_cast<int>(source_extent.height), 1};
+		region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(source_extent.width),
+		                                      static_cast<int>(source_extent.height), 1};
 		region.dstSubresource = region.srcSubresource;
 		region.dstOffsets[1]  = vk::Offset3D {static_cast<int>(kW), static_cast<int>(kH), 1};
-		command.blitImage(source, vk::ImageLayout::eTransferSrcOptimal, m_image, vk::ImageLayout::eTransferDstOptimal, 1,
-		                  &region, vk::Filter::eLinear);
+		command.blitImage(source, vk::ImageLayout::eTransferSrcOptimal, m_image,
+		                  vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eLinear);
 		barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 		barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
 		barrier.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
 		barrier.newLayout     = vk::ImageLayout::eTransferSrcOptimal;
-		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
-		                        vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &barrier);
+		command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
+		                        nullptr, 0, nullptr, 1, &barrier);
 		vk::BufferImageCopy copy {};
 		copy.imageSubresource = region.srcSubresource;
 		copy.imageExtent      = vk::Extent3D {kW, kH, 1};
-		command.copyImageToBuffer(m_image, vk::ImageLayout::eTransferSrcOptimal, m_buffer, 1, &copy);
+		command.copyImageToBuffer(m_image, vk::ImageLayout::eTransferSrcOptimal, m_buffer, 1,
+		                          &copy);
 		m_recorded = true;
 	}
 	// After Submit: the tick of the command buffer that carries the probe.
@@ -457,17 +448,20 @@ public:
 	}
 
 private:
-	static constexpr uint32_t kW = 64, kH = 36; // card3: black = every pixel <= LoadCard::kBlackMax (max luma, not mean)
+	static constexpr uint32_t
+	    kW = 64,
+	    kH = 36; // card3: black = every pixel <= LoadCard::kBlackMax (max luma, not mean)
 	LumaProbe(): m_enabled(LoadCard::BlackEnabled()) {}
 	void Ensure(GraphicContext& graphics) {
 		if (m_image != nullptr) {
 			return;
 		}
-		auto device = graphics.device;
+		auto       device      = graphics.device;
 		const auto memory_type = [&](uint32_t bits, vk::MemoryPropertyFlags wanted) {
 			const auto& memory = graphics.physical_device_memory_properties;
 			for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
-				if ((bits & (1u << i)) != 0 && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
+				if ((bits & (1u << i)) != 0 &&
+				    (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
 					return i;
 				}
 			}
@@ -480,33 +474,37 @@ private:
 		create.mipLevels   = 1;
 		create.arrayLayers = 1;
 		create.format      = vk::Format::eB8G8R8A8Unorm;
-		create.usage       = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
-		create.samples     = vk::SampleCountFlagBits::e1;
+		create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+		create.samples = vk::SampleCountFlagBits::e1;
 		RequireVulkanSuccess(device.createImage(&create, nullptr, &m_image), "luma probe image");
 		vk::MemoryRequirements requirements {};
 		device.getImageMemoryRequirements(m_image, &requirements);
 		vk::MemoryAllocateInfo allocate {};
 		allocate.allocationSize  = requirements.size;
 		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
-		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_image_memory), "luma probe image memory");
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_image_memory),
+		                     "luma probe image memory");
 		device.bindImageMemory(m_image, m_image_memory, 0);
 		vk::BufferCreateInfo buffer {};
 		buffer.size  = static_cast<vk::DeviceSize>(kW) * kH * 4u;
 		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
 		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &m_buffer), "luma probe buffer");
 		device.getBufferMemoryRequirements(m_buffer, &requirements);
-		allocate.allocationSize  = requirements.size;
-		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
-		                                                                        vk::MemoryPropertyFlagBits::eHostCoherent);
-		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_buffer_memory), "luma probe buffer memory");
+		allocate.allocationSize = requirements.size;
+		allocate.memoryTypeIndex =
+		    memory_type(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+		                                                 vk::MemoryPropertyFlagBits::eHostCoherent);
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_buffer_memory),
+		                     "luma probe buffer memory");
 		device.bindBufferMemory(m_buffer, m_buffer_memory, 0);
-		RequireVulkanSuccess(device.mapMemory(m_buffer_memory, 0, VK_WHOLE_SIZE, {}, &m_mapped), "luma probe map");
+		RequireVulkanSuccess(device.mapMemory(m_buffer_memory, 0, VK_WHOLE_SIZE, {}, &m_mapped),
+		                     "luma probe map");
 	}
-	bool             m_enabled  = false;
-	bool             m_recorded = false;
-	bool             m_pending  = false;
-	uint64_t         m_tick     = 0;
-	uint64_t         m_count    = 0;
+	bool             m_enabled       = false;
+	bool             m_recorded      = false;
+	bool             m_pending       = false;
+	uint64_t         m_tick          = 0;
+	uint64_t         m_count         = 0;
 	vk::Image        m_image         = nullptr;
 	vk::DeviceMemory m_image_memory  = nullptr;
 	vk::Buffer       m_buffer        = nullptr;
@@ -520,10 +518,11 @@ static std::string DumpPath(const char* name) {
 	return dir != nullptr && dir[0] != 0 ? std::string(dir) + "/" + name : std::string(name);
 }
 
-// nps5: KYTY_DUMP_FRAMES=<n> [KYTY_DUMP_FRAMES_EVERY=<m>] [KYTY_DUMP_FRAMES_FROM=<present>] saves every m-th presented swapchain image
-// (what the window shows: after the blit/filter and the overlays) as frame_<index>.bmp in the
-// working directory, 960x540 (KYTY_DUMP_SCALE=1: swapchain size) 32-bit top-down BGRA, the format
-// and naming of AnyPS5's APS5_DUMP_FRAMES. The read-back is synchronous on the present thread.
+// nps5: KYTY_DUMP_FRAMES=<n> [KYTY_DUMP_FRAMES_EVERY=<m>] [KYTY_DUMP_FRAMES_FROM=<present>] saves
+// every m-th presented swapchain image (what the window shows: after the blit/filter and the
+// overlays) as frame_<index>.bmp in the working directory, 960x540 (KYTY_DUMP_SCALE=1: swapchain
+// size) 32-bit top-down BGRA, the format and naming of AnyPS5's APS5_DUMP_FRAMES. The read-back is
+// synchronous on the present thread.
 class FrameDump final {
 public:
 	static FrameDump& Instance() {
@@ -533,27 +532,50 @@ public:
 	[[nodiscard]] bool Enabled() const noexcept { return m_limit > 0; }
 	// True when the next Next() call will select a frame (no state change).
 	[[nodiscard]] bool WouldDump() const noexcept {
-		return m_dumped < m_limit && m_presents + 1 >= m_from && (m_presents + 1) % static_cast<uint64_t>(m_every) == 0;
+		Arm();
+		return m_dumped < m_limit && m_presents + 1 >= m_from &&
+		       (m_presents + 1) % static_cast<uint64_t>(m_every) == 0;
 	}
 	[[nodiscard]] bool Next() {
 		if (m_dumped >= m_limit) {
 			return false;
 		}
+		Arm();
 		return ++m_presents >= m_from && m_presents % static_cast<uint64_t>(m_every) == 0;
 	}
+	// fmsel6: KYTY_DUMP_FRAMES_TRIGGER=<file>: no dumps until the file exists; then
+	// KYTY_DUMP_FRAMES_FROM counts from the present at which it appeared (a runner creates it on a
+	// game-time event).
+	void Arm() const noexcept {
+		if (m_trigger.empty() || m_armed) {
+			return;
+		}
+		m_from = UINT64_MAX;
+		struct stat st {};
+		if (::stat(m_trigger.c_str(), &st) == 0) {
+			m_armed = true;
+			m_from  = m_presents + 1 + m_from_after;
+			std::fprintf(stderr, "[kyty-dump] trigger %s at present %llu: dumps from %llu\n",
+			             m_trigger.c_str(), static_cast<unsigned long long>(m_presents),
+			             static_cast<unsigned long long>(m_from));
+		}
+	}
 	void Record(GraphicContext& graphics, vk::CommandBuffer command, vk::Image swapchain_image,
-	            vk::Format swapchain_format, vk::Extent2D swapchain_extent, bool from_attachment = false) {
-		const bool srgb = swapchain_format == vk::Format::eB8G8R8A8Srgb ||
-		                  swapchain_format == vk::Format::eR8G8B8A8Srgb;
-		const auto format = srgb ? vk::Format::eB8G8R8A8Srgb : vk::Format::eB8G8R8A8Unorm;
+	            vk::Format swapchain_format, vk::Extent2D swapchain_extent,
+	            bool from_attachment = false) {
+		const bool         srgb   = swapchain_format == vk::Format::eB8G8R8A8Srgb ||
+		                            swapchain_format == vk::Format::eR8G8B8A8Srgb;
+		const auto         format = srgb ? vk::Format::eB8G8R8A8Srgb : vk::Format::eB8G8R8A8Unorm;
 		const vk::Extent2D extent = m_full ? swapchain_extent : vk::Extent2D {960, 540};
 		Ensure(graphics, format, extent);
-		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		const vk::ImageSubresourceRange       range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 		std::array<vk::ImageMemoryBarrier, 2> barriers {};
-		barriers[0].srcAccessMask       = from_attachment ? vk::AccessFlagBits::eColorAttachmentWrite : vk::AccessFlagBits::eMemoryRead;
-		barriers[0].dstAccessMask       = vk::AccessFlagBits::eTransferRead;
-		barriers[0].oldLayout           = from_attachment ? vk::ImageLayout::eColorAttachmentOptimal : vk::ImageLayout::ePresentSrcKHR;
-		barriers[0].newLayout           = vk::ImageLayout::eTransferSrcOptimal;
+		barriers[0].srcAccessMask = from_attachment ? vk::AccessFlagBits::eColorAttachmentWrite
+		                                            : vk::AccessFlagBits::eMemoryRead;
+		barriers[0].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+		barriers[0].oldLayout     = from_attachment ? vk::ImageLayout::eColorAttachmentOptimal
+		                                            : vk::ImageLayout::ePresentSrcKHR;
+		barriers[0].newLayout     = vk::ImageLayout::eTransferSrcOptimal;
 		barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barriers[0].image               = swapchain_image;
@@ -572,15 +594,17 @@ public:
 		region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(swapchain_extent.width),
 		                                      static_cast<int>(swapchain_extent.height), 1};
 		region.dstSubresource = region.srcSubresource;
-		region.dstOffsets[1]  =
+		region.dstOffsets[1] =
 		    vk::Offset3D {static_cast<int>(extent.width), static_cast<int>(extent.height), 1};
 		command.blitImage(swapchain_image, vk::ImageLayout::eTransferSrcOptimal, m_image,
 		                  vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eLinear);
 		barriers[0].srcAccessMask = vk::AccessFlagBits::eTransferRead;
-		barriers[0].dstAccessMask = from_attachment ? vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
+		barriers[0].dstAccessMask = from_attachment ? vk::AccessFlagBits::eColorAttachmentRead |
+		                                                  vk::AccessFlagBits::eColorAttachmentWrite
 		                                            : vk::AccessFlagBits::eMemoryRead;
 		barriers[0].oldLayout     = vk::ImageLayout::eTransferSrcOptimal;
-		barriers[0].newLayout     = from_attachment ? vk::ImageLayout::eColorAttachmentOptimal : vk::ImageLayout::ePresentSrcKHR;
+		barriers[0].newLayout     = from_attachment ? vk::ImageLayout::eColorAttachmentOptimal
+		                                            : vk::ImageLayout::ePresentSrcKHR;
 		barriers[1].srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 		barriers[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
 		barriers[1].oldLayout     = vk::ImageLayout::eTransferDstOptimal;
@@ -591,7 +615,8 @@ public:
 		vk::BufferImageCopy copy {};
 		copy.imageSubresource = region.srcSubresource;
 		copy.imageExtent      = vk::Extent3D {extent.width, extent.height, 1};
-		command.copyImageToBuffer(m_image, vk::ImageLayout::eTransferSrcOptimal, m_buffer, 1, &copy);
+		command.copyImageToBuffer(m_image, vk::ImageLayout::eTransferSrcOptimal, m_buffer, 1,
+		                          &copy);
 		m_recorded = true;
 	}
 	/// True when the command buffer just submitted carries a read-back; the caller waits for it.
@@ -605,9 +630,9 @@ public:
 		std::snprintf(name, sizeof(name), "frame_%03d.bmp", m_dumped++);
 		const uint32_t bytes = m_extent.width * m_extent.height * 4u;
 		uint8_t        header[54] {};
-		const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
-		header[0] = 'B';
-		header[1] = 'M';
+		const auto put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+		header[0]      = 'B';
+		header[1]      = 'M';
 		put(2, 54u + bytes);
 		put(10, 54u);
 		put(14, 40u);
@@ -619,14 +644,16 @@ public:
 		put(38, 2835u);
 		put(42, 2835u);
 		if (Common::LatTrace::Enabled() && std::getenv("KYTY_DUMP_STAT") != nullptr) {
-			// nps5 KYTY_DUMP_STAT=1 (with KYTY_LAT_TRACE): no file; "[klat] diff" = mean absolute difference of every 4th
-			// pixel against the previous presented frame (x100, 0 = identical), to find the first frame an input changed.
+			// nps5 KYTY_DUMP_STAT=1 (with KYTY_LAT_TRACE): no file; "[klat] diff" = mean absolute
+			// difference of every 4th pixel against the previous presented frame (x100, 0 =
+			// identical), to find the first frame an input changed.
 			static std::vector<uint8_t> prev;
 			const auto*                 cur = static_cast<const uint8_t*>(m_mapped);
 			uint64_t                    acc = 0, cnt = 0;
 			if (prev.size() == bytes) {
 				for (uint32_t i = 0; i < bytes; i += 16) {
-					acc += static_cast<uint64_t>(std::abs(int(cur[i]) - int(prev[i]))) + std::abs(int(cur[i + 1]) - int(prev[i + 1])) +
+					acc += static_cast<uint64_t>(std::abs(int(cur[i]) - int(prev[i]))) +
+					       std::abs(int(cur[i + 1]) - int(prev[i + 1])) +
 					       std::abs(int(cur[i + 2]) - int(prev[i + 2]));
 					cnt += 3;
 				}
@@ -653,9 +680,9 @@ public:
 		             static_cast<double>(sum) / (static_cast<double>(bytes) * 0.75));
 	}
 
-	// KYTY_DUMP_GUEST_RANGE=<hex address>:<hex size> (diagnostic): with each dump, the guest bytes of
-	// that range (e.g. the display buffer) as runs of 64 KiB blocks: zero, one repeated 32-bit word,
-	// or mixed (first word shown).
+	// KYTY_DUMP_GUEST_RANGE=<hex address>:<hex size> (diagnostic): with each dump, the guest bytes
+	// of that range (e.g. the display buffer) as runs of 64 KiB blocks: zero, one repeated 32-bit
+	// word, or mixed (first word shown).
 	static void ScanGuest(const char* name) {
 		const char* text = std::getenv("KYTY_DUMP_GUEST_RANGE");
 		if (text == nullptr) {
@@ -663,24 +690,30 @@ public:
 		}
 		char*          end  = nullptr;
 		const uint64_t base = std::strtoull(text, &end, 16);
-		const uint64_t size = end != nullptr && *end == ':' ? std::strtoull(end + 1, nullptr, 16) : 0;
-		const char*    block_text = std::getenv("KYTY_DUMP_GUEST_BLOCK"); // hex bytes, default 64 KiB
-		const uint64_t Block = block_text != nullptr ? std::max<uint64_t>(std::strtoull(block_text, nullptr, 16), 4) : 0x10000;
-		int      last_kind = -1;
-		uint32_t last_word = 0;
-		uint64_t run_start = base;
-		const auto flush = [&](uint64_t at) {
+		const uint64_t size =
+		    end != nullptr && *end == ':' ? std::strtoull(end + 1, nullptr, 16) : 0;
+		const char* block_text = std::getenv("KYTY_DUMP_GUEST_BLOCK"); // hex bytes, default 64 KiB
+		const uint64_t Block   = block_text != nullptr
+		                             ? std::max<uint64_t>(std::strtoull(block_text, nullptr, 16), 4)
+		                             : 0x10000;
+		int            last_kind = -1;
+		uint32_t       last_word = 0;
+		uint64_t       run_start = base;
+		const auto     flush     = [&](uint64_t at) {
 			if (last_kind >= 0) {
 				std::fprintf(stderr, "[kyty-dump] %s guest 0x%llx +0x%llx: %s 0x%08x\n", name,
 				             static_cast<unsigned long long>(run_start),
 				             static_cast<unsigned long long>(at - run_start),
-				             last_kind == 0 ? "zero" : last_kind == 1 ? "uniform" : "mixed", last_word);
+				             last_kind == 0   ? "zero"
+				             : last_kind == 1 ? "uniform"
+				                              : "mixed",
+				             last_word);
 			}
 			run_start = at;
 		};
 		for (uint64_t at = base; at + Block <= base + size; at += Block) {
-			const auto* words = static_cast<const uint32_t*>(
-			    Libs::LibKernel::Memory::GuestReadPtr(at, Block));
+			const auto* words =
+			    static_cast<const uint32_t*>(Libs::LibKernel::Memory::GuestReadPtr(at, Block));
 			uint32_t first = 0;
 			std::memcpy(&first, words, 4);
 			bool uniform = true;
@@ -709,6 +742,12 @@ private:
 		m_every = std::max(number("KYTY_DUMP_FRAMES_EVERY", 1), 1);
 		m_full  = number("KYTY_DUMP_SCALE", 0) == 1;
 		m_from  = static_cast<uint64_t>(std::max(number("KYTY_DUMP_FRAMES_FROM", 0), 0));
+		if (const char* trigger = std::getenv("KYTY_DUMP_FRAMES_TRIGGER");
+		    trigger != nullptr && trigger[0] != '\0') {
+			m_trigger    = trigger;
+			m_from_after = m_from;
+			m_from       = UINT64_MAX;
+		}
 	}
 	void Ensure(GraphicContext& graphics, vk::Format format, vk::Extent2D extent) {
 		if (m_image != nullptr && format == m_format && extent == m_extent) {
@@ -723,12 +762,13 @@ private:
 			device.destroyImage(m_image, nullptr);
 			device.freeMemory(m_image_memory, nullptr);
 		}
-		m_format = format;
-		m_extent = extent;
+		m_format               = format;
+		m_extent               = extent;
 		const auto memory_type = [&](uint32_t bits, vk::MemoryPropertyFlags wanted) {
 			const auto& memory = graphics.physical_device_memory_properties;
 			for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
-				if ((bits & (1u << i)) != 0 && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
+				if ((bits & (1u << i)) != 0 &&
+				    (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
 					return i;
 				}
 			}
@@ -757,10 +797,10 @@ private:
 		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
 		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &m_buffer), "frame dump buffer");
 		device.getBufferMemoryRequirements(m_buffer, &requirements);
-		allocate.allocationSize  = requirements.size;
-		allocate.memoryTypeIndex = memory_type(
-		    requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
-		                                     vk::MemoryPropertyFlagBits::eHostCoherent);
+		allocate.allocationSize = requirements.size;
+		allocate.memoryTypeIndex =
+		    memory_type(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+		                                                 vk::MemoryPropertyFlagBits::eHostCoherent);
 		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &m_buffer_memory),
 		                     "frame dump buffer memory");
 		device.bindBufferMemory(m_buffer, m_buffer_memory, 0);
@@ -774,7 +814,10 @@ private:
 	bool             m_full     = false;
 	bool             m_recorded = false;
 	uint64_t         m_presents = 0;
-	uint64_t         m_from     = 0; // KYTY_DUMP_FRAMES_FROM: first present considered
+	mutable uint64_t m_from     = 0; // KYTY_DUMP_FRAMES_FROM: first present considered
+	std::string      m_trigger;      // KYTY_DUMP_FRAMES_TRIGGER
+	mutable bool     m_armed      = false;
+	uint64_t         m_from_after = 0; // with a trigger: presents after it before the first dump
 	vk::Format       m_format   = vk::Format::eUndefined;
 	vk::Extent2D     m_extent {};
 	vk::Image        m_image         = nullptr;
@@ -784,11 +827,12 @@ private:
 	void*            m_mapped        = nullptr;
 };
 
-// nps5 diagnostic: KYTY_DUMP_TARGETS=<n> [KYTY_DUMP_TARGETS_FROM=<flip>] [KYTY_DUMP_TARGETS_EVERY=<m>]
-// [KYTY_DUMP_TARGETS_MINW=<px>, default 512] [KYTY_DUMP_TARGETS_ONLYW=<px>: images of exactly that width]
-// [KYTY_DUMP_TARGETS_MAXW=<px>, default 960]: at such a flip, level 0 / layer 0 of every cached colour
-// image at least that wide is blitted to an sRGB-encoded BGRA image of at most MAXW px width and saved
-// as k3_<dump>_<address>_<w>x<h>_<format>.bmp in the working directory, with one [kyty-target] line
+// nps5 diagnostic: KYTY_DUMP_TARGETS=<n> [KYTY_DUMP_TARGETS_FROM=<flip>]
+// [KYTY_DUMP_TARGETS_EVERY=<m>] [KYTY_DUMP_TARGETS_MINW=<px>, default 512]
+// [KYTY_DUMP_TARGETS_ONLYW=<px>: images of exactly that width] [KYTY_DUMP_TARGETS_MAXW=<px>,
+// default 960]: at such a flip, level 0 / layer 0 of every cached colour image at least that wide
+// is blitted to an sRGB-encoded BGRA image of at most MAXW px width and saved as
+// k3_<dump>_<address>_<w>x<h>_<format>.bmp in the working directory, with one [kyty-target] line
 // per image (address, extent, formats, usage, state). The files are written KYTY_DUMP_TARGETS_DELAY
 // (20) flips later, when the recording command buffer has long completed.
 class TargetDump final {
@@ -805,8 +849,8 @@ public:
 		if (!m_pending.empty() && m_flips >= m_pending_flip + m_delay) {
 			Write(graphics);
 		}
-		// memtrk: KYTY_DUMP_TARGETS_AFTER_S=<s>: the series starts at the first flip at least s
-		// seconds after the first flip (KYTY_DUMP_TARGETS_FROM is then counted from that flip).
+		// memtrk: KYTY_DUMP_TARGETS_AFTER_S=<s>: the series starts at the first flip at least s seconds
+		// after the first flip (KYTY_DUMP_TARGETS_FROM is then counted from that flip).
 		if (m_after_s > 0 && !m_after_armed) {
 			const auto now = std::chrono::steady_clock::now();
 			if (m_first_flip_time == std::chrono::steady_clock::time_point {}) {
@@ -817,47 +861,42 @@ public:
 			}
 			m_after_armed = true;
 			m_from += m_flips - 1;
-			std::fprintf(
-			    stderr,
-			    "[kyty-target] time trigger %d s reached at flip %llu: series from flip %llu\n",
-			    m_after_s, static_cast<unsigned long long>(m_flips),
-			    static_cast<unsigned long long>(m_from));
+			std::fprintf(stderr, "[kyty-target] time trigger %d s reached at flip %llu: series from flip %llu\n",
+			             m_after_s, static_cast<unsigned long long>(m_flips),
+			             static_cast<unsigned long long>(m_from));
 		}
 		// A series with KYTY_DUMP_TARGETS_EVERY below the delay (consecutive flips for a flicker
 		// check) is recorded whole and written after its last dump.
-		// KYTY_DUMP_TARGETS_BURST=<k> (default 1): k consecutive flips at each dump point (two give a
-		// frame-to-frame difference per point), written together after the last.
+		// KYTY_DUMP_TARGETS_BURST=<k> (default 1): k consecutive flips at each dump point (two give
+		// a frame-to-frame difference per point), written together after the last.
 		const auto phase = m_flips < m_from ? m_every : (m_flips - m_from) % m_every;
 		if ((!m_pending.empty() && m_every >= m_delay && phase == 0) || m_dumped >= m_limit ||
 		    m_flips < m_from || phase >= m_burst) {
 			return;
 		}
 		command_buffer.EndRendering();
-		auto command = command_buffer.Handle();
-		const int index = m_dumped++;
-		m_pending_flip  = m_flips;
+		auto      command = command_buffer.Handle();
+		const int index   = m_dumped++;
+		m_pending_flip    = m_flips;
 		cache.ForEachImageDebug([&](auto, Image& image) {
 			const auto& info    = image.info;
 			const auto  format  = image.backing.format;
 			const auto  name    = vk::to_string(format);
-			// sarostex2: KYTY_DUMP_BC=1 (default off): raw level-0 / layer-0 texel blocks of
-			// block-compressed images, and of the images named in KYTY_DUMP_BC_ADDRS (any
-			// uncompressed format), to a host buffer, written as .bin + .json (+ .dds for BC) next
-			// to the BMPs.
+			// sarostex2: KYTY_DUMP_BC=1 (default off): raw level-0 / layer-0 texel blocks of block-compressed
+			// images, and of the images named in KYTY_DUMP_BC_ADDRS (any uncompressed format), to a host
+			// buffer, written as .bin + .json (+ .dds for BC) next to the BMPs.
 			if (m_bc && image.backing.image != nullptr && info.samples == 1 && !info.IsDepth() &&
 			    BcWanted(info.data.address, info.data.size, image.backing.extent.width,
-			             info.IsBlock())) {
+			                                 info.IsBlock())) {
 				const uint32_t bw   = image.backing.extent.width;
 				const uint32_t bh   = image.backing.extent.height;
 				const bool     bcf  = IsBcFormat(format);
 				const uint64_t bpb  = vk::blockSize(format);
 				const uint64_t cols = bcf ? (bw + 3) / 4 : bw;
 				const uint64_t rows = bcf ? (bh + 3) / 4 : bh;
-				// saroslight: volumes (the baked-lighting bricks) are dumped whole, all depth
-				// slices of level 0.
-				const uint32_t slices =
-				    info.IsVolume() ? std::max(image.backing.extent.depth, 1u) : 1u;
-				const uint64_t bytes = cols * rows * bpb * slices;
+				// saroslight: volumes (the baked-lighting bricks) are dumped whole, all depth slices of level 0.
+				const uint32_t slices = info.IsVolume() ? std::max(image.backing.extent.depth, 1u) : 1u;
+				const uint64_t bytes  = cols * rows * bpb * slices;
 				if (bpb != 0 && bytes <= (96ull << 20) && m_bc_bytes + bytes <= (768ull << 20) &&
 				    m_pending.size() < m_bc_max) {
 					m_bc_bytes += bytes;
@@ -873,77 +912,67 @@ public:
 					entry.tile_mode     = static_cast<unsigned>(info.tile_mode);
 					entry.levels        = info.resources.levels;
 					entry.layers        = info.IsVolume() ? slices : info.resources.layers;
-					std::snprintf(entry.name, sizeof(entry.name), "bc_%02d_%llx_%ux%u%s%u_%s",
-					              index, static_cast<unsigned long long>(info.data.address), bw, bh,
-					              info.IsVolume() ? "x" : "_L", info.IsVolume() ? slices : 1u,
-					              name.c_str());
+					std::snprintf(entry.name, sizeof(entry.name), "bc_%02d_%llx_%ux%u%s%u_%s", index,
+					              static_cast<unsigned long long>(info.data.address), bw, bh, info.IsVolume() ? "x" : "_L",
+					              info.IsVolume() ? slices : 1u, name.c_str());
 					Create(graphics, entry);
-					image.Transit(vk::ImageLayout::eTransferSrcOptimal,
-					              vk::AccessFlagBits2::eTransferRead, {}, command);
+					image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+					              command);
 					vk::BufferImageCopy copy {};
 					copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 					copy.imageExtent      = vk::Extent3D {bw, bh, slices};
-					command.copyImageToBuffer(image.backing.image,
-					                          vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
-					                          &copy);
+					command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal,
+					                          entry.buffer, 1, &copy);
 					m_pending.push_back(entry);
 					std::fprintf(stderr,
-					             "[kyty-bc] %d flip %llu image 0x%llx +0x%llx %ux%u %s "
-					             "guest-format %u tile %u levels %u layers %u "
+					             "[kyty-bc] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile %u levels %u layers %u "
 					             "%llu bytes\n",
 					             index, static_cast<unsigned long long>(m_flips),
 					             static_cast<unsigned long long>(info.data.address),
-					             static_cast<unsigned long long>(info.data.size), bw, bh,
-					             name.c_str(), entry.guest_format, entry.tile_mode, entry.levels,
-					             entry.layers, static_cast<unsigned long long>(bytes));
+					             static_cast<unsigned long long>(info.data.size), bw, bh, name.c_str(),
+					             entry.guest_format, entry.tile_mode, entry.levels, entry.layers,
+					             static_cast<unsigned long long>(bytes));
 				} else {
-					std::fprintf(stderr,
-					             "[kyty-bc] skipped image 0x%llx %ux%u %s (%llu bytes, budget)\n",
-					             static_cast<unsigned long long>(info.data.address), bw, bh,
-					             name.c_str(), static_cast<unsigned long long>(bytes));
+					std::fprintf(stderr, "[kyty-bc] skipped image 0x%llx %ux%u %s (%llu bytes, budget)\n",
+					             static_cast<unsigned long long>(info.data.address), bw, bh, name.c_str(),
+					             static_cast<unsigned long long>(bytes));
 				}
 				return;
 			}
 			const bool  integer = name.find("int") != std::string::npos;
-			const bool  size_ok = image.backing.image != nullptr && !info.IsBlock() &&
-			                      !info.IsVolume() && image.backing.extent.width >= m_min_width &&
-			                      (m_only_width == 0 || image.backing.extent.width == m_only_width);
-			// memtrk: KYTY_DUMP_TARGETS_DEPTH=1 also dumps depth images (depth aspect, level 0 /
-			// layer 0, full resolution, as raw values to a host buffer, written as a min..max grey
-			// BMP).
-			const auto depth_fmt  = DepthAspectTransferFormat(format);
-			const auto depth_size = DepthAspectTransferBytes(format);
-			const bool depth_dump = m_depth && size_ok && info.IsDepth() && info.samples == 1 &&
+			const bool  size_ok = image.backing.image != nullptr && !info.IsBlock() && !info.IsVolume() &&
+			                     image.backing.extent.width >= m_min_width &&
+			                     (m_only_width == 0 || image.backing.extent.width == m_only_width);
+			// memtrk: KYTY_DUMP_TARGETS_DEPTH=1 also dumps depth images (depth aspect, level 0 / layer 0,
+			// full resolution, as raw values to a host buffer, written as a min..max grey BMP).
+			const auto  depth_fmt  = DepthAspectTransferFormat(format);
+			const auto  depth_size = DepthAspectTransferBytes(format);
+			const bool  depth_dump = m_depth && size_ok && info.IsDepth() && info.samples == 1 &&
 			                        depth_size != 0 && m_pending.size() < 256;
-			const bool wanted     = size_ok && (!info.IsDepth() || m_depth);
-			const bool blit =
-			    wanted && !info.IsDepth() && info.samples == 1 && !integer &&
-			    static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
-			                      vk::FormatFeatureFlagBits::eBlitSrc) &&
-			    m_pending.size() < 256;
+			const bool  wanted  = size_ok && (!info.IsDepth() || m_depth);
+			const bool  blit    = wanted && !info.IsDepth() && info.samples == 1 && !integer &&
+			                      static_cast<bool>(graphics.GetFormatProperties(format).optimalTilingFeatures &
+			                                        vk::FormatFeatureFlagBits::eBlitSrc) &&
+			                      m_pending.size() < 256;
 			if (wanted) {
-				std::fprintf(
-				    stderr,
-				    "[kyty-target] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile "
-				    "%u samples %u "
-				    "levels %u layers %u usage%s%s%s%s%s gpu-modified %d cpu-dirty %d "
-				    "buffer-modified %d writes %llu "
-				    "metadata %u 0x%llx clear-word 0x%08x%s\n",
-				    index, static_cast<unsigned long long>(m_flips),
-				    static_cast<unsigned long long>(info.data.address),
-				    static_cast<unsigned long long>(info.data.size), image.backing.extent.width,
-				    image.backing.extent.height, name.c_str(),
-				    static_cast<unsigned>(info.guest_format), static_cast<unsigned>(info.tile_mode),
-				    info.samples, info.resources.levels, info.resources.layers,
-				    image.usage.texture ? " texture" : "", image.usage.storage ? " storage" : "",
-				    image.usage.render_target ? " rt" : "",
-				    image.usage.depth_target ? " depth" : "",
-				    image.usage.video_out ? " video-out" : "", image.IsGpuModified() ? 1 : 0,
-				    image.IsCpuDirty() ? 1 : 0, image.IsBufferModified() ? 1 : 0,
-				    static_cast<unsigned long long>(image.DefiniteWrites()),
-				    static_cast<unsigned>(info.metadata.kind),
-				    static_cast<unsigned long long>(info.metadata.range.address),
-				    info.metadata.dcc_clear_word, blit || depth_dump ? "" : " (not dumped)");
+				std::fprintf(stderr,
+				             "[kyty-target] %d flip %llu image 0x%llx +0x%llx %ux%u %s guest-format %u tile %u samples %u "
+				             "levels %u layers %u usage%s%s%s%s%s gpu-modified %d cpu-dirty %d buffer-modified %d writes %llu "
+				             "metadata %u 0x%llx clear-word 0x%08x%s\n",
+				             index, static_cast<unsigned long long>(m_flips),
+				             static_cast<unsigned long long>(info.data.address),
+				             static_cast<unsigned long long>(info.data.size), image.backing.extent.width,
+				             image.backing.extent.height, name.c_str(), static_cast<unsigned>(info.guest_format),
+				             static_cast<unsigned>(info.tile_mode), info.samples, info.resources.levels,
+				             info.resources.layers, image.usage.texture ? " texture" : "",
+				             image.usage.storage ? " storage" : "", image.usage.render_target ? " rt" : "",
+				             image.usage.depth_target ? " depth" : "", image.usage.video_out ? " video-out" : "",
+				             image.IsGpuModified() ? 1 : 0, image.IsCpuDirty() ? 1 : 0,
+				             image.IsBufferModified() ? 1 : 0,
+				             static_cast<unsigned long long>(image.DefiniteWrites()),
+				             static_cast<unsigned>(info.metadata.kind),
+				             static_cast<unsigned long long>(info.metadata.range.address),
+				             info.metadata.dcc_clear_word, blit || depth_dump ? "" : " (not dumped)");
 			}
 			if (depth_dump) {
 				Entry entry {};
@@ -953,48 +982,41 @@ public:
 				entry.extent.width  = image.backing.extent.width;
 				entry.extent.height = image.backing.extent.height;
 				std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
-				              static_cast<unsigned long long>(info.data.address),
-				              image.backing.extent.width, image.backing.extent.height,
-				              name.c_str());
+				              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+				              image.backing.extent.height, name.c_str());
 				Create(graphics, entry);
-				image.Transit(vk::ImageLayout::eTransferSrcOptimal,
-				              vk::AccessFlagBits2::eTransferRead, {}, command);
+				image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+				              command);
 				vk::BufferImageCopy copy {};
 				copy.imageSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1};
 				copy.imageExtent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
-				command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal,
-				                          entry.buffer, 1, &copy);
+				command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
+				                          &copy);
 				m_pending.push_back(entry);
-				// nanite: the stencil aspect too (raw bytes: nonzero share and value range,
-				// "_stencil"), e.g. the Nanite bit a depth export sets for the material passes'
-				// stencil test.
-				if (format == vk::Format::eD32SfloatS8Uint ||
-				    format == vk::Format::eD24UnormS8Uint ||
+				// nanite: the stencil aspect too (raw bytes: nonzero share and value range, "_stencil"),
+				// e.g. the Nanite bit a depth export sets for the material passes' stencil test.
+				if (format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint ||
 				    format == vk::Format::eD16UnormS8Uint) {
 					Entry stencil {};
-					stencil.raw         = true;
-					stencil.texel_bytes = 1;
-					stencil.extent      = entry.extent;
-					std::snprintf(stencil.name, sizeof(stencil.name),
-					              "k3_%02d_%llx_%ux%u_stencil.bmp", index,
-					              static_cast<unsigned long long>(info.data.address),
-					              image.backing.extent.width, image.backing.extent.height);
+					stencil.raw           = true;
+					stencil.texel_bytes   = 1;
+					stencil.extent        = entry.extent;
+					std::snprintf(stencil.name, sizeof(stencil.name), "k3_%02d_%llx_%ux%u_stencil.bmp", index,
+					              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+					              image.backing.extent.height);
 					Create(graphics, stencil);
 					vk::BufferImageCopy scopy {};
 					scopy.imageSubresource = {vk::ImageAspectFlagBits::eStencil, 0, 0, 1};
-					scopy.imageExtent =
-					    vk::Extent3D {stencil.extent.width, stencil.extent.height, 1};
-					command.copyImageToBuffer(image.backing.image,
-					                          vk::ImageLayout::eTransferSrcOptimal, stencil.buffer,
+					scopy.imageExtent      = vk::Extent3D {stencil.extent.width, stencil.extent.height, 1};
+					command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, stencil.buffer,
 					                          1, &scopy);
 					m_pending.push_back(stencil);
 				}
 				return;
 			}
-			// memtrk: KYTY_DUMP_TARGETS_RAW=1 also dumps single-sample integer colour images (e.g.
-			// a 64-bit visibility buffer): raw texels to a host buffer, written as a BMP that
-			// colours each nonzero texel by a hash of its low 32 bits, plus the share of nonzero
-			// texels.
+			// memtrk: KYTY_DUMP_TARGETS_RAW=1 also dumps single-sample integer colour images (e.g. a
+			// 64-bit visibility buffer): raw texels to a host buffer, written as a BMP that colours each
+			// nonzero texel by a hash of its low 32 bits, plus the share of nonzero texels.
 			uint32_t raw_bytes = 0;
 			switch (format) {
 				case vk::Format::eR8Uint: raw_bytes = 1; break;
@@ -1005,25 +1027,24 @@ public:
 				case vk::Format::eR32G32B32A32Uint: raw_bytes = 16; break;
 				default: break;
 			}
-			if (m_raw && wanted && integer && !info.IsDepth() && info.samples == 1 &&
-			    raw_bytes != 0 && m_pending.size() < 256) {
+			if (m_raw && wanted && integer && !info.IsDepth() && info.samples == 1 && raw_bytes != 0 &&
+			    m_pending.size() < 256) {
 				Entry entry {};
 				entry.raw           = true;
 				entry.texel_bytes   = raw_bytes;
 				entry.extent.width  = image.backing.extent.width;
 				entry.extent.height = image.backing.extent.height;
 				std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
-				              static_cast<unsigned long long>(info.data.address),
-				              image.backing.extent.width, image.backing.extent.height,
-				              name.c_str());
+				              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
+				              image.backing.extent.height, name.c_str());
 				Create(graphics, entry);
-				image.Transit(vk::ImageLayout::eTransferSrcOptimal,
-				              vk::AccessFlagBits2::eTransferRead, {}, command);
+				image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
+				              command);
 				vk::BufferImageCopy copy {};
 				copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 				copy.imageExtent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
-				command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal,
-				                          entry.buffer, 1, &copy);
+				command.copyImageToBuffer(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
+				                          &copy);
 				m_pending.push_back(entry);
 				return;
 			}
@@ -1032,14 +1053,14 @@ public:
 			}
 			Entry entry {};
 			entry.extent.width  = std::min(image.backing.extent.width, m_max_width);
-			entry.extent.height = std::max(
-			    1u, image.backing.extent.height * entry.extent.width / image.backing.extent.width);
+			entry.extent.height = std::max(1u, image.backing.extent.height * entry.extent.width /
+			                                       image.backing.extent.width);
 			std::snprintf(entry.name, sizeof(entry.name), "k3_%02d_%llx_%ux%u_%s.bmp", index,
-			              static_cast<unsigned long long>(info.data.address), image.backing.extent.width,
-			              image.backing.extent.height, name.c_str());
+			              static_cast<unsigned long long>(info.data.address),
+			              image.backing.extent.width, image.backing.extent.height, name.c_str());
 			Create(graphics, entry);
-			image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
-			              command);
+			image.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead,
+			              {}, command);
 			const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 			vk::ImageMemoryBarrier          barrier {};
 			barrier.dstAccessMask       = vk::AccessFlagBits::eTransferWrite;
@@ -1050,8 +1071,8 @@ public:
 			barrier.image               = entry.image;
 			barrier.subresourceRange    = range;
 			command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-			                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0, nullptr,
-			                        0, nullptr, 1, &barrier);
+			                        vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {}, 0,
+			                        nullptr, 0, nullptr, 1, &barrier);
 			vk::ImageBlit region {};
 			region.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 			region.srcOffsets[1]  = vk::Offset3D {static_cast<int>(image.backing.extent.width),
@@ -1059,20 +1080,21 @@ public:
 			region.dstSubresource = region.srcSubresource;
 			region.dstOffsets[1]  = vk::Offset3D {static_cast<int>(entry.extent.width),
 			                                      static_cast<int>(entry.extent.height), 1};
-			command.blitImage(image.backing.image, vk::ImageLayout::eTransferSrcOptimal, entry.image,
-			                  vk::ImageLayout::eTransferDstOptimal, 1, &region, vk::Filter::eNearest);
+			command.blitImage(image.backing.image, vk::ImageLayout::eTransferSrcOptimal,
+			                  entry.image, vk::ImageLayout::eTransferDstOptimal, 1, &region,
+			                  vk::Filter::eNearest);
 			barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 			barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
 			barrier.oldLayout     = vk::ImageLayout::eTransferDstOptimal;
 			barrier.newLayout     = vk::ImageLayout::eTransferSrcOptimal;
 			command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-			                        vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags {}, 0,
-			                        nullptr, 0, nullptr, 1, &barrier);
+			                        vk::PipelineStageFlagBits::eAllCommands, vk::DependencyFlags {},
+			                        0, nullptr, 0, nullptr, 1, &barrier);
 			vk::BufferImageCopy copy {};
 			copy.imageSubresource = region.srcSubresource;
 			copy.imageExtent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
-			command.copyImageToBuffer(entry.image, vk::ImageLayout::eTransferSrcOptimal, entry.buffer, 1,
-			                          &copy);
+			command.copyImageToBuffer(entry.image, vk::ImageLayout::eTransferSrcOptimal,
+			                          entry.buffer, 1, &copy);
 			m_pending.push_back(entry);
 		});
 		std::fprintf(stderr, "[kyty-target] %d flip %llu: %zu images recorded\n", index,
@@ -1089,28 +1111,28 @@ private:
 		vk::DeviceMemory buffer_memory = nullptr;
 		void*            mapped        = nullptr;
 		bool             depth         = false; // memtrk: raw depth aspect in `buffer`, no `image`
-		bool             raw = false; // memtrk: raw integer texels in `buffer`, no `image`
-		bool             bc  = false; // sarostex2: raw level-0 texel blocks in `buffer`, no `image`
-		bool             bc_bcf       = false;
-		uint64_t         bc_bytes     = 0;
-		vk::Format       bc_format    = vk::Format::eUndefined;
-		uint64_t         address      = 0;
-		unsigned         guest_format = 0, tile_mode = 0;
-		uint32_t         levels = 0, layers = 0;
-		vk::Format       depth_format = vk::Format::eUndefined;
-		uint32_t         texel_bytes  = 4;
+		bool             raw           = false; // memtrk: raw integer texels in `buffer`, no `image`
+		bool             bc            = false; // sarostex2: raw level-0 texel blocks in `buffer`, no `image`
+		bool             bc_bcf        = false;
+		uint64_t         bc_bytes      = 0;
+		vk::Format       bc_format     = vk::Format::eUndefined;
+		uint64_t         address       = 0;
+		unsigned         guest_format  = 0, tile_mode = 0;
+		uint32_t         levels        = 0, layers = 0;
+		vk::Format       depth_format  = vk::Format::eUndefined;
+		uint32_t         texel_bytes   = 4;
 	};
 	TargetDump() {
 		const auto number = [](const char* name, int fallback) {
 			const char* value = std::getenv(name);
 			return value != nullptr ? std::atoi(value) : fallback;
 		};
-		m_limit     = number("KYTY_DUMP_TARGETS", 0);
-		m_from      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_FROM", 1), 1));
-		m_every     = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_EVERY", 1), 1));
-		m_delay     = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_DELAY", 20), 1));
-		m_min_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MINW", 512), 1));
-		m_max_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MAXW", 960), 16));
+		m_limit      = number("KYTY_DUMP_TARGETS", 0);
+		m_from       = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_FROM", 1), 1));
+		m_every      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_EVERY", 1), 1));
+		m_delay      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_DELAY", 20), 1));
+		m_min_width  = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MINW", 512), 1));
+		m_max_width  = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_MAXW", 960), 16));
 		m_only_width = static_cast<uint32_t>(std::max(number("KYTY_DUMP_TARGETS_ONLYW", 0), 0));
 		m_burst      = static_cast<uint64_t>(std::max(number("KYTY_DUMP_TARGETS_BURST", 1), 1));
 		m_depth      = number("KYTY_DUMP_TARGETS_DEPTH", 0) != 0;
@@ -1139,7 +1161,8 @@ private:
 		const auto memory_type = [&](uint32_t bits, vk::MemoryPropertyFlags wanted) {
 			const auto& memory = graphics.physical_device_memory_properties;
 			for (uint32_t i = 0; i < memory.memoryTypeCount; i++) {
-				if ((bits & (1u << i)) != 0 && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
+				if ((bits & (1u << i)) != 0 &&
+				    (memory.memoryTypes[i].propertyFlags & wanted) == wanted) {
 					return i;
 				}
 			}
@@ -1149,41 +1172,40 @@ private:
 		vk::MemoryRequirements requirements {};
 		vk::MemoryAllocateInfo allocate {};
 		if (!entry.depth && !entry.raw && !entry.bc) {
-			vk::ImageCreateInfo create {};
-			create.imageType   = vk::ImageType::e2D;
-			create.extent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
-			create.mipLevels   = 1;
-			create.arrayLayers = 1;
-			create.format      = vk::Format::eB8G8R8A8Srgb;
-			create.usage =
-			    vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
-			create.samples = vk::SampleCountFlagBits::e1;
-			RequireVulkanSuccess(device.createImage(&create, nullptr, &entry.image),
-			                     "target dump image");
-			device.getImageMemoryRequirements(entry.image, &requirements);
-			allocate.allocationSize  = requirements.size;
-			allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
-			RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &entry.image_memory),
-			                     "target dump image memory");
-			device.bindImageMemory(entry.image, entry.image_memory, 0);
+		vk::ImageCreateInfo create {};
+		create.imageType   = vk::ImageType::e2D;
+		create.extent      = vk::Extent3D {entry.extent.width, entry.extent.height, 1};
+		create.mipLevels   = 1;
+		create.arrayLayers = 1;
+		create.format      = vk::Format::eB8G8R8A8Srgb;
+		create.usage = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+		create.samples = vk::SampleCountFlagBits::e1;
+		RequireVulkanSuccess(device.createImage(&create, nullptr, &entry.image), "target dump image");
+		device.getImageMemoryRequirements(entry.image, &requirements);
+		allocate.allocationSize  = requirements.size;
+		allocate.memoryTypeIndex = memory_type(requirements.memoryTypeBits, {});
+		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &entry.image_memory),
+		                     "target dump image memory");
+		device.bindImageMemory(entry.image, entry.image_memory, 0);
 		}
 		vk::BufferCreateInfo buffer {};
-		buffer.size  = entry.bc
-		                   ? entry.bc_bytes
-		                   : static_cast<vk::DeviceSize>(entry.extent.width) * entry.extent.height *
-		                         (entry.depth || entry.raw ? entry.texel_bytes : 4u);
+		buffer.size  = entry.bc ? entry.bc_bytes
+		                        : static_cast<vk::DeviceSize>(entry.extent.width) * entry.extent.height *
+		                              (entry.depth || entry.raw ? entry.texel_bytes : 4u);
 		buffer.usage = vk::BufferUsageFlagBits::eTransferDst;
-		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &entry.buffer), "target dump buffer");
+		RequireVulkanSuccess(device.createBuffer(&buffer, nullptr, &entry.buffer),
+		                     "target dump buffer");
 		device.getBufferMemoryRequirements(entry.buffer, &requirements);
-		allocate.allocationSize  = requirements.size;
-		allocate.memoryTypeIndex = memory_type(
-		    requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
-		                                     vk::MemoryPropertyFlagBits::eHostCoherent);
+		allocate.allocationSize = requirements.size;
+		allocate.memoryTypeIndex =
+		    memory_type(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+		                                                 vk::MemoryPropertyFlagBits::eHostCoherent);
 		RequireVulkanSuccess(device.allocateMemory(&allocate, nullptr, &entry.buffer_memory),
 		                     "target dump buffer memory");
 		device.bindBufferMemory(entry.buffer, entry.buffer_memory, 0);
-		RequireVulkanSuccess(device.mapMemory(entry.buffer_memory, 0, VK_WHOLE_SIZE, {}, &entry.mapped),
-		                     "target dump map");
+		RequireVulkanSuccess(
+		    device.mapMemory(entry.buffer_memory, 0, VK_WHOLE_SIZE, {}, &entry.mapped),
+		    "target dump map");
 	}
 	void Write(GraphicContext& graphics) {
 		auto device = graphics.device;
@@ -1202,7 +1224,9 @@ private:
 			}
 			const uint32_t bytes = entry.extent.width * entry.extent.height * 4u;
 			uint8_t        header[54] {};
-			const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+			const auto     put = [&](size_t at, uint32_t value) {
+				std::memcpy(header + at, &value, 4);
+			};
 			header[0] = 'B';
 			header[1] = 'M';
 			put(2, 54u + bytes);
@@ -1261,23 +1285,20 @@ private:
 		}
 	}
 	static bool IsBcFormat(vk::Format f) { return BcDxgi(f) != 0; }
-	// sarostex2: an image to dump: named in KYTY_DUMP_BC_ADDRS (any format; an address inside the
-	// image counts) or, with no list, any block-compressed image of width KYTY_DUMP_BC_MINW..MAXW
-	// (16..4096); KYTY_DUMP_BC_ALL=1 adds that range to the list.
+	// sarostex2: an image to dump: named in KYTY_DUMP_BC_ADDRS (any format; an address inside the image
+	// counts) or, with no list, any block-compressed image of width KYTY_DUMP_BC_MINW..MAXW (16..4096); KYTY_DUMP_BC_ALL=1 adds that range to the list.
 	bool BcWanted(uint64_t address, uint64_t size, uint32_t width, bool block) const {
 		for (const auto a: m_bc_addrs) {
 			if (address == a || (size != 0 && a > address && a < address + size)) {
 				return true;
 			}
 		}
-		return (m_bc_addrs.empty() || m_bc_all) && block && width >= m_bc_minw &&
-		       width <= m_bc_maxw;
+		return (m_bc_addrs.empty() || m_bc_all) && block && width >= m_bc_minw && width <= m_bc_maxw;
 	}
-	// sarostex2: <name>.bin = raw level-0 blocks, <name>.json = format/size/tiling, <name>.dds for
-	// BC (DX10 header).
+	// sarostex2: <name>.bin = raw level-0 blocks, <name>.json = format/size/tiling, <name>.dds for BC (DX10 header).
 	void WriteBc(vk::Device device, Entry& entry) {
-		const auto*    src    = static_cast<const uint8_t*>(entry.mapped);
-		const uint32_t dxgi   = BcDxgi(entry.bc_format);
+		const auto*    src  = static_cast<const uint8_t*>(entry.mapped);
+		const uint32_t dxgi = BcDxgi(entry.bc_format);
 		uint64_t       groups = 0, nonzero = 0;
 		for (uint64_t i = 0; i + 4 <= entry.bc_bytes; i += 16) {
 			uint8_t x = 0;
@@ -1287,30 +1308,25 @@ private:
 			nonzero += x != 0;
 			groups++;
 		}
-		if (auto* file =
-		        std::fopen(DumpPath((std::string(entry.name) + ".bin").c_str()).c_str(), "wb");
-		    file != nullptr) {
+		if (auto* file = std::fopen(DumpPath((std::string(entry.name) + ".bin").c_str()).c_str(), "wb"); file != nullptr) {
 			std::fwrite(src, 1, entry.bc_bytes, file);
 			std::fclose(file);
 		}
 		if (dxgi != 0) {
-			if (auto* file =
-			        std::fopen(DumpPath((std::string(entry.name) + ".dds").c_str()).c_str(), "wb");
-			    file != nullptr) {
-				uint32_t h[37] {};  // magic, 124-byte header (31 dwords), DX10 header (5 dwords)
-				h[0] = 0x20534444u; // "DDS "
-				h[1] = 124;
-				h[2] =
-				    0x1 | 0x2 | 0x4 | 0x1000 | 0x80000; // caps height width pixelformat linearsize
+			if (auto* file = std::fopen(DumpPath((std::string(entry.name) + ".dds").c_str()).c_str(), "wb"); file != nullptr) {
+				uint32_t h[37] {}; // magic, 124-byte header (31 dwords), DX10 header (5 dwords)
+				h[0]  = 0x20534444u; // "DDS "
+				h[1]  = 124;
+				h[2]  = 0x1 | 0x2 | 0x4 | 0x1000 | 0x80000; // caps height width pixelformat linearsize
 				h[3]  = entry.extent.height;
 				h[4]  = entry.extent.width;
 				h[5]  = static_cast<uint32_t>(entry.bc_bytes);
-				h[7]  = 1;           // mip count
-				h[19] = 32;          // pixel format size
-				h[20] = 0x4;         // DDPF_FOURCC
-				h[21] = 0x30315844u; // "DX10"
-				h[27] = 0x1000;      // DDSCAPS_TEXTURE
-				h[32] = dxgi;        // DX10 header: format, 2D, misc, array size, alpha mode
+				h[7]  = 1;                 // mip count
+				h[19] = 32;                // pixel format size
+				h[20] = 0x4;               // DDPF_FOURCC
+				h[21] = 0x30315844u;       // "DX10"
+				h[27] = 0x1000;            // DDSCAPS_TEXTURE
+				h[32] = dxgi;              // DX10 header: format, 2D, misc, array size, alpha mode
 				h[33] = 3;
 				h[35] = 1;
 				std::fwrite(h, 4, 37, file);
@@ -1318,36 +1334,30 @@ private:
 				std::fclose(file);
 			}
 		}
-		if (auto* file =
-		        std::fopen(DumpPath((std::string(entry.name) + ".json").c_str()).c_str(), "wb");
-		    file != nullptr) {
+		if (auto* file = std::fopen(DumpPath((std::string(entry.name) + ".json").c_str()).c_str(), "wb"); file != nullptr) {
 			std::fprintf(file,
-			             "{\"address\": \"0x%llx\", \"format\": \"%s\", \"guest_format\": %u, "
-			             "\"tile_mode\": %u, "
-			             "\"width\": %u, \"height\": %u, \"levels\": %u, \"layers\": %u, \"bc\": "
-			             "%s, \"dxgi\": %u, "
+			             "{\"address\": \"0x%llx\", \"format\": \"%s\", \"guest_format\": %u, \"tile_mode\": %u, "
+			             "\"width\": %u, \"height\": %u, \"levels\": %u, \"layers\": %u, \"bc\": %s, \"dxgi\": %u, "
 			             "\"bytes\": %llu}\n",
-			             static_cast<unsigned long long>(entry.address),
-			             vk::to_string(entry.bc_format).c_str(), entry.guest_format,
-			             entry.tile_mode, entry.extent.width, entry.extent.height, entry.levels,
+			             static_cast<unsigned long long>(entry.address), vk::to_string(entry.bc_format).c_str(),
+			             entry.guest_format, entry.tile_mode, entry.extent.width, entry.extent.height, entry.levels,
 			             entry.layers, entry.bc_bcf ? "true" : "false", dxgi,
 			             static_cast<unsigned long long>(entry.bc_bytes));
 			std::fclose(file);
 		}
-		std::fprintf(
-		    stderr, "[kyty-bc] %s: written, %.1f%% of 16-byte groups nonzero\n", entry.name,
-		    groups != 0 ? 100.0 * static_cast<double>(nonzero) / static_cast<double>(groups) : 0.0);
+		std::fprintf(stderr, "[kyty-bc] %s: written, %.1f%% of 16-byte groups nonzero\n", entry.name,
+		             groups != 0 ? 100.0 * static_cast<double>(nonzero) / static_cast<double>(groups) : 0.0);
 		device.unmapMemory(entry.buffer_memory);
 		device.destroyBuffer(entry.buffer, nullptr);
 		device.freeMemory(entry.buffer_memory, nullptr);
 	}
-	// memtrk: a depth entry as a grey BMP (black = min, white = max of the values that are neither
-	// 0 nor 1) and one stats line: the share of pixels at exactly 0 and 1 (cleared near/far) tells
-	// whether a pass wrote depth at all.
+	// memtrk: a depth entry as a grey BMP (black = min, white = max of the values that are neither 0
+	// nor 1) and one stats line: the share of pixels at exactly 0
+	// and 1 (cleared near/far) tells whether a pass wrote depth at all.
 	void WriteDepth(vk::Device device, Entry& entry) {
 		const uint64_t pixels_n = static_cast<uint64_t>(entry.extent.width) * entry.extent.height;
 		std::vector<float> values(pixels_n);
-		const auto*        src = static_cast<const uint8_t*>(entry.mapped);
+		const auto* src = static_cast<const uint8_t*>(entry.mapped);
 		for (uint64_t i = 0; i < pixels_n; i++) {
 			if (entry.depth_format == vk::Format::eD16Unorm) {
 				uint16_t v = 0;
@@ -1376,9 +1386,9 @@ private:
 		}
 		const uint32_t bytes = static_cast<uint32_t>(pixels_n * 4u);
 		uint8_t        header[54] {};
-		const auto put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
-		header[0]      = 'B';
-		header[1]      = 'M';
+		const auto     put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
+		header[0] = 'B';
+		header[1] = 'M';
 		put(2, 54u + bytes);
 		put(10, 54u);
 		put(14, 40u);
@@ -1410,13 +1420,12 @@ private:
 			std::fclose(file);
 		}
 		std::fprintf(stderr,
-		             "[kyty-target] %s: depth %ux%u zero %.1f%% one %.1f%% other %.1f%% (min %.6g "
-		             "max %.6g)\n",
+		             "[kyty-target] %s: depth %ux%u zero %.1f%% one %.1f%% other %.1f%% (min %.6g max %.6g)\n",
 		             entry.name, entry.extent.width, entry.extent.height,
 		             100.0 * static_cast<double>(zeros) / static_cast<double>(pixels_n),
 		             100.0 * static_cast<double>(ones) / static_cast<double>(pixels_n),
-		             100.0 * static_cast<double>(other) / static_cast<double>(pixels_n),
-		             other != 0 ? lo : 0.0f, other != 0 ? hi : 0.0f);
+		             100.0 * static_cast<double>(other) / static_cast<double>(pixels_n), other != 0 ? lo : 0.0f,
+		             other != 0 ? hi : 0.0f);
 		device.unmapMemory(entry.buffer_memory);
 		device.destroyBuffer(entry.buffer, nullptr);
 		device.freeMemory(entry.buffer_memory, nullptr);
@@ -1429,8 +1438,8 @@ private:
 		const auto*    src      = static_cast<const uint8_t*>(entry.mapped);
 		const uint32_t bytes    = static_cast<uint32_t>(pixels_n * 4u);
 		std::vector<uint8_t> out(bytes);
-		uint64_t             nonzero = 0;
-		uint32_t             hi_min = UINT32_MAX, hi_max = 0, lo_min = UINT32_MAX, lo_max = 0;
+		uint64_t nonzero = 0;
+		uint32_t hi_min = UINT32_MAX, hi_max = 0, lo_min = UINT32_MAX, lo_max = 0;
 		for (uint64_t i = 0; i < pixels_n; i++) {
 			const uint8_t* t   = src + i * entry.texel_bytes;
 			uint32_t       low = 0;
@@ -1450,8 +1459,8 @@ private:
 			uint8_t r = 0, g = 0, b = 0;
 			if (any) {
 				nonzero++;
-				lo_min     = std::min(lo_min, low);
-				lo_max     = std::max(lo_max, low);
+				lo_min = std::min(lo_min, low);
+				lo_max = std::max(lo_max, low);
 				uint32_t h = low * 2654435761u;
 				h ^= h >> 15;
 				r = static_cast<uint8_t>(64 + (h & 0xbf));
@@ -1465,8 +1474,8 @@ private:
 		}
 		uint8_t    header[54] {};
 		const auto put = [&](size_t at, uint32_t value) { std::memcpy(header + at, &value, 4); };
-		header[0]      = 'B';
-		header[1]      = 'M';
+		header[0] = 'B';
+		header[1] = 'M';
 		put(2, 54u + bytes);
 		put(10, 54u);
 		put(14, 40u);
@@ -1482,28 +1491,25 @@ private:
 			std::fwrite(out.data(), 1, bytes, file);
 			std::fclose(file);
 		}
-		std::fprintf(stderr,
-		             "[kyty-target] %s: raw %ux%u %u B/texel nonzero %.2f%% high words "
-		             "0x%08x..0x%08x low 0x%x..0x%x\n",
+		std::fprintf(stderr, "[kyty-target] %s: raw %ux%u %u B/texel nonzero %.2f%% high words 0x%08x..0x%08x low 0x%x..0x%x\n",
 		             entry.name, entry.extent.width, entry.extent.height, entry.texel_bytes,
 		             100.0 * static_cast<double>(nonzero) / static_cast<double>(pixels_n),
-		             nonzero != 0 && entry.texel_bytes >= 8 ? hi_min : 0u, hi_max,
-		             nonzero != 0 ? lo_min : 0u, lo_max);
+		             nonzero != 0 && entry.texel_bytes >= 8 ? hi_min : 0u, hi_max, nonzero != 0 ? lo_min : 0u, lo_max);
 		device.unmapMemory(entry.buffer_memory);
 		device.destroyBuffer(entry.buffer, nullptr);
 		device.freeMemory(entry.buffer_memory, nullptr);
 	}
 
-	bool     m_depth   = false;
-	bool     m_raw     = false;
-	int      m_after_s = 0;
-	bool     m_bc      = false; // sarostex2: KYTY_DUMP_BC
-	size_t   m_bc_max  = 400;   // KYTY_DUMP_BC_MAX
-	bool     m_bc_all  = false; // KYTY_DUMP_BC_ALL=1: the width range also with an address list
-	uint32_t m_bc_minw = 16, m_bc_maxw = 4096;
-	uint64_t m_bc_bytes = 0;
-	std::vector<uint64_t> m_bc_addrs; // KYTY_DUMP_BC_ADDRS=0x..,0x.. (hex, any separator)
-	bool                  m_after_armed = false;
+	bool               m_depth        = false;
+	bool               m_raw          = false;
+	int                m_after_s      = 0;
+	bool               m_bc           = false; // sarostex2: KYTY_DUMP_BC
+	size_t             m_bc_max       = 400;   // KYTY_DUMP_BC_MAX
+	bool               m_bc_all       = false; // KYTY_DUMP_BC_ALL=1: the width range also with an address list
+	uint32_t           m_bc_minw      = 16, m_bc_maxw = 4096;
+	uint64_t           m_bc_bytes     = 0;
+	std::vector<uint64_t> m_bc_addrs;   // KYTY_DUMP_BC_ADDRS=0x..,0x.. (hex, any separator)
+	bool               m_after_armed  = false;
 	std::chrono::steady_clock::time_point m_first_flip_time {};
 	int                m_limit        = 0;
 	int                m_dumped       = 0;
@@ -1518,7 +1524,6 @@ private:
 	uint64_t           m_pending_flip = 0;
 	std::vector<Entry> m_pending;
 };
-
 
 class Swapchain final {
 public:
@@ -1557,8 +1562,8 @@ private:
 	vk::SurfaceFormatKHR SelectFormat();
 	/// Destroys the swapchain Vulkan objects and resets all members.
 	void Destroy();
-	void DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer,
-	                 const PresentGeometry::Rect& area);
+	void DrawLayer(vk::CommandBuffer command, const Presenter::Layer& layer,
+	               const vk::Rect2D& rect);
 
 	WindowContext&   m_window;
 	vk::SwapchainKHR m_handle = nullptr;
@@ -1586,7 +1591,7 @@ private:
 	vk::Pipeline                   m_overlay_pipeline    = nullptr;
 	vk::Sampler                    m_overlay_sampler     = nullptr;
 	PresentFilter                  m_filter; // KYTY_PRESENT_BOX_DOWNSCALE
-	uint32_t                       m_image_index         = static_cast<uint32_t>(-1);
+	uint32_t                       m_image_index         = 0;
 	uint32_t                       m_frame_index         = 0;
 };
 
@@ -1595,7 +1600,6 @@ struct Presenter::Impl {
 	    : renderer(*owner.render_context), window(owner), swapchain(owner),
 	      present_scheduler(renderer, owner.graphic_ctx, CommandScheduler::Role::Presenter),
 	      frames(owner, present_scheduler) {
-		EXIT_IF(owner.render_context == nullptr);
 		swapchain.Create();
 		const uint32_t image_count = swapchain.ImageCount() > 0 ? swapchain.ImageCount() : 3;
 		frames.Initialize(image_count, swapchain.Format());
@@ -1636,13 +1640,16 @@ struct Presenter::Impl {
 		static const bool flip_log = std::getenv("KYTY_FLIP_LOG") != nullptr;
 		if (flip_log) {
 			static uint64_t flips = 0, dirty_flips = 0;
-			static uint32_t last = ~0u;
-			const uint32_t  state = (image.IsCpuDirty() ? 1u : 0u) | (image.IsGpuModified() ? 2u : 0u) |
+			static uint32_t last  = ~0u;
+			const uint32_t  state = (image.IsCpuDirty() ? 1u : 0u) |
+			                        (image.IsGpuModified() ? 2u : 0u) |
 			                        (image.IsBufferModified() ? 4u : 0u);
 			dirty_flips += state & 1u;
 			if (state != last || ++flips % 120 == 0) {
 				last = state;
-				std::fprintf(stderr, "[kyty-flip] image 0x%llx %ux%u: cpu-dirty %u gpu-modified %u buffer-modified %u (%llu of %llu flips cpu-dirty)\n",
+				std::fprintf(stderr,
+				             "[kyty-flip] image 0x%llx %ux%u: cpu-dirty %u gpu-modified %u "
+				             "buffer-modified %u (%llu of %llu flips cpu-dirty)\n",
 				             static_cast<unsigned long long>(info.data.address), info.extent.width,
 				             info.extent.height, state & 1u, (state >> 1u) & 1u, (state >> 2u) & 1u,
 				             static_cast<unsigned long long>(dirty_flips),
@@ -1655,9 +1662,10 @@ struct Presenter::Impl {
 	void Present();
 	// nps5 load card: the watchdog thread (below Presenter::Impl::Present).
 	void LoadCardLoop(std::stop_token stop);
-	// Presents the last frame with (card = true) or without the load card, only if no game flip happened since
-	// `seq` (decided under present_mutex, the lock of every present: no concurrent acquire/queue present, and the
-	// card can never land on a game frame). False when nothing was presented.
+	// Presents the last frame with (card = true) or without the load card, only if no game flip
+	// happened since `seq` (decided under present_mutex, the lock of every present: no concurrent
+	// acquire/queue present, and the card can never land on a game frame). False when nothing was
+	// presented.
 	bool PresentLoadCard(uint64_t seq, bool card);
 
 	RenderContext&        renderer;
@@ -1749,19 +1757,19 @@ void Swapchain::Create() {
 
 	m_extent = surface.capabilities.currentExtent;
 	if (m_extent.width == std::numeric_limits<uint32_t>::max()) {
-		// winresize: the surface lets the swapchain choose: the drawable size clamped to the surface
-		// limits and to KYTY_SWAPCHAIN_MAX_MB (default 512 MiB of images; the self memory limit is
-		// never raised for a big window).
+		// winresize: the surface lets the swapchain choose: the drawable size clamped to the
+		// surface limits and to KYTY_SWAPCHAIN_MAX_MB (default 512 MiB of images; the self memory
+		// limit is never raised for a big window).
 		static const uint64_t budget = [] {
-			const char* v = std::getenv("KYTY_SWAPCHAIN_MAX_MB");
+			const char* v  = std::getenv("KYTY_SWAPCHAIN_MAX_MB");
 			const long  mb = v != nullptr && *v != '\0' ? std::strtol(v, nullptr, 10) : 512;
 			return static_cast<uint64_t>(mb > 0 ? mb : 512) << 20u;
 		}();
-		const auto& caps    = surface.capabilities;
-		auto        chosen  = PresentGeometry::ClampExtent(
-            {m_window_extent.width, m_window_extent.height}, {m_extent.width, m_extent.height},
-            {caps.minImageExtent.width, caps.minImageExtent.height},
-            {caps.maxImageExtent.width, caps.maxImageExtent.height});
+		const auto& caps   = surface.capabilities;
+		auto        chosen = PresentGeometry::ClampExtent(
+		    {m_window_extent.width, m_window_extent.height}, {m_extent.width, m_extent.height},
+		    {caps.minImageExtent.width, caps.minImageExtent.height},
+		    {caps.maxImageExtent.width, caps.maxImageExtent.height});
 		chosen = PresentGeometry::FitToBudget(chosen, std::max(caps.minImageCount + 1, 3u), budget);
 		m_extent.width  = chosen.w;
 		m_extent.height = chosen.h;
@@ -1817,12 +1825,16 @@ void Swapchain::Create() {
 		case Config::PresentMode::Fifo:
 		default: create_info.presentMode = vk::PresentModeKHR::eFifo; break;
 	}
-	// nps5 KYTY_PRESENT_MODE=fifo|immediate|mailbox overrides the configured mode (KosmicKrisp offers immediate and fifo only;
-	// immediate = CAMetalLayer displaySyncEnabled=NO: the frame is shown at once instead of at the next vblank).
+	// nps5 KYTY_PRESENT_MODE=fifo|immediate|mailbox overrides the configured mode (KosmicKrisp
+	// offers immediate and fifo only; immediate = CAMetalLayer displaySyncEnabled=NO: the frame is
+	// shown at once instead of at the next vblank).
 	if (const char* mode = std::getenv("KYTY_PRESENT_MODE"); mode != nullptr) {
-		if (std::strcmp(mode, "immediate") == 0) create_info.presentMode = vk::PresentModeKHR::eImmediate;
-		else if (std::strcmp(mode, "mailbox") == 0) create_info.presentMode = vk::PresentModeKHR::eMailbox;
-		else if (std::strcmp(mode, "fifo") == 0) create_info.presentMode = vk::PresentModeKHR::eFifo;
+		if (std::strcmp(mode, "immediate") == 0)
+			create_info.presentMode = vk::PresentModeKHR::eImmediate;
+		else if (std::strcmp(mode, "mailbox") == 0)
+			create_info.presentMode = vk::PresentModeKHR::eMailbox;
+		else if (std::strcmp(mode, "fifo") == 0)
+			create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	if (std::find(surface.present_modes.begin(), surface.present_modes.end(),
 	              create_info.presentMode) == surface.present_modes.end()) {
@@ -1830,10 +1842,26 @@ void Swapchain::Create() {
 		create_info.presentMode = vk::PresentModeKHR::eFifo;
 	}
 	create_info.clipped = VK_TRUE;
-	if (Common::LatTrace::Enabled()) {
-		std::fprintf(stderr, "[klat] swapchain present_mode=%s images=%u\n", vk::to_string(create_info.presentMode).c_str(), image_count);
+#if defined(_WIN32)
+	// KYTY_FULLSCREEN_EXCLUSIVE (GraphicContext::full_screen_exclusive): exclusive fullscreen
+	// disallowed or allowed. (VkSurfaceFullScreenExclusiveInfoEXT is vulkan_win32.h's, not included
+	// here: its layout.)
+	struct {
+		VkStructureType sType                 = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
+		const void*     pNext                 = nullptr;
+		int32_t         full_screen_exclusive = 0; // VkFullScreenExclusiveEXT: 1 allowed, 2 disallowed
+	} exclusive;
+	if (graphics.full_screen_exclusive >= 0) {
+		exclusive.pNext                 = create_info.pNext;
+		exclusive.full_screen_exclusive = graphics.full_screen_exclusive == 0 ? 2 : 1;
+		create_info.pNext               = &exclusive;
 	}
-	create_info.pNext   = LowLatency::SwapchainCreateNext(create_info.pNext);
+#endif
+	if (Common::LatTrace::Enabled()) {
+		std::fprintf(stderr, "[klat] swapchain present_mode=%s images=%u\n",
+		             vk::to_string(create_info.presentMode).c_str(), image_count);
+	}
+	create_info.pNext = LowLatency::SwapchainCreateNext(create_info.pNext);
 	RequireVulkanSuccess(graphics.device.createSwapchainKHR(&create_info, nullptr, &m_handle),
 	                     "vkCreateSwapchainKHR");
 	EXIT_IF(m_handle == nullptr);
@@ -1880,8 +1908,6 @@ void Swapchain::Create() {
 		    graphics.device.createSemaphore(&semaphore_info, nullptr, &m_render_complete[i]),
 		    "create swapchain render-complete semaphore");
 	}
-	m_image_index = static_cast<uint32_t>(-1);
-	m_frame_index = 0;
 }
 
 Swapchain::~Swapchain() {
@@ -1941,7 +1967,6 @@ void Swapchain::Destroy() {
 	m_format        = vk::Format::eUndefined;
 	m_extent        = {};
 	m_window_extent = {};
-	m_image_index   = static_cast<uint32_t>(-1);
 	m_frame_index   = 0;
 	m_images.clear();
 	m_image_views.clear();
@@ -2014,15 +2039,20 @@ Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 	if (m_minimized || m_handle == nullptr) {
 		return Status::Minimized;
 	}
-	EXIT_IF(m_frame_index >= m_image_acquired.size());
 	if (m_frame_index < m_frame_ticks.size() && m_frame_ticks[m_frame_index] != 0) {
 		scheduler.Wait(m_frame_ticks[m_frame_index]);
 		m_frame_ticks[m_frame_index] = 0;
 	}
-	m_image_index     = static_cast<uint32_t>(-1);
-	const auto result = m_window.graphic_ctx.device.acquireNextImageKHR(
-	    m_handle, std::numeric_limits<uint64_t>::max(), m_image_acquired[m_frame_index], nullptr,
-	    &m_image_index);
+	vk::Result result;
+	{
+		// Hang reports (issue #62, Linux): shows a present thread blocked in the driver's acquire.
+		HangWatchdog::Scope acquire("vkAcquireNextImageKHR",
+		                            reinterpret_cast<uint64_t>(static_cast<VkSwapchainKHR>(m_handle)),
+		                            m_frame_index);
+		result = m_window.graphic_ctx.device.acquireNextImageKHR(
+		    m_handle, std::numeric_limits<uint64_t>::max(), m_image_acquired[m_frame_index], nullptr,
+		    &m_image_index);
+	}
 	switch (result) {
 		case vk::Result::eSuccess: break;
 		case vk::Result::eSuboptimalKHR:
@@ -2040,7 +2070,6 @@ Swapchain::Status Swapchain::AcquireNextImage(CommandScheduler& scheduler) {
 			return Status::SurfaceLost;
 		default: EXIT("vkAcquireNextImageKHR failed: %s\n", vk::to_string(result).c_str());
 	}
-	EXIT_IF(m_image_index >= m_images.size());
 	return Status::Success;
 }
 
@@ -2117,6 +2146,35 @@ static vk::Pipeline CreateFullscreenPipeline(vk::Device device, vk::PipelineLayo
 	return pipeline;
 }
 
+// KYTY_HDR_TO_SDR (default 1; 0 off): a game that outputs HDR10 (PQ) video-out buffers while the
+// window is SDR (HDR off in the launcher or no HDR display) is converted for display: the PQ code
+// values were shown unchanged, so the picture looked washed out (Miles Morales outputs PQ whatever
+// the reported dynamic range). KYTY_HDR_TO_SDR_WHITE_NITS (default 203, BT.2408 reference white)
+// maps to SDR white; highlights roll off up to KYTY_HDR_TO_SDR_PEAK_NITS (default 1000).
+static bool PqToSdrEnabled() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_HDR_TO_SDR");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
+static float EnvNits(const char* name, float fallback) {
+	const auto* value = std::getenv(name);
+	const float parsed = value != nullptr ? std::strtof(value, nullptr) : 0.0f;
+	return parsed >= 1.0f && parsed <= 10000.0f ? parsed : fallback;
+}
+
+float PqToSdrWhiteNits() {
+	static const float nits = EnvNits("KYTY_HDR_TO_SDR_WHITE_NITS", 203.0f);
+	return nits;
+}
+
+float PqToSdrPeakNits() {
+	static const float nits = EnvNits("KYTY_HDR_TO_SDR_PEAK_NITS", 1000.0f);
+	return nits;
+}
+
 bool PresentNeedsFilter(vk::Extent2D source, vk::Extent2D target) noexcept {
 	const bool shrinks = source.width > target.width || source.height > target.height;
 	const bool halves =
@@ -2127,13 +2185,16 @@ bool PresentNeedsFilter(vk::Extent2D source, vk::Extent2D target) noexcept {
 
 void PresentFilter::Record(vk::Device device, vk::CommandBuffer command, vk::ImageView source_view,
                            uint32_t level, vk::Extent2D source, vk::ImageView target_view,
-                           vk::Format target_format, vk::Extent2D target) {
+                           vk::Format target_format, vk::Extent2D target, bool pq_to_sdr) {
 	struct Constants {
 		int32_t  size[2];
 		float    scale[2];
 		uint32_t level;
+		uint32_t flags;
+		float    white_nits;
+		float    peak_nits;
 	};
-	static_assert(sizeof(Constants) == 20);
+	static_assert(sizeof(Constants) == 32);
 	if (m_layout == nullptr) {
 		vk::SamplerCreateInfo sampler {};
 		sampler.magFilter    = vk::Filter::eLinear;
@@ -2184,7 +2245,13 @@ void PresentFilter::Record(vk::Device device, vk::CommandBuffer command, vk::Ima
 	    {static_cast<int32_t>(source.width), static_cast<int32_t>(source.height)},
 	    {static_cast<float>(source.width) / static_cast<float>(target.width),
 	     static_cast<float>(source.height) / static_cast<float>(target.height)},
-	    level};
+	    level,
+	    // The two-texel box covers at most a 2:1 downscale; beyond that (only an HDR10 frame on an
+	    // SDR window takes this pass then) one linear tap per pixel, as the blit it replaces.
+	    (pq_to_sdr ? 1u : 0u) |
+	        (source.width > 2ull * target.width || source.height > 2ull * target.height ? 2u : 0u),
+	    PqToSdrWhiteNits(),
+	    PqToSdrPeakNits()};
 	command.pushConstants(m_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(constants),
 	                      &constants);
 	command.bindPipeline(vk::PipelineBindPoint::eGraphics, m_pipeline);
@@ -2220,8 +2287,26 @@ void PresentFilter::Release(vk::Device device) {
 	m_format      = vk::Format::eUndefined;
 }
 
-void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& layer,
-                            const PresentGeometry::Rect& area) {
+// The game frame's rectangle in the swapchain image: the window's whole extent with --stretch,
+// else the largest one with the frame's aspect ratio, centred (upstream 69fdb03dc; the bars are
+// cleared to black).
+static vk::Rect2D FitAspect(const vk::Extent3D& source, const vk::Extent2D& target) {
+	const uint64_t src_w = std::max(source.width, 1u);
+	const uint64_t src_h = std::max(source.height, 1u);
+	uint32_t       w     = target.width;
+	uint32_t       h     = target.height;
+	if (src_w * h > src_h * w) {
+		h = std::max<uint32_t>(1, static_cast<uint32_t>(src_h * w / src_w));
+	} else {
+		w = std::max<uint32_t>(1, static_cast<uint32_t>(src_w * h / src_h));
+	}
+	return {{static_cast<int32_t>((target.width - w) / 2),
+	         static_cast<int32_t>((target.height - h) / 2)},
+	        {w, h}};
+}
+
+void Swapchain::DrawLayer(vk::CommandBuffer command, const Presenter::Layer& layer,
+                          const vk::Rect2D& rect) {
 	auto device = m_window.graphic_ctx.device;
 	if (m_overlay_pipeline == nullptr) {
 		vk::SamplerCreateInfo sampler {};
@@ -2323,9 +2408,11 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 	write.descriptorType  = vk::DescriptorType::eCombinedImageSampler;
 	write.pImageInfo      = &image;
 	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, m_overlay_layout, 0, 1, &write);
-	const uint32_t flags = (layer.premultiplied_alpha ? 1u : 0u) |
-	                       (m_hdr_active ? 2u : 0u) | (frame.hdr ? 4u : 0u) |
-	                       (frame.image.format == vk::Format::eR16G16B16A16Sfloat ? 8u : 0u);
+	// The main bus ignores alpha.
+	const uint32_t flags = (layer.premultiplied_alpha ? 1u : 0u) | (m_hdr_active ? 2u : 0u) |
+	                       (frame.hdr ? 4u : 0u) |
+	                       (frame.image.format == vk::Format::eR16G16B16A16Sfloat ? 8u : 0u) |
+	                       (layer.bus == 0 ? 16u : 0u);
 	command.pushConstants(m_overlay_layout, vk::ShaderStageFlagBits::eFragment, 0,
 	                      sizeof(flags), &flags);
 	command.bindPipeline(vk::PipelineBindPoint::eGraphics, m_overlay_pipeline);
@@ -2340,20 +2427,21 @@ void Swapchain::DrawOverlay(vk::CommandBuffer command, const Presenter::Layer& l
 	rendering.colorAttachmentCount = 1;
 	rendering.pColorAttachments    = &attachment;
 	command.beginRendering(&rendering);
-	// winresize: the overlay layer shares the game frame's letterboxed rectangle.
-	const vk::Viewport viewport {static_cast<float>(area.x), static_cast<float>(area.y),
-	                             static_cast<float>(area.w), static_cast<float>(area.h), 0.0f, 1.0f};
-	const vk::Rect2D scissor {{area.x, area.y}, {area.w, area.h}};
+	const vk::Viewport viewport {static_cast<float>(rect.offset.x),
+	                             static_cast<float>(rect.offset.y),
+	                             static_cast<float>(rect.extent.width),
+	                             static_cast<float>(rect.extent.height),
+	                             0.0f,
+	                             1.0f};
 	command.setViewport(0, 1, &viewport);
-	command.setScissor(0, 1, &scissor);
+	command.setScissor(0, 1, &rect);
 	command.draw(3, 1, 0, 0);
 	command.endRendering();
 }
 
 void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* source,
                                       const Presenter::Layer& overlay, bool draw_system_overlay) {
-	bool dump_checked = false;
-	EXIT_IF(m_image_index >= m_images.size());
+	bool       dump_checked    = false;
 	auto       vk_command      = command.Handle();
 	const bool draw_overlay    = overlay.frame != nullptr;
 	const bool draw_attachment = draw_overlay || draw_system_overlay;
@@ -2362,17 +2450,10 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	const vk::Extent2D source_extent =
 	    source != nullptr ? vk::Extent2D {source->image.extent.width, source->image.extent.height}
 	                      : vk::Extent2D {};
-	// winresize: aspect-preserving letterbox of the game frame (or, without one, of the overlay
-	// layer) in the swapchain; black bars around it. Full target when the aspects match.
-	const auto letterbox_src = source != nullptr ? source_extent
-	    : overlay.frame != nullptr
-	        ? vk::Extent2D {overlay.frame->image.extent.width, overlay.frame->image.extent.height}
-	        : vk::Extent2D {};
-	const auto area = PresentGeometry::Letterbox(letterbox_src.width, letterbox_src.height,
-	                                             m_extent.width, m_extent.height);
-	const bool boxed = !PresentGeometry::IsFull(area, m_extent.width, m_extent.height);
-	const bool filtered = source != nullptr && !boxed && PresentBoxDownscaleEnabled() &&
-	                      PresentNeedsFilter(source_extent, m_extent);
+	// An HDR10 frame on an SDR window is converted by the filter pass (KYTY_HDR_TO_SDR).
+	const bool pq_to_sdr = source != nullptr && source->hdr && !m_hdr_active && PqToSdrEnabled();
+	const bool filtered  = source != nullptr && (pq_to_sdr || (PresentBoxDownscaleEnabled() &&
+	                                                           PresentNeedsFilter(source_extent, m_extent)));
 	if (filtered) {
 		if (source->view == nullptr) {
 			vk::ImageViewCreateInfo view {};
@@ -2416,26 +2497,37 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, write_stage,
 	                           vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1, &to_transfer);
 
+	// The filter pass (KYTY_HDR_TO_SDR, KYTY_PRESENT_BOX_DOWNSCALE) always fills the whole image.
+	const auto* aspect_source = source != nullptr ? source : overlay.frame;
+	const auto  game_rect     = !filtered && !Config::StretchEnabled() && aspect_source != nullptr
+	                                ? FitAspect(aspect_source->image.extent, m_extent)
+	                                : vk::Rect2D {{0, 0}, m_extent};
+	if (!filtered && (source == nullptr || game_rect.extent != m_extent)) {
+		const vk::ClearColorValue black {};
+		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
+		                           &black, 1, &to_transfer.subresourceRange);
+		if (source != nullptr) {
+			vk::ImageMemoryBarrier after_clear = to_transfer;
+			after_clear.srcAccessMask          = vk::AccessFlagBits::eTransferWrite;
+			after_clear.oldLayout              = vk::ImageLayout::eTransferDstOptimal;
+			vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+			                           vk::PipelineStageFlagBits::eTransfer,
+			                           vk::DependencyFlags {}, 0, nullptr, 0, nullptr, 1,
+			                           &after_clear);
+		}
+	}
 	if (filtered) {
 		m_filter.Record(m_window.graphic_ctx.device, vk_command, source->view, 0, source_extent,
-		                m_image_views[m_image_index], m_format, m_extent);
+		                m_image_views[m_image_index], m_format, m_extent, pq_to_sdr);
 		if (!source->blank && LumaProbe::Instance().Wanted()) {
-			// The filtered path read the frame as a texture: back to transfer-source for the probe blit.
-			source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead);
-			LumaProbe::Instance().Record(m_window.graphic_ctx, vk_command, source->image.image, source_extent);
+			// The filtered path read the frame as a texture: back to transfer-source for the probe
+			// blit.
+			source->Transit(vk_command, vk::ImageLayout::eTransferSrcOptimal,
+			                vk::AccessFlagBits2::eTransferRead);
+			LumaProbe::Instance().Record(m_window.graphic_ctx, vk_command, source->image.image,
+			                             source_extent);
 		}
 	} else if (source != nullptr) {
-		if (boxed) {
-			const vk::ClearColorValue black {};
-			vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
-			                           &black, 1, &to_transfer.subresourceRange);
-			vk::MemoryBarrier clear_done {};
-			clear_done.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-			clear_done.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-			vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-			                           vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlags {},
-			                           1, &clear_done, 0, nullptr, 0, nullptr);
-		}
 		vk::ImageBlit region {};
 		region.srcSubresource.aspectMask     = vk::ImageAspectFlagBits::eColor;
 		region.srcSubresource.mipLevel       = 0;
@@ -2448,21 +2540,18 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 		region.dstSubresource.mipLevel       = 0;
 		region.dstSubresource.baseArrayLayer = 0;
 		region.dstSubresource.layerCount     = 1;
-		region.dstOffsets[0].x               = area.x;
-		region.dstOffsets[0].y               = area.y;
-		region.dstOffsets[1].x               = area.x + static_cast<int>(area.w);
-		region.dstOffsets[1].y               = area.y + static_cast<int>(area.h);
+		region.dstOffsets[0].x = game_rect.offset.x;
+		region.dstOffsets[0].y = game_rect.offset.y;
+		region.dstOffsets[1].x = game_rect.offset.x + static_cast<int>(game_rect.extent.width);
+		region.dstOffsets[1].y = game_rect.offset.y + static_cast<int>(game_rect.extent.height);
 		region.dstOffsets[1].z               = 1;
 		vk_command.blitImage(source->image.image, vk::ImageLayout::eTransferSrcOptimal,
 		                     m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal, 1,
 		                     &region, vk::Filter::eLinear);
 		if (!source->blank && LumaProbe::Instance().Wanted()) {
-			LumaProbe::Instance().Record(m_window.graphic_ctx, vk_command, source->image.image, source_extent);
+			LumaProbe::Instance().Record(m_window.graphic_ctx, vk_command, source->image.image,
+			                             source_extent);
 		}
-	} else {
-		const vk::ClearColorValue black {};
-		vk_command.clearColorImage(m_images[m_image_index], vk::ImageLayout::eTransferDstOptimal,
-		                           &black, 1, &to_transfer.subresourceRange);
 	}
 
 	vk::ImageMemoryBarrier to_present {};
@@ -2489,33 +2578,39 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 	                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
 	                           &to_present);
 	if (draw_attachment) {
+		// Each pass blends over the color writes of the previous one.
+		to_present.srcAccessMask      = vk::AccessFlagBits::eColorAttachmentWrite;
+		to_present.oldLayout          = vk::ImageLayout::eColorAttachmentOptimal;
+		const auto attachment_barrier = [&] {
+			vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
+			                           vk::PipelineStageFlagBits::eColorAttachmentOutput,
+			                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0, nullptr, 1,
+			                           &to_present);
+		};
+		// Upstream 026189166 also draws an HDR10 main frame through DrawLayer here; ours converts it
+		// in the filter pass above (KYTY_HDR_TO_SDR).
 		if (draw_overlay) {
-			DrawOverlay(vk_command, overlay, area);
+			DrawLayer(vk_command, overlay, game_rect);
 			if (draw_system_overlay) {
-				to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-				to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
-				vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
-				                           vk::PipelineStageFlagBits::eColorAttachmentOutput,
-				                           vk::DependencyFlagBits::eByRegion, 0, nullptr, 0,
-				                           nullptr, 1, &to_present);
+				attachment_barrier();
 			}
 		}
-		// load card: dumping never changes the screen. A dumped present that carries the progress card/badge copies the
-		// frame BEFORE the overlay is drawn (BMP without the card; KYTY_PROGRESS_OVERLAY_IN_DUMPS=1 dumps it after).
+		// load card: dumping never changes the screen. A dumped present that carries the progress
+		// card/badge copies the frame BEFORE the overlay is drawn (BMP without the card;
+		// KYTY_PROGRESS_OVERLAY_IN_DUMPS=1 dumps it after).
 		if (draw_system_overlay && !ProgressOverlay::InDumps() && SystemOverlayProgressWanted()) {
 			if (auto& dump = FrameDump::Instance(); dump.Enabled()) {
 				dump_checked = true;
 				if (dump.Next()) {
-					dump.Record(m_window.graphic_ctx, vk_command, m_images[m_image_index], m_format, m_extent, true);
+					dump.Record(m_window.graphic_ctx, vk_command, m_images[m_image_index], m_format,
+					            m_extent, true);
 				}
 			}
 		}
 		if (draw_system_overlay) {
 			m_system_overlay->Record(vk_command, m_image_views[m_image_index]);
 		}
-		to_present.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
 		to_present.dstAccessMask = vk::AccessFlagBits::eMemoryRead;
-		to_present.oldLayout     = vk::ImageLayout::eColorAttachmentOptimal;
 		to_present.newLayout     = vk::ImageLayout::ePresentSrcKHR;
 		vk_command.pipelineBarrier(vk::PipelineStageFlagBits::eColorAttachmentOutput,
 		                           vk::PipelineStageFlagBits::eAllCommands,
@@ -2528,7 +2623,6 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, Presenter::Frame* 
 }
 
 uint64_t Swapchain::Submit(CommandScheduler& scheduler) {
-	EXIT_IF(m_frame_index >= m_image_acquired.size() || m_image_index >= m_render_complete.size());
 	SubmitInfo submit;
 	submit.AddWait(m_image_acquired[m_frame_index], 1, vk::PipelineStageFlagBits::eTransfer);
 	submit.AddSignal(m_render_complete[m_image_index]);
@@ -2543,7 +2637,6 @@ Swapchain::Status Swapchain::Present() {
 	if (m_minimized || m_handle == nullptr) {
 		return Status::Minimized;
 	}
-	EXIT_IF(m_image_index >= m_render_complete.size());
 	const auto         ready = m_render_complete[m_image_index];
 	vk::PresentInfoKHR present {};
 	present.sType              = vk::StructureType::ePresentInfoKHR;
@@ -2555,8 +2648,8 @@ Swapchain::Status Swapchain::Present() {
 
 	vk::Result result;
 	// ASTROHYBRID_LOW_LATENCY (lowLatency.h): the presented flip's frame number as present ID.
-	const auto            latency_id = LowLatency::BeginPresent(static_cast<VkSwapchainKHR>(m_handle));
-	vk::PresentIdKHR      present_id {};
+	const auto       latency_id = LowLatency::BeginPresent(static_cast<VkSwapchainKHR>(m_handle));
+	vk::PresentIdKHR present_id {};
 	if (latency_id != 0) {
 		present_id.swapchainCount = 1;
 		present_id.pPresentIds    = &latency_id;
@@ -2565,8 +2658,13 @@ Swapchain::Status Swapchain::Present() {
 	{
 		// The blit this present waits for goes ahead of game batches still waiting for their
 		// texture copies: the present never waits for them, nor for a signal not yet submitted.
-		Common::LockGuard lock(m_window.graphic_ctx.queue_mutex);
+		// Hang reports (issue #62, Linux): a present blocked in the driver holds the graphics queue
+		// lock, so these scopes tell a stuck vkQueuePresentKHR from a stuck GPU.
+		const auto        queue = reinterpret_cast<uint64_t>(static_cast<VkQueue>(m_window.graphic_ctx.queue));
+		HangWatchdog::Scope lock_scope("present-queue-lock", queue, m_image_index);
+		Common::LockGuard   lock(m_window.graphic_ctx.queue_mutex);
 		m_window.graphic_ctx.submission_queue.DrainReadyForPresentLocked();
+		HangWatchdog::Scope present_scope("vkQueuePresentKHR", queue, m_image_index);
 		result = m_window.graphic_ctx.queue.presentKHR(&present);
 	}
 	FlightRec::NotePresent();
@@ -2614,6 +2712,115 @@ static bool PresentUnlocked() {
 
 Presenter::~Presenter() = default;
 
+// KYTY_FRAME_DUMP=<frames>[:<x>,<y>,<w>,<h>] (diagnostic, default off): each time the file
+// KYTY_FRAME_DUMP_TRIGGER (default _framedump.go in the working directory) appears, it is removed
+// and the next <frames> prepared video-out frames (every prepared frame, also ones that are not
+// shown; optional crop) are read back and appended to _framedump.bin ({u32 'KFDM', u32 dump
+// ordinal, i32 guest frame, u32 width, u32 height, u32 vk format, u32 bytes per pixel, u64
+// steady-clock ns at recording, pixels} per frame), to tell one-frame jumps from motion.
+static void GuestFrameDump(RenderContext& renderer, CommandBuffer& command_buffer,
+                           Presenter::Frame& frame) {
+	struct Request {
+		uint32_t    frames = 0;
+		uint32_t    x = 0, y = 0, w = 0, h = 0;
+		std::string trigger;
+	};
+	static const Request request = [] {
+		Request parsed;
+		if (const auto* value = std::getenv("KYTY_FRAME_DUMP"); value != nullptr) {
+			char* end     = nullptr;
+			parsed.frames = static_cast<uint32_t>(std::strtoul(value, &end, 10));
+			if (end != nullptr && *end == ':') {
+				std::array<uint32_t, 4> rect {};
+				for (auto& v: rect) {
+					v = static_cast<uint32_t>(std::strtoul(end + 1, &end, 10));
+					if (end == nullptr || *end != ',') break;
+				}
+				parsed.x = rect[0];
+				parsed.y = rect[1];
+				parsed.w = rect[2];
+				parsed.h = rect[3];
+			}
+		}
+		const auto* trigger = std::getenv("KYTY_FRAME_DUMP_TRIGGER");
+		parsed.trigger      = trigger != nullptr && trigger[0] != '\0' ? trigger : "_framedump.go";
+		return parsed;
+	}();
+	if (request.frames == 0) [[likely]] {
+		return;
+	}
+	static uint32_t remaining = 0;
+	static uint32_t ordinal   = 0;
+	if (remaining == 0) {
+		std::error_code error;
+		if (!std::filesystem::exists(request.trigger, error)) {
+			return;
+		}
+		std::filesystem::remove(request.trigger, error);
+		remaining = request.frames;
+	}
+	remaining--;
+	const auto         format = frame.image.format;
+	const uint32_t     bpp    = format == vk::Format::eR16G16B16A16Sfloat ? 8u : 4u;
+	const auto         ex     = frame.image.extent;
+	const uint32_t     x      = std::min(request.x, ex.width - 1);
+	const uint32_t     y      = std::min(request.y, ex.height - 1);
+	const uint32_t     w      = request.w == 0 ? ex.width - x : std::min(request.w, ex.width - x);
+	const uint32_t     h      = request.h == 0 ? ex.height - y : std::min(request.h, ex.height - y);
+	const uint64_t     bytes  = uint64_t {w} * h * bpp;
+	constexpr uint32_t Slots  = 16;
+	static std::unique_ptr<Buffer> download;
+	static uint64_t                slot_bytes = 0;
+	if (download == nullptr || bytes > slot_bytes) {
+		auto& scheduler = renderer.GetCommandScheduler();
+		if (download != nullptr) {
+			scheduler.Wait(scheduler.CurrentTick() - 1);
+			scheduler.PopPendingOperations();
+		}
+		slot_bytes = bytes;
+		download   = std::make_unique<Buffer>(renderer.GetGraphics(), scheduler, MemoryUsage::Download, 0,
+		                                      AllFlags, slot_bytes * Slots);
+	}
+	const auto slot    = ordinal % Slots;
+	const auto number  = ordinal++;
+	auto       command = command_buffer.Handle();
+	frame.Transit(command, vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead);
+	vk::BufferImageCopy copy {};
+	copy.bufferOffset     = slot * slot_bytes;
+	copy.imageSubresource = vk::ImageSubresourceLayers {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+	copy.imageOffset      = vk::Offset3D {static_cast<int32_t>(x), static_cast<int32_t>(y), 0};
+	copy.imageExtent      = vk::Extent3D {w, h, 1};
+	command.copyImageToBuffer(frame.image.image, vk::ImageLayout::eTransferSrcOptimal, download->Handle(),
+	                          copy);
+	vk::BufferMemoryBarrier barrier {};
+	barrier.srcAccessMask       = vk::AccessFlagBits::eTransferWrite;
+	barrier.dstAccessMask       = vk::AccessFlagBits::eHostRead;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer              = download->Handle();
+	barrier.offset              = copy.bufferOffset;
+	barrier.size                = bytes;
+	command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost, {}, {},
+	                        barrier, {});
+	const auto guest_frame = renderer.GetGpu().GetFrameNum();
+	const auto t_ns        = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                std::chrono::steady_clock::now().time_since_epoch())
+                                                .count());
+	const auto vk_format   = static_cast<uint32_t>(format);
+	renderer.GetCommandScheduler().DeferOperation(
+	    [slot, number, guest_frame, w, h, vk_format, bpp, t_ns, bytes] {
+		    static std::FILE* file = std::fopen("_framedump.bin", "wb");
+		    if (file == nullptr) return;
+		    download->Invalidate(slot * slot_bytes, bytes);
+		    const uint32_t header[7] = {0x4d44464bu, number, static_cast<uint32_t>(guest_frame), w, h, vk_format,
+		                                bpp};
+		    std::fwrite(header, sizeof(header), 1, file);
+		    std::fwrite(&t_ns, sizeof(t_ns), 1, file);
+		    std::fwrite(download->Mapped().data() + slot * slot_bytes, 1, bytes, file);
+		    std::fflush(file);
+	    });
+}
+
 Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo& info, bool hdr,
                                           bool headset) {
 	KYTY_PROFILER_FUNCTION();
@@ -2635,7 +2842,10 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);
-	TargetDump::Instance().OnFlip(m_impl->window.graphic_ctx, m_impl->renderer.GetTextureCache(), buffer);
+	GuestFrameDump(m_impl->renderer, buffer,
+	               *frame); // upstream KYTY_FRAME_DUMP (renamed: our FrameDump class)
+	TargetDump::Instance().OnFlip(m_impl->window.graphic_ctx, m_impl->renderer.GetTextureCache(),
+	                              buffer);
 	if (MetalFx::Requested()) [[unlikely]] {
 		MetalFx::NoteFlip();
 	}
@@ -2693,10 +2903,6 @@ bool Presenter::PresentLastFrame() {
 	return true;
 }
 
-bool Presenter::IsGuestPaused() const noexcept {
-	return m_impl->window.loop.paused.load(std::memory_order_acquire);
-}
-
 bool Presenter::IsHdrSupported() const noexcept {
 	return m_impl->swapchain.IsHdrSupported();
 }
@@ -2718,19 +2924,23 @@ void Presenter::Present(Frame& frame) {
 
 void Presenter::Present(std::span<const Layer> layers) {
 	Common::LockGuard lock(m_impl->present_mutex);
-	bool hold = false;
+	bool              hold = false;
 	for (const auto& layer: layers) {
 		// nps5 load card: a real game flip ends the load card before this frame is presented.
 		if (layer.bus == 0 && layer.frame != nullptr && !layer.frame->blank) {
 			const bool black = LoadCard::BlackNow();
-			hold             = layers.size() == 1 && LoadCard::HoldGameFrame(black, LoadCard::Active());
+			hold = layers.size() == 1 && LoadCard::HoldGameFrame(black, LoadCard::Active());
 			LoadCard::NoteGameFlip(black);
 		}
 	}
 	for (const auto& layer: layers) {
 		EXIT_IF(layer.bus < 0 || layer.bus >= static_cast<int>(m_impl->layers.size()));
-		m_impl->frames.ValidateForPresent(layer.frame);
 		auto& previous = m_impl->layers[layer.bus];
+		if (layer.hold && previous.frame != nullptr && previous.frame != layer.frame) {
+			// KYTY_HOLD_SKIPPED_DRAWS: the frame shown before stays; this one goes back to the pool.
+			m_impl->frames.Release(layer.frame);
+			continue;
+		}
 		if (previous.frame != nullptr) {
 			m_impl->frames.Release(previous.frame);
 		}
@@ -2755,6 +2965,9 @@ void Presenter::ClearLayer(int bus) {
 
 void Presenter::Impl::Present() {
 	KYTY_PROFILER_FUNCTION();
+	using Common::DebugCounters::Counter;
+	using Common::DebugCounters::ScopedTimer;
+	ScopedTimer present_time(Counter::PresentNs);
 	Nps5MemLog::Start();
 	Nps5MemLog::NoteFrame();
 
@@ -2774,7 +2987,10 @@ void Presenter::Impl::Present() {
 		return;
 	}
 	for (uint32_t attempt = 0; attempt < 2; attempt++) {
-		auto status = swapchain.AcquireNextImage(present_scheduler);
+		auto status = [&] {
+			ScopedTimer acquire_time(Counter::PresentAcquireNs);
+			return swapchain.AcquireNextImage(present_scheduler);
+		}();
 		if (status == Swapchain::Status::Minimized) {
 			return;
 		}
@@ -2791,11 +3007,14 @@ void Presenter::Impl::Present() {
 				render_lock.emplace(renderer.GetMutex());
 			}
 			LumaProbe::Instance().Collect(present_scheduler);
-			auto&             command = present_scheduler.BeginCommand();
+			auto&      command             = present_scheduler.BeginCommand();
 			if (attempt != 0) {
 			}
-			const bool        draw_system_overlay =
-			    (overlay_visual.active || PerformanceOverlayEnabled()) && swapchain.PrepareSystemOverlay();
+			const bool draw_system_overlay = [&] {
+				ScopedTimer overlay_time(Counter::OverlayNs);
+				return (overlay_visual.active || PerformanceOverlayEnabled()) &&
+				       swapchain.PrepareSystemOverlay();
+			}();
 			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 			                                draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);
@@ -2837,7 +3056,8 @@ bool Presenter::Impl::PresentLoadCard(uint64_t seq, bool card) {
 		return false; // the game flipped meanwhile: nothing of ours is inserted
 	}
 	// Before the very first game frame there is nothing to repaint: the card is drawn over black.
-	if (layers[0].frame == nullptr && layers[1].frame == nullptr && !(card && LoadCard::AnyReason())) {
+	if (layers[0].frame == nullptr && layers[1].frame == nullptr &&
+	    !(card && LoadCard::AnyReason())) {
 		return false;
 	}
 	if (card) {
@@ -2849,55 +3069,73 @@ bool Presenter::Impl::PresentLoadCard(uint64_t seq, bool card) {
 	return true;
 }
 
-// nps5 load card: polls the flip sequence and the compile counters (LoadCard::Watchdog decides) and presents the
-// load card from this thread. Never touches the command processor or the compile workers: it only reads relaxed
-// counters and takes present_mutex for its own present.
+// nps5 load card: polls the flip sequence and the compile counters (LoadCard::Watchdog decides) and
+// presents the load card from this thread. Never touches the command processor or the compile
+// workers: it only reads relaxed counters and takes present_mutex for its own present.
 void Presenter::Impl::LoadCardLoop(std::stop_token stop) {
 	using Clock = std::chrono::steady_clock;
-	LoadCard::Watchdog wd(LoadCard::StartMs(), LoadCard::PresentIntervalMs());
-	auto&              shared   = LoadCard::State();
-	uint64_t           last_seq = ~uint64_t {0};
-	uint64_t           shown    = 0;
+	LoadCard::Watchdog    wd(LoadCard::StartMs(), LoadCard::PresentIntervalMs());
+	auto&                 shared   = LoadCard::State();
+	uint64_t              last_seq = ~uint64_t {0};
+	uint64_t              shown    = 0;
 	LoadCard::VfsActivity vfs;
 	while (!stop.stop_requested()) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		const auto now = static_cast<uint64_t>(
-		    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+		    std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch())
+		        .count());
 		const auto seq  = shared.flip_seq.load(std::memory_order_acquire);
 		const auto snap = CompileProgress::Read();
 		if (seq != last_seq) {
-			last_seq = seq;
+			last_seq      = seq;
 			const auto& c = CompileProgress::Get();
-			shared.base_started.store(c.live_started.load(std::memory_order_relaxed), std::memory_order_relaxed);
-			shared.base_finished.store(c.live_finished.load(std::memory_order_relaxed), std::memory_order_relaxed);
+			shared.base_started.store(c.live_started.load(std::memory_order_relaxed),
+			                          std::memory_order_relaxed);
+			shared.base_finished.store(c.live_finished.load(std::memory_order_relaxed),
+			                           std::memory_order_relaxed);
 		}
-		// load card: the full-screen card belongs to the session start (before the first content frame). Afterwards only a
-		// genuine long stall (>= GapMs without content, compiles pending or VFS bytes still moving) brings it back.
+		// load card: the full-screen card belongs to the session start (before the first content
+		// frame). Afterwards only a genuine long stall (>= GapMs without content, compiles pending
+		// or VFS bytes still moving) brings it back.
 		const bool content_seen = shared.content_seen.load(std::memory_order_acquire);
-		const bool video   = LoadCard::VideoPlaying();
-		const bool content = seq != 0 && LoadCard::EndsOpening(video, LoadCard::LaunchPhasePending(), LoadCard::BlackEnabled() && shared.probe_state.load(std::memory_order_relaxed) != 2);
-		const auto pol = LoadCard::MakePolicy(content_seen, content, seq, window.loop.paused.load(std::memory_order_acquire),
-		                                      LoadCard::AnyReason(), LoadCard::MidgameEnabled(), LoadCard::StartMs(), LoadCard::GapMs(), video);
+		const bool video        = LoadCard::VideoPlaying();
+		const bool content =
+		    seq != 0 &&
+		    LoadCard::EndsOpening(video, LoadCard::LaunchPhasePending(),
+		                          LoadCard::BlackEnabled() &&
+		                              shared.probe_state.load(std::memory_order_relaxed) != 2);
+		const auto pol = LoadCard::MakePolicy(content_seen, content, seq,
+		                                      false /* upstream dropped the window pause state */,
+		                                      LoadCard::AnyReason(), LoadCard::MidgameEnabled(),
+		                                      LoadCard::StartMs(), LoadCard::GapMs(), video);
 		wd.SetStartMs(pol.start_ms);
 		bool work = LoadCard::Pending(snap);
 		if (content_seen) {
-			static const auto* vfs_bytes = reinterpret_cast<const std::atomic<unsigned long long>*>(dlsym(RTLD_DEFAULT, "nps5_vfs_bytes_read"));
-			if (vfs_bytes != nullptr) work = vfs.Update(now, vfs_bytes->load(std::memory_order_relaxed)) || work;
+			static const auto* vfs_bytes = reinterpret_cast<const std::atomic<unsigned long long>*>(
+			    dlsym(RTLD_DEFAULT, "nps5_vfs_bytes_read"));
+			if (vfs_bytes != nullptr)
+				work = vfs.Update(now, vfs_bytes->load(std::memory_order_relaxed)) || work;
 		}
 		const auto d = wd.Step(now, seq, work, pol.armed, pol.any);
 		shared.last_flip_ms.store(wd.LastFlipMs(), std::memory_order_relaxed);
 		if (d.started && LoadCard::LogEnabled()) {
-			std::fprintf(stderr, "[loadcard] %llu ms: start (no game flip for %llu ms, seq %llu, live %d waiting %d replay %llu/%llu)\n",
-			             static_cast<unsigned long long>(now), static_cast<unsigned long long>(now - wd.LastFlipMs()), static_cast<unsigned long long>(seq), snap.live,
-			             snap.waiting, static_cast<unsigned long long>(snap.replay_done),
+			std::fprintf(stderr,
+			             "[loadcard] %llu ms: start (no game flip for %llu ms, seq %llu, live %d "
+			             "waiting %d replay %llu/%llu)\n",
+			             static_cast<unsigned long long>(now),
+			             static_cast<unsigned long long>(now - wd.LastFlipMs()),
+			             static_cast<unsigned long long>(seq), snap.live, snap.waiting,
+			             static_cast<unsigned long long>(snap.replay_done),
 			             static_cast<unsigned long long>(snap.replay_total));
 		}
 		if (d.present_now && !video && PresentLoadCard(seq, true)) {
 			shown++;
 		}
 		if (d.stopped && LoadCard::LogEnabled()) {
-			std::fprintf(stderr, "[loadcard] %llu ms: stop (%s) after %llu card presents\n", static_cast<unsigned long long>(now),
-			             d.repaint_clean ? "work ended" : "game flipped", static_cast<unsigned long long>(shown));
+			std::fprintf(stderr, "[loadcard] %llu ms: stop (%s) after %llu card presents\n",
+			             static_cast<unsigned long long>(now),
+			             d.repaint_clean ? "work ended" : "game flipped",
+			             static_cast<unsigned long long>(shown));
 			shown = 0;
 		}
 		if (d.repaint_clean) {

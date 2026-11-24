@@ -37,6 +37,14 @@
 // cannot finish before the packet was recorded) and against the previously published value (the
 // single host queue executes in recording order).
 //
+// busy (adapted from Erlou93/KytyPS5-Yotei's KYTY_FIX_VIRTUAL_GPU_CLOCK): gpu, and the published
+// clock leaves out the host GPU's idle time between command buffers (each buffer gets a
+// top-of-pipe stamp at its start and an all-commands stamp at its end; the time from one buffer's
+// end to the next buffer's start is idle). The guest then measures its GPU work, not the time the
+// GPU waited for the emulator to record the next buffer. Ghost of Yotei's dynamic resolution reads
+// these timers (Erlou: 3840x2160 -> 1920x1080 + FSR3, 4.63 -> 5.40 fps on their PC). The clock
+// falls behind the reference clock by the idle time so far.
+//
 // cbtime (nps5 drsclock; for hosts where timestamp queries are not safe: under KosmicKrisp a
 // timestamp query pool is a Metal counter heap):
 // - Like gpu, but with no query, no device timestamp and no calibration: the value comes from when
@@ -54,8 +62,8 @@ struct GraphicContext;
 
 namespace EopTimestamps {
 
-enum class Mode : uint8_t { Record, Gpu, GpuVerify, CbTime };
-// KYTY_EOP_TIMESTAMPS=record|gpu|gpu-verify|cbtime. Evaluated once.
+enum class Mode : uint8_t { Record, Gpu, GpuVerify, Busy, CbTime };
+// KYTY_EOP_TIMESTAMPS=record|gpu|gpu-verify|busy|cbtime. Evaluated once.
 [[nodiscard]] Mode GetMode();
 // gpu / gpu-verify: the timestamp query ring (and the calibrated-timestamp extension).
 [[nodiscard]] inline bool GpuEnabled() {
@@ -94,7 +102,9 @@ public:
 	// Directly after the command buffer begins, outside rendering: resets the slots already read.
 	// Through a CommandSink: with KYTY_CP_RECORDER the resets and timestamp writes are recorder
 	// packets, in stream order, and never drain the recorder.
-	void BeginCommand(const CommandSink& sink);
+	void BeginCommand(const CommandSink& sink, uint64_t tick = UINT64_MAX);
+	// busy: before the command buffer of `tick` ends, an all-commands stamp marks its end.
+	void EndCommand(const CommandSink& sink, uint64_t tick);
 	// At an end-of-pipe clock write: records a timestamp query at this point of the command
 	// buffer. Returns its slot, or NoSlot (no free slot: the record-time value stays).
 	[[nodiscard]] uint32_t RecordQuery(const CommandSink& sink);
@@ -117,6 +127,10 @@ private:
 
 	void Recalibrate(uint64_t now_ns, bool force);
 	void PublishEntry(const Entry& entry, bool available, uint64_t device_raw);
+	// busy: queues a command-buffer start (BeginMarker) or end (EndMarker) stamp.
+	void QueueMarker(const CommandSink& sink, uint64_t tick, uint64_t marker, bool top_of_pipe);
+	static constexpr uint64_t BeginMarker = 1; // Entry::address of the markers (never a guest slot)
+	static constexpr uint64_t EndMarker   = 2;
 
 	GraphicContext&          m_graphics;
 	vk::QueryPool            m_pool = nullptr;
@@ -133,6 +147,11 @@ private:
 	uint64_t                m_calibrated_ns = 0;
 	bool                    m_verify         = false;
 	uint64_t                m_last_published = 0; // gpu-verify: the previous published value
+	// busy: idle device ticks so far (also read by TakeDeferred on another thread), and the latest
+	// stamp seen in stream order.
+	bool                  m_busy = false;
+	std::atomic<uint64_t> m_idle_raw {0};
+	uint64_t              m_last_raw = 0;
 };
 
 // KYTY_EOP_TIMESTAMPS=cbtime: the completion clock of one guest command scheduler.
@@ -152,8 +171,8 @@ public:
 	// scheduler's layout is unchanged): created in the scheduler's constructor in cbtime mode,
 	// destroyed in its destructor after the last deferred clock write and before the timeline.
 	// Null in every other mode. `timeline` identifies the scheduler.
-	static void                              CreateGuest(GraphicContext& graphics, vk::Semaphore timeline);
-	static void                              DestroyGuest(vk::Semaphore timeline);
+	static void CreateGuest(GraphicContext& graphics, vk::Semaphore timeline);
+	static void DestroyGuest(vk::Semaphore timeline);
 	[[nodiscard]] static EopCompletionClock* Guest(vk::Semaphore timeline) noexcept;
 
 	// `address` now holds `record_value`; it gets its completion value once `tick` completed.
@@ -198,13 +217,13 @@ private:
 	std::mutex               m_mutex;
 	std::vector<Observation> m_observations; // under m_mutex, in tick order
 	// Statistics of the current report window (recording thread).
-	uint64_t m_report_at    = 0;
-	uint64_t m_groups       = 0;
-	uint64_t m_rewritten    = 0;
-	uint64_t m_skipped      = 0;
-	uint64_t m_shift_sum    = 0;
-	uint64_t m_shift_max    = 0;
-	uint64_t m_gpu_span_sum = 0; // sum of the groups' (gpu_end - gpu_begin)
+	uint64_t              m_report_at    = 0;
+	uint64_t              m_groups       = 0;
+	uint64_t              m_rewritten    = 0;
+	uint64_t              m_skipped      = 0;
+	uint64_t              m_shift_sum    = 0;
+	uint64_t              m_shift_max    = 0;
+	uint64_t              m_gpu_span_sum = 0; // sum of the groups' (gpu_end - gpu_begin)
 	std::atomic<uint64_t> m_dropped {0};
 	// Deferred clock writes: the record span of each tick that has some, in tick order, and the
 	// group of the tick whose deferred writes are running. Under m_deferred_mutex.
@@ -219,7 +238,7 @@ private:
 	uint64_t                       m_deferred_shift_sum    = 0;
 	uint64_t                       m_deferred_shift_max    = 0;
 	uint64_t                       m_deferred_span_sum     = 0;
-	std::jthread          m_watcher; // last: stopped and joined before the members above go
+	std::jthread m_watcher; // last: stopped and joined before the members above go
 };
 
 } // namespace Libs::Graphics

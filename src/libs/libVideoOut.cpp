@@ -3,8 +3,8 @@
 #include "common/abi.h"
 #include "graphics/presentation/videoOut.h"
 #include "libs/errno.h"
-#include "libs/libs.h"
 #include "libs/guestCallTrace.h" // nps5: KYTY_GPU_CALL_TRACE
+#include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
 namespace Libs {

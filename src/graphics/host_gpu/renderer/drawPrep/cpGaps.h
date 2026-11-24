@@ -3,6 +3,7 @@
 
 #include "common/fastTicks.h"
 #include "common/onceValue.h"
+
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -49,8 +50,8 @@ namespace Libs::Graphics::CpGaps {
 enum class Cat : uint8_t {
 	Commit,
 	HeadSelf,
-	HeadWait,      // a wait that began right after a stop, with a shallow or a deep window:
-	HeadWaitStart, // (DrawPrepCommitWaits{Barrier,Start,Shallow,Deep}); HeadWait = barrier
+	HeadWait,        // a wait that began right after a stop, with a shallow or a deep window:
+	HeadWaitStart,   // (DrawPrepCommitWaits{Barrier,Start,Shallow,Deep}); HeadWait = barrier
 	HeadWaitShallow,
 	HeadWaitDeep,
 	DrawOp,
@@ -81,15 +82,6 @@ enum class Cat : uint8_t {
 	GpuWaitDrain,
 	GpuWaitOcclusion,
 	GpuWaitOther,
-	// nps5 faultwin: tagged waits that used to count as gpuwait.other (Profiler::FrameWait).
-	GpuWaitSideCopy,
-	GpuWaitStreamWrap,
-	GpuWaitLodStats,
-	GpuWaitMisc, // other tagged waits (nothing sets it any more: the three below split it)
-	// nps5 saroscp: the former gpuwait.misc by caller.
-	GpuWaitUnmap,
-	GpuWaitPredication,
-	GpuWaitGds,
 	RecorderWait,
 	SubmitWait,
 	TextureUpload,
@@ -283,61 +275,36 @@ enum class Event : uint8_t {
 constexpr size_t EventCount = static_cast<size_t>(Event::Count);
 
 // The GPU thread's ledger (null on every other thread, and while the diagnostic is off).
-struct DrawPassKey {
-	uint32_t width = 0;
-	uint32_t height = 0;
-	uint32_t colors = 0;
-	uint32_t color_format = 0;
-	uint32_t depth_format = 0;
-
-	bool operator==(const DrawPassKey&) const = default;
-};
-
-struct DrawPassSample {
-	DrawPassKey key;
-	uint64_t binding_ticks = 0;
-	uint64_t descriptor_ticks = 0;
-	uint64_t rebind_ticks = 0;
-	uint64_t shader_table_bindings = 0;
-	uint64_t shader_table_bytes = 0;
-	int64_t shader_table_reduction = 0;
-	int64_t shader_byte_reduction = 0;
-	// nps5 saroscp: ledger time nested in this commit (protect, drains, side copies, uploads,
-	// faults), taken as the difference of the in-commit ledger totals over the commit.
-	uint64_t nested_protect = 0;
-	uint64_t nested_drain   = 0;
-	uint64_t nested_side    = 0;
-	uint64_t nested_upload  = 0;
-	uint64_t nested_fault   = 0;
-};
-
-struct DrawPassTotals {
-	DrawPassKey key;
-	uint64_t draws = 0;
-	uint64_t ticks = 0;
-	uint64_t binding_ticks = 0;
-	uint64_t descriptor_ticks = 0;
-	uint64_t rebind_ticks = 0;
-	uint64_t shader_table_bindings = 0;
-	uint64_t shader_table_bytes = 0;
-	int64_t shader_table_reduction = 0;
-	int64_t shader_byte_reduction = 0;
-	uint64_t    nested_protect         = 0;
-	uint64_t    nested_drain           = 0;
-	uint64_t    nested_side            = 0;
-	uint64_t    nested_upload          = 0;
-	uint64_t    nested_fault           = 0;
-};
-
 struct ThreadState {
 	Ledger                           ledger;
 	double                           ticks_per_ns = 1.0;
 	std::array<uint64_t, EventCount> events {};
-	DrawPassSample* draw_pass_sample = nullptr;
-	// Last entry is the overflow bucket.
-	std::array<DrawPassTotals, 33> draw_pass_totals {};
+	// KYTY_CP_GAP_CPU=1: inclusive thread CPU cycles and wall TSC ticks of the outermost scope of
+	// each category in CpuCats (commits, faults, drains, service commands, draw ops), so the line
+	// tells how much of their wall time the thread was on a processor.
+	std::array<uint64_t, CatCount> cpu_cycles {};
+	std::array<uint64_t, CatCount> cpu_wall {};
+	std::array<uint32_t, CatCount> cpu_depth {};
 };
 inline constinit thread_local ThreadState* t_state = nullptr;
+
+// KYTY_CP_GAP_CPU (diagnostic, default off; needs KYTY_CP_GAP_STATS=1).
+[[nodiscard]] inline bool CpuEnabled() noexcept {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CP_GAP_CPU");
+		return value != nullptr && value[0] == '1';
+	}();
+	return enabled;
+}
+// The calling thread's CPU cycles (set by AttachThread on the GPU thread; null elsewhere).
+inline uint64_t (*g_thread_cycles)() noexcept = nullptr;
+[[nodiscard]] inline uint64_t ThreadCycles() noexcept {
+	return g_thread_cycles != nullptr ? g_thread_cycles() : 0;
+}
+[[nodiscard]] constexpr bool CpuCat(Cat cat) noexcept {
+	return cat == Cat::Commit || cat == Cat::Fault || cat == Cat::GpuWaitDrain ||
+	       cat == Cat::Service || cat == Cat::DrawOp || cat == Cat::HeadWaitDeep;
+}
 
 class Scope {
 public:
@@ -345,48 +312,43 @@ public:
 		if (Enabled()) [[unlikely]] {
 			m_state = t_state;
 			if (m_state != nullptr) {
-				m_state->ledger.Enter(cat, Tsc());
+				const auto now = Tsc();
+				m_state->ledger.Enter(cat, now);
+				if (CpuCat(cat) && CpuEnabled()) {
+					m_cat_seen = cat;
+					if (m_state->cpu_depth[static_cast<size_t>(cat)]++ == 0) {
+						m_cat    = cat;
+						m_cycles = ThreadCycles();
+						m_tsc    = now;
+					}
+				}
 			}
 		}
 	}
 	~Scope() {
 		if (m_state != nullptr) [[unlikely]] {
-			m_state->ledger.Exit(Tsc());
+			const auto now = Tsc();
+			m_state->ledger.Exit(now);
+			if (m_tsc != 0) {
+				const auto i = static_cast<size_t>(m_cat);
+				m_state->cpu_cycles[i] += ThreadCycles() - m_cycles;
+				m_state->cpu_wall[i] += now - m_tsc;
+			}
+			if (m_cat_seen != Cat::Count) {
+				m_state->cpu_depth[static_cast<size_t>(m_cat_seen)]--;
+			}
 		}
 	}
 	Scope(const Scope&)            = delete;
 	Scope& operator=(const Scope&) = delete;
 
 private:
-	ThreadState* m_state = nullptr;
+	ThreadState* m_state    = nullptr;
+	Cat          m_cat      = Cat::Count;
+	Cat          m_cat_seen = Cat::Count;
+	uint64_t     m_cycles   = 0;
+	uint64_t     m_tsc      = 0;
 };
-
-// KYTY_CP_PASS_STATS=1 with KYTY_CP_GAP_STATS=1 records the same inclusive commit
-// boundary by the final draw's attachment signature. Non-draw commits remain unclassified.
-class DrawCommitScope {
-public:
-	DrawCommitScope() noexcept;
-	~DrawCommitScope();
-	DrawCommitScope(const DrawCommitScope&) = delete;
-	DrawCommitScope& operator=(const DrawCommitScope&) = delete;
-
-private:
-	Scope m_gap {Cat::Commit};
-	ThreadState* m_state = nullptr;
-	DrawPassSample* m_previous = nullptr;
-	DrawPassSample m_sample;
-	uint64_t m_start = 0;
-	std::array<uint64_t, 5> m_nested_start {};
-};
-
-// nps5 saroscp: the in-commit ledger totals the per-pass nested split reads (protect, drain,
-// side copy, upload, fault), in this order.
-inline constexpr std::array<Cat, 5> kPassNestedCats = {
-    Cat::Protect, Cat::GpuWaitDrain, Cat::GpuWaitSideCopy, Cat::TextureUpload, Cat::Fault};
-
-[[nodiscard]] inline DrawPassSample* CurrentDrawPassSample() noexcept {
-	return t_state != nullptr ? t_state->draw_pass_sample : nullptr;
-}
 
 // The innermost scope continues as `cat` (dispatch phases).
 inline void Phase(Cat cat) noexcept {
@@ -421,6 +383,34 @@ inline void NestedNs(Cat cat, uint64_t ns) noexcept {
 			state->ledger.AddNested(cat, static_cast<uint64_t>(static_cast<double>(ns) *
 			                                                   state->ticks_per_ns));
 		}
+	}
+}
+
+// The sequencer's parse stops (any thread; the line's "stops/f"): lockstep ops by kind, and the
+// pending-write stops. A lockstep read also records its guest address (the 2 MiB regions most read).
+enum class Stop : uint8_t {
+	WaitSelfLabel,
+	WaitOther,
+	FlipWait,
+	Predication,
+	CondExec,
+	Branch,
+	RegisterRead,  // LockstepRead of register pairs (GPU-touched pages)
+	CommandBytes,  // LockstepRead of command bytes
+	PendingWrite,  // a front read under a pending CP write
+	RegisterReadFineClean, // diagnostic: a RegisterRead the 1 KiB marks call untouched
+	// KYTY_CLEAN_UNTOUCHED_DIAG: the marking sources of a RegisterRead's pages (GpuTouched::DiagSource order)
+	RegisterReadByBufferDirty,
+	RegisterReadByTrackerGpu,
+	RegisterReadByImageGpu,
+	RegisterReadByPublication,
+	Count
+};
+constexpr size_t StopCount = static_cast<size_t>(Stop::Count);
+void NoteStopSlow(Stop stop, uint64_t address) noexcept;
+inline void NoteStop(Stop stop, uint64_t address = 0) noexcept {
+	if (Enabled()) [[unlikely]] {
+		NoteStopSlow(stop, address);
 	}
 }
 

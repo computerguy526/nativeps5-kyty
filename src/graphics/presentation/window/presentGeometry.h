@@ -16,10 +16,10 @@
 namespace Libs::Graphics::PresentGeometry {
 
 struct Rect {
-	int32_t  x = 0;
-	int32_t  y = 0;
-	uint32_t w = 0;
-	uint32_t h = 0;
+	int32_t                      x                                      = 0;
+	int32_t                      y                                      = 0;
+	uint32_t                     w                                      = 0;
+	uint32_t                     h                                      = 0;
 	[[nodiscard]] constexpr bool operator==(const Rect&) const noexcept = default;
 };
 
@@ -35,9 +35,11 @@ struct Rect {
 	uint64_t h = dst_h;
 	// compare src_w/src_h with dst_w/dst_h without division
 	if (static_cast<uint64_t>(src_w) * dst_h >= static_cast<uint64_t>(src_h) * dst_w) {
-		h = (static_cast<uint64_t>(dst_w) * src_h + src_w / 2) / src_w; // wider than target: bars top/bottom
+		h = (static_cast<uint64_t>(dst_w) * src_h + src_w / 2) /
+		    src_w; // wider than target: bars top/bottom
 	} else {
-		w = (static_cast<uint64_t>(dst_h) * src_w + src_h / 2) / src_h; // taller than target: bars left/right
+		w = (static_cast<uint64_t>(dst_h) * src_w + src_h / 2) /
+		    src_h; // taller than target: bars left/right
 	}
 	w = std::clamp<uint64_t>(w, 1, dst_w);
 	h = std::clamp<uint64_t>(h, 1, dst_h);
@@ -53,8 +55,8 @@ struct Rect {
 }
 
 struct Extent {
-	uint32_t w = 0;
-	uint32_t h = 0;
+	uint32_t                     w                                        = 0;
+	uint32_t                     h                                        = 0;
 	[[nodiscard]] constexpr bool operator==(const Extent&) const noexcept = default;
 };
 
@@ -96,7 +98,8 @@ struct Extent {
 			hi = mid - 1;
 		}
 	}
-	return {lo, static_cast<uint32_t>(std::max<uint64_t>(1, static_cast<uint64_t>(want.h) * lo / want.w))};
+	return {lo, static_cast<uint32_t>(
+	                std::max<uint64_t>(1, static_cast<uint64_t>(want.h) * lo / want.w))};
 }
 
 // Backing pixels from window points with a pixel density (HiDPI), rounded to nearest.
@@ -109,10 +112,10 @@ struct Extent {
 enum class StepKind : uint8_t { Size, Maximize, Fullscreen, Restore };
 
 struct Step {
-	double   at_s = 0; // seconds after the first presented frame
-	StepKind kind = StepKind::Size;
-	int32_t  w    = 0; // window points for Size
-	int32_t  h    = 0;
+	double             at_s = 0; // seconds after the first presented frame
+	StepKind           kind = StepKind::Size;
+	int32_t            w    = 0; // window points for Size
+	int32_t            h    = 0;
 	[[nodiscard]] bool operator==(const Step&) const noexcept = default;
 };
 
@@ -127,7 +130,7 @@ struct Step {
 			end = text.size();
 		}
 		const std::string item(text.substr(pos, end - pos));
-		pos = end + 1;
+		pos                = end + 1;
 		const size_t colon = item.find(':');
 		if (colon == std::string::npos || colon == 0) {
 			continue;

@@ -15,6 +15,7 @@ static int g_checks = 0;
 
 using Libs::Graphics::RtSession::BudgetGuard;
 using Libs::Graphics::RtSession::LoadHold;
+using Libs::Graphics::RtSession::ProbeGate;
 
 int main() {
 	{ // a valid BVH: the counter never moves, nothing is ever skipped
@@ -184,6 +185,101 @@ int main() {
 		CHECK(!h.Hold(500 * MB, 0, 0));
 		CHECK(!h.Hold(0, 0, 300));
 		CHECK(h.Holds() == 0);
+	}
+	{ // probe gate, valid BVH: the first RT dispatch is the probe, the rest of that frame waits, RT
+	  // opens when the GPU completed the probe without exhausted lanes
+		ProbeGate g;
+		bool      sent = false;
+		CHECK(g.Allow(0, false, 0, sent) && sent);
+		for (uint64_t t = 1; t < 40; t++) CHECK(!g.Allow(0, false, t, sent) && !sent);
+		CHECK(g.Allow(0, true, 40, sent) && !sent);
+		CHECK(g.Current() == ProbeGate::State::Open);
+		for (uint64_t t = 41; t < 10000; t += 16) CHECK(g.Allow(0, true, t, sent));
+		CHECK(g.Probes() == 1 && g.Failed() == 0 && g.Opened() == 1);
+	}
+	{ // a few stray lanes below the threshold do not fail a probe
+		ProbeGate g;
+		bool      sent = false;
+		CHECK(g.Allow(100, false, 0, sent));
+		CHECK(g.Allow(100 + 1023, true, 50, sent));
+		CHECK(g.Failed() == 0);
+	}
+	// A level-entry timeline: the load hold ends at `hold_end`, the game attempts `per_frame` RT
+	// dispatches every 27 ms, the BVH stays invalid until `valid_at`; a dispatch on an invalid BVH
+	// exhausts 30000 lanes, the GPU completes a dispatch 60 ms after it was recorded. Returns how
+	// many dispatches ran on the invalid BVH.
+	const auto level_entry = [&](uint64_t hold_end, uint64_t valid_at, uint64_t end, uint32_t per_frame,
+	                             uint64_t& ran_valid, uint64_t& open_at) {
+		ProbeGate g;
+		bool      sent = false;
+		CHECK(g.Allow(0, false, 0, sent) && sent);   // session start, long before the level
+		CHECK(g.Allow(0, true, 100, sent));
+		uint32_t counter = 0, pending = 0;
+		uint64_t ran_invalid = 0, probe_done = 0;
+		bool     waiting = false;
+		ran_valid = 0;
+		open_at   = 0;
+		g.Arm();   // the load hold ended
+		for (uint64_t t = hold_end; t < end; t += 27) {
+			for (uint32_t i = 0; i < per_frame; i++) {
+				const bool done = waiting && t >= probe_done;
+				if (done && pending != 0) {
+					counter += pending;
+					pending = 0;
+				}
+				const auto before = g.Current();
+				if (g.Allow(counter, done, t, sent)) {
+					if (t < valid_at) {
+						ran_invalid++;
+						pending = 30000;
+					} else {
+						ran_valid++;
+					}
+					if (sent) {
+						waiting    = true;
+						probe_done = t + 60;
+					} else if (before == ProbeGate::State::Waiting && open_at == 0) {
+						open_at = t;
+					}
+				}
+			}
+		}
+		CHECK(g.Current() == ProbeGate::State::Open);
+		return ran_invalid;
+	};
+	{ // route run (hold over at level-open + 13 s, BVH invalid ~2 s longer, 45 attempts per frame):
+	  // without the gate about 135 dispatches ran on the invalid BVH before the hold came back
+		uint64_t valid = 0, open_at = 0;
+		const auto bad = level_entry(85000, 87000, 95000, 45, valid, open_at);
+		CHECK(bad >= 1 && bad <= 3);              // one per probe: 0 s, +1 s (and +2 s at the edge)
+		CHECK(open_at >= 87000 && open_at <= 87000 + 2000 + 200);
+		CHECK(valid > 1000);
+	}
+	{ // play session (hold over at 413 s, BVH invalid until ~421 s): a handful of probes, never a burst
+		uint64_t valid = 0, open_at = 0;
+		const auto bad = level_entry(413000, 421000, 440000, 45, valid, open_at);
+		CHECK(bad >= 3 && bad <= 5);              // probes at 0, +1, +3, +7 s (retry doubles)
+		CHECK(open_at >= 421000 && open_at <= 421000 + 8000 + 200);
+	}
+	{ // clean level entry (BVH valid when the hold ends): one probe, open after ~60 ms
+		uint64_t valid = 0, open_at = 0;
+		const auto bad = level_entry(30000, 0, 35000, 45, valid, open_at);
+		CHECK(bad == 0);
+		CHECK(open_at >= 30000 + 54 && open_at <= 30000 + 120);
+	}
+	{ // a probe the GPU never completes counts as invalid after the timeout; a guard trip closes
+		ProbeGate g;
+		bool      sent = false;
+		CHECK(g.Allow(0, false, 0, sent) && sent);
+		CHECK(!g.Allow(0, false, 3999, sent));
+		CHECK(!g.Allow(0, false, 4000, sent));
+		CHECK(g.Failed() == 1 && g.Current() == ProbeGate::State::Closed);
+		CHECK(!g.Allow(0, false, 4999, sent));
+		CHECK(g.Allow(0, false, 5000, sent) && sent);    // retry 1 s later: a new probe
+		CHECK(g.Allow(0, true, 5100, sent) && !sent);
+		g.Close(6000);                                   // budget guard trip while open
+		CHECK(!g.Allow(5000, true, 6500, sent));
+		CHECK(g.Allow(5000, false, 7000, sent) && sent);
 	}
 	std::printf("RtBudgetGuardTests: %d checks passed\n", g_checks);
 	return 0;

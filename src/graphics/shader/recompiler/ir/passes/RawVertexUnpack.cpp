@@ -28,9 +28,10 @@ bool IsWordExtract(const Inst& inst, size_t operand, uint32_t& word, bool& sign)
 
 // A use of an extracted word that is the word's number as a float: what the field carries.
 struct WordFloat {
-	Inst* result = nullptr; // the instruction whose value the field (negated: its negation) replaces
-	Kind  kind   = Kind::None;
-	bool  negate = false;
+	Inst* result =
+	    nullptr; // the instruction whose value the field (negated: its negation) replaces
+	Kind kind   = Kind::None;
+	bool negate = false;
 };
 
 // The single user of `inst` when it is `opcode` (taking `inst` as its first argument).
@@ -105,7 +106,8 @@ const RawVertexUnpackStats& LastRawVertexUnpackStats() {
 	return g_last_stats;
 }
 
-RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPixelInputInfo& pixel) {
+RawVertexUnpackStats UnpackRawVertexParameters(Program&                    program,
+                                               const ShaderPixelInputInfo& pixel) {
 	auto& stats = g_last_stats;
 	stats       = {};
 	if (program.stage != ShaderType::Pixel) {
@@ -115,13 +117,14 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 	std::array<bool, 32> interpolated {};
 	for (auto* block: program.blocks) {
 		for (auto& inst: *block) {
-			if (inst.GetOpcode() == ValueOpcode::GetInterpolationParameter && inst.Arg(2).U32() < 2u) {
+			if (inst.GetOpcode() == ValueOpcode::GetInterpolationParameter &&
+			    inst.Arg(2).U32() < 2u) {
 				interpolated[inst.Arg(0).U32() & 31u] = true;
 			}
 		}
 	}
-	const auto field = [&](Block& block, Block::iterator at, uint32_t attr, Kind kind, uint32_t chan,
-	                       uint32_t word) {
+	const auto field = [&](Block& block, Block::iterator at, uint32_t attr, Kind kind,
+	                       uint32_t chan, uint32_t word) {
 		return Value(&*block.PrependNewInst(
 		    at, ValueOpcode::GetParameterField,
 		    {Value(attr), Value(ShaderParameterFieldCode(kind, chan, word))}));
@@ -132,8 +135,8 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 			if (inst.GetOpcode() == ValueOpcode::GetAttributeF16) {
 				const auto attr = inst.Arg(0).U32();
 				if (!ShaderPixelParameterIsFlat(pixel, attr)) {
-					const auto value =
-					    field(*block, it, attr, Kind::F16, inst.Arg(1).U32(), inst.Arg(2).U32() & 1u);
+					const auto value = field(*block, it, attr, Kind::F16, inst.Arg(1).U32(),
+					                         inst.Arg(2).U32() & 1u);
 					inst.ReplaceUsesWith(value);
 					stats.half_reads++;
 				}
@@ -146,8 +149,8 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 			const auto chan = inst.Arg(1).U32();
 			const auto mode = inst.Arg(2).U32();
 			if (!ShaderPixelParameterIsCustom(pixel, attr)) {
-				// The differences of a host-interpolated (or flat) parameter are zero; P0 stays (the
-				// emitter reads the input).
+				// The differences of a host-interpolated (or flat) parameter are zero; P0 stays
+				// (the emitter reads the input).
 				if (mode < 2u) {
 					inst.ReplaceUsesWith(Value(uint32_t {0}));
 					stats.zero_deltas++;
@@ -156,8 +159,9 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 			}
 			stats.raw_reads++;
 			if (!interpolated[attr & 31u]) {
-				const auto raw  = field(*block, it, attr, Kind::Raw, chan, 0);
-				const auto bits = Value(&*block->PrependNewInst(it, ValueOpcode::BitCastU32F32, {raw}));
+				const auto raw = field(*block, it, attr, Kind::Raw, chan, 0);
+				const auto bits =
+				    Value(&*block->PrependNewInst(it, ValueOpcode::BitCastU32F32, {raw}));
 				inst.ReplaceUsesWith(bits);
 				stats.flat_reads++;
 				continue;
@@ -165,7 +169,7 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 			// Words used as floats become field reads.
 			std::array<Kind, 2> word_kind {Kind::None, Kind::None};
 			bool                integer_use = false;
-			const auto          uses = inst.Uses(); // copy: the lists change below
+			const auto          uses        = inst.Uses(); // copy: the lists change below
 			for (const auto& use: uses) {
 				uint32_t word = 0;
 				bool     sign = false;
@@ -174,7 +178,8 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 				}
 				const auto extract_uses = use.user->Uses();
 				for (const auto& extract_use: extract_uses) {
-					const auto found = ClassifyWordUse(*extract_use.user, extract_use.operand, sign);
+					const auto found =
+					    ClassifyWordUse(*extract_use.user, extract_use.operand, sign);
 					if (found.kind == Kind::None) {
 						// The word is used as an integer: rebuilt below, in this signedness.
 						integer_use = true;
@@ -198,8 +203,8 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 				}
 			}
 			// What still uses the read (or a word of it as an integer) gets the dword put together
-			// from the fields, rounded: the same for the three vertices. A read that is only kept as
-			// the old value of an overwritten register (the false side of a SelectU32) takes the
+			// from the fields, rounded: the same for the three vertices. A read that is only kept
+			// as the old value of an overwritten register (the false side of a SelectU32) takes the
 			// words whose kind is known; any other use takes both (signed by default).
 			std::vector<const Inst*> visited;
 			if (!Consumed(inst, visited)) {
@@ -215,10 +220,11 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 				    (!use.user->MayHaveSideEffects() && !Consumed(*use.user, visited))) {
 					continue;
 				}
-				other_use = other_use || use.user->GetOpcode() != ValueOpcode::SelectU32 || use.operand != 2;
+				other_use = other_use || use.user->GetOpcode() != ValueOpcode::SelectU32 ||
+				            use.operand != 2;
 			}
 			const bool stale_only = !other_use;
-			Value bits(uint32_t {0});
+			Value      bits(uint32_t {0});
 			for (uint32_t word = 0; word < 2u; word++) {
 				auto kind = word_kind[word];
 				if (kind == Kind::None) {
@@ -234,10 +240,12 @@ RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPix
 				Value      low;
 				if (kind == Kind::F16) {
 					low = emit(ValueOpcode::ConvertU32U16,
-					           {emit(ValueOpcode::BitCastU16F16, {emit(ValueOpcode::ConvertF16F32, {value})})});
+					           {emit(ValueOpcode::BitCastU16F16,
+					                 {emit(ValueOpcode::ConvertF16F32, {value})})});
 				} else {
 					low = emit(ValueOpcode::BitwiseAnd32,
-					           {emit(ValueOpcode::ConvertS32F32, {emit(ValueOpcode::FPRoundEven32, {value})}),
+					           {emit(ValueOpcode::ConvertS32F32,
+					                 {emit(ValueOpcode::FPRoundEven32, {value})}),
 					            Value(uint32_t {0xffffu})});
 				}
 				if (word == 1u) {
@@ -270,20 +278,22 @@ Value EmitParameterFieldExport(Block& block, Block::iterator at, Value data,
 		const auto shift = Value(ShaderParameterFieldCodeWord(code) * 16u);
 		switch (kind) {
 			case Kind::S16:
-				components[component] = emit(
-				    ValueOpcode::BitCastU32F32,
-				    {emit(ValueOpcode::ConvertF32S32,
-				          {emit(ValueOpcode::BitFieldSExtract, {dword, shift, Value(uint32_t {16})})})});
+				components[component] = emit(ValueOpcode::BitCastU32F32,
+				                             {emit(ValueOpcode::ConvertF32S32,
+				                                   {emit(ValueOpcode::BitFieldSExtract,
+				                                         {dword, shift, Value(uint32_t {16})})})});
 				break;
 			case Kind::U16:
-				components[component] = emit(
-				    ValueOpcode::BitCastU32F32,
-				    {emit(ValueOpcode::ConvertF32U32,
-				          {emit(ValueOpcode::BitFieldUExtract, {dword, shift, Value(uint32_t {16})})})});
+				components[component] = emit(ValueOpcode::BitCastU32F32,
+				                             {emit(ValueOpcode::ConvertF32U32,
+				                                   {emit(ValueOpcode::BitFieldUExtract,
+				                                         {dword, shift, Value(uint32_t {16})})})});
 				break;
 			case Kind::F16: {
-				const auto word = emit(ValueOpcode::BitFieldUExtract, {dword, shift, Value(uint32_t {16})});
-				const auto half = emit(ValueOpcode::BitCastF16U16, {emit(ValueOpcode::ConvertU16U32, {word})});
+				const auto word =
+				    emit(ValueOpcode::BitFieldUExtract, {dword, shift, Value(uint32_t {16})});
+				const auto half =
+				    emit(ValueOpcode::BitCastF16U16, {emit(ValueOpcode::ConvertU16U32, {word})});
 				components[component] =
 				    emit(ValueOpcode::BitCastU32F32, {emit(ValueOpcode::ConvertF32F16, {half})});
 				break;

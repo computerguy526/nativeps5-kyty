@@ -6,15 +6,17 @@
 #include <cstdint>
 #include <mutex>
 
-// nps5: the end of a window loop that runs on the host's main queue (kytyGpuBridge.cpp, hybrid ABI 1.6
-// run_on_main_thread). There is no thread to join: shutdown() on another thread waits here until the
-// main thread has ended the loop and torn the renderer down, as a join would.
-// - The loop side (main thread): Start once; Running before every step; TryBeginEnd / FinishEnd around
+// nps5: the end of a window loop that runs on the host's main queue (kytyGpuBridge.cpp, hybrid
+// ABI 1.6 run_on_main_thread). There is no thread to join: shutdown() on another thread waits here
+// until the main thread has ended the loop and torn the renderer down, as a join would.
+// - The loop side (main thread): Start once; Running before every step; TryBeginEnd / FinishEnd
+// around
 //   the teardown.
-// - The shutdown side (any other thread): WaitEnded. A loop that has not begun to end within `grace`
+// - The shutdown side (any other thread): WaitEnded. A loop that has not begun to end within
+// `grace`
 //   (the main thread no longer serves its queue: the process is exiting on it, or it is blocked) is
-//   Abandoned: it takes no further step and is never torn down behind the exiting process. A teardown
-//   that has begun is waited for without a limit.
+//   Abandoned: it takes no further step and is never torn down behind the exiting process. A
+//   teardown that has begun is waited for without a limit.
 // Header only: tests/HybridSeamTests.cpp.
 namespace Hybrid {
 

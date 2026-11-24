@@ -3,6 +3,8 @@ file(GLOB common_src CONFIGURE_DEPENDS
 	"logging/*.cpp"
 	"platform/*.cpp"
 )
+# The start-up CPU check is its own baseline-compiled object (kyty_cpu_check, top-level CMakeLists.txt).
+list(FILTER common_src EXCLUDE REGEX "/cpuCheck\\.cpp$")
 
 file(GLOB_RECURSE common_headers CONFIGURE_DEPENDS "*.h")
 
@@ -15,7 +17,7 @@ add_library(common STATIC ${common_src} ${common_headers})
 # Loading/watchdog diagnostics handle filesystem and thread-start exceptions locally.
 # Other sources retain the project's no-exceptions compilation policy.
 if(LINUX OR APPLE)
-	set_property(SOURCE profiler.cpp hangWatchdog.cpp APPEND PROPERTY COMPILE_OPTIONS -fexceptions)
+	set_property(SOURCE profiler.cpp hangWatchdog.cpp u59Preset.cpp kytyEvents.cpp compileWatch.cpp APPEND PROPERTY COMPILE_OPTIONS -fexceptions)
 endif()
 set(localization_dir "${PROJECT_SOURCE_DIR}/assets/localization")
 file(GLOB localization_catalogs CONFIGURE_DEPENDS "${localization_dir}/*.json")

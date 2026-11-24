@@ -8,6 +8,7 @@
 #include "common/emulatorConfig.h"
 #include "common/flightRec.h"
 #include "common/hangTrace.h"
+#include "common/hleWaitStats.h"
 #include "common/latTrace.h"
 #include "common/liveSwitch.h"
 #include "common/logging/log.h"
@@ -16,6 +17,7 @@
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
+#include "graphics/guest_gpu/command_processor/passCensus.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/tile.h"
@@ -34,6 +36,7 @@
 #include "graphics/presentation/window/lowLatency.h"
 #include "kernel/eventQueueFilters.h"
 #include "kernel/pthread.h"
+#include "libs/controller.h"
 #include "libs/errno.h"
 #include "libs/hmd2.h"
 #include "libs/libs.h"
@@ -42,6 +45,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -104,8 +108,7 @@ struct VideoOutEventState;
 struct VideoOutEventRegistration {
 	EventQueue::KernelEqueue            handle = EventQueue::KERNEL_EQUEUE_INVALID;
 	std::shared_ptr<VideoOutEventState> state;
-	uint64_t                            generation = 0;
-	VideoOutEventKind                   kind       = VideoOutEventKind::Flip;
+	VideoOutEventKind                   kind = VideoOutEventKind::Flip;
 };
 
 using VideoOutEventRegistrationRef = std::shared_ptr<VideoOutEventRegistration>;
@@ -205,19 +208,16 @@ struct VideoOutConfig {
 	Common::Mutex                       mutex;
 	Common::CondVar                     vblank_cond;
 	std::shared_ptr<VideoOutEventState> events      = std::make_shared<VideoOutEventState>();
-	uint32_t                            width       = 0;
-	uint32_t                            height      = 0;
-	uint64_t                            generation  = 0;
+	uint64_t                            generation  = 0; // Bumped on every open and close.
 	bool                                opened      = false;
-	bool                                closing     = false;
 	int                                 bus         = 0;
 	VideoOutConfig*                     master      = nullptr;
 	uint32_t                            slave_count = 0;
 	int                                 flip_rate   = 0;
 	uint64_t                            output_mode = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
-	float                               gamma       = 1.0f;
+	uint64_t                            pre_vblanks = 0;
+	uint64_t                            flip_vblank = 0; // vblank_status.count at the last flip.
 	VideoOutFlipStatus                  flip_status;
-	VideoOutVblankStatus                pre_vblank_status;
 	VideoOutVblankStatus                vblank_status;
 	std::array<VideoOutBuffer, VIDEO_OUT_BUFFER_NUM_MAX>                 buffers;
 	std::array<BufferAttributeGroup, VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX> groups;
@@ -232,9 +232,8 @@ static std::atomic<uint64_t> g_autocap_prev_ready {0};
 
 class FlipQueue {
 public:
-	explicit FlipQueue(Graphics::Presenter& presenter): m_presenter(presenter) {
-		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-	}
+	FlipQueue(Graphics::Presenter& presenter, uint32_t width, uint32_t height)
+	    : m_presenter(presenter), m_width(width), m_height(height) {}
 	~FlipQueue();
 	KYTY_CLASS_NO_COPY(FlipQueue);
 
@@ -244,13 +243,16 @@ public:
 	void Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer);
 	void Complete(uint64_t request_id);
 	void WaitForSubmitSlot(VideoOutConfig& cfg);
-	bool Flip(uint32_t micros);
-	void GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out);
-	void Wait(VideoOutConfig& cfg, int index);
-	bool IsPending(VideoOutConfig& cfg, int index);
+	bool     Flip();
+	void     Wait(VideoOutConfig& cfg, int index, uint64_t before);
+	bool     IsPending(VideoOutConfig& cfg, int index, uint64_t before);
+	uint64_t NextRequestId() {
+		Common::LockGuard lock(m_mutex);
+		return m_next_request_id;
+	}
 
 private:
-	enum class RequestState { Reserved, Recording, Ready, Presenting };
+	enum class RequestState { Reserved, Ready, Presenting };
 
 	struct Request {
 		uint64_t                    id;
@@ -266,19 +268,21 @@ private:
 		Graphics::Presenter::Frame* frame;
 		bool                        premultiplied_alpha;
 		uint64_t                    latency_frame; // ASTROHYBRID_LOW_LATENCY frame number
-		uint64_t                    ready_tick;    // nps5 frame pacing: QPC when the frame became Ready
-		uint64_t                    submit_tick;   // nps5 autocap: QPC when the request was created
+		// KYTY_HOLD_SKIPPED_DRAWS: the main display keeps the frame it shows (TakeFrameHold).
+		bool hold = false;
+		uint64_t ready_tick;  // nps5 frame pacing: QPC when the frame became Ready
+		uint64_t submit_tick; // nps5 autocap: QPC when the request was created
 	};
 
 	Graphics::Presenter& m_presenter;
+	const uint32_t       m_width;
+	const uint32_t       m_height;
 	Common::Mutex        m_mutex;
-	Common::CondVar      m_submit_cond_var;
 	Common::CondVar      m_submit_slot_cond_var;
 	Common::CondVar      m_done_cond_var;
 	std::list<Request>   m_requests;
 	std::list<Request>   m_cpu_requests;
 	std::list<Request>   m_cancelled_requests;
-	bool                 m_processing      = false;
 	uint64_t             m_next_request_id = 1;
 };
 
@@ -290,9 +294,9 @@ public:
 	static constexpr int VIDEO_OUT_NUM_MAX = VIDEO_OUT_BUSES.size() + 1;
 
 	Impl(uint32_t width, uint32_t height, Graphics::Presenter& presenter)
-	    : m_renderer(presenter.Renderer()), m_presenter(presenter), m_flip_queue(presenter) {
+	    : width(width), height(height), m_renderer(presenter.Renderer()), m_presenter(presenter),
+	      m_flip_queue(presenter, width, height) {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
-		Init(width, height);
 		m_present_thread = std::jthread([this](std::stop_token token) { PresentThread(token); });
 	}
 	~Impl();
@@ -301,11 +305,8 @@ public:
 	int             Open(int bus_type, int index);
 	bool            Close(int handle);
 	VideoOutConfig* Get(int handle);
-	VideoOutConfig* Get(int handle, uint64_t& generation);
-	bool            IsOpened(int handle);
 	int             SetFlipMaster(int slave_handle, int master_handle);
 
-	void                     Init(uint32_t width, uint32_t height);
 	FlipQueue&               GetFlipQueue() { return m_flip_queue; }
 	Graphics::RenderContext& Renderer() const noexcept { return m_renderer; }
 	bool                     IsHdrSupported() const noexcept { return m_presenter.IsHdrSupported(); }
@@ -314,7 +315,14 @@ public:
 	void VblankEnd();
 	void PresentThread(std::stop_token token);
 
+	const uint32_t width; // The output size of every port.
+	const uint32_t height;
+
 private:
+	[[nodiscard]] bool IsOpenedLocked(int handle) const {
+		return handle > 0 && handle < VIDEO_OUT_NUM_MAX && m_video_out_ctx[handle].opened;
+	}
+
 	Common::Mutex            m_mutex;
 	VideoOutConfig           m_video_out_ctx[VIDEO_OUT_NUM_MAX];
 	Graphics::RenderContext& m_renderer;
@@ -401,9 +409,6 @@ static void TriggerVideoOutEvents(VideoOutConfig& video_out, VideoOutEventKind k
 		queues = VideoOutEventQueuesFor(*video_out.events, kind);
 	}
 	for (const auto& registration: queues) {
-		if (!registration || registration->generation != video_out.generation) {
-			continue;
-		}
 		const auto result =
 		    EventQueue::KernelTriggerEvent(registration->handle, VideoOutEventId(kind),
 		                                   EventQueue::KERNEL_EVFILT_VIDEO_OUT, trigger_data);
@@ -414,9 +419,6 @@ static void TriggerVideoOutEvents(VideoOutConfig& video_out, VideoOutEventKind k
 
 static void DeleteVideoOutEvents(const VideoOutEventQueues& queues, VideoOutEventKind kind) {
 	for (const auto& registration: queues) {
-		if (!registration) {
-			continue;
-		}
 		const auto result = EventQueue::KernelDeleteEvent(
 		    registration->handle, VideoOutEventId(kind), EventQueue::KERNEL_EVFILT_VIDEO_OUT);
 		EXIT_NOT_IMPLEMENTED(result != OK && result != LibKernel::KERNEL_ERROR_EBADF &&
@@ -426,14 +428,13 @@ static void DeleteVideoOutEvents(const VideoOutEventQueues& queues, VideoOutEven
 
 static int RegisterVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOutEventKind kind,
                                  void* udata) {
-	uint64_t generation = 0;
-	auto*    video_out  = DriverState().Get(handle, generation);
+	auto* video_out = DriverState().Get(handle);
 	if (video_out == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
 	Common::LockGuard lock(video_out->mutex);
-	if (!video_out->opened || video_out->closing || video_out->generation != generation) {
+	if (!video_out->opened) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	if (kind == VideoOutEventKind::OutputMode) {
@@ -470,14 +471,13 @@ static int RegisterVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoO
 	{
 		Common::LockGuard event_lock(event_state->mutex);
 		const auto        existing =
-		    std::find_if(queues.begin(), queues.end(), [&](const auto& candidate) {
-			    return candidate->handle == eq && candidate->generation == generation;
-		    });
+		    std::find_if(queues.begin(), queues.end(),
+			             [eq](const auto& candidate) { return candidate->handle == eq; });
 		if (existing != queues.end()) {
 			registration = *existing;
 		} else {
-			registration = std::make_shared<VideoOutEventRegistration>(VideoOutEventRegistration {
-			    .handle = eq, .state = event_state, .generation = generation, .kind = kind});
+			registration = std::make_shared<VideoOutEventRegistration>(
+			    VideoOutEventRegistration {.handle = eq, .state = event_state, .kind = kind});
 			queues.push_back(registration);
 			add_queue = true;
 		}
@@ -496,13 +496,12 @@ static int RegisterVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoO
 }
 
 static int DeleteVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOutEventKind kind) {
-	uint64_t generation = 0;
-	auto*    video_out  = DriverState().Get(handle, generation);
+	auto* video_out = DriverState().Get(handle);
 	if (video_out == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	Common::LockGuard lock(video_out->mutex);
-	if (!video_out->opened || video_out->closing || video_out->generation != generation) {
+	if (!video_out->opened) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	if (!EventQueue::KernelPinEqueue(eq)) {
@@ -516,13 +515,12 @@ static int DeleteVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOut
 	return result == LibKernel::KERNEL_ERROR_ENOENT ? OK : result;
 }
 
-static bool IsFlipDueLocked(const VideoOutConfig& cfg, uint64_t generation) {
-	if (!cfg.opened || cfg.closing || cfg.generation != generation) {
-		return false;
-	}
-	const int interval = cfg.flip_rate + 1;
+// A flip is due once flip_rate + 1 vblanks have passed since the last flip, so a late frame flips
+// at the next vblank.
+static bool IsFlipDueLocked(const VideoOutConfig& cfg) {
+	const auto interval = static_cast<uint64_t>(cfg.flip_rate) + 1;
 
-	return interval <= 1 || (cfg.vblank_status.count % static_cast<uint64_t>(interval)) == 0;
+	return interval <= 1 || cfg.vblank_status.count - cfg.flip_vblank >= interval;
 }
 
 static bool IsValidBufferIndex(int index) {
@@ -562,7 +560,7 @@ static int ReserveFlipRequest(VideoOutDriver::Impl& driver, int handle, int inde
 		return VIDEO_OUT_ERROR_INVALID_FLIP_MODE;
 	}
 	// The headset port can flip before its reprojection buffers are registered; those show blank.
-	if (video_out->closing ||
+	if (!video_out->opened ||
 	    (!IsSpecialBufferIndex(index) && !video_out->buffers[index].Occupied() &&
 	     video_out->bus != VIDEO_OUT_BUS_TYPE_HMD2_MAIN)) {
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
@@ -585,7 +583,12 @@ Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer
 	    attribute.tiling_mode != 0 || attribute.pad0 != 0 || attribute.reserved1[0] != 0 ||
 	    attribute.reserved1[1] != 0 || attribute.reserved1[2] != 0 || buffer.data_address == 0 ||
 	    compression == Graphics::VideoOutCompression::Unsupported) {
-		EXIT("unsupported or invalid video-out surface attributes\n");
+		EXIT("unsupported or invalid video-out surface attributes: %ux%u, DCC control 0x%08x%s, "
+		     "data 0x%" PRIx64 ", metadata 0x%" PRIx64 "\n",
+		     static_cast<uint32_t>(attribute.width), static_cast<uint32_t>(attribute.height),
+		     static_cast<uint32_t>(attribute.dcc_control),
+		     compression == Graphics::VideoOutCompression::Unsupported ? " (not supported)" : "",
+		     static_cast<uint64_t>(buffer.data_address), static_cast<uint64_t>(buffer.metadata_address));
 	}
 	Graphics::VideoOutPixelFormatInfo pixel_format {};
 	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, pixel_format)) {
@@ -622,7 +625,6 @@ Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer
 		}
 		info.metadata.range       = {buffer.metadata_address, dcc_size.size};
 		info.metadata.kind        = Graphics::ImageMetadataKind::Dcc;
-		info.metadata.control     = attribute.dcc_control;
 		info.metadata.compression = compression;
 	}
 	Graphics::ImageOps::Validate(info);
@@ -666,13 +668,6 @@ VideoOutDriver::Impl::~Impl() {
 	}
 }
 
-void VideoOutDriver::Impl::Init(uint32_t width, uint32_t height) {
-	for (auto& ctx: m_video_out_ctx) {
-		ctx.width  = width;
-		ctx.height = height;
-	}
-}
-
 int VideoOutDriver::Impl::Open(int bus_type, int index) {
 	const auto bus = std::find(VIDEO_OUT_BUSES.begin(), VIDEO_OUT_BUSES.end(), bus_type);
 	if (bus == VIDEO_OUT_BUSES.end()) {
@@ -703,9 +698,8 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 		EXIT_IF(group.occupied);
 	}
 
-	config.closing = false;
-	config.opened  = true;
-	config.bus     = bus_type;
+	config.opened = true;
+	config.bus    = bus_type;
 	if (++config.generation == 0) {
 		EXIT("video-out port generation wrapped\n");
 	}
@@ -713,8 +707,8 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 	config.flip_status               = VideoOutFlipStatus();
 	config.flip_status.flipArg       = -1;
 	config.flip_status.currentBuffer = -1;
-	config.flip_status.count         = 0;
-	config.pre_vblank_status         = VideoOutVblankStatus();
+	config.pre_vblanks               = 0;
+	config.flip_vblank               = 0;
 	config.vblank_status             = VideoOutVblankStatus();
 
 	return handle;
@@ -723,7 +717,7 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 bool VideoOutDriver::Impl::Close(int handle) {
 	Common::LockGuard lock(m_mutex);
 
-	if (handle <= 0 || handle >= VIDEO_OUT_NUM_MAX || !m_video_out_ctx[handle].opened) {
+	if (!IsOpenedLocked(handle)) {
 		return false;
 	}
 
@@ -735,12 +729,8 @@ bool VideoOutDriver::Impl::Close(int handle) {
 	VideoOutConfig* master = nullptr;
 	{
 		Common::LockGuard config_lock(config.mutex);
-		if (config.closing) {
-			return false;
-		}
 		EXIT_IF(config.slave_count != 0);
-		config.opened  = false;
-		config.closing = true;
+		config.opened = false;
 		if (++config.generation == 0) {
 			EXIT("video-out port generation wrapped\n");
 		}
@@ -755,13 +745,6 @@ bool VideoOutDriver::Impl::Close(int handle) {
 		master             = config.master;
 		config.master      = nullptr;
 
-		for (const auto& buffer: config.buffers) {
-			if (buffer.Occupied() &&
-			    (buffer.group_index >= VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX ||
-			     buffer.data_address == 0 || !config.groups[buffer.group_index].occupied)) {
-				EXIT("inconsistent registered video-out buffer state\n");
-			}
-		}
 		for (auto& buffer: config.buffers) {
 			buffer = VideoOutBuffer {};
 		}
@@ -788,39 +771,13 @@ bool VideoOutDriver::Impl::Close(int handle) {
 
 VideoOutConfig* VideoOutDriver::Impl::Get(int handle) {
 	Common::LockGuard lock(m_mutex);
-	if (handle <= 0 || handle >= VIDEO_OUT_NUM_MAX || !m_video_out_ctx[handle].opened) {
-		return nullptr;
-	}
 
-	return m_video_out_ctx + handle;
-}
-
-VideoOutConfig* VideoOutDriver::Impl::Get(int handle, uint64_t& generation) {
-	Common::LockGuard lock(m_mutex);
-	if (handle <= 0 || handle >= VIDEO_OUT_NUM_MAX || !m_video_out_ctx[handle].opened) {
-		return nullptr;
-	}
-
-	auto*             config = m_video_out_ctx + handle;
-	Common::LockGuard config_lock(config->mutex);
-	if (!config->opened || config->closing) {
-		return nullptr;
-	}
-	generation = config->generation;
-	return config;
-}
-
-bool VideoOutDriver::Impl::IsOpened(int handle) {
-	Common::LockGuard lock(m_mutex);
-
-	return handle > 0 && handle < VIDEO_OUT_NUM_MAX && m_video_out_ctx[handle].opened;
+	return IsOpenedLocked(handle) ? m_video_out_ctx + handle : nullptr;
 }
 
 int VideoOutDriver::Impl::SetFlipMaster(int slave_handle, int master_handle) {
 	Common::LockGuard lock(m_mutex);
-	if (slave_handle <= 0 || slave_handle >= VIDEO_OUT_NUM_MAX ||
-	    master_handle <= 0 || master_handle >= VIDEO_OUT_NUM_MAX ||
-	    !m_video_out_ctx[slave_handle].opened || !m_video_out_ctx[master_handle].opened) {
+	if (!IsOpenedLocked(slave_handle) || !IsOpenedLocked(master_handle)) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	auto& slave  = m_video_out_ctx[slave_handle];
@@ -848,13 +805,8 @@ void VideoOutDriver::Impl::VblankBegin() {
 		auto& ctx = m_video_out_ctx[i];
 		if (ctx.opened) {
 			ctx.mutex.Lock();
-			ctx.pre_vblank_status.count++;
-			ctx.pre_vblank_status.processTime        = LibKernel::KernelGetProcessTime();
-			ctx.pre_vblank_status.reserved           = LibKernel::KernelReadTsc();
-			ctx.pre_vblank_status.processTimeCounter = LibKernel::KernelGetProcessTimeCounter();
-
 			TriggerVideoOutEvents(ctx, VideoOutEventKind::PreVblankStart,
-			                      reinterpret_cast<void*>(ctx.pre_vblank_status.count));
+			                      reinterpret_cast<void*>(++ctx.pre_vblanks));
 			ctx.mutex.Unlock();
 		}
 	}
@@ -880,27 +832,31 @@ void VideoOutDriver::Impl::VblankEnd() {
 	}
 }
 
-// KYTY_PRESENT_ABS_VBLANK=1 (live switch, upstream default off): run the virtual vblank on an absolute QPC
-// timeline (deadline = origin + index * frequency / refresh, fractional ticks kept). A vblank that
-// is missed is skipped instead of repaid: the default timeline carries the overrun forward as
-// negative wait, so an over-budget frame is followed by back-to-back vblanks that keep the average
-// rate exact (what games pacing from vblank counts rely on) but bunch guest flips together. In
-// PresentMode::Immediate the switch also presents ready flips between vblanks (polling every
+// KYTY_PRESENT_ABS_VBLANK=1 (live switch, upstream default off): run the virtual vblank on an
+// absolute QPC timeline (deadline = origin + index * frequency / refresh, fractional ticks kept). A
+// vblank that is missed is skipped instead of repaid: the default timeline carries the overrun
+// forward as negative wait, so an over-budget frame is followed by back-to-back vblanks that keep
+// the average rate exact (what games pacing from vblank counts rely on) but bunch guest flips
+// together. In PresentMode::Immediate the switch also presents ready flips between vblanks (polling
+// every
 // <= 500 us) instead of only at a vblank. The timeline restarts when the switch turns on or the
-// refresh rate changes. Independent of KYTY_PRESENT_PORT_UNLOCKED, which only changes FlipQueue::Flip.
-// nps5: default ON in this tree (=0 restores the 60 Hz grid). Measured on Astro (Kyty + KosmicKrisp, in-run A/B): on the
-// grid a 47-57 ms frame alternates between 50 and 67 ms (stdev 6.4-9.7 ms, mean frame-to-frame change 7-14 ms) and a
-// finished frame waits 7-10 ms for the tick; presented when ready: stdev 1.1-3.6, change 1.3-3.8 ms, same fps, 8-11 ms
-// less submission -> present latency.
+// refresh rate changes. Independent of KYTY_PRESENT_PORT_UNLOCKED, which only changes
+// FlipQueue::Flip. nps5: default ON in this tree (=0 restores the 60 Hz grid). Measured on Astro
+// (Kyty + KosmicKrisp, in-run A/B): on the grid a 47-57 ms frame alternates between 50 and 67 ms
+// (stdev 6.4-9.7 ms, mean frame-to-frame change 7-14 ms) and a finished frame waits 7-10 ms for the
+// tick; presented when ready: stdev 1.1-3.6, change 1.3-3.8 ms, same fps, 8-11 ms less submission
+// -> present latency.
 static Live::Switch g_present_abs_vblank("KYTY_PRESENT_ABS_VBLANK", Live::ParseDefaultOn);
-// ASTROHYBRID_FPS_PACING (default on; =0 off): with a frame-rate limit, presents keep a fixed cadence
-// (each due time is the previous due time plus the interval) instead of restarting the interval at
-// every present, which let timer overshoots accumulate (30 FPS limit measured 29.76 FPS, uneven gaps).
+// ASTROHYBRID_FPS_PACING (default on; =0 off): with a frame-rate limit, presents keep a fixed
+// cadence (each due time is the previous due time plus the interval) instead of restarting the
+// interval at every present, which let timer overshoots accumulate (30 FPS limit measured 29.76
+// FPS, uneven gaps).
 static Live::Switch g_frame_limit_pacing("ASTROHYBRID_FPS_PACING", Live::ParseDefaultOn);
-// nps5 KYTY_FPS_LIMIT=<10..240> (live switch, default unset = ASTROHYBRID_FPS_LIMIT / none): frame-rate limit that can
-// change while the game runs (KYTY_LIVE_FILE), for same-run pacing A/Bs and for a governor outside the present thread.
-// Like ASTROHYBRID_FPS_LIMIT it implies the absolute vblank timeline in Immediate mode (flips presented when ready,
-// spaced by the limit's interval, the guest's vblank events keep their own clock).
+// nps5 KYTY_FPS_LIMIT=<10..240> (live switch, default unset = ASTROHYBRID_FPS_LIMIT / none):
+// frame-rate limit that can change while the game runs (KYTY_LIVE_FILE), for same-run pacing A/Bs
+// and for a governor outside the present thread. Like ASTROHYBRID_FPS_LIMIT it implies the absolute
+// vblank timeline in Immediate mode (flips presented when ready, spaced by the limit's interval,
+// the guest's vblank events keep their own clock).
 static Live::Switch g_live_frame_limit("KYTY_FPS_LIMIT", [](const char* value) -> int64_t {
 	const auto limit = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
 	return limit >= 10 && limit <= 240 ? limit : 0;
@@ -937,8 +893,6 @@ struct AutoCapRun {
 	AutoCap::Controller    controller {AutoCapFloor()};
 	AutoCap::Estimator     estimator; // vblank thread only
 	AutoCap::WorkEstimator work;
-	AutoCap::PromoCap      promo; // KYTY_FPS_AUTOCAP=promotion, adaptive (ProMotion) screens
-	bool                   promo_on = false;
 	uint32_t               seen_seq = 0;
 	bool                   active   = false;
 };
@@ -963,42 +917,23 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 		if (seq == 0) {
 			return; // no screen published yet: no cap
 		}
-		const auto screen = AutoCap::Snapshot();
-		r.controller.SetScreen(screen, now);
+		r.controller.SetScreen(AutoCap::Snapshot(), now);
 		r.estimator.Reset();
 		r.work.Reset();
-		r.promo_on = screen.adaptive && screen.refresh_hz >= 48.0 && AutoCap::PromotionEnabled();
-		if (r.promo_on) r.promo.SetRefresh(screen.refresh_hz, now);
 		log = true;
 	} else if (seq != 0) {
 		if (const auto cnt = g_autocap_work_count.exchange(0, std::memory_order_relaxed);
 		    cnt != 0) {
 			const auto ticks = g_autocap_work_ticks.exchange(0, std::memory_order_relaxed);
-			const auto w     = static_cast<double>(ticks) / cnt /
-			                   static_cast<double>(Common::Timer::QueryPerformanceFrequency());
-			r.work.OnWork(w);
-			if (r.promo_on) r.promo.OnWork(now, w);
+			r.work.OnWork(static_cast<double>(ticks) / cnt /
+			              static_cast<double>(Common::Timer::QueryPerformanceFrequency()));
 		}
-		if (r.promo_on) {
-			r.promo.Tick(now);
-			log = r.promo.Changed();
-		} else {
-			r.controller.Tick(now, r.estimator.Fps(), r.work.Fps());
-			log = r.controller.Changed();
-		}
+		r.controller.Tick(now, r.estimator.Fps(), r.work.Fps());
+		log = r.controller.Changed();
 	}
-	const auto cap_milli =
-	    static_cast<uint32_t>((r.promo_on ? r.promo.Cap() : r.controller.Cap()) * 1000.0 + 0.5);
+	const auto cap_milli = static_cast<uint32_t>(r.controller.Cap() * 1000.0 + 0.5);
 	st.cap_milli.store(cap_milli, std::memory_order_relaxed);
-	if (log && r.promo_on) {
-		const auto& s = r.controller.Current();
-		std::fprintf(
-		    stderr,
-		    "[autocap] %.4g Hz -> %.4g (n=%d, p90 interval %.1f ms, p90 work %.1f ms, screen %s, "
-		    "promotion)\n",
-		    s.refresh_hz, cap_milli / 1000.0, r.promo.N(), r.promo.LastP90Interval() * 1000.0,
-		    r.promo.LastP90Work() * 1000.0, s.name.c_str());
-	} else if (log) {
+	if (log) {
 		const auto& s = r.controller.Current();
 		std::fprintf(stderr,
 		             "[autocap] screen %s %.4g Hz %s -> %s %.4g fps (present %.1f fps, work %.1f "
@@ -1009,25 +944,33 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 	}
 }
 
-// nps5 frame pacing at the SOURCE. A present-side limit alone (ASTROHYBRID_FPS_LIMIT / KYTY_FPS_LIMIT) gives an even
-// cadence but the guest keeps producing until every queue is full: two finished frames wait in the flip queue (Astro world
-// map: guest submission -> present 116 ms uncapped, 203 ms at a present-side 20 fps cap, 242 ms at 17). The gate below
-// holds the guest thread that ended a frame (sceAgcSuspendPoint, GuestGpu::Done) so that the next frame starts just in
-// time for its present slot.
-//   KYTY_FRAME_START_SLACK_MS=<1..100> (live, default unset = off; acts with a frame-rate limit in Immediate mode): frame
-//     starts run on the limiter's interval, phase-locked to the presents: every limited flip reports how long its frame
-//     waited finished (ready -> present; minus how late the flip was when the frame missed its slot), and the next start
-//     moves by a fifth of (that - SLACK): frames arrive SLACK ms before their slot instead of two intervals before it.
-//     SLACK is the jitter reserve (guest build + GPU time variation); too small = missed slots, too large = latency.
-//     A game that cannot hold the limit is never held (it arrives after its start time) and behaves as without the gate.
-//   KYTY_FRAME_START_LIMIT=<5..240> (live, default unset = off): free-running start cadence without a present-side limit
-//     (start(n+1) = start(n) + interval, late by up to a quarter interval keeps the cadence). Lowest latency, but the
-//     present cadence inherits the guest's build-time jitter (world map at 15-17: stdev 5 ms): measurement arm.
-// Waits sleep to ~1.5 ms before the deadline and yield for the rest (macOS sleeps overshoot by ~1 ms under load).
-static Live::Switch g_frame_start_slack_ms("KYTY_FRAME_START_SLACK_MS", [](const char* value) -> int64_t {
-	const auto slack = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
-	return slack >= 1 && slack <= 100 ? slack : 0;
-});
+// nps5 frame pacing at the SOURCE. A present-side limit alone (ASTROHYBRID_FPS_LIMIT /
+// KYTY_FPS_LIMIT) gives an even cadence but the guest keeps producing until every queue is full:
+// two finished frames wait in the flip queue (Astro world map: guest submission -> present 116 ms
+// uncapped, 203 ms at a present-side 20 fps cap, 242 ms at 17). The gate below holds the guest
+// thread that ended a frame (sceAgcSuspendPoint, GuestGpu::Done) so that the next frame starts just
+// in time for its present slot.
+//   KYTY_FRAME_START_SLACK_MS=<1..100> (live, default unset = off; acts with a frame-rate limit in
+//   Immediate mode): frame
+//     starts run on the limiter's interval, phase-locked to the presents: every limited flip
+//     reports how long its frame waited finished (ready -> present; minus how late the flip was
+//     when the frame missed its slot), and the next start moves by a fifth of (that - SLACK):
+//     frames arrive SLACK ms before their slot instead of two intervals before it. SLACK is the
+//     jitter reserve (guest build + GPU time variation); too small = missed slots, too large =
+//     latency. A game that cannot hold the limit is never held (it arrives after its start time)
+//     and behaves as without the gate.
+//   KYTY_FRAME_START_LIMIT=<5..240> (live, default unset = off): free-running start cadence without
+//   a present-side limit
+//     (start(n+1) = start(n) + interval, late by up to a quarter interval keeps the cadence).
+//     Lowest latency, but the present cadence inherits the guest's build-time jitter (world map at
+//     15-17: stdev 5 ms): measurement arm.
+// Waits sleep to ~1.5 ms before the deadline and yield for the rest (macOS sleeps overshoot by ~1
+// ms under load).
+static Live::Switch
+    g_frame_start_slack_ms("KYTY_FRAME_START_SLACK_MS", [](const char* value) -> int64_t {
+	    const auto slack = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
+	    return slack >= 1 && slack <= 100 ? slack : 0;
+    });
 static Live::Switch g_frame_start_limit("KYTY_FRAME_START_LIMIT", [](const char* value) -> int64_t {
 	const auto limit = value != nullptr ? std::strtol(value, nullptr, 10) : 0;
 	return limit >= 5 && limit <= 240 ? limit : 0;
@@ -1035,7 +978,8 @@ static Live::Switch g_frame_start_limit("KYTY_FRAME_START_LIMIT", [](const char*
 // Written by the present thread (QPC ticks), read by the gate. interval 0 = no limit in force.
 static std::atomic<uint64_t> g_pace_flip_ready {0}; // ready tick of the frame being flipped
 static std::atomic<uint64_t> g_pace_interval {0};
-static std::atomic<int64_t>  g_pace_error {0};      // ready -> present wait minus lateness, of the last limited flip
+static std::atomic<int64_t>  g_pace_error {
+    0}; // ready -> present wait minus lateness, of the last limited flip
 static std::atomic<uint64_t> g_pace_error_seq {0};
 
 static void PaceWaitUntil(uint64_t deadline, uint64_t frequency) {
@@ -1054,16 +998,17 @@ void PaceFrameStart() {
 	static const auto            frequency = Common::Timer::QueryPerformanceFrequency();
 	static std::atomic<uint64_t> next_start {0};
 	static std::atomic<uint64_t> seen_seq {0};
-	const auto slack_ms = static_cast<int64_t>(g_frame_start_slack_ms.Get());
-	const auto limit    = static_cast<uint64_t>(g_frame_start_limit.Get());
-	uint64_t   interval = slack_ms != 0 ? g_pace_interval.load(std::memory_order_relaxed) : 0;
-	int64_t    adjust   = 0;
+	const auto                   slack_ms = static_cast<int64_t>(g_frame_start_slack_ms.Get());
+	const auto                   limit    = static_cast<uint64_t>(g_frame_start_limit.Get());
+	uint64_t interval = slack_ms != 0 ? g_pace_interval.load(std::memory_order_relaxed) : 0;
+	int64_t  adjust   = 0;
 	if (interval != 0) {
 		const auto seq = g_pace_error_seq.load(std::memory_order_relaxed);
 		if (seen_seq.exchange(seq, std::memory_order_relaxed) != seq) {
 			const int64_t target = slack_ms * static_cast<int64_t>(frequency) / 1000;
-			adjust = std::clamp((g_pace_error.load(std::memory_order_relaxed) - target) / 5,
-			                    -static_cast<int64_t>(interval / 4), static_cast<int64_t>(interval / 2));
+			adjust =
+			    std::clamp((g_pace_error.load(std::memory_order_relaxed) - target) / 5,
+			               -static_cast<int64_t>(interval / 4), static_cast<int64_t>(interval / 2));
 		}
 	} else if (limit != 0) {
 		interval = frequency / limit;
@@ -1086,12 +1031,21 @@ void PaceFrameStart() {
 	next_start.store(start + interval, std::memory_order_relaxed);
 }
 
+// KYTY_PRESENT_READY_FLIPS=1 (live switch, default off; usa-ratt/KytyPS5-GT7's FlipQueue::Flip): guest flips are
+// presented as soon as their GPU work is done, between vblanks, whatever the host present mode (the
+// absolute vblank timeline of KYTY_PRESENT_ABS_VBLANK keeps the guest's vblank events on their clock).
+// A frame that needs 25 ms is then shown at 25 ms instead of at the second vblank (33.3 ms): GT7's title
+// screen and races run at the GPU/CP rate rather than at 60/n fps. Less exact than the console, where a
+// vsync flip waits for the vblank; for titles that pace by flip completion.
+static Live::Switch g_present_ready_flips("KYTY_PRESENT_READY_FLIPS", Live::ParseDefaultOff);
+
 namespace {
 
-constexpr uint32_t FRAME_LIMIT_DISABLED = UINT32_MAX;
-constexpr std::array<uint32_t, 10> FRAME_LIMITS {30, 35, 40, 45, 50, 55, 60, 90, 120, 0};
-constexpr std::array<const char*, 10> FRAME_LIMIT_LABELS {"30 FPS", "35 FPS", "40 FPS", "45 FPS", "50 FPS",
-                                                        "55 FPS", "60 FPS", "90 FPS", "120 FPS", "No limit"};
+constexpr uint32_t                    FRAME_LIMIT_DISABLED = UINT32_MAX;
+constexpr std::array<uint32_t, 10>    FRAME_LIMITS {30, 35, 40, 45, 50, 55, 60, 90, 120, 0};
+constexpr std::array<const char*, 10> FRAME_LIMIT_LABELS {"30 FPS",  "35 FPS",  "40 FPS", "45 FPS",
+                                                          "50 FPS",  "55 FPS",  "60 FPS", "90 FPS",
+                                                          "120 FPS", "No limit"};
 
 // ASTROHYBRID_FPS_LIMIT: one of the listed values, or any whole number of frames per second from 10
 // to 240 (the launcher's frame-generation target divides the on-screen rate by the multiplier, e.g.
@@ -1104,7 +1058,8 @@ std::atomic<uint32_t>& FrameLimitChoice() {
 	static std::atomic<uint32_t> choice {[] {
 		const char* value = std::getenv("ASTROHYBRID_FPS_LIMIT");
 		if (value != nullptr) {
-			constexpr std::array<const char*, 10> options {"30", "35", "40", "45", "50", "55", "60", "90", "120", "unlimited"};
+			constexpr std::array<const char*, 10> options {"30", "35", "40", "45",  "50",
+			                                               "55", "60", "90", "120", "unlimited"};
 			for (uint32_t i = 0; i < options.size(); ++i) {
 				if (std::strcmp(value, options[i]) == 0) {
 					return i;
@@ -1113,9 +1068,10 @@ std::atomic<uint32_t>& FrameLimitChoice() {
 			char*      end    = nullptr;
 			const auto custom = std::strtoul(value, &end, 10);
 			if (end != value && *end == '\0' && custom >= 10 && custom <= 240) {
-				g_custom_frame_limit.store(static_cast<uint32_t>(custom), std::memory_order_relaxed);
-				std::snprintf(g_custom_frame_limit_label, sizeof(g_custom_frame_limit_label), "%lu FPS",
-				              custom);
+				g_custom_frame_limit.store(static_cast<uint32_t>(custom),
+				                           std::memory_order_relaxed);
+				std::snprintf(g_custom_frame_limit_label, sizeof(g_custom_frame_limit_label),
+				              "%lu FPS", custom);
 				return FRAME_LIMIT_CUSTOM;
 			}
 		}
@@ -1136,12 +1092,12 @@ struct GameStep {
 };
 
 // ASTROHYBRID_GAME_SPEED=1 (default off): Astro Bot advances a fixed 1/FrameRate per frame from one
-// global (eboot 0x8ff0040: f64 frame rate, f32 1/rate, u64 microseconds per frame; image +0x400000),
-// so below 60 FPS the game runs in slow motion (30 FPS = half speed). With the switch on, every
-// present writes the measured frame rate there; ASTROHYBRID_GAME_SPEED_PERCENT (25..150, default 100)
-// scales the result (90 = 10% slower). Every
-// present writes the measured frame rate there (the limit itself when the cadence holds it), clamped
-// to 20..120. ASTROHYBRID_GAME_STEP_ADDR overrides the address; the block is checked first.
+// global (eboot 0x8ff0040: f64 frame rate, f32 1/rate, u64 microseconds per frame; image
+// +0x400000), so below 60 FPS the game runs in slow motion (30 FPS = half speed). With the switch
+// on, every present writes the measured frame rate there; ASTROHYBRID_GAME_SPEED_PERCENT (25..150,
+// default 100) scales the result (90 = 10% slower). Every present writes the measured frame rate
+// there (the limit itself when the cadence holds it), clamped to 20..120.
+// ASTROHYBRID_GAME_STEP_ADDR overrides the address; the block is checked first.
 void UpdateGameStep(GameStep& step, uint64_t now, uint64_t frequency, uint32_t limit) {
 	static const bool enabled = [] {
 		const char* value = std::getenv("ASTROHYBRID_GAME_SPEED");
@@ -1155,14 +1111,17 @@ void UpdateGameStep(GameStep& step, uint64_t now, uint64_t frequency, uint32_t l
 		const auto  addr   = custom != nullptr ? std::strtoull(custom, nullptr, 0) : 0x93F0040ull;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		MEMORY_BASIC_INFORMATION info {};
-		const bool mapped = VirtualQuery(reinterpret_cast<void*>(addr), &info, sizeof(info)) == sizeof(info) &&
-		                    info.State == MEM_COMMIT && (info.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
+		const bool               mapped =
+		    VirtualQuery(reinterpret_cast<void*>(addr), &info, sizeof(info)) == sizeof(info) &&
+		    info.State == MEM_COMMIT && (info.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) != 0;
 #else
-		const bool mapped = false; // nps5: the host runtime owns the game's clock (NPS5_ASTRO_REALTIME)
+		const bool mapped =
+		    false; // nps5: the host runtime owns the game's clock (NPS5_ASTRO_REALTIME)
 #endif
 		if (!mapped) {
 			step.dead = true;
-			std::printf("Game speed: no frame-rate block at 0x%llx, switch ignored\n", static_cast<unsigned long long>(addr));
+			std::printf("Game speed: no frame-rate block at 0x%llx, switch ignored\n",
+			            static_cast<unsigned long long>(addr));
 			return;
 		}
 		auto* fps = reinterpret_cast<double*>(addr);
@@ -1170,7 +1129,7 @@ void UpdateGameStep(GameStep& step, uint64_t now, uint64_t frequency, uint32_t l
 		if (!(*fps >= 10.0 && *fps <= 240.0) || std::abs(*dt * *fps - 1.0) > 1e-3) {
 			step.dead = true;
 			std::printf("Game speed: 0x%llx does not hold a frame rate (%g, %g), switch ignored\n",
-			       static_cast<unsigned long long>(addr), *fps, static_cast<double>(*dt));
+			            static_cast<unsigned long long>(addr), *fps, static_cast<double>(*dt));
 			return;
 		}
 		step.fps   = fps;
@@ -1181,7 +1140,7 @@ void UpdateGameStep(GameStep& step, uint64_t now, uint64_t frequency, uint32_t l
 			step.scale = std::clamp(std::strtod(speed, nullptr), 25.0, 150.0) / 100.0;
 		}
 		std::printf("Game speed: frame-rate block at 0x%llx (game rate %g), real-time step on\n",
-		       static_cast<unsigned long long>(addr), *fps);
+		            static_cast<unsigned long long>(addr), *fps);
 	}
 	if (step.last != 0 && now > step.last) {
 		const double rate = static_cast<double>(frequency) / static_cast<double>(now - step.last);
@@ -1214,12 +1173,14 @@ const char* FrameLimitLabel() {
 }
 
 bool CycleFrameLimit() {
-	auto& setting = FrameLimitChoice();
-	const auto choice = setting.load(std::memory_order_relaxed);
+	auto&      setting = FrameLimitChoice();
+	const auto choice  = setting.load(std::memory_order_relaxed);
 	if (choice == FRAME_LIMIT_DISABLED) {
 		return false;
 	}
-	setting.store(choice == FRAME_LIMIT_CUSTOM ? 0u : (choice + 1) % static_cast<uint32_t>(FRAME_LIMITS.size()),
+	setting.store(choice == FRAME_LIMIT_CUSTOM
+	                  ? 0u
+	                  : (choice + 1) % static_cast<uint32_t>(FRAME_LIMITS.size()),
 	              std::memory_order_relaxed);
 	return true;
 }
@@ -1227,12 +1188,16 @@ bool CycleFrameLimit() {
 void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 	// A 120 Hz timer loop that blocks between vblanks; it presents and fires the flip events the
 	// guest waits for. Its only spin is the last <= 50 us of a vblank wait (SleepMicro).
+	// Named, so hang reports show which thread made the present submissions (it was '').
+	Profiler::SetThreadName("VideoOut present");
 	Common::RaiseServiceThreadPriority();
-	const auto frequency = Common::Timer::QueryPerformanceFrequency();
-	EXIT_IF(frequency == 0);
+	// Steady-clock nanoseconds (upstream 159149c50 moved time keeping to std::chrono and dropped
+	// Common::Timer::QueryPerformanceCounter); the arithmetic below is in these ticks.
+	constexpr uint64_t frequency = 1000000000ull;
+	const auto         now_ticks = [] { return Common::SteadyNs(); };
 
-	const auto sleep_until = [frequency](uint64_t deadline) {
-		const auto current = Common::Timer::QueryPerformanceCounter();
+	const auto sleep_until = [&now_ticks](uint64_t deadline) {
+		const auto current = now_ticks();
 		if (current >= deadline) {
 			return false;
 		}
@@ -1250,39 +1215,39 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 	uint64_t abs_index   = 0;
 	uint32_t abs_refresh = 0;
 	uint32_t previous_limit = FRAME_LIMIT_DISABLED;
-	uint64_t next_flip = 0;
+	uint64_t next_flip      = 0;
 
-	GameStep game_step;
+	GameStep   game_step;
 	const auto flip = [&](uint32_t limit) {
 		if (limit == 0) {
-			const bool flipped = m_flip_queue.Flip(0);
+			const bool flipped = m_flip_queue.Flip();
 			if (flipped) {
 				g_pace_interval.store(0, std::memory_order_relaxed);
-				UpdateGameStep(game_step, Common::Timer::QueryPerformanceCounter(), frequency, 0);
+				UpdateGameStep(game_step, now_ticks(), frequency, 0);
 			}
 			return flipped;
 		}
-		const auto now = Common::Timer::QueryPerformanceCounter();
-		if (now < next_flip || !m_flip_queue.Flip(0)) {
+		const auto now = now_ticks();
+		if (now < next_flip || !m_flip_queue.Flip()) {
 			return false;
 		}
 		// Carry small timer overshoots forward without accumulating them. After a late frame,
 		// start a fresh interval so the next frame cannot arrive in a catch-up burst.
-		const bool on_cadence = g_frame_limit_pacing.On() && next_flip != 0 &&
-		                        now - next_flip <= frequency / 1000;
-		const int64_t late = next_flip != 0 ? static_cast<int64_t>(now - next_flip) : 0; // >= 0: now >= next_flip here
+		const bool on_cadence =
+		    g_frame_limit_pacing.On() && next_flip != 0 && now - next_flip <= frequency / 1000;
+		const int64_t  late  = next_flip != 0 ? static_cast<int64_t>(now - next_flip)
+		                                      : 0; // >= 0: now >= next_flip here
 		const auto     milli = static_cast<uint64_t>(LimitMilli());
 		const uint64_t interval_ticks =
 		    milli != 0 ? frequency * 1000u / milli : (frequency + limit - 1) / limit;
 		next_flip = (on_cadence ? next_flip : now) + interval_ticks;
-		if (const auto ready = g_pace_flip_ready.load(std::memory_order_relaxed); ready != 0 && ready <= now) {
+		if (const auto ready = g_pace_flip_ready.load(std::memory_order_relaxed);
+		    ready != 0 && ready <= now) {
 			g_pace_error.store(static_cast<int64_t>(now - ready) - late, std::memory_order_relaxed);
 			g_pace_error_seq.fetch_add(1, std::memory_order_relaxed);
 		}
 		g_pace_interval.store(interval_ticks, std::memory_order_relaxed);
 		g_autocap.estimator.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
-		if (g_autocap.promo_on)
-			g_autocap.promo.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
 		UpdateGameStep(game_step, now, frequency, limit);
 		return true;
 	};
@@ -1301,29 +1266,32 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		                                    : FrameLimitChoice().load(std::memory_order_relaxed);
 		if (choice != previous_limit) {
 			previous_limit = choice;
-			next_flip = 0;
+			next_flip      = 0;
 		}
 		const bool limit_enabled = choice != FRAME_LIMIT_DISABLED;
-		const auto limit = live_limit != 0 ? live_limit
-		                   : limit_enabled ? (choice == FRAME_LIMIT_CUSTOM
-		                                          ? g_custom_frame_limit.load(std::memory_order_relaxed)
-		                                          : FRAME_LIMITS[choice])
-		                                   : 0u;
-		const bool absolute = g_present_abs_vblank.On() ||
-		                      (limit_enabled && Config::GetPresentMode() == Config::PresentMode::Immediate);
+		const auto limit         = live_limit != 0 ? live_limit
+		                           : limit_enabled
+		                               ? (choice == FRAME_LIMIT_CUSTOM
+		                                      ? g_custom_frame_limit.load(std::memory_order_relaxed)
+		                                      : FRAME_LIMITS[choice])
+		                               : 0u;
+		const bool ready_flips = g_present_ready_flips.On();
+		const bool absolute =
+		    g_present_abs_vblank.On() || ready_flips ||
+		    (limit_enabled && Config::GetPresentMode() == Config::PresentMode::Immediate);
 		bool       behind      = false; // a vblank deadline was missed: may present a blank frame
 		uint64_t   frame_begin = 0;
 		uint64_t   period      = 1;
 		if (absolute) {
 			const auto refresh = std::max(Config::GetVblankFrequency(), 1u);
-			const auto now     = Common::Timer::QueryPerformanceCounter();
+			const auto now     = now_ticks();
 			if (!abs_active || refresh != abs_refresh) {
 				abs_active  = true;
 				abs_origin  = now;
 				abs_index   = 0;
 				abs_refresh = refresh;
 			}
-			const auto deadline_for = [origin = abs_origin, frequency, refresh](uint64_t index) {
+			const auto deadline_for = [origin = abs_origin, refresh](uint64_t index) {
 				return origin + (frequency / refresh) * index +
 				       ((frequency % refresh) * index) / refresh;
 			};
@@ -1337,21 +1305,20 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 					deadline = deadline_for(++abs_index);
 				}
 			}
-			if (Config::GetPresentMode() == Config::PresentMode::Immediate &&
-			    !m_presenter.IsGuestPaused()) {
+			if (ready_flips || Config::GetPresentMode() == Config::PresentMode::Immediate) {
 				// Present each ready flip as it arrives; the guest's vblank events keep their clock.
-				while (!token.stop_requested() &&
-				       Common::Timer::QueryPerformanceCounter() < deadline) {
+				while (!token.stop_requested() && now_ticks() < deadline) {
 					if (flip(limit)) {
 						continue;
 					}
-					const auto current = Common::Timer::QueryPerformanceCounter();
+					const auto current = now_ticks();
 					if (current >= deadline) {
 						break;
 					}
 					if (limit != 0 && current < next_flip) {
-						// nps5: the flip's due time is met to within the scheduler's yield (the plain sleep
-						// overshot by ~1 ms on macOS: every flip left the cadence and the interval grew by it).
+						// nps5: the flip's due time is met to within the scheduler's yield (the
+						// plain sleep overshot by ~1 ms on macOS: every flip left the cadence and
+						// the interval grew by it).
 						if (next_flip <= deadline) {
 							PaceWaitUntil(next_flip, frequency);
 						} else {
@@ -1371,17 +1338,12 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 				break;
 			}
 			abs_index++;
-
-			if (m_presenter.IsGuestPaused()) {
-				(void)m_presenter.PresentLastFrame();
-				continue;
-			}
 		} else {
 			if (abs_active) {
 				abs_active = false;
 				total_wait = 0;
 			}
-			const auto sleep_begin = Common::Timer::QueryPerformanceCounter();
+			const auto sleep_begin = now_ticks();
 			if (total_wait > 0) {
 				const auto remaining_us =
 				    (static_cast<uint64_t>(total_wait) * 1000000u + frequency - 1) / frequency;
@@ -1391,61 +1353,39 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 			if (token.stop_requested()) {
 				break;
 			}
-			frame_begin = Common::Timer::QueryPerformanceCounter();
+			frame_begin = now_ticks();
 			total_wait -= static_cast<int64_t>(frame_begin - sleep_begin);
 
 			const auto refresh = std::max(Config::GetVblankFrequency(), 1u);
 			period             = std::max(frequency / refresh, uint64_t {1});
-
-			if (m_presenter.IsGuestPaused()) {
-				(void)m_presenter.PresentLastFrame();
-				const auto frame_end = Common::Timer::QueryPerformanceCounter();
-				total_wait +=
-				    static_cast<int64_t>(period) - static_cast<int64_t>(frame_end - frame_begin);
-				continue;
-			}
-			behind = total_wait < 0;
+			behind             = total_wait < 0;
 		}
 
 		VblankBegin();
 		bool presented = flip(limit);
-		if (!presented && !Libs::Graphics::LoadCard::Active() && m_presenter.NeedsSystemOverlayRefresh()) {
-			if (m_presenter.PresentLastFrame()) {
-				presented = true;
-			} else {
-				uint32_t width  = 0;
-				uint32_t height = 0;
-				{
-					Common::LockGuard lock(m_mutex);
-					width  = m_video_out_ctx[0].width;
-					height = m_video_out_ctx[0].height;
-				}
-				auto& blank = m_presenter.PrepareBlankFrame(width, height, true);
-				m_presenter.Present(blank);
-				presented = true;
+		if (!presented && !Libs::Graphics::LoadCard::Active() &&
+		    m_presenter.NeedsSystemOverlayRefresh()) {
+			if (!m_presenter.PresentLastFrame()) {
+				m_presenter.Present(m_presenter.PrepareBlankFrame(width, height, true));
 			}
+			presented = true;
 		}
 		if (!presented && behind) {
-			bool     any_open = false;
-			uint32_t width    = 0;
-			uint32_t height   = 0;
+			bool any_open = false;
 			{
 				Common::LockGuard lock(m_mutex);
-				width  = m_video_out_ctx[0].width;
-				height = m_video_out_ctx[0].height;
 				for (int handle = 1; handle < VIDEO_OUT_NUM_MAX; handle++) {
 					any_open |= m_video_out_ctx[handle].opened;
 				}
 			}
 			if (!any_open) {
-				auto& blank = m_presenter.PrepareBlankFrame(width, height, true);
-				m_presenter.Present(blank);
+				m_presenter.Present(m_presenter.PrepareBlankFrame(width, height, true));
 			}
 		}
 		VblankEnd();
 
 		if (!absolute) {
-			const auto frame_end = Common::Timer::QueryPerformanceCounter();
+			const auto frame_end = now_ticks();
 			total_wait +=
 			    static_cast<int64_t>(period) - static_cast<int64_t>(frame_end - frame_begin);
 			if (total_wait < 0) {
@@ -1501,8 +1441,9 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 	Graphics::PassTrace::NoteFlip();
 	FlightRec::NoteFlip(static_cast<uint64_t>(index), static_cast<uint64_t>(source),
 	                    static_cast<uint64_t>(flip_arg));
-	r.latency_frame = source == FlipRequestSource::GpuEop ? Graphics::LowLatency::OnGpuFlipReserved()
-	                                                      : Graphics::LowLatency::TakeCpuFlipFrame();
+	r.latency_frame = source == FlipRequestSource::GpuEop
+	                      ? Graphics::LowLatency::OnGpuFlipReserved()
+	                      : Graphics::LowLatency::TakeCpuFlipFrame();
 	if (cfg.slave_count != 0) {
 		for (auto* queue: {&m_requests, &m_cpu_requests}) {
 			for (auto& slave: *queue) {
@@ -1540,9 +1481,9 @@ FlipQueue::~FlipQueue() {
 void FlipQueue::Cancel(VideoOutConfig& cfg) {
 	std::vector<Graphics::Presenter::Frame*> frames;
 	m_mutex.Lock();
-	while (m_processing && std::any_of(m_requests.begin(), m_requests.end(), [&cfg](const auto& r) {
-		       return r.cfg == &cfg && r.state == RequestState::Presenting;
-	       })) {
+	while (std::any_of(m_requests.begin(), m_requests.end(), [&cfg](const auto& r) {
+		return r.cfg == &cfg && r.state == RequestState::Presenting;
+	})) {
 		m_done_cond_var.Wait(&m_mutex);
 	}
 	for (auto* queue: {&m_requests, &m_cpu_requests}) {
@@ -1551,13 +1492,10 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 				++it;
 				continue;
 			}
-			if (it->state == RequestState::Reserved || it->state == RequestState::Recording) {
+			if (it->state == RequestState::Reserved) {
 				auto cancelled = it++;
 				m_cancelled_requests.splice(m_cancelled_requests.end(), *queue, cancelled);
 				continue;
-			}
-			if (it->state == RequestState::Presenting) {
-				EXIT("video-out cancellation retained a presenting request\n");
 			}
 			if (it->frame != nullptr) {
 				frames.push_back(it->frame);
@@ -1567,7 +1505,6 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 	}
 	m_done_cond_var.SignalAll();
 	m_submit_slot_cond_var.SignalAll();
-	m_submit_cond_var.SignalAll();
 	m_mutex.Unlock();
 	m_presenter.Renderer().NotifyGpuProgress();
 	for (auto* frame: frames) {
@@ -1577,6 +1514,9 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 	cfg.flip_status.flipPendingNum = 0;
 	cfg.flip_status.gcQueueNum     = 0;
 }
+
+// KYTY_HOLD_SKIPPED_DRAWS (defined below).
+static bool TakeFrameHold();
 
 void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	VideoOutConfig* cfg        = nullptr;
@@ -1590,56 +1530,33 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 			auto pending = std::find_if(m_cpu_requests.begin(), m_cpu_requests.end(),
 			                            [request_id](const auto& r) { return r.id == request_id; });
 			if (pending == m_cpu_requests.end()) {
-				auto cancelled =
-				    std::find_if(m_cancelled_requests.begin(), m_cancelled_requests.end(),
-				                 [request_id](const auto& r) { return r.id == request_id; });
-				if (cancelled == m_cancelled_requests.end() ||
-				    cancelled->state != RequestState::Reserved) {
-					EXIT("cannot prepare video-out request id=%" PRIu64 "\n", request_id);
-				}
-				cancelled->state = RequestState::Recording;
-				return;
+				return; // Cancelled before recording; Complete releases it.
 			}
 			request = m_requests.insert(m_requests.end(), *pending);
 			m_cpu_requests.erase(pending);
 		}
-		if (request->state != RequestState::Reserved) {
-			EXIT("cannot prepare video-out request id=%" PRIu64 "\n", request_id);
-		}
-		request->state = RequestState::Recording;
-		cfg            = request->cfg;
-		generation     = request->generation;
-		index          = request->index;
+		cfg        = request->cfg;
+		generation = request->generation;
+		index      = request->index;
 	}
 
 	bool                special = IsSpecialBufferIndex(index);
 	Graphics::ImageInfo source_info;
-	uint32_t            width   = 0;
-	uint32_t            height  = 0;
 	bool                current = false;
 	bool                premultiplied_alpha = false;
 	bool                hdr                 = false;
 	bool                headset             = false;
 	{
 		Common::LockGuard lock(cfg->mutex);
-		current = cfg->opened && !cfg->closing && cfg->generation == generation;
+		current = cfg->generation == generation;
 		headset = cfg->bus == VIDEO_OUT_BUS_TYPE_HMD2_MAIN;
 		special = special || (headset && !cfg->buffers[index].Occupied());
-		if (current && special) {
-			width  = cfg->width;
-			height = cfg->height;
-		} else if (current) {
+		if (current && !special) {
 			const auto& surface = cfg->buffers[index];
 			if (!surface.Occupied()) {
 				EXIT("cannot prepare flip from an unregistered surface, id=%" PRIu64
 				     " index=%d\n",
 				     request_id, index);
-			}
-			if (surface.group_index >= VIDEO_OUT_BUFFER_ATTRIBUTE_NUM_MAX ||
-			    !cfg->groups[surface.group_index].occupied) {
-				EXIT("video-out surface references an unavailable attribute group, id=%" PRIu64
-				     " index=%d group=%d\n",
-				     request_id, index, surface.group_index);
 			}
 			const auto& group   = cfg->groups[surface.group_index];
 			source_info         = group.ImageInfo(surface);
@@ -1661,13 +1578,16 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	static std::atomic_flag warned = ATOMIC_FLAG_INIT;
 	if (hdr && !m_presenter.IsHdrSupported() && !warned.test_and_set(std::memory_order_relaxed)) {
 		Log::WriteToConsoleAndLog(
-		    "Warning: HDR output is unavailable; HDR-to-SDR conversion is not implemented, "
-		    "displaying PQ video-out pixels unchanged.\n");
+		    "HDR output is unavailable: the game's HDR10 (PQ) video-out frames are converted to SDR "
+		    "for display (KYTY_HDR_TO_SDR=0 shows the PQ pixels unchanged).\n");
 	}
 	Graphics::Presenter::Frame* frame = nullptr;
+	// KYTY_HOLD_SKIPPED_DRAWS: a main-display frame that left out many draws while their
+	// pipelines built is not shown.
+	const bool hold = !special && cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN && TakeFrameHold();
 	if (special) {
-		frame = &m_presenter.PrepareBlankFrame(width, height, index == VIDEO_OUT_BUFFER_INDEX_BLACK,
-		                                       &buffer);
+		frame = &m_presenter.PrepareBlankFrame(m_width, m_height,
+		                                       index == VIDEO_OUT_BUFFER_INDEX_BLACK, &buffer);
 	} else {
 		frame = &m_presenter.PrepareFrame(buffer, source_info, hdr, headset);
 		if (headset) {
@@ -1676,24 +1596,15 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	}
 
 	Common::LockGuard lock(m_mutex);
-	Request*          prepared = nullptr;
-	if (const auto request =
-	        std::find_if(m_requests.begin(), m_requests.end(),
-	                     [request_id](const auto& r) { return r.id == request_id; });
-	    request != m_requests.end()) {
-		prepared = &*request;
-	} else if (const auto cancelled =
-	               std::find_if(m_cancelled_requests.begin(), m_cancelled_requests.end(),
-	                            [request_id](const auto& r) { return r.id == request_id; });
-	           cancelled != m_cancelled_requests.end()) {
-		prepared = &*cancelled;
+	auto prepared = std::find_if(m_requests.begin(), m_requests.end(),
+	                             [request_id](const auto& r) { return r.id == request_id; });
+	if (prepared == m_requests.end()) {
+		prepared = std::find_if(m_cancelled_requests.begin(), m_cancelled_requests.end(),
+		                        [request_id](const auto& r) { return r.id == request_id; });
 	}
-	if (prepared == nullptr || prepared->state != RequestState::Recording ||
-	    prepared->frame != nullptr) {
-		EXIT("video-out request changed while recording, id=%" PRIu64 "\n", request_id);
-	}
-	prepared->frame = frame;
+	prepared->frame               = frame;
 	prepared->premultiplied_alpha = premultiplied_alpha;
+	prepared->hold                = hold;
 }
 
 void FlipQueue::Complete(uint64_t request_id) {
@@ -1701,10 +1612,6 @@ void FlipQueue::Complete(uint64_t request_id) {
 	auto request = std::find_if(m_requests.begin(), m_requests.end(),
 	                            [request_id](const auto& r) { return r.id == request_id; });
 	if (request != m_requests.end()) {
-		if (request->state != RequestState::Recording || request->frame == nullptr) {
-			m_mutex.Unlock();
-			EXIT("completed GPU flip has no prepared recording, id=%" PRIu64 "\n", request_id);
-		}
 		request->state = RequestState::Ready;
 		request->ready_tick = Common::Timer::QueryPerformanceCounter();
 		{
@@ -1718,17 +1625,12 @@ void FlipQueue::Complete(uint64_t request_id) {
 			}
 		}
 		PaceLog::NoteReady(request_id);
-		m_submit_cond_var.Signal();
 		m_mutex.Unlock();
 		return;
 	}
-	auto cancelled = std::find_if(m_cancelled_requests.begin(), m_cancelled_requests.end(),
-	                              [request_id](const auto& r) { return r.id == request_id; });
-	if (cancelled == m_cancelled_requests.end() || cancelled->state != RequestState::Recording) {
-		m_mutex.Unlock();
-		EXIT("completed GPU flip has no prepared recording, id=%" PRIu64 "\n", request_id);
-	}
-	auto* frame = cancelled->frame;
+	auto  cancelled = std::find_if(m_cancelled_requests.begin(), m_cancelled_requests.end(),
+	                               [request_id](const auto& r) { return r.id == request_id; });
+	auto* frame     = cancelled->frame;
 	m_cancelled_requests.erase(cancelled);
 	m_done_cond_var.SignalAll();
 	m_mutex.Unlock();
@@ -1750,11 +1652,16 @@ void FlipQueue::WaitForSubmitSlot(VideoOutConfig& cfg) {
 	}
 }
 
-void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
+// `before`: only requests older than this id count (KYTY_FLIP_WATERMARK; UINT64_MAX: all). The
+// adaptation of superkeka/KytyPS5-bc250 894c3e4b: a wait evaluated after the title has already
+// requested the next flip of the same buffer does not wait for that newer flip.
+void FlipQueue::Wait(VideoOutConfig& cfg, int index, uint64_t before) {
 	Common::LockGuard lock(m_mutex);
 
-	auto has_request = [this, &cfg, index] {
-		auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
+	auto has_request = [this, &cfg, index, before] {
+		auto matches = [&cfg, index, before](const auto& r) {
+			return r.cfg == &cfg && r.index == index && r.id < before;
+		};
 		return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
 		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 	};
@@ -1763,9 +1670,11 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 	}
 }
 
-bool FlipQueue::IsPending(VideoOutConfig& cfg, int index) {
+bool FlipQueue::IsPending(VideoOutConfig& cfg, int index, uint64_t before) {
 	Common::LockGuard lock(m_mutex);
-	auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
+	auto matches = [&cfg, index, before](const auto& r) {
+		return r.cfg == &cfg && r.index == index && r.id < before;
+	};
 	return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
 	       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
 }
@@ -1774,15 +1683,65 @@ bool FlipQueue::IsPending(VideoOutConfig& cfg, int index) {
 // KYTY_PRESENT_UNLOCKED, which releases the renderer's lock while presenting.)
 static Live::Switch g_present_unlocked("KYTY_PRESENT_PORT_UNLOCKED", Live::ParseDefaultOff);
 
-bool FlipQueue::Flip(uint32_t micros) {
+// KYTY_HOLD_SKIPPED_DRAWS=<n> (live, default 0 = off; the GT7 fork's round 133, usa-ratt
+// 65ed4150b, 100 there): at a flip of the main display, a frame that left out n draws or more
+// while their pipelines built in the background (KYTY_PIPELINE_SKIP) is released unshown and the
+// frame shown before stays: at most two in a row, then eight shown before the next. A burst of
+// pipeline builds (a race start) otherwise shows a frame with most of the scene missing.
+static Live::Switch g_hold_skipped_draws("KYTY_HOLD_SKIPPED_DRAWS", [](const char* value) -> int64_t {
+	return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 10)) : 0;
+});
+
+// KYTY_HOLD_COMPILING=1 (live, default off; Sakura 45bc441ec via usa-ratt/KytyPS5-GT7): with
+// KYTY_HOLD_SKIPPED_DRAWS, frames are held in a row (one shown between runs) for up to
+// KYTY_HOLD_MAX_MS (live, default 5000) instead of two at most, so while a burst of pipelines
+// builds in parallel the screen shows only complete frames; one frame is shown after the cap.
+static Live::Switch g_hold_compiling("KYTY_HOLD_COMPILING", Live::ParseDefaultOff);
+static Live::Switch g_hold_max_ms("KYTY_HOLD_MAX_MS", [](const char* value) -> int64_t {
+	return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 10)) : 5000;
+});
+
+// The thread that prepares flips, after the frame's draws: whether this main-display frame is held.
+static bool TakeFrameHold() {
+	const bool      compiling  = g_hold_compiling.On();
+	const uint32_t  MaxInARow  = compiling ? UINT32_MAX : 2u;
+	const uint32_t  ShownAfter = compiling ? 1u : 8u;
+	static uint32_t in_a_row   = 0;
+	static uint32_t shown      = 8;
+	static uint64_t held       = 0;
+	static std::chrono::steady_clock::time_point held_since;
+	Graphics::PassCensus::Frame(); // KYTY_TRACE_PASS_CENSUS
+	const uint32_t skips = Graphics::g_frame_pipeline_skips.exchange(0, std::memory_order_relaxed);
+	const auto     threshold = static_cast<uint64_t>(g_hold_skipped_draws.Get());
+	const auto     now       = std::chrono::steady_clock::now();
+	const bool     hold      = threshold != 0 && skips >= threshold && in_a_row < MaxInARow &&
+	                  (in_a_row != 0 || shown >= ShownAfter) &&
+	                  (!compiling || in_a_row == 0 ||
+	                   now - held_since < std::chrono::milliseconds(g_hold_max_ms.Get()));
+	if (hold) {
+		if (in_a_row == 0) {
+			held_since = now;
+		}
+		in_a_row++;
+		shown = 0;
+		held++;
+		if (held <= 16 || (held & 63u) == 0) {
+			LOGF("Frame hold: a frame that left out %u draws while their pipelines built is not "
+			     "shown (%" PRIu64 " so far, KYTY_HOLD_SKIPPED_DRAWS=%" PRIu64 ")\n",
+			     skips, held, threshold);
+		}
+	} else {
+		in_a_row = 0;
+		shown    = std::min(shown + 1u, 8u);
+	}
+	return hold;
+}
+
+bool FlipQueue::Flip() {
 	KYTY_PROFILER_BLOCK("FlipQueue::Flip");
 
 	const uint64_t pace_tick = PaceLog::Enabled() ? PaceLog::NowNs() : 0;
 	m_mutex.Lock();
-	if (m_requests.empty()) {
-		m_submit_cond_var.WaitFor(&m_mutex, micros);
-	}
-	EXIT_IF(m_processing);
 	const auto owner = std::find_if(m_requests.begin(), m_requests.end(),
 	                               [](const auto& r) { return r.group == r.id; });
 	if (owner == m_requests.end()) {
@@ -1808,7 +1767,6 @@ bool FlipQueue::Flip(uint32_t micros) {
 			g_pace_flip_ready.store(request.ready_tick, std::memory_order_relaxed);
 		}
 	}
-	m_processing = true;
 	m_mutex.Unlock();
 
 	// Lock each port in bus order, then present and complete the whole group at one Vblank.
@@ -1824,7 +1782,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		for (size_t i = 0; i < count; i++) {
 			auto& r = requests[i];
 			r.cfg->mutex.Lock();
-			current &= r.cfg->opened && !r.cfg->closing && r.cfg->generation == r.generation;
+			current &= r.cfg->generation == r.generation; // bumped on every open and close
 		}
 		return current;
 	};
@@ -1837,7 +1795,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	for (size_t i = 0; i < count; i++) {
 		auto& r = requests[i];
 		if (r.id == group) {
-			due &= IsFlipDueLocked(*r.cfg, r.generation);
+			due &= IsFlipDueLocked(*r.cfg);
 			pace_vblank = r.cfg->vblank_status.count;
 		}
 		if (r.cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN &&
@@ -1846,12 +1804,12 @@ bool FlipQueue::Flip(uint32_t micros) {
 		} else {
 			const bool headset    = r.cfg->bus == VIDEO_OUT_BUS_TYPE_HMD2_MAIN;
 			layers[layer_count++] = {r.frame, headset ? VIDEO_OUT_BUS_TYPE_MAIN : r.cfg->bus,
-			                         r.premultiplied_alpha};
+			                         r.premultiplied_alpha, r.hold};
 		}
 	}
 	if (due) {
 		if (requests[0].cfg->bus == 0) {
-			Graphics::PerformanceOverlayRecordFlip(requests[0].cfg->width, requests[0].cfg->height);
+			Graphics::PerformanceOverlayRecordFlip(m_width, m_height);
 		}
 		if (present_unlocked) {
 			for (size_t i = count; i != 0; i--) {
@@ -1876,6 +1834,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		}
 	}
 
+	// The ports are still locked here (lock_ports above); upstream 937b3766e locks them only now.
 	m_mutex.Lock();
 	for (auto it = m_requests.begin(); it != m_requests.end();) {
 		if (it->group != group) {
@@ -1887,6 +1846,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 			continue;
 		}
 		auto& r = *it;
+		r.cfg->flip_vblank = r.cfg->vblank_status.count;
 		r.cfg->flip_status.count++;
 		r.cfg->flip_status.processTime              = LibKernel::KernelGetProcessTime();
 		r.cfg->flip_status.processTimeCounter       = LibKernel::KernelGetProcessTimeCounter();
@@ -1898,7 +1858,6 @@ bool FlipQueue::Flip(uint32_t micros) {
 		TriggerVideoOutEvents(*r.cfg, VideoOutEventKind::Flip, reinterpret_cast<void*>(r.flip_arg));
 		it = m_requests.erase(it);
 	}
-	m_processing = false;
 	m_done_cond_var.SignalAll();
 	m_submit_slot_cond_var.SignalAll();
 	m_mutex.Unlock();
@@ -1910,6 +1869,19 @@ bool FlipQueue::Flip(uint32_t micros) {
 		m_presenter.Renderer().NotifyGpuProgress();
 
 		Graphics::RenderDocOnGuestFlip(m_presenter.Renderer());
+		// KYTY_DRAW_PEEK (renderDraw.cpp): a frame and steady-clock marker per guest flip.
+		static const bool draw_peek = [] {
+			const auto* value = std::getenv("KYTY_DRAW_PEEK");
+			return value != nullptr && value[0] != '\0' && value[0] != '0';
+		}();
+		if (draw_peek) [[unlikely]] {
+			LOGF("DrawPeekFlip: frame=%d buffer=%d t=%llu\n", m_presenter.Renderer().GetGpu().GetFrameNum(),
+			     requests[0].index,
+			     static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                                         std::chrono::steady_clock::now().time_since_epoch())
+			                                         .count()));
+		}
+		Controller::OnGuestFlip();
 		// A completed guest flip (one per presented layer group), not the polling iterations of
 		// FlipQueue::Flip. This is a CPU presentation marker; it does not measure GPU execution
 		// time.
@@ -1936,12 +1908,6 @@ bool FlipQueue::Flip(uint32_t micros) {
 		}
 	}
 	return due;
-}
-
-void FlipQueue::GetFlipStatus(VideoOutConfig& cfg, VideoOutFlipStatus& out) {
-	Common::LockGuard lock(cfg.mutex);
-
-	out = cfg.flip_status;
 }
 
 KYTY_SYSV_ABI int VideoOutSetFlipMaster(int slave_handle, int master_handle) {
@@ -1991,9 +1957,12 @@ KYTY_SYSV_ABI void VideoOutSetBufferAttribute2(VideoOutBufferAttribute2* attribu
 	     dcc_cb_register_clear_color);
 
 	if (std::getenv("KYTY_CLEAR_TRACE") != nullptr) { // nps5 diagnostic
-		std::fprintf(stderr, "VideoOutSetBufferAttribute2: format 0x%016" PRIx64 " tiling %u %ux%u option 0x%" PRIx64
+		std::fprintf(stderr,
+		             "VideoOutSetBufferAttribute2: format 0x%016" PRIx64
+		             " tiling %u %ux%u option 0x%" PRIx64
 		             " dcc_control 0x%08x dcc_clear_color 0x%016" PRIx64 "\n",
-		             pixel_format, tiling_mode, width, height, option, dcc_control, dcc_cb_register_clear_color);
+		             pixel_format, tiling_mode, width, height, option, dcc_control,
+		             dcc_cb_register_clear_color);
 	}
 	memset(attribute, 0, sizeof(VideoOutBufferAttribute2));
 
@@ -2167,7 +2136,7 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 	}
 
 	Common::LockGuard lock(ctx->mutex);
-	if (ctx->closing) {
+	if (!ctx->opened) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	if (ctx->groups[set_index].occupied) {
@@ -2187,7 +2156,9 @@ KYTY_SYSV_ABI int VideoOutRegisterBuffers2(int handle, int set_index, int buffer
 		     buffer_index_start + i, buffer.data_address, buffer.metadata_address,
 		     attribute->dcc_control);
 		if (std::getenv("KYTY_CLEAR_TRACE") != nullptr) { // nps5 diagnostic
-			std::fprintf(stderr, "VideoOutRegisterBuffers2: buffers[%d] = 0x%" PRIx64 " metadata = 0x%" PRIx64 "\n",
+			std::fprintf(stderr,
+			             "VideoOutRegisterBuffers2: buffers[%d] = 0x%" PRIx64
+			             " metadata = 0x%" PRIx64 "\n",
 			             buffer_index_start + i, buffer.data_address, buffer.metadata_address);
 		}
 	}
@@ -2218,7 +2189,7 @@ KYTY_SYSV_ABI int VideoOutSubmitChangeBufferAttribute2(int handle, int set_index
 
 	Common::LockGuard lock(ctx->mutex);
 	const auto&       current = ctx->groups[set_index];
-	if (ctx->closing || !current.occupied) {
+	if (!ctx->opened || !current.occupied) {
 		return VIDEO_OUT_ERROR_INVALID_INDEX;
 	}
 
@@ -2249,7 +2220,7 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 	}
 
 	Common::LockGuard lock(ctx->mutex);
-	if (ctx->closing) {
+	if (!ctx->opened) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	if (!ctx->groups[set_index].occupied) {
@@ -2266,11 +2237,13 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 }
 
 KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64_t flip_arg) {
+	HleWait::Scope hle_wait_scope(HleWait::FlipSubmit); // wholecp measurement (KYTY_HLE_WAIT_STATS)
 	PRINT_NAME();
 
+	auto&      driver        = DriverState();
 	uint64_t   request_id    = 0;
 	const auto latency_frame = Graphics::LowLatency::BeginCpuFlip();
-	const int  result        = ReserveFlipRequest(DriverState(), handle, index, flip_mode, flip_arg,
+	const int  result        = ReserveFlipRequest(driver, handle, index, flip_mode, flip_arg,
 	                                              FlipRequestSource::Cpu, request_id);
 	if (result == VIDEO_OUT_ERROR_INVALID_FLIP_MODE) {
 		LOGF("\t unsupported flip_mode = %d\n", flip_mode);
@@ -2278,7 +2251,7 @@ KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64
 	if (result != OK) {
 		return result;
 	}
-	g_video_out_driver->SubmitFlipPreparation(request_id);
+	driver.Renderer().GetGpu().SubmitFlipPreparation(request_id);
 	Graphics::LowLatency::EndCpuFlip(latency_frame);
 
 	return OK;
@@ -2298,10 +2271,6 @@ int VideoOutDriver::SubmitFlipFromGpu(Graphics::CommandBuffer& buffer, int handl
 	return OK;
 }
 
-void VideoOutDriver::SubmitFlipPreparation(uint64_t request_id) {
-	m_impl->Renderer().GetGpu().SubmitFlipPreparation(request_id);
-}
-
 void VideoOutDriver::PrepareFlip(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	m_impl->GetFlipQueue().Prepare(request_id, buffer);
 }
@@ -2316,20 +2285,24 @@ void VideoOutDriver::WaitForSubmitSlot(int handle) {
 	m_impl->GetFlipQueue().WaitForSubmitSlot(*cfg);
 }
 
-bool VideoOutDriver::IsFlipPending(int handle, int index) {
+bool VideoOutDriver::IsFlipPending(int handle, int index, uint64_t before) {
 	auto* ctx = m_impl->Get(handle);
 	EXIT_IF(ctx == nullptr);
 
 	EXIT_NOT_IMPLEMENTED(!IsValidBufferIndex(index));
-	return m_impl->GetFlipQueue().IsPending(*ctx, index);
+	return m_impl->GetFlipQueue().IsPending(*ctx, index, before);
 }
 
-void VideoOutDriver::WaitFlipDone(int handle, int index) {
+void VideoOutDriver::WaitFlipDone(int handle, int index, uint64_t before) {
 	auto* ctx = m_impl->Get(handle);
 	EXIT_IF(ctx == nullptr);
 
 	EXIT_NOT_IMPLEMENTED(!IsValidBufferIndex(index));
-	m_impl->GetFlipQueue().Wait(*ctx, index);
+	m_impl->GetFlipQueue().Wait(*ctx, index, before);
+}
+
+uint64_t VideoOutDriver::NextFlipRequestId() {
+	return m_impl->GetFlipQueue().NextRequestId();
 }
 
 KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) {
@@ -2344,7 +2317,9 @@ KYTY_SYSV_ABI int VideoOutGetFlipStatus(int handle, VideoOutFlipStatus* status) 
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
-	DriverState().GetFlipQueue().GetFlipStatus(*ctx, *status);
+	ctx->mutex.Lock();
+	*status = ctx->flip_status;
+	ctx->mutex.Unlock();
 
 	LOGF("\t count = %" PRIu64 "\n"
 	     "\t processTime = %" PRIu64 "\n"
@@ -2369,14 +2344,15 @@ KYTY_SYSV_ABI int VideoOutIsFlipPending(int handle) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
-	VideoOutFlipStatus status {};
-	DriverState().GetFlipQueue().GetFlipStatus(*ctx, status);
+	ctx->mutex.Lock();
+	const int pending = ctx->flip_status.flipPendingNum;
+	ctx->mutex.Unlock();
 
 	if (Config::GraphicsDebugDumpEnabled()) {
-		LOGF("\t flipPendingNum = %d\n", status.flipPendingNum);
+		LOGF("\t flipPendingNum = %d\n", pending);
 	}
 
-	return status.flipPendingNum;
+	return pending;
 }
 
 KYTY_SYSV_ABI int VideoOutGetVblankStatus(int handle, VideoOutVblankStatus* status) {
@@ -2483,7 +2459,8 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 		return VIDEO_OUT_ERROR_INVALID_ADDRESS;
 	}
 
-	auto* ctx = DriverState().Get(handle);
+	auto& driver = DriverState();
+	auto* ctx    = driver.Get(handle);
 	if (ctx == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
@@ -2496,8 +2473,8 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 	ctx->mutex.Lock();
 	// Primary output reports 4K unless param.json Video-out Info enables resolution detection.
 	status->resolution =
-	    ((attribute3 & 4) != 0 && ctx->width < 3840 && ctx->height < 2160 ? 1u : 2u);
-	status->dynamicRange = hdr_allowed && DriverState().IsHdrSupported() ? 2u : 1u;
+	    ((attribute3 & 4) != 0 && driver.width < 3840 && driver.height < 2160 ? 1u : 2u);
+	status->dynamicRange = hdr_allowed && driver.IsHdrSupported() ? 2u : 1u;
 	status->refreshRate =
 	    (ctx->output_mode == VIDEO_OUT_OUTPUT_MODE_119_88HZ || Config::GetVblankFrequency() >= 119
 	         ? VIDEO_OUT_REFRESH_RATE_119_88HZ
@@ -2522,7 +2499,7 @@ KYTY_SYSV_ABI int VideoOutGetOutputStatus(int handle, VideoOutOutputStatus* stat
 }
 
 KYTY_SYSV_ABI int VideoOutAllowOutputResolutionWqhdDetection(int handle) {
-	if (!DriverState().IsOpened(handle)) {
+	if (DriverState().Get(handle) == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 	return OK;
@@ -2555,7 +2532,7 @@ KYTY_SYSV_ABI int VideoOutVrrUnpegFromFixedRate(int handle) {
 
 static int ValidateOutputConfig(int handle, uint64_t mode, const VideoOutOutputOptions* options,
                                 void* reserved_ptr, uint64_t reserved) {
-	if (!DriverState().IsOpened(handle)) {
+	if (DriverState().Get(handle) == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_HANDLE;
 	}
 
@@ -2700,19 +2677,7 @@ KYTY_SYSV_ABI int VideoOutAdjustColor(int handle, const VideoOutColorSettings* s
 		return VIDEO_OUT_ERROR_INVALID_ADDRESS;
 	}
 
-	if (!DriverState().IsOpened(handle)) {
-		return VIDEO_OUT_ERROR_INVALID_HANDLE;
-	}
-
-	auto* ctx = DriverState().Get(handle);
-	if (ctx == nullptr) {
-		return VIDEO_OUT_ERROR_INVALID_HANDLE;
-	}
-	ctx->mutex.Lock();
-	ctx->gamma = settings->gamma;
-	ctx->mutex.Unlock();
-
-	return OK;
+	return DriverState().Get(handle) == nullptr ? VIDEO_OUT_ERROR_INVALID_HANDLE : OK;
 }
 
 } // namespace Libs::VideoOut

@@ -36,11 +36,14 @@ public:
 	                       int64_t flip_arg, uint64_t& request_id);
 	void PrepareFlip(uint64_t request_id, Graphics::CommandBuffer& buffer);
 	void CompleteFlip(uint64_t request_id);
-	void SubmitFlipPreparation(uint64_t request_id);
 	void WaitForSubmitSlot(int handle);
-	void WaitFlipDone(int handle, int index);
+	// `before` (KYTY_FLIP_WATERMARK): only flip requests with an id below it count (UINT64_MAX: all).
+	void WaitFlipDone(int handle, int index, uint64_t before = UINT64_MAX);
 	// Non-blocking form of WaitFlipDone: true while a flip of that buffer is still queued.
-	[[nodiscard]] bool IsFlipPending(int handle, int index);
+	[[nodiscard]] bool IsFlipPending(int handle, int index, uint64_t before = UINT64_MAX);
+	// The id the next flip request will get (KYTY_FLIP_WATERMARK: taken when a command buffer is
+	// submitted, so its WAIT_FLIP_DONE ignores flips the title requested after it).
+	[[nodiscard]] uint64_t NextFlipRequestId();
 
 	[[nodiscard]] Impl& State() noexcept;
 
@@ -53,9 +56,10 @@ private:
 void                          VideoOutShutdown();
 
 [[nodiscard]] const char* FrameLimitLabel();
-bool CycleFrameLimit();
-// nps5 frame pacing: called by the guest thread that ended a frame (sceAgcSuspendPoint), before it starts the next
-// one. Returns at once unless KYTY_FRAME_START_LIMIT or KYTY_FRAME_START_SLACK_MS (with a frame-rate limit) is set.
+bool                      CycleFrameLimit();
+// nps5 frame pacing: called by the guest thread that ended a frame (sceAgcSuspendPoint), before it
+// starts the next one. Returns at once unless KYTY_FRAME_START_LIMIT or KYTY_FRAME_START_SLACK_MS
+// (with a frame-rate limit) is set.
 void PaceFrameStart();
 
 KYTY_SYSV_ABI int  VideoOutOpen(int user_id, int bus_type, int index, const void* param);

@@ -31,7 +31,8 @@ inline void TraceWatch() {
 		const char* value = std::getenv("KYTY_GPU_CALL_TRACE_WATCH");
 		return value != nullptr ? std::strtoull(value, nullptr, 0) : 0ull;
 	}();
-	// KYTY_GPU_CALL_TRACE_DUMP=<guest address>: 0x180 bytes there after every 8th traced call past 1100.
+	// KYTY_GPU_CALL_TRACE_DUMP=<guest address>: 0x180 bytes there after every 8th traced call past
+	// 1100.
 	static const unsigned long long dump = [] {
 		const char* value = std::getenv("KYTY_GPU_CALL_TRACE_DUMP");
 		return value != nullptr ? std::strtoull(value, nullptr, 0) : 0ull;
@@ -40,13 +41,13 @@ inline void TraceWatch() {
 	if (dump != 0 && ++calls > 1100 && (calls & 7u) == 0) {
 		const auto* words = Guest::Ptr<const volatile unsigned long long>(dump);
 		for (int i = 0; i < 48; i += 4) {
-			std::fprintf(stderr, "[kyty dump] %llx: %016llx %016llx %016llx %016llx\n", dump + i * 8ull, words[i],
-			             words[i + 1], words[i + 2], words[i + 3]);
+			std::fprintf(stderr, "[kyty dump] %llx: %016llx %016llx %016llx %016llx\n",
+			             dump + i * 8ull, words[i], words[i + 1], words[i + 2], words[i + 3]);
 		}
 	}
 	if (address != 0) {
 		static unsigned long long last = ~0ull;
-		const auto now = *Guest::Ptr<const volatile unsigned long long>(address);
+		const auto                now  = *Guest::Ptr<const volatile unsigned long long>(address);
 		if (now != last) {
 			std::fprintf(stderr, "[kyty watch] %llx: %llx -> %llx\n", address, last, now);
 			last = now;
@@ -116,14 +117,15 @@ struct Traced<Function> {
 		((count < 8 ? (void)(words[count++] = TraceWord(args)) : (void)0), ...);
 		if constexpr (std::is_void_v<R>) {
 			Call<R>(Function, args...);
-			std::fprintf(stderr, "[kyty call] %s(%llx, %llx, %llx, %llx, %llx, %llx)\n", name, words[0], words[1],
-			             words[2], words[3], words[4], words[5]);
+			std::fprintf(stderr, "[kyty call] %s(%llx, %llx, %llx, %llx, %llx, %llx)\n", name,
+			             words[0], words[1], words[2], words[3], words[4], words[5]);
 			TraceWatch();
 			return 0;
 		} else {
 			const R result = Call<R>(Function, args...);
-			std::fprintf(stderr, "[kyty call] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %llx\n", name, words[0],
-			             words[1], words[2], words[3], words[4], words[5], TraceWord(result));
+			std::fprintf(stderr, "[kyty call] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %llx\n",
+			             name, words[0], words[1], words[2], words[3], words[4], words[5],
+			             TraceWord(result));
 			TraceWatch();
 			return result;
 		}
@@ -134,7 +136,7 @@ struct Traced<Function> {
 
 #undef LIB_FUNC
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define LIB_FUNC(n, f)                                                                              \
+#define LIB_FUNC(n, f)                                                                             \
 	Libs::GuestCall::Traced<&f>::name = #f;                                                        \
 	LIB_ADD(n, &Libs::GuestCall::Traced<&f>::Invoke, Loader::SymbolType::Func)
 

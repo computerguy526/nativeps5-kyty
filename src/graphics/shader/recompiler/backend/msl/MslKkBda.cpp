@@ -165,6 +165,32 @@ std::string KkBdaLayoutComment(const IR::Program& program) {
 	return s + "\n";
 }
 
+// srtexec: the layout file kk_spv_lay reads ("B <binding> <VkDescriptorType> <count> <stage flags>", "P <stage flags> <push size>"),
+// straight from program.bindings = what AddLayoutBindings gives vkCreateDescriptorSetLayout (binding = NativeBinding, count =
+// max(1, resources), push range {stage, 0, NativePushConstantSize}); replaces layout_dump (which decodes 165 of 935 SAROS CS permutations).
+// "D 1" = the program binds Gds (kk_spv_lay needs --dispatch-base). Compute stage flags (0x20) for compute programs, 0x1/0x10 otherwise.
+std::string KkLayoutText(const IR::Program& program) {
+	const uint32_t stages = program.stage == ShaderType::Compute ? 0x20u : program.stage == ShaderType::Pixel ? 0x10u : 0x1u;
+	std::string    s;
+	bool           gds = false;
+	for (const auto& k: KkSetLayout(program)) {
+		uint32_t type = 7u; // storage buffer: every kind that is not an image / sampler / uniform buffer
+		switch (IR::ImageBindingResourceClass(k.kind)) {
+			case IR::ImageResourceClass::Sampled: type = 2u; break;
+			case IR::ImageResourceClass::Storage: type = 3u; break;
+			default:
+				if (k.kind == Kind::Samplers) type = 0u;
+				else if (k.kind == Kind::UniformBuffers) type = 6u;
+		}
+		gds = gds || k.kind == Kind::Gds;
+		s += "B " + std::to_string(k.binding) + " " + std::to_string(type) + " " +
+		     std::to_string(std::max<size_t>(k.resources.size(), 1u)) + " " + std::to_string(stages) + "\n";
+	}
+	s += "P " + std::to_string(stages) + " " + std::to_string(IR::NativePushConstantSize) + "\n";
+	if (gds) s += "D 1\n";
+	return s;
+}
+
 void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 	SetKkSamplerBias(true);
 	auto&       b       = ctx.b;
@@ -212,9 +238,9 @@ void KkBdaLocals(MslCtx& ctx, const BindingModel& m) {
 		if (lds) {
 			uint32_t dw = 1u;
 			if (program.stage == ShaderType::Pixel && ctx.input_info.pixel != nullptr)
-				dw = std::max(ctx.input_info.pixel->lds_size_dwords, 1u);
+				dw = std::max<uint32_t>(ctx.input_info.pixel->lds_size_dwords, 1u);
 			else if (program.stage == ShaderType::Vertex && ctx.input_info.vertex != nullptr)
-				dw = std::max(ctx.input_info.vertex->lds_size_dwords, 1u);
+				dw = std::max<uint32_t>(ctx.input_info.vertex->lds_size_dwords, 1u);
 			else
 				bad("graphics LDS outside VS/PS");
 			if (lds_atomic) bad("graphics LDS atomic");

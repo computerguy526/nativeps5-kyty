@@ -5,6 +5,7 @@
 #include "common/hangTrace.h"
 #include "common/hangWatchdog.h"
 #include "common/stringUtils.h"
+#include "common/threads.h"
 
 #include <algorithm>
 #include <array>
@@ -535,6 +536,7 @@ constexpr std::array<const char*, kFrameEventCount> kFrameEventNames {
     "FrameEvent.EqueueCoalescedTriggers.Cumulative",
     "FrameEvent.EqueueCoalescedDataChanges.Cumulative",
     "FrameEvent.DrawPrepColdWakes.Cumulative",
+    "FrameEvent.DrawPrepServedInWait.Cumulative",
     "FrameEvent.RenderStateVertexPartialCopies.Cumulative",
     "FrameEvent.RenderStateVertexFullCopies.Cumulative",
     "FrameEvent.RenderStateMinimalResets.Cumulative",
@@ -717,6 +719,10 @@ constexpr std::array<const char*, kFrameEventCount> kFrameEventNames {
     "FrameEvent.BdaSettleCpuDirtyPages.Cumulative",
     "FrameEvent.VariantPlanSkips.Cumulative",
     "FrameEvent.BdaLoggedStores.Cumulative",
+    "FrameEvent.TextureDiscardedTargetSkips.Cumulative",
+    "FrameEvent.UnmapDrainSkips.Cumulative",
+    "FrameEvent.ClampRangeBitmapHits.Cumulative",
+    "FrameEvent.WriteDataGpuReleased.Cumulative",
 };
 static_assert(kFrameEventNames.back() != nullptr, "FrameEvent names must match the enum");
 
@@ -1289,6 +1295,7 @@ void EndBlock() {
 
 void SetThreadName(const char* name) {
 	if (name != nullptr) HangWatchdog::SetThreadName(name);
+	Common::NameCurrentThreadForOs(name);
 #if defined(__APPLE__)
 	// nps5 (kcpu): also the host thread's own name, so per-thread CPU tools (the host's NPS5_PERF
 	// thread table, sample, Instruments) and the host's NPS5_QOS_MAP can tell Kyty's threads apart.

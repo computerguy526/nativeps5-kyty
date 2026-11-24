@@ -112,8 +112,8 @@ struct CompletionGroup {
 			value = gpu_begin;
 		} else {
 			const auto span = static_cast<unsigned __int128>(gpu_end - gpu_begin);
-			value = gpu_begin + static_cast<uint64_t>(span * (record - first_record) /
-			                                          (last_record - first_record));
+			value           = gpu_begin + static_cast<uint64_t>(span * (record - first_record) /
+			                                                    (last_record - first_record));
 		}
 		return value > record ? value : record;
 	}

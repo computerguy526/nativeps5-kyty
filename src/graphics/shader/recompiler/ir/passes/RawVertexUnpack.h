@@ -31,20 +31,19 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 // The fields come from the vertex shader through spare locations (ShaderPixelFieldSlots,
 // ShaderLinkVertexPixelParameters); ShaderInfoCollection lays them out.
 struct RawVertexUnpackStats {
-	uint32_t raw_reads      = 0; // custom-parameter reads replaced
-	uint32_t float_fields   = 0; // word-to-float conversions that became field reads
-	uint32_t rounded_reads  = 0; // reads rebuilt from rounded fields (the word or dword used as bits)
-	uint32_t stale_reads    = 0; // reads only kept as the old value of an overwritten register
-	uint32_t flat_reads     = 0; // P0-only custom reads (Raw)
-	uint32_t zero_deltas    = 0; // P10/P20 of an ordinary parameter
-	uint32_t half_reads     = 0; // packed halves
-	uint32_t signed_fields  = 0; // of float_fields
+	uint32_t raw_reads    = 0; // custom-parameter reads replaced
+	uint32_t float_fields = 0; // word-to-float conversions that became field reads
+	uint32_t rounded_reads =
+	    0; // reads rebuilt from rounded fields (the word or dword used as bits)
+	uint32_t stale_reads     = 0; // reads only kept as the old value of an overwritten register
+	uint32_t flat_reads      = 0; // P0-only custom reads (Raw)
+	uint32_t zero_deltas     = 0; // P10/P20 of an ordinary parameter
+	uint32_t half_reads      = 0; // packed halves
+	uint32_t signed_fields   = 0; // of float_fields
 	uint32_t unsigned_fields = 0;
 	uint32_t half_fields     = 0;
 
-	[[nodiscard]] bool Any() const {
-		return raw_reads != 0 || zero_deltas != 0 || half_reads != 0;
-	}
+	[[nodiscard]] bool Any() const { return raw_reads != 0 || zero_deltas != 0 || half_reads != 0; }
 };
 
 RawVertexUnpackStats UnpackRawVertexParameters(Program& program, const ShaderPixelInputInfo& pixel);

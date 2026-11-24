@@ -8,17 +8,19 @@
 #include <span>
 
 // nps5: shader journals and pipeline lists store a vertex input info without its PS parameter
-// aliases (ShaderStoredInputInfoSize), but the source's static key holds them: the 0x7A11A5 tag, the
-// mask and one word per aliased destination (BuildStageStaticKey), a field alias's field codes in
-// the word's upper bits (KYTY_PS_PER_VERTEX=unpack). A replay that clears the aliases derives another
-// key and never builds the alias variant, so the first draw compiles it. This reads them back.
+// aliases (ShaderStoredInputInfoSize), but the source's static key holds them: the 0x7A11A5 tag,
+// the mask and one word per aliased destination (BuildStageStaticKey), a field alias's field codes
+// in the word's upper bits (KYTY_PS_PER_VERTEX=unpack). A replay that clears the aliases derives
+// another key and never builds the alias variant, so the first draw compiles it. This reads them
+// back.
 
 namespace Libs::Graphics {
 
 // Restores param_alias_mask / param_alias_source of a stored vertex input info from the static key
 // recorded with it. True when the key has no aliases (mask cleared) or well-formed ones; false when
 // the alias words are malformed (the info is left without aliases).
-[[nodiscard]] inline bool ShaderRestoreVertexAliases(ShaderVertexInputInfo& info, std::span<const uint32_t> static_key) {
+[[nodiscard]] inline bool ShaderRestoreVertexAliases(ShaderVertexInputInfo&    info,
+                                                     std::span<const uint32_t> static_key) {
 	info.param_alias_mask = 0;
 	info.param_alias_source.fill(0);
 	// The words before the tag, as BuildStageStaticKey writes them.
@@ -30,7 +32,8 @@ namespace Libs::Graphics {
 	if (mask == 0 || at + 2 + count > static_key.size()) return false;
 	at += 2;
 	for (uint32_t destination = 0; destination < 32u; ++destination) {
-		if ((mask & (1u << destination)) != 0) info.param_alias_source[destination] = static_key[at++];
+		if ((mask & (1u << destination)) != 0)
+			info.param_alias_source[destination] = static_key[at++];
 	}
 	info.param_alias_mask = mask;
 	return true;

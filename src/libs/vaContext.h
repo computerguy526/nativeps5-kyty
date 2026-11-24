@@ -2,7 +2,12 @@
 #define EMULATOR_INCLUDE_EMULATOR_LIBS_VACONTEXT_H_
 
 #include <cstddef>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <xmmintrin.h>
+#else
+// arm64 host (test targets only): a 16-byte vector stands in for the SSE register type
+typedef float __m128 __attribute__((__vector_size__(16), __aligned__(16)));
+#endif
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define VA_ARGS                                                                                    \

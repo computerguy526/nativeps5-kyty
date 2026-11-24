@@ -32,8 +32,8 @@ namespace Detail {
 		return false;
 	}
 	const auto when_true = producer->Arg(1);
-	return when_true.IsImmediate() && when_true.GetType() == IR::Type::U32 && when_true.U32() == 0u &&
-	       producer->Arg(0).Resolve() == active.Resolve();
+	return when_true.IsImmediate() && when_true.GetType() == IR::Type::U32 &&
+	       when_true.U32() == 0u && producer->Arg(0).Resolve() == active.Resolve();
 }
 
 [[nodiscard]] inline bool IsZeroU64(const IR::Value& value, const IR::Value& active) {
@@ -56,10 +56,13 @@ namespace Detail {
 	if (opcode == IR::ValueOpcode::BufferAtomicSwap64) {
 		return inst.HasUses() ? BufferAtomic64Form::Native : BufferAtomic64Form::PlainStore;
 	}
-	if (opcode == IR::ValueOpcode::BufferAtomicOr64 || opcode == IR::ValueOpcode::BufferAtomicXor64 ||
-	    opcode == IR::ValueOpcode::BufferAtomicIAdd64 || opcode == IR::ValueOpcode::BufferAtomicISub64) {
-		return Detail::IsZeroU64(inst.Arg(inst.NumArgs() - 2), active) ? BufferAtomic64Form::PlainLoad
-		                                                               : BufferAtomic64Form::Native;
+	if (opcode == IR::ValueOpcode::BufferAtomicOr64 ||
+	    opcode == IR::ValueOpcode::BufferAtomicXor64 ||
+	    opcode == IR::ValueOpcode::BufferAtomicIAdd64 ||
+	    opcode == IR::ValueOpcode::BufferAtomicISub64) {
+		return Detail::IsZeroU64(inst.Arg(inst.NumArgs() - 2), active)
+		           ? BufferAtomic64Form::PlainLoad
+		           : BufferAtomic64Form::Native;
 	}
 	return BufferAtomic64Form::Native;
 }

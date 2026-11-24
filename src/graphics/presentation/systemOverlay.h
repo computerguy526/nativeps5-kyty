@@ -28,8 +28,9 @@ void                     InitializeSystemOverlayInput(SDL_Window* window);
 void                     ShutdownSystemOverlayInput();
 bool                     ProcessSystemOverlayInput(const SDL_Event& event);
 SystemOverlayVisualState GetSystemOverlayVisualState() noexcept;
-// nps5: true while the next presented frame is a KYTY_DUMP_FRAMES dump; the compile progress overlay then stays off it.
-void                     SystemOverlaySuppressProgress(bool suppress) noexcept;
+// nps5: true while the next presented frame is a KYTY_DUMP_FRAMES dump; the compile progress
+// overlay then stays off it.
+void SystemOverlaySuppressProgress(bool suppress) noexcept;
 // load card: the progress card/badge is (or will be) drawn on the next present.
 [[nodiscard]] bool       SystemOverlayProgressWanted() noexcept;
 void                     NotifyTrophyUnlocked(std::string_view name, int32_t grade,

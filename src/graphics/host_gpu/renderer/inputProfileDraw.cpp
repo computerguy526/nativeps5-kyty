@@ -25,8 +25,7 @@ constexpr uint32_t kUnmapped  = 1u << 6u;
 // Readable guest bytes of [address, address + size): null when unmapped. valid: one bit per
 // InputProfile::kChunkBytes chunk that is not GPU-modified (a GPU-modified CPU copy may be stale,
 // and reading it must not start a read-back; those chunks are skipped).
-const void* Readable(BufferCache& cache, uint64_t address, uint64_t& size, uint32_t& info,
-                     uint32_t& valid) {
+const void* Readable(BufferCache& cache, uint64_t address, uint64_t& size, uint32_t& info, uint32_t& valid) {
 	valid = 0;
 	if (address == 0 || size == 0) {
 		return nullptr;
@@ -69,26 +68,23 @@ void NoteImpl(BufferCache& cache, std::span<PreparedBindings* const> stages) noe
 		// 'U': the shader data dwords as bound (user SGPR dwords first, memory offsets from
 		// memory_offset_dword on). meta: memory_offset_dword, push start (or ~0), user dwords.
 		{
-			const uint32_t meta[3] = {
-			    program.bindings.memory_offset_dword, program.bindings.push_data_start_dword,
-			    static_cast<uint32_t>(program.bindings.user_data_registers.size())};
+			const uint32_t meta[3] = {program.bindings.memory_offset_dword,
+			                          program.bindings.push_data_start_dword,
+			                          static_cast<uint32_t>(program.bindings.user_data_registers.size())};
 			reg.AddData(hash, st, 'U', 0, stage->shader_data.data(), stage->shader_data.size() * 4,
 			            stage->shader_data.size() * 4, meta, 3, 0);
 		}
 		if (!snapshot.flattened_srt.empty()) {
-			reg.AddData(hash, st, 'R', 0, snapshot.flattened_srt.data(),
-			            snapshot.flattened_srt.size() * 4, snapshot.flattened_srt.size() * 4,
-			            nullptr, 0, 0);
+			reg.AddData(hash, st, 'R', 0, snapshot.flattened_srt.data(), snapshot.flattened_srt.size() * 4,
+			            snapshot.flattened_srt.size() * 4, nullptr, 0, 0);
 		}
 		const uint32_t cap = reg.Cfg().read_bytes;
-		for (uint32_t i = 0; i < stage->buffer_sources.size() && i < program.info.buffers.size();
-		     i++) {
-			const auto& src     = stage->buffer_sources[i];
-			const auto& res     = program.info.buffers[i];
-			uint32_t    info    = (res.read ? kRead : 0) | (res.written ? kWritten : 0) |
-			                      (res.atomic ? kAtomic : 0) | (res.formatted ? kFormatted : 0) |
-			                      (res.scalar ? kScalar : 0);
-			uint32_t    meta[6] = {};
+		for (uint32_t i = 0; i < stage->buffer_sources.size() && i < program.info.buffers.size(); i++) {
+			const auto& src = stage->buffer_sources[i];
+			const auto& res = program.info.buffers[i];
+			uint32_t    info = (res.read ? kRead : 0) | (res.written ? kWritten : 0) | (res.atomic ? kAtomic : 0) |
+			                (res.formatted ? kFormatted : 0) | (res.scalar ? kScalar : 0);
+			uint32_t meta[6] = {};
 			if (i < snapshot.buffers.size()) {
 				for (uint32_t w = 0; w < 4; w++) {
 					meta[w] = snapshot.buffers[i].dwords[w];
@@ -100,19 +96,16 @@ void NoteImpl(BufferCache& cache, std::span<PreparedBindings* const> stages) noe
 				reg.AddDescriptor(hash, st, 'W', i, meta, 6, src.size, info);
 				continue;
 			}
-			uint64_t    n     = std::min<uint64_t>(src.size, cap);
-			uint32_t    valid = 0;
-			const void* data  = Readable(cache, src.address, n, info, valid);
-			reg.AddData(hash, st, 'B', i, data, data != nullptr ? n : 0, src.size, meta, 6, info, 0,
-			            valid);
+			uint64_t       n     = std::min<uint64_t>(src.size, cap);
+			uint32_t       valid = 0;
+			const void*    data  = Readable(cache, src.address, n, info, valid);
+			reg.AddData(hash, st, 'B', i, data, data != nullptr ? n : 0, src.size, meta, 6, info, 0, valid);
 		}
 		for (uint32_t b = 0; b < snapshot.images.size(); b++) {
-			reg.AddDescriptor(hash, st, 'T', b, snapshot.images[b].dwords.data(),
-			                  snapshot.images[b].dword_count);
+			reg.AddDescriptor(hash, st, 'T', b, snapshot.images[b].dwords.data(), snapshot.images[b].dword_count);
 		}
 		for (uint32_t s = 0; s < snapshot.samplers.size(); s++) {
-			reg.AddDescriptor(hash, st, 'S', s, snapshot.samplers[s].dwords.data(),
-			                  snapshot.samplers[s].dword_count);
+			reg.AddDescriptor(hash, st, 'S', s, snapshot.samplers[s].dwords.data(), snapshot.samplers[s].dword_count);
 		}
 	}
 }
@@ -156,21 +149,15 @@ void NoteMeshImpl(BufferCache& cache, const ShaderVertexInputInfo& info, uint32_
 		return;
 	}
 	const auto&    mesh    = info.mesh;
-	const uint32_t meta[8] = {index_count,
-	                          instances,
-	                          index_size,
-	                          groups,
-	                          segments,
-	                          mesh.threads_num[0],
+	const uint32_t meta[8] = {index_count, instances, index_size, groups, segments, mesh.threads_num[0],
 	                          mesh.lds_size_dwords,
-	                          (mesh.vertices_per_group & 0xffffu) |
-	                              (mesh.primitives_per_group << 16u)};
+	                          (mesh.vertices_per_group & 0xffffu) | (mesh.primitives_per_group << 16u)};
 	uint32_t       flags   = 0;
 	uint32_t       valid   = 0;
-	uint64_t    n = std::min<uint64_t>(uint64_t {index_count} * index_size, 16384) & ~uint64_t {3};
-	const void* data = index_size != 0 ? Readable(cache, index_address, n, flags, valid) : nullptr;
-	reg.AddData(hash, st, 'M', 0, data, data != nullptr ? n : 0,
-	            uint64_t {index_count} * index_size, meta, 8, flags, 0, valid);
+	uint64_t       n       = std::min<uint64_t>(uint64_t {index_count} * index_size, 16384) & ~uint64_t {3};
+	const void*    data    = index_size != 0 ? Readable(cache, index_address, n, flags, valid) : nullptr;
+	reg.AddData(hash, st, 'M', 0, data, data != nullptr ? n : 0, uint64_t {index_count} * index_size, meta, 8,
+	            flags, 0, valid);
 }
 
 } // namespace Libs::Graphics::InputProfileDraw

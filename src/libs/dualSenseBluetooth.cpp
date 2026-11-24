@@ -107,8 +107,9 @@ SDL_hid_device* OpenDevice(int controller) {
 		}
 	}
 	SDL_hid_free_enumeration(devices);
-	const std::string& chosen =
-	    (!ambiguous && !path.empty()) ? path : (!fallback_ambiguous ? fallback_path : std::string {});
+	const std::string& chosen = (!ambiguous && !path.empty())
+	                                ? path
+	                                : (!fallback_ambiguous ? fallback_path : std::string {});
 	return !chosen.empty() ? SDL_hid_open_path(chosen.c_str()) : nullptr;
 }
 

@@ -6,6 +6,7 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/backend/spirv/atomic64Lowering.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -133,7 +134,35 @@ void HostFlag() {
 
 } // namespace
 
+// nps5 905bphi: SAROS 905b (hash-keyed) ignores the entry's immediate-zero incoming of an invariant phi.
+void SarosPhiEntryZero() {
+	Fixture f;
+	const auto make = [&](std::initializer_list<Value> in) {
+		auto& inst = f.program.blocks[0]->AppendNewInst(ValueOpcode::Phi);
+		for (const auto v: in) inst.AddPhiOperand(f.program.blocks[0], v);
+		return Value(&inst);
+	};
+	const Value constant(uint32_t {0x00fff000});
+	const auto  phi = make({Value(uint32_t {0}), constant});
+	f.program.shader_hash = 0x1234;
+	Check(ResolveInvariantPhi(f.program, phi).IsEmpty(), "other hash: phi [0, c] stays unresolved");
+	f.program.shader_hash = 0x905b2e2c09c61a5dull;
+	const auto r = ResolveInvariantPhi(f.program, phi);
+	Check(!r.IsEmpty() && r.IsImmediate() && r.U32() == 0x00fff000u, "905b: phi [0, c] resolves to c");
+	const auto two = make({Value(uint32_t {0}), constant, Value(uint32_t {0x0a500000})});
+	Check(ResolveInvariantPhi(f.program, two).IsEmpty(), "905b: two different non-zero incomings stay unresolved");
+	const auto zeros = make({Value(uint32_t {0}), Value(uint32_t {0})});
+	const auto rz    = ResolveInvariantPhi(f.program, zeros);
+	Check(!rz.IsEmpty() && rz.U32() == 0u, "905b: all-zero phi resolves to zero");
+	setenv("KYTY_SAROS_905B_PHI", "0", 1);
+	Check(!SarosPhiIgnoresEntryZero(0x905b2e2c09c61a5dull), "KYTY_SAROS_905B_PHI=0 turns it off");
+	unsetenv("KYTY_SAROS_905B_PHI");
+	Check(SarosPhiIgnoresEntryZero(0x905b2e2c09c61a5dull) && !SarosPhiIgnoresEntryZero(0x9fba2edffc549531ull),
+	      "only 905b is keyed");
+}
+
 int main() {
+	SarosPhiEntryZero();
 	AtomicClassification();
 	MinLodView();
 	HostFlag();

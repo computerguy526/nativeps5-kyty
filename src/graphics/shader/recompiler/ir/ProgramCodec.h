@@ -91,9 +91,13 @@ private:
 void EncodeSpecialization(const ResourceSpecialization& value, std::vector<uint8_t>& out);
 [[nodiscard]] bool DecodeSpecialization(std::span<const uint8_t> bytes,
                                         ResourceSpecialization& value);
-// Offline tools only (kyty_msl_dump): DecodeSpecialization, and when that fails the layout older
-// program caches hold (image records without indirect_group; the group reads as "none").
-// `legacy` tells which layout matched. The runtime cache keeps the strict decoder.
+// A specialization as int21 (744705ee1) journals stored it: image records end after `fmask`.
+[[nodiscard]] bool DecodeSpecializationInt21(std::span<const uint8_t> bytes,
+                                             ResourceSpecialization& value);
+
+// Offline tools only (kyty_msl_dump): DecodeSpecialization, and when that fails the int21 layout
+// older program caches hold. `legacy` tells which layout matched; `value` is left alone on failure.
+// The runtime cache keeps the strict decoders.
 [[nodiscard]] bool DecodeSpecializationCompat(std::span<const uint8_t> bytes,
                                               ResourceSpecialization&  value,
                                               bool*                    legacy = nullptr);

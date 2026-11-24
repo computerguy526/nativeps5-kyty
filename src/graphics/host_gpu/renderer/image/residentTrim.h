@@ -29,7 +29,8 @@ namespace Libs::Graphics::ResidentTrim {
 }
 
 // Levels the native image holds.
-[[nodiscard]] constexpr uint32_t NativeLevels(uint32_t guest_levels, uint32_t native_first) noexcept {
+[[nodiscard]] constexpr uint32_t NativeLevels(uint32_t guest_levels,
+                                              uint32_t native_first) noexcept {
 	return guest_levels > native_first ? guest_levels - native_first : 0u;
 }
 
@@ -41,7 +42,8 @@ namespace Libs::Graphics::ResidentTrim {
 
 // The first level a trimmed image may start at for a request of `resident_first`: the request
 // itself while it leaves at least one level, 0 (no trim) otherwise.
-[[nodiscard]] constexpr uint32_t TrimFirst(uint32_t resident_first, uint32_t guest_levels) noexcept {
+[[nodiscard]] constexpr uint32_t TrimFirst(uint32_t resident_first,
+                                           uint32_t guest_levels) noexcept {
 	return resident_first < guest_levels ? resident_first : 0u;
 }
 
@@ -87,31 +89,38 @@ struct ViewLevels {
 	return all > 0.0 ? kept / all : 1.0;
 }
 
-// nps5 mipskip: KYTY_TEX_MIP_SKIP=1|2 (needs KYTY_TEXTURE_RESIDENT_TRIM=1): the finest `skip` levels of a large
-// read-only sampled 2D texture are never made resident, so its native image starts at guest level `skip`
-// (the trim above), whatever the guest's views ask for. Views keep guest numbering: a view whose base level is
-// below native_first is cut to the image's first level (NativeView), implicit-LOD sampling stays right
-// (normalised coordinates on a half-size image pick level L-1 = guest level L); the picture only loses the
-// finest levels. Any non-sampling use (target, storage, depth) makes the whole chain resident again.
-// Returns the levels to skip: 0 when the texture is not eligible.
-[[nodiscard]] constexpr uint32_t MipSkipLevels(uint32_t requested, uint32_t min_dim, uint32_t width, uint32_t height,
-                                               uint32_t levels, uint32_t bytes_per_block, bool block_compressed) noexcept {
+// nps5 mipskip: KYTY_TEX_MIP_SKIP=1|2 (needs KYTY_TEXTURE_RESIDENT_TRIM=1): the finest `skip`
+// levels of a large read-only sampled 2D texture are never made resident, so its native image
+// starts at guest level `skip` (the trim above), whatever the guest's views ask for. Views keep
+// guest numbering: a view whose base level is below native_first is cut to the image's first level
+// (NativeView), implicit-LOD sampling stays right (normalised coordinates on a half-size image pick
+// level L-1 = guest level L); the picture only loses the finest levels. Any non-sampling use
+// (target, storage, depth) makes the whole chain resident again. Returns the levels to skip: 0 when
+// the texture is not eligible.
+[[nodiscard]] constexpr uint32_t MipSkipLevels(uint32_t requested, uint32_t min_dim, uint32_t width,
+                                               uint32_t height, uint32_t levels,
+                                               uint32_t bytes_per_block,
+                                               bool     block_compressed) noexcept {
 	if (requested == 0u || levels < 4u) return 0u;
 	const uint32_t longest = width > height ? width : height;
 	if (longest < min_dim) return 0u;
-	if (!block_compressed && bytes_per_block < 2u) return 0u; // R8 masks and font atlases stay whole
+	if (!block_compressed && bytes_per_block < 2u)
+		return 0u; // R8 masks and font atlases stay whole
 	uint32_t skip = requested;
-	if (skip > levels - 3u) skip = levels - 3u;               // at least three levels remain
-	while (skip > 0u && ((width >> skip) == 0u || (height >> skip) == 0u)) --skip;
+	if (skip > levels - 3u) skip = levels - 3u; // at least three levels remain
+	while (skip > 0u && ((width >> skip) == 0u || (height >> skip) == 0u))
+		--skip;
 	// Block compressed: the skipped level's extent must still be a whole number of 4x4 blocks.
 	if (block_compressed) {
-		while (skip > 0u && (((width >> skip) & 3u) != 0u || ((height >> skip) & 3u) != 0u)) --skip;
+		while (skip > 0u && (((width >> skip) & 3u) != 0u || ((height >> skip) & 3u) != 0u))
+			--skip;
 	}
 	return skip;
 }
 
 // The first level a sampled view may need once the skip floor applies.
-[[nodiscard]] constexpr uint32_t SkipFloor(uint32_t view_first, uint32_t skip, uint32_t guest_levels) noexcept {
+[[nodiscard]] constexpr uint32_t SkipFloor(uint32_t view_first, uint32_t skip,
+                                           uint32_t guest_levels) noexcept {
 	const uint32_t first = view_first > skip ? view_first : skip;
 	return first < guest_levels ? first : (guest_levels != 0u ? guest_levels - 1u : 0u);
 }

@@ -1,15 +1,17 @@
 #include "graphics/host_gpu/renderer/lodStats.h"
-#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
+#include "graphics/host_gpu/renderer/mipStream.h"
 
 #include "common/assert.h"
 #include "common/hangTrace.h"
 #include "common/profiler.h"
+#include "common/staticOnce.h"
 #include "graphics/host_gpu/coherenceLog.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/memory.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -61,7 +63,7 @@ bool LodStatsCounter::CountClamped() {
 }
 
 LodStatsCounter::Plain LodStatsCounter::PlainVariant() {
-	static const Plain mode = [] {
+	static constexpr auto mode_init = [] {
 		const auto* value = std::getenv("KYTY_LOD_STATS_PLAIN_VARIANT");
 		Plain result = Plain::On;
 		if (value != nullptr && value[0] != 0) {
@@ -75,7 +77,9 @@ LodStatsCounter::Plain LodStatsCounter::PlainVariant() {
 			                                                                        : "verify");
 		}
 		return result;
-	}();
+	};
+	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(mode_init())>> mode_once;
+	const Plain& mode = mode_once.Get(mode_init);
 	return mode;
 }
 
@@ -152,15 +156,16 @@ void LodStatsCounter::Report(uint64_t destination, uint32_t size, uint32_t contr
 	if (early_log) [[unlikely]] {
 		static uint64_t reports = 0;
 		auto&           totals  = ShaderRecompiler::g_lod_stats_early_totals;
-		std::fprintf(stderr,
-		             "[lodstats] report %llu draws instrumented-early %llu instrumented-guest-early "
-		             "%llu instrumented-late %llu plain-for-writes %llu plain-no-counter %llu\n",
-		             static_cast<unsigned long long>(reports++),
-		             static_cast<unsigned long long>(totals.instrumented_early.exchange(0)),
-		             static_cast<unsigned long long>(totals.instrumented_guest.exchange(0)),
-		             static_cast<unsigned long long>(totals.instrumented_late.exchange(0)),
-		             static_cast<unsigned long long>(totals.plain_for_writes.exchange(0)),
-		             static_cast<unsigned long long>(totals.plain_no_counter.exchange(0)));
+		std::fprintf(
+		    stderr,
+		    "[lodstats] report %llu draws instrumented-early %llu instrumented-guest-early "
+		    "%llu instrumented-late %llu plain-for-writes %llu plain-no-counter %llu\n",
+		    static_cast<unsigned long long>(reports++),
+		    static_cast<unsigned long long>(totals.instrumented_early.exchange(0)),
+		    static_cast<unsigned long long>(totals.instrumented_guest.exchange(0)),
+		    static_cast<unsigned long long>(totals.instrumented_late.exchange(0)),
+		    static_cast<unsigned long long>(totals.plain_for_writes.exchange(0)),
+		    static_cast<unsigned long long>(totals.plain_no_counter.exchange(0)));
 	}
 	auto& scheduler = m_context.GetCommandScheduler();
 	scheduler.EndRendering();
@@ -248,6 +253,17 @@ void LodStatsCounter::Report(uint64_t destination, uint32_t size, uint32_t contr
 	}
 
 	const bool reset = !m_initialized || reset_requested;
+	// nps5 mipstream: the textures behind each counter of this copy; a reset starts a new list.
+	std::shared_ptr<std::vector<std::pair<uint32_t, uint64_t>>> assoc;
+	if (MipStream::Active()) {
+		std::scoped_lock lock(MipStream::g_assoc_mutex);
+		if (publish && !MipStream::g_assoc.empty()) {
+			assoc = std::make_shared<std::vector<std::pair<uint32_t, uint64_t>>>(MipStream::g_assoc);
+		}
+		if (reset) {
+			MipStream::g_assoc.clear();
+		}
+	}
 	if ((reset && publish) || check_canary) {
 		// The reset overwrites the counters the copy above reads (write-after-read hazard found
 		// by synchronization validation): the fills must not start before the copy has read.
@@ -292,12 +308,29 @@ void LodStatsCounter::Report(uint64_t destination, uint32_t size, uint32_t contr
 	++m_issued;
 	const auto write_size = writes_report ? std::min<uint32_t>(size, ReportSize) : 0u;
 	scheduler.DeferOperation([this, slot_offset, destination, mode, writes_report, write_size,
-	                          record_time_report, control, check_canary] {
+	                          record_time_report, control, check_canary, assoc] {
 		if (check_canary) {
 			CheckCanary(slot_offset);
 		}
 		m_publish->Invalidate(slot_offset, CounterBytes);
 		const auto* words = reinterpret_cast<const uint32_t*>(m_publish->Mapped().data() + slot_offset);
+		if (assoc != nullptr) {
+			const auto bias = static_cast<int>(MipStream::Get().proxy_bias);
+			for (const auto& [code, address]: *assoc) {
+				const auto counter = code & 0xffu;
+				if (words[counter] == LodStatsReport::Unsampled) {
+					continue;
+				}
+				if ((code & 0x1000u) == 0u) {
+					MipStream::NoteMeasured(address, words[counter]);
+					continue;
+				}
+				// Proxy: finest level of the counter texture plus the width ratio, minus the bias.
+				const int offset = static_cast<int>((code >> 8u) & 0xfu) - 8;
+				const int level  = static_cast<int>(std::min<uint32_t>(words[counter], 14u)) + offset - bias;
+				MipStream::NoteMeasured(address, static_cast<uint32_t>(std::max(level, 0)), true);
+			}
+		}
 		if (mode == Publish::Completion) {
 			// The packet's own interval, visible once the GPU has produced it: the guest's
 			// consumer skips the current slot while its header is zero.

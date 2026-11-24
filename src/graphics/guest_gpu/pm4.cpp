@@ -1,8 +1,8 @@
-#include "common/guestAddress.h" // nps5
 #include "graphics/guest_gpu/pm4.h"
 
 #include "common/assert.h"
 #include "common/file.h"
+#include "common/guestAddress.h" // nps5
 
 #include <array>
 
@@ -30,6 +30,7 @@ constexpr auto MakeRegisterNames() {
 	names[R_RELEASE_MEM]    = "R_RELEASE_MEM";
 	names[R_DMA_DATA]       = "R_DMA_DATA";
 	names[R_CONTEXT_STATE]  = "R_CONTEXT_STATE";
+	names[R_PSSR]           = "R_PSSR";
 	return names;
 }
 
@@ -88,7 +89,7 @@ constexpr auto MakeOpcodeNames() {
 	names[IT_INCREMENT_DE_COUNTER]      = "IT_INCREMENT_DE_COUNTER";
 	names[IT_WAIT_ON_CE_COUNTER]        = "IT_WAIT_ON_CE_COUNTER";
 	names[IT_WAIT_ON_DE_COUNTER_DIFF]   = "IT_WAIT_ON_DE_COUNTER_DIFF";
-	names[IT_DISPATCH_DRAW_PREAMBLE]    = "IT_DISPATCH_DRAW_PREAMBLE";
+	names[IT_DRAW_INDEX_MULTI_INST]     = "IT_DRAW_INDEX_MULTI_INST";
 	names[IT_DISPATCH_DRAW]             = "IT_DISPATCH_DRAW";
 	names[IT_GET_LOD_STATS]             = "IT_GET_LOD_STATS";
 	names[IT_WAIT_REG_MEM_64]           = "IT_WAIT_REG_MEM_64";
@@ -103,8 +104,6 @@ constexpr auto g_opcode_names   = MakeOpcodeNames();
 
 void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_t start_dw,
                          uint32_t num_dw) {
-	// db_dump();
-
 	file->Printf("----- Buffer --- dwords: 0x%05" PRIx32 ", offset : %u, addr: %016" PRIx64
 	             " ----- \n",
 	             num_dw, start_dw, reinterpret_cast<uint64_t>(cmd_buffer));
@@ -144,9 +143,9 @@ void DumpPm4PacketStream(Common::File* file, const uint32_t* cmd_buffer, uint32_
 				if ((op == IT_SET_CONTEXT_REG_INDIRECT || op == IT_SET_SH_REG_INDIRECT ||
 				     op == IT_SET_UCONFIG_REG_INDIRECT) &&
 				    len == 4) {
-					auto* indirect_buffer = Guest::Ptr<const uint32_t>(
-					    (static_cast<uint64_t>(cmd[0]) & 0xfffffffcu) |
-					    (static_cast<uint64_t>(cmd[1]) << 32u));
+					auto* indirect_buffer =
+					    Guest::Ptr<const uint32_t>((static_cast<uint64_t>(cmd[0]) & 0xfffffffcu) |
+					                               (static_cast<uint64_t>(cmd[1]) << 32u));
 					const uint32_t indirect_num_regs = cmd[3] & 0x3fffu;
 
 					for (uint32_t i = 0; indirect_buffer != nullptr && i < indirect_num_regs;

@@ -220,6 +220,47 @@ TileManager::Scratch TileManager::AllocateScratch(uint64_t size) {
 		if (freed != 0) {
 			result = vmaCreateBuffer(m_graphics.allocator, &raw, &allocate, &buffer, &memory, nullptr);
 		}
+		if (result != VK_SUCCESS) {
+			// Issue #57 (RX 6900 XT, about 6.5 GB of 16 GB in use): the stderr line above is not in
+			// the log, so the fatal message carries the size and the device limits that can refuse a
+			// single buffer whatever the free VRAM (VMA has tried every memory type by now).
+			vk::PhysicalDeviceMaintenance4Properties maintenance4 {};
+			vk::PhysicalDeviceMaintenance3Properties maintenance3 {};
+			maintenance3.pNext = &maintenance4;
+			vk::PhysicalDeviceProperties2 properties {};
+			properties.pNext = &maintenance3;
+			m_graphics.physical_device.getProperties2(&properties);
+			// Device-memory objects (a driver limit, maxMemoryAllocationCount) and the VRAM heaps' use.
+			const auto&  memory_properties = m_graphics.physical_device_memory_properties;
+			VmaBudget    budgets[VK_MAX_MEMORY_HEAPS] {};
+			vmaGetHeapBudgets(m_graphics.allocator, budgets);
+			uint64_t blocks = 0;
+			uint64_t vram_usage = 0;
+			uint64_t vram_budget = 0;
+			for (uint32_t heap = 0; heap < memory_properties.memoryHeapCount; heap++) {
+				blocks += budgets[heap].statistics.blockCount;
+				if (memory_properties.memoryHeaps[heap].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+					vram_usage += budgets[heap].usage;
+					vram_budget += budgets[heap].budget;
+				}
+			}
+			static char operation[512];
+			std::snprintf(operation, sizeof(operation),
+			              "allocate TileManager scratch buffer (%llu bytes for a %llu-byte detile; %llu idle "
+			              "pooled bytes freed; device maxMemoryAllocationSize %llu, maxBufferSize %llu, "
+			              "maxStorageBufferRange %u; %llu device-memory objects, maxMemoryAllocationCount %u; "
+			              "VRAM heaps %llu MiB used of a %llu MiB budget)",
+			              static_cast<unsigned long long>(capacity), static_cast<unsigned long long>(size),
+			              static_cast<unsigned long long>(freed),
+			              static_cast<unsigned long long>(maintenance3.maxMemoryAllocationSize),
+			              static_cast<unsigned long long>(maintenance4.maxBufferSize),
+			              properties.properties.limits.maxStorageBufferRange,
+			              static_cast<unsigned long long>(blocks),
+			              properties.properties.limits.maxMemoryAllocationCount,
+			              static_cast<unsigned long long>(vram_usage >> 20u),
+			              static_cast<unsigned long long>(vram_budget >> 20u));
+			RequireVulkanSuccess(static_cast<vk::Result>(result), operation);
+		}
 	}
 	RequireVulkanSuccess(static_cast<vk::Result>(result), "allocate TileManager scratch buffer");
 	VramStats::Note(VramStats::Kind::TilerScratch, true, static_cast<int64_t>(capacity));
@@ -355,7 +396,10 @@ void TileManager::Prepare(bool tile, uint64_t tiled_capacity, uint64_t linear_ca
 	dispatches.reserve(infos.size());
 	for (const auto& info: infos) {
 		EXIT_IF((transform == ColorTransform::SwapBgra16 && info.bytes_per_element != 8u) ||
-		        (transform == ColorTransform::Reverse10_11_11 && info.bytes_per_element != 4u));
+		        ((transform == ColorTransform::Reverse10_11_11 ||
+		          transform == ColorTransform::Narrow10_11_11 ||
+		          transform == ColorTransform::Rotate2_10_10_10) &&
+		         info.bytes_per_element != 4u));
 		TileBlockLayout block {};
 		const uint32_t  tiled_width  = info.tiled_width != 0 ? info.tiled_width : info.pitch;
 		const uint32_t  tiled_height = info.tiled_height != 0 ? info.tiled_height : info.height;
@@ -496,9 +540,10 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	const uint32_t                                   element_index = slot % BytesPerElementCount;
 	const uint32_t                   direction_index = slot / (FamilyCount * BytesPerElementCount);
 	const uint32_t                   family_index    = (slot / BytesPerElementCount) % FamilyCount;
-	const uint32_t                   values[] {1u << element_index, direction_index};
-	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}};
-	const vk::SpecializationInfo     specialization {2, entries, sizeof(values), values};
+	const uint32_t                   values[] {1u << element_index, direction_index,
+                                               SubwordCas() ? 1u : 0u};
+	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+	const vk::SpecializationInfo     specialization {3, entries, sizeof(values), values};
 	const auto module =
 	    CompileSPV({shaders[family_index].code, shaders[family_index].words}, m_graphics.device);
 	vk::PipelineShaderStageCreateInfo stage {};
@@ -664,11 +709,24 @@ void TileManager::Record(vk::Buffer source, uint64_t source_offset,
 	                        &barriers[1], 0, nullptr);
 }
 
+namespace {
+// KYTY_TILER_TRACE: one buffer-mode pass (Detile / Tile / TileImage).
+void TraceBufferPass(const char* op, std::span<const GpuTileInfo> infos, uint64_t linear_capacity) {
+	if (!TilerTrace::Enabled() || infos.empty()) {
+		return;
+	}
+	const auto& first = infos.front();
+	TilerTrace::NoteBuffer(op, first.bytes_per_element, static_cast<uint32_t>(first.family),
+	                       first.width, first.height, first.depth, infos.size(), linear_capacity);
+}
+} // namespace
+
 TileManager::Result TileManager::Detile(vk::Buffer tiled, uint64_t tiled_offset,
                                         uint64_t tiled_capacity, uint64_t linear_capacity,
                                         std::span<const GpuTileInfo> infos,
                                         ColorTransform transform) {
 	KYTY_GPU_OP_SITE("tiler.detile");
+	TraceBufferPass("detile.buf", infos, linear_capacity);
 	const auto&    limits = m_graphics.GetPhysicalDeviceProperties().limits;
 	const uint64_t descriptor_alignment =
 	    std::max<uint64_t>(limits.minStorageBufferOffsetAlignment, 4);
@@ -687,6 +745,7 @@ void TileManager::Tile(vk::Buffer linear, uint64_t linear_offset, uint64_t linea
                        vk::Buffer tiled, uint64_t tiled_offset, uint64_t tiled_capacity,
                        std::span<const GpuTileInfo> infos) {
 	KYTY_GPU_OP_SITE("tiler.tile");
+	TraceBufferPass("tile.buf", infos, linear_capacity);
 	const auto&    limits = m_graphics.GetPhysicalDeviceProperties().limits;
 	const uint64_t descriptor_alignment =
 	    std::max<uint64_t>(limits.minStorageBufferOffsetAlignment, 4);
@@ -703,6 +762,7 @@ void TileManager::TileImage(Image& image, std::span<const vk::BufferImageCopy> r
                             uint64_t linear_capacity, std::span<const GpuTileInfo> infos,
                             ColorTransform transform) {
 	KYTY_GPU_OP_SITE("tiler.tile_image");
+	TraceBufferPass("tile_image.buf", infos, linear_capacity);
 	EXIT_IF(regions.empty());
 	const auto&    limits = m_graphics.GetPhysicalDeviceProperties().limits;
 	const uint64_t descriptor_alignment =
@@ -725,6 +785,19 @@ bool TileManager::ImageDirectEnabled() {
 	static const bool enabled = [] {
 		const auto* value = std::getenv("KYTY_TILER_IMAGE_DIRECT");
 		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+
+bool TileManager::SubwordCas() {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_TILER_CAS");
+		const bool  on    = value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+		if (on) {
+			std::printf("Kyty tiler: 8/16-bit elements merged with one compare-and-swap loop "
+			            "(KYTY_TILER_CAS)\n");
+		}
+		return on;
 	}();
 	return enabled;
 }
@@ -831,7 +904,6 @@ void TileManager::VerifyOnCompletion(const char* operation, uint64_t guest_addre
 			}
 		}
 		Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageVerifyChecks);
-		TilerTrace::Count(("verify." + label).c_str(), 1, mismatches);
 		if (mismatches != 0) {
 			Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageVerifyMismatches);
 			static std::atomic<uint32_t> logged {0};
@@ -1026,9 +1098,10 @@ vk::Pipeline TileManager::GetImagePipeline(bool load, TileBlockFamily family,
 			break;
 		default: EXIT("TileManager: no image variant for tile family %u\n", family_index);
 	}
-	const uint32_t                   values[] {bytes_per_element, load ? 1u : 0u};
-	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}};
-	const vk::SpecializationInfo     specialization {2, entries, sizeof(values), values};
+	const uint32_t                   values[] {bytes_per_element, load ? 1u : 0u,
+                                               SubwordCas() ? 1u : 0u};
+	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+	const vk::SpecializationInfo     specialization {3, entries, sizeof(values), values};
 	const auto module = CompileSPV({shader.code, shader.words}, m_graphics.device);
 	vk::PipelineShaderStageCreateInfo stage {};
 	stage.stage               = vk::ShaderStageFlagBits::eCompute;
@@ -1165,8 +1238,7 @@ void TileManager::RecordImage(Image& image, bool load, vk::Buffer tiled, uint64_
 		command.dispatch((dispatch.push.width + 7u) / 8u, (dispatch.push.height + 7u) / 8u,
 		                 dispatch.push.depth);
 		TilerTrace::Count(load ? "dispatch.load" : "dispatch.store", 1,
-		                  uint64_t {dispatch.push.width} * dispatch.push.height *
-		                      dispatch.push.depth);
+		                  uint64_t {dispatch.push.width} * dispatch.push.height * dispatch.push.depth);
 	}
 
 	if (load) {
@@ -1356,9 +1428,9 @@ void TileManager::ConvertD16(Result source, Result target, D16Direction directio
 	}
 	auto& pipeline = *pipeline_pointer;
 	if (pipeline == nullptr) {
-		const uint32_t                   value = d32 ? 1u : 0u;
-		const vk::SpecializationMapEntry entry {0, 0, sizeof(value)};
-		const vk::SpecializationInfo     specialization {1, &entry, sizeof(value), &value};
+		const uint32_t                   values[] {d32 ? 1u : 0u};
+		const vk::SpecializationMapEntry entries[] {{0, 0, 4}};
+		const vk::SpecializationInfo     specialization {1, entries, sizeof(values), values};
 		const uint32_t*                  code  = nullptr;
 		size_t                           words = 0;
 		if (direction == D16Direction::Promote) {
@@ -1429,7 +1501,8 @@ void TileManager::ConvertD16(Result source, Result target, D16Direction directio
 	                            vk::AccessFlagBits::eHostWrite |
 	                            vk::AccessFlagBits::eTransferWrite |
 	                            vk::AccessFlagBits::eShaderWrite;
-	barriers[1].dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite;
+	// Both directions only store whole target elements.
+	barriers[1].dstAccessMask = vk::AccessFlagBits::eShaderWrite;
 	command.pipelineBarrier(
 	    vk::PipelineStageFlagBits::eAllCommands | vk::PipelineStageFlagBits::eHost,
 	    vk::PipelineStageFlagBits::eComputeShader, {}, 0, nullptr, 2, barriers, 0, nullptr);
@@ -1506,7 +1579,9 @@ void TileManager::TransformColor(Result input, Result output, ColorTransform tra
 	uint32_t element_bytes = 0;
 	switch (transform) {
 		case ColorTransform::SwapBgra16: element_bytes = 8; break;
-		case ColorTransform::Reverse10_11_11: element_bytes = 4; break;
+		case ColorTransform::Reverse10_11_11:
+		case ColorTransform::Narrow10_11_11:
+		case ColorTransform::Rotate2_10_10_10: element_bytes = 4; break;
 		default: EXIT("invalid color transform\n");
 	}
 	EXIT_IF(input.size == 0 || input.size % element_bytes != 0 ||

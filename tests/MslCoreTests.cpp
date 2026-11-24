@@ -23,13 +23,16 @@
 #include <unistd.h>
 
 namespace Common {
-int DbgExitIfHandler(const char *, const char *, int) { return 1; }
-int DbgNotImplementedHandler(const char *, const char *, int) { return 1; }
-int DbgExitHandler(const char *, int, std::string_view text) {
-  std::printf("EXIT %.*s\n", (int)text.size(), text.data());
+// Upstream int22 made the handlers [[noreturn]] void.
+void DbgExitIfHandler(const char *e, const char *, int) {
+  std::printf("EXIT_IF %s\n", e);
   std::_Exit(3);
 }
-int DbgExitHandler(const char *, int, fmt::text_style, std::string_view text) {
+void DbgNotImplementedHandler(const char *e, const char *, int) {
+  std::printf("NOTIMPL %s\n", e);
+  std::_Exit(3);
+}
+void DbgExitHandler(const char *, int, std::string_view text) {
   std::printf("EXIT %.*s\n", (int)text.size(), text.data());
   std::_Exit(3);
 }
@@ -419,6 +422,79 @@ void TestBindingModelPerEmission() {
   program.info.buffers.clear();
   Check(Msl::EmitProgram(program, input).source == first,
         "binding model: emission is a function of its inputs only");
+}
+
+// upcodegen: the compute program of TestBindingModelPerEmission, shared by the two refusal tests.
+SR::CompileResult RefusalProgram() {
+  const std::vector<uint32_t> code = {0xbe8a0480, 0x7d8a0080, 0x888a6a0a,
+                                      0x8afe6a7e, 0xbf89fffc, 0x88fe0a7e,
+                                      0x7e020281, 0xbf810000};
+  static ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Compute;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  static std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.compute = &info;
+  auto translated = SR::TranslateProgram(code, options);
+  SR::IR::ResourceSpecialization spec;
+  return SR::CompileProgram(std::move(translated), options, spec, 0);
+}
+
+// upcodegen: a program with an int22 bindless image table is refused by name
+// (kyty_msl_dump exits 5 on "refused:"), never emitted with a guessed binding.
+void TestBindlessImageRefused() {
+  auto result = RefusalProgram();
+  auto &program = result.program;
+  ShaderStageInputInfo input;
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  input.compute = &info;
+  Check(Msl::EmitProgram(program, input).complete,
+        "bindless refusal: the plain program is complete");
+  program.info.images.emplace_back();
+  program.info.images.back().bindless = true;
+  program.info.images.back().runtime = true;
+  const auto r = Msl::EmitProgram(program, input);
+  bool named = false;
+  for (const auto &[reason, n] : r.unsupported)
+    named |= reason.rfind("refused: bindless image table (image 0", 0) == 0;
+  Check(!r.complete && named,
+        "bindless refusal: incomplete, with the named reason");
+  program.info.images.back().bindless = false;
+  Check(Msl::EmitProgram(program, input).complete,
+        "bindless refusal: a non-bindless image is not refused");
+}
+
+// upcodegen: an IR op the emitter does not know fails loudly with the op name.
+void TestUnknownOpNamed() {
+  auto result = RefusalProgram();
+  auto &program = result.program;
+  ShaderStageInputInfo input;
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  input.compute = &info;
+  program.blocks[0]->AppendNewInst(ValueOpcode::BvhIntersectRayStub,
+                                   {SR::IR::Value(1u)});
+  const auto r = Msl::EmitProgram(program, input);
+  bool named = false;
+  for (const auto &[reason, n] : r.unsupported)
+    named |= reason.find("BvhIntersectRayStub") != std::string::npos;
+  Check(!r.complete && named,
+        "unknown op: emission is incomplete and names the opcode");
 }
 
 // review-fixes v1.1.1: the per-dword fallback of a raw x2..x4 access checks
@@ -1163,8 +1239,11 @@ void TestSpecializationCompat() {
       w.Bool(i.fmask);
     }
   }
-  Check(old.size() + 4 * spec.images.size() == cur.size(),
-        "spec compat: an old image record is four bytes shorter");
+  // int21 (the old layout) ends an image record after `fmask`; int22 appends the later fields
+  // (bindless, runtime, fmask_fragments, clamp_half_float): at least one byte longer per record.
+  Check(cur.size() > old.size() &&
+            (cur.size() - old.size()) % spec.images.size() == 0,
+        "spec compat: an int21 image record is shorter than an int22 one");
   IR::ResourceSpecialization back;
   bool legacy = true;
   Check(IR::DecodeSpecializationCompat(cur, back, &legacy) && !legacy &&
@@ -1177,17 +1256,11 @@ void TestSpecializationCompat() {
   legacy = false;
   Check(IR::DecodeSpecializationCompat(old, oldback, &legacy) && legacy &&
             oldback == spec && oldback.buffers[1].packed_stride == 704 &&
-            oldback.images[1].indirect_group ==
-                IR::ImageResource::NoIndirectImage,
-        "spec compat: the old layout decodes, buffer strides kept, no image "
-        "group");
-  // skipfix: the replay re-encodes a legacy blob in the current layout (what a draw publishes), so
-  // permutation identities match modules built today.
-  {
-    std::vector<uint8_t> reenc;
-    IR::EncodeSpecialization(oldback, reenc);
-    Check(reenc == cur, "spec compat: a legacy blob re-encodes to the current bytes");
-  }
+            !oldback.images[1].bindless && !oldback.images[1].runtime &&
+            oldback.images[1].fmask_fragments == 0 &&
+            !oldback.images[1].clamp_half_float,
+        "spec compat: the int21 layout decodes to the same image fields, "
+        "buffer strides kept, the int22 tail at its defaults");
   IR::ResourceSpecialization keep = spec;
   for (size_t cut : {size_t{1}, size_t{3}, old.size() / 2}) {
     std::vector<uint8_t> t(old.begin(), old.end() - static_cast<long>(cut));
@@ -1417,6 +1490,44 @@ void TestPixelOutputModes() {
         "pixel output modes: mode 10 stores a bit cast / int4 value");
 }
 
+// srtexec: --kk-layout (kk_spv_lay layout file) from program.bindings: binding numbers, VkDescriptorType, counts, push range, Gds flag.
+void TestKkLayoutText() {
+  using K = SR::IR::DescriptorBindingKind;
+  SR::IR::Program p;
+  p.stage = ShaderType::Compute;
+  auto add = [&](K kind, std::vector<uint32_t> res) {
+    SR::IR::DescriptorBinding d;
+    d.kind = kind;
+    d.resources = std::move(res);
+    p.bindings.descriptors.push_back(std::move(d));
+  };
+  add(K::FlattenedSrt, {});                     // binding 53, storage buffer, count 1
+  add(K::Buffers, {0, 1, 2});                   // binding 0, count 3
+  add(static_cast<K>(1), {0, 1});               // sampled image 0: type 2
+  add(static_cast<K>(29), {0});                 // storage image 0: type 3
+  add(K::Samplers, {0});                        // sampler: type 0
+  add(K::UniformBuffers, {0});                  // uniform buffer: type 6
+  auto text = Msl::KkLayoutText(p);
+  const std::string push = "P 32 " + std::to_string(SR::IR::NativePushConstantSize) + "\n";
+  Check(text.find("B 0 7 3 32\n") != std::string::npos, "kk-layout: buffers binding 0, storage buffer, count 3");
+  Check(text.find("B 1 2 2 32\n") != std::string::npos, "kk-layout: sampled image type 2 count 2");
+  Check(text.find("B 29 3 1 32\n") != std::string::npos, "kk-layout: storage image type 3");
+  Check(text.find("B 49 0 1 32\n") != std::string::npos, "kk-layout: sampler type 0");
+  Check(text.find("B 57 6 1 32\n") != std::string::npos, "kk-layout: uniform buffer type 6");
+  Check(text.find("B 53 7 1 32\n") != std::string::npos, "kk-layout: flattened SRT, empty resources count 1");
+  Check(text.find(push) != std::string::npos, "kk-layout: push range");
+  Check(text.find("D 1") == std::string::npos, "kk-layout: no Gds, no dispatch-base line");
+  // sorted by binding number
+  Check(text.find("B 0 ") < text.find("B 1 ") && text.find("B 1 ") < text.find("B 29 ") && text.find("B 29 ") < text.find("B 53 "),
+        "kk-layout: ascending binding order");
+  add(K::Gds, {});
+  Check(Msl::KkLayoutText(p).find("D 1\n") != std::string::npos, "kk-layout: Gds -> D 1");
+  Check(Msl::KkLayoutText(p).find("B 50 7 1 32\n") != std::string::npos, "kk-layout: Gds binding");
+  SR::IR::Program empty;
+  empty.stage = ShaderType::Compute;
+  Check(Msl::KkLayoutText(empty) == push, "kk-layout: no descriptors = push line only");
+}
+
 int main() {
   TestBuilder();
   TestAluGolden();
@@ -1441,7 +1552,10 @@ int main() {
   TestEmitterModes();
   TestPixelOutputModes();
   TestSpecializationCompat();
+  TestBindlessImageRefused();
+  TestUnknownOpNamed();
   TestVsLiveAdce();
+  TestKkLayoutText();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

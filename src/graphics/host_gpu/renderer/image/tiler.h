@@ -95,6 +95,11 @@ public:
 	// scratch) and a completion callback compares both results byte for byte (FrameEvent
 	// TilerImageVerifyChecks / TilerImageVerifyMismatches; the first mismatches are logged).
 	[[nodiscard]] static bool ImageDirectVerifyEnabled();
+	// KYTY_TILER_CAS (default 0): 8- and 16-bit elements are merged into their words with one
+	// compare-and-swap loop instead of an atomicAnd plus an atomicOr (strxno/KytyPS5-GT7
+	// c0afe8d27). The resulting words are the same; only the atomics differ. Read once, at the
+	// first pipeline creation (a specialization constant of the tiler shaders).
+	[[nodiscard]] static bool SubwordCas();
 	// Scratch lifetime: a scratch buffer (GetScratchBuffer, Detile, TransformColor, the internal
 	// passes) returns to the pool or is destroyed once the scheduler tick that last used it has
 	// completed. Without a ScratchHold that is the tick current at allocation, which is enough
@@ -114,14 +119,6 @@ public:
 		TileManager& m_tiler;
 	};
 	[[nodiscard]] Result GetScratchBuffer(uint64_t size);
-	// Diagnostic (KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=verify): compares the byte ranges (offset,
-	// length from each buffer's offset) of two buffers as recorded now, once the tick completed;
-	// KYTY_TILER_TRACE prints "count verify.<operation> n=<checks> bytes=<mismatching ranges>".
-	void VerifyRanges(const char* operation, uint64_t guest_address, Result expected, Result actual,
-	                  uint64_t size, std::vector<std::pair<uint64_t, uint64_t>> ranges) {
-		VerifyOnCompletion(operation, guest_address, expected.buffer, expected.offset,
-		                   actual.buffer, actual.offset, size, std::move(ranges));
-	}
 	// KYTY_VRAM_STATS: idle pooled scratch bytes and their limit.
 	[[nodiscard]] std::pair<uint64_t, uint64_t> ScratchPoolBytes();
 	// KYTY_TILER_SCRATCH_POOL_IDLE_MS: destroys pooled scratch buffers unused that long

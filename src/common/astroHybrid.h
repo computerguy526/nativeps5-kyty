@@ -20,12 +20,14 @@ namespace AstroHybrid {
 }
 
 [[nodiscard]] inline bool Opt1() {
-	static const bool on = ReadSwitch("ASTROHYBRID_OPT_1", "deferred unprotect skips host_lock when settled");
+	static const bool on =
+	    ReadSwitch("ASTROHYBRID_OPT_1", "deferred unprotect skips host_lock when settled");
 	return on;
 }
 
 [[nodiscard]] inline bool Opt2() {
-	static const bool on = ReadSwitch("ASTROHYBRID_OPT_2", "texture binding memo default 32768 entries");
+	static const bool on =
+	    ReadSwitch("ASTROHYBRID_OPT_2", "texture binding memo default 32768 entries");
 	return on;
 }
 

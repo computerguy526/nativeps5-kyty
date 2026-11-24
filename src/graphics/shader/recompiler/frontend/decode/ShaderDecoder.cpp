@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 
 #include "common/assert.h"
@@ -9,17 +10,16 @@
 
 #include <algorithm>
 #include <bit>
-#include <cstdlib>
 #include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
-// KYTY_SKIP_UNDECODABLE=1 (bring-up): a scalar operand the decoder does not know (e.g.
-// SRC_SHARED_BASE, which needs flat-aperture support) marks the program undecodable instead of
-// ending the session; TranslateProgram then skips its draws and dispatches.
+// KYTY_SKIP_UNDECODABLE=1 (bring-up): a scalar operand the decoder does not know (e.g. SRC_SHARED_BASE,
+// which needs flat-aperture support) marks the program undecodable instead of ending the session;
+// TranslateProgram then skips its draws and dispatches.
 static thread_local uint32_t t_undecodable_pc   = UINT32_MAX;
 static thread_local uint32_t t_undecodable_code = 0;
-bool                         SkipUndecodable() {
+bool SkipUndecodable() {
 	static const bool on = [] {
 		const char* v = std::getenv("KYTY_SKIP_UNDECODABLE");
 		return v != nullptr && v[0] == '1';
@@ -34,9 +34,9 @@ void NoteUndecodable(uint32_t pc, uint32_t code) {
 }
 bool TakeUndecodable(uint32_t& pc, uint32_t& code) {
 	if (t_undecodable_pc == UINT32_MAX) return false;
-	pc               = t_undecodable_pc;
-	code             = t_undecodable_code;
-	t_undecodable_pc = UINT32_MAX;
+	pc                 = t_undecodable_pc;
+	code               = t_undecodable_code;
+	t_undecodable_pc   = UINT32_MAX;
 	return true;
 }
 namespace {
@@ -153,10 +153,9 @@ std::string ImageSampleFlagsToString(uint32_t flags) {
 }
 
 std::string FormatMimg(const Instruction& inst) {
-	const char* sample_name =
-	    inst.opcode == Opcode::IMAGE_SAMPLE ? MimgSampleOpcodeName(inst.opcode_id) : nullptr;
+	const char*            sampled_name = MimgSampledOpcodeName(inst.opcode_id);
 	const std::string_view name =
-	    sample_name != nullptr ? sample_name : magic_enum::enum_name(inst.opcode);
+	    sampled_name != nullptr ? sampled_name : magic_enum::enum_name(inst.opcode);
 	std::string text =
 	    fmt::format("0x{:08x}: {} {}, {}, {}, {} ; dmask=0x{:x} image_dim={}", inst.pc, name,
 	                OperandToString(inst.dst).c_str(), OperandToString(inst.src0).c_str(),
@@ -174,28 +173,16 @@ std::string FormatMimg(const Instruction& inst) {
 	if (inst.lwe) {
 		text += " lwe=1";
 	}
-	switch (inst.opcode) {
-		case Opcode::IMAGE_SAMPLE:
-		case Opcode::IMAGE_GATHER4_L:
-		case Opcode::IMAGE_GATHER4_LZ:
-		case Opcode::IMAGE_GATHER4_C:
-		case Opcode::IMAGE_GATHER4_C_L:
-		case Opcode::IMAGE_GATHER4_C_LZ:
-		case Opcode::IMAGE_GATHER4_LZ_O:
-		case Opcode::IMAGE_GATHER4_C_O:
-		case Opcode::IMAGE_GATHER4_C_LZ_O:
-		case Opcode::IMAGE_GATHER4H:
-			text += fmt::format(" sample_flags={} addr_components={}",
-			                    ImageSampleFlagsToString(inst.image_sample_flags).c_str(),
-			                    inst.image_address_components);
-			break;
-		case Opcode::IMAGE_BVH_INTERSECT_RAY:
-		case Opcode::IMAGE_BVH64_INTERSECT_RAY:
-			text += fmt::format(" a16={} addr_dwords={}",
-			                    (inst.image_sample_flags & ImageSampleFlagA16) != 0u ? 1u : 0u,
-			                    inst.image_address_components);
-			break;
-		default: break;
+	if (sampled_name != nullptr) {
+		text += fmt::format(" sample_flags={} addr_components={}",
+		                    ImageSampleFlagsToString(inst.image_sample_flags).c_str(),
+		                    inst.image_address_components);
+	} else if (inst.opcode == Opcode::IMAGE_BVH_INTERSECT_RAY ||
+	           inst.opcode == Opcode::IMAGE_BVH64_INTERSECT_RAY ||
+	           inst.opcode == Opcode::IMAGE_BVH8_INTERSECT_RAY) {
+		text += fmt::format(" a16={} addr_dwords={}",
+		                    (inst.image_sample_flags & ImageSampleFlagA16) != 0u ? 1u : 0u,
+		                    inst.image_address_components);
 	}
 	if (inst.image_nsa_dwords != 0) {
 		text += fmt::format(" nsa_dwords={} nsa_addr=", inst.image_nsa_dwords);
@@ -299,11 +286,11 @@ void DecodeScalarSource(uint32_t code, uint32_t pc, Operand& operand) {
 		case 125u: operand.kind = OperandKind::Null; return;
 		case 126u: operand.kind = OperandKind::ExecLo; return;
 		case 127u: operand.kind = OperandKind::ExecHi; return;
+		case 239u: operand.kind = OperandKind::PopsExitingWaveId; return;
 		case 235u: operand.kind = OperandKind::SharedBase; return;
 		case 236u: operand.kind = OperandKind::SharedLimit; return;
 		case 237u: operand.kind = OperandKind::PrivateBase; return;
 		case 238u: operand.kind = OperandKind::PrivateLimit; return;
-		case 239u: operand.kind = OperandKind::PopsExitingWaveId; return;
 		case 248u:
 			operand.kind      = OperandKind::FloatInlineConstant;
 			operand.value = std::bit_cast<uint32_t>(0.15915494309189535f);
@@ -523,11 +510,11 @@ std::string OperandToString(const Operand& operand) {
 		case OperandKind::ExecZ: text = "execz"; break;
 		case OperandKind::Scc: text = "scc"; break;
 		case OperandKind::M0: text = "m0"; break;
+		case OperandKind::PopsExitingWaveId: text = "pops_exiting_wave_id"; break;
 		case OperandKind::SharedBase: text = "shared_base"; break;
 		case OperandKind::SharedLimit: text = "shared_limit"; break;
 		case OperandKind::PrivateBase: text = "private_base"; break;
 		case OperandKind::PrivateLimit: text = "private_limit"; break;
-		case OperandKind::PopsExitingWaveId: text = "pops_exiting_wave_id"; break;
 		case OperandKind::Null: text = "null"; break;
 		default: text = "unknown"; break;
 	}
@@ -596,6 +583,7 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::S_NOT_B64:
 		case Opcode::S_WQM_B32:
 		case Opcode::S_WQM_B64:
+		case Opcode::S_QUADMASK_B32:
 		case Opcode::S_QUADMASK_B64:
 		case Opcode::S_AND_SAVEEXEC_B32:
 		case Opcode::S_ORN2_SAVEEXEC_B32:
@@ -700,17 +688,10 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::IMAGE_LOAD_MIP:
 		case Opcode::IMAGE_GET_RESINFO:
 		case Opcode::IMAGE_GET_LOD:
-		case Opcode::IMAGE_GATHER4_L:
-		case Opcode::IMAGE_GATHER4_LZ:
-		case Opcode::IMAGE_GATHER4_C:
-		case Opcode::IMAGE_GATHER4_C_L:
-		case Opcode::IMAGE_GATHER4_C_LZ:
-		case Opcode::IMAGE_GATHER4_LZ_O:
-		case Opcode::IMAGE_GATHER4_C_O:
-		case Opcode::IMAGE_GATHER4_C_LZ_O:
-		case Opcode::IMAGE_GATHER4H:
+		case Opcode::IMAGE_GATHER4:
 		case Opcode::IMAGE_BVH_INTERSECT_RAY:
-		case Opcode::IMAGE_BVH64_INTERSECT_RAY: return WithUnsupportedReason(inst, FormatMimg(inst));
+		case Opcode::IMAGE_BVH64_INTERSECT_RAY:
+		case Opcode::IMAGE_BVH8_INTERSECT_RAY: return WithUnsupportedReason(inst, FormatMimg(inst));
 		case Opcode::S_LOAD_DWORD:
 		case Opcode::S_LOAD_DWORDX2:
 		case Opcode::S_LOAD_DWORDX4:
@@ -726,6 +707,7 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::BUFFER_LOAD_FORMAT_XYZ:
 		case Opcode::BUFFER_LOAD_FORMAT_XYZW:
 		case Opcode::BUFFER_LOAD_FORMAT_D16_X:
+		case Opcode::BUFFER_LOAD_FORMAT_D16_HI_X:
 		case Opcode::BUFFER_LOAD_FORMAT_D16_XY:
 		case Opcode::BUFFER_LOAD_FORMAT_D16_XYZ:
 		case Opcode::BUFFER_LOAD_FORMAT_D16_XYZW:
@@ -740,6 +722,7 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::BUFFER_STORE_FORMAT_D16_XYZW:
 		case Opcode::BUFFER_LOAD_UBYTE:
 		case Opcode::BUFFER_LOAD_UBYTE_D16:
+		case Opcode::BUFFER_LOAD_UBYTE_D16_HI:
 		case Opcode::BUFFER_LOAD_USHORT:
 		case Opcode::BUFFER_LOAD_SHORT_D16:
 		case Opcode::BUFFER_LOAD_SHORT_D16_HI:
@@ -790,12 +773,15 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::BUFFER_ATOMIC_UMAX_X2:
 		case Opcode::BUFFER_ATOMIC_XOR_X2:
 		case Opcode::BUFFER_LOAD_SBYTE:
+		case Opcode::BUFFER_LOAD_SBYTE_D16:
+		case Opcode::BUFFER_LOAD_SBYTE_D16_HI:
 		case Opcode::BUFFER_LOAD_SSHORT:
 		case Opcode::FLAT_LOAD_UBYTE:
 		case Opcode::FLAT_LOAD_SBYTE:
 		case Opcode::FLAT_LOAD_USHORT:
 		case Opcode::FLAT_LOAD_SSHORT:
 		case Opcode::FLAT_LOAD_SHORT_D16:
+		case Opcode::FLAT_LOAD_SHORT_D16_HI:
 		case Opcode::FLAT_LOAD_DWORD:
 		case Opcode::FLAT_LOAD_DWORDX2:
 		case Opcode::FLAT_LOAD_DWORDX3:
@@ -852,6 +838,7 @@ std::string InstructionToString(const Instruction& inst) {
 		case Opcode::DS_READ2ST64_B64:
 		case Opcode::DS_READ_B96:
 		case Opcode::DS_READ_B128:
+		case Opcode::DS_BVH_STACK_PUSH8_POP1_RTN_B32:
 		case Opcode::DS_WRITE_B8:
 		case Opcode::DS_WRITE_B16:
 		case Opcode::DS_WRITE_B8_D16_HI:

@@ -16,11 +16,11 @@
 namespace Libs::Graphics::PassTrace {
 
 namespace Detail {
-inline std::atomic<int> g_state {0}; // 0 unset, 1 waiting, 2 tracing, 3 done / off
-inline std::atomic<int64_t> g_start_ns {0};
+inline std::atomic<int>      g_state {0}; // 0 unset, 1 waiting, 2 tracing, 3 done / off
+inline std::atomic<int64_t>  g_start_ns {0};
 inline std::atomic<uint32_t> g_flips {0};
 inline std::atomic<uint64_t> g_seq {0};
-inline int64_t NowNs() {
+inline int64_t               NowNs() {
 	return std::chrono::duration_cast<std::chrono::nanoseconds>(
 	           std::chrono::steady_clock::now().time_since_epoch())
 	    .count();
@@ -43,7 +43,8 @@ inline int64_t NowNs() {
 			g_state.store(3, std::memory_order_relaxed);
 			return false;
 		}
-		g_start_ns.store(NowNs() + static_cast<int64_t>(std::strtoll(value, nullptr, 10)) * 1'000'000'000LL,
+		g_start_ns.store(NowNs() + static_cast<int64_t>(std::strtoll(value, nullptr, 10)) *
+		                               1'000'000'000LL,
 		                 std::memory_order_relaxed);
 		g_state.store(1, std::memory_order_relaxed);
 		return false;

@@ -38,10 +38,10 @@ size_t FormatRing(char* buf, size_t cap, size_t max) noexcept {
 	if (cap == 0) {
 		return 0;
 	}
-	size_t         len  = 0;
-	buf[0]              = '\0';
-	const uint64_t head = g_head.load(std::memory_order_acquire);
-	const uint64_t now  = NowNs();
+	size_t len           = 0;
+	buf[0]               = '\0';
+	const uint64_t head  = g_head.load(std::memory_order_acquire);
+	const uint64_t now   = NowNs();
 	size_t         shown = 0;
 	for (uint64_t n = head; n > 0 && shown < max && shown < RingSize; --n, ++shown) {
 		const Entry& e = g_ring[n & (RingSize - 1)];
@@ -52,16 +52,18 @@ size_t FormatRing(char* buf, size_t cap, size_t max) noexcept {
 		const uint64_t submit = e.submit.load(std::memory_order_acquire);
 		const uint64_t args   = e.args.load(std::memory_order_acquire);
 		const uint64_t ns     = e.ns.load(std::memory_order_acquire);
-		// A newer submission took the slot while it was read (the ring was lapped): its fields are not n's.
+		// A newer submission took the slot while it was read (the ring was lapped): its fields are
+		// not n's.
 		if (e.seq.load(std::memory_order_acquire) != n) {
 			continue;
 		}
-		const int w = std::snprintf(buf + len, cap - len,
-		                            "[kyty-safe]  submit #%llu tick=%llu guest_submit=%llu op=%u arg0=%u age=%llu ms\n",
-		                            static_cast<unsigned long long>(n), static_cast<unsigned long long>(tick),
-		                            static_cast<unsigned long long>(submit), static_cast<unsigned>(args >> 32),
-		                            static_cast<unsigned>(args & 0xffffffffu),
-		                            static_cast<unsigned long long>((now > ns ? now - ns : 0) / 1000000ull));
+		const int w = std::snprintf(
+		    buf + len, cap - len,
+		    "[kyty-safe]  submit #%llu tick=%llu guest_submit=%llu op=%u arg0=%u age=%llu ms\n",
+		    static_cast<unsigned long long>(n), static_cast<unsigned long long>(tick),
+		    static_cast<unsigned long long>(submit), static_cast<unsigned>(args >> 32),
+		    static_cast<unsigned>(args & 0xffffffffu),
+		    static_cast<unsigned long long>((now > ns ? now - ns : 0) / 1000000ull));
 		if (w < 0 || static_cast<size_t>(w) >= cap - len) {
 			break;
 		}
@@ -78,7 +80,8 @@ static std::atomic<bool> g_previous_usr2_valid {false};
 static void Sigusr2(int sig, siginfo_t* info, void* context) {
 	const int   saved_errno = errno;
 	static char buf[8192];
-	const char  head[] = "[kyty-safe] GPU watchdog fired in the driver; last native submissions (newest first):\n";
+	const char  head[] =
+	    "[kyty-safe] GPU watchdog fired in the driver; last native submissions (newest first):\n";
 	(void)!write(2, head, sizeof(head) - 1);
 	const size_t n = FormatRing(buf, sizeof(buf), 24);
 	(void)!write(2, buf, n);
@@ -98,7 +101,8 @@ static void Sigusr2(int sig, siginfo_t* info, void* context) {
 void InitSlow() noexcept {
 	int expected = 0;
 	if (!g_state.compare_exchange_strong(expected, 3)) {
-		return; // initialised, or another thread is at it (a second install would chain to ourselves)
+		return; // initialised, or another thread is at it (a second install would chain to
+		        // ourselves)
 	}
 	const bool on = WatchdogEnabledFromEnv(std::getenv("KYTY_GPU_WATCHDOG_S"));
 #if !defined(_WIN32)
@@ -106,8 +110,9 @@ void InitSlow() noexcept {
 		struct sigaction old;
 		std::memset(&old, 0, sizeof(old));
 		if (sigaction(SIGUSR2, nullptr, &old) == 0 &&
-		    ((old.sa_flags & SA_SIGINFO) != 0 ? old.sa_sigaction != nullptr
-		                                      : (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN))) {
+		    ((old.sa_flags & SA_SIGINFO) != 0
+		         ? old.sa_sigaction != nullptr
+		         : (old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN))) {
 			g_previous_usr2 = old;
 			g_previous_usr2_valid.store(true, std::memory_order_release);
 		}

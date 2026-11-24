@@ -36,11 +36,11 @@ public:
 			builder.RequireCapability(spv::CapabilityCullDistance);
 		}
 
-		void_type       = builder.Type(spv::OpTypeVoid);
-		uint_type       = builder.Type(spv::OpTypeInt, 32u, 0u);
-		int_type        = builder.Type(spv::OpTypeInt, 32u, 1u);
-		float_type      = builder.Type(spv::OpTypeFloat, 32u);
-		vec4_float_type = builder.Type(spv::OpTypeVector, float_type, 4u);
+		void_type                = builder.Type(spv::OpTypeVoid);
+		uint_type                = builder.Type(spv::OpTypeInt, 32u, 0u);
+		int_type                 = builder.Type(spv::OpTypeInt, 32u, 1u);
+		float_type               = builder.Type(spv::OpTypeFloat, 32u);
+		vec4_float_type          = builder.Type(spv::OpTypeVector, float_type, 4u);
 		const auto function_type = builder.Type(spv::OpTypeFunction, void_type);
 
 		// gl_PerVertex: the position and the vertex shader's clip and cull distances.
@@ -55,12 +55,11 @@ public:
 			cull_type   = Array(float_type, interface.cull_distances);
 			members.push_back(cull_type);
 		}
-		const auto member_span    = std::span<const uint32_t>(members);
-		const auto per_vertex_in  = builder.Type(spv::OpTypeStruct, member_span);
+		const auto member_span   = std::span<const uint32_t>(members);
+		const auto per_vertex_in = builder.Type(spv::OpTypeStruct, member_span);
 		// A distinct type id for the output block, which alone may carry Invariant.
-		const auto per_vertex_out =
-		    builder.DecoratedType(spv::OpTypeStruct, {{spv::OpDecorate, {spv::DecorationBlock}}},
-		                          member_span);
+		const auto per_vertex_out = builder.DecoratedType(
+		    spv::OpTypeStruct, {{spv::OpDecorate, {spv::DecorationBlock}}}, member_span);
 		builder.AddAnnotation(spv::OpDecorate, per_vertex_in, spv::DecorationBlock);
 		for (const auto type: {per_vertex_in, per_vertex_out}) {
 			builder.AddAnnotation(spv::OpMemberDecorate, type, 0u, spv::DecorationBuiltIn,
@@ -85,9 +84,9 @@ public:
 		builder.AddExecutionMode(main, spv::ExecutionModeOutputTriangleStrip);
 		builder.AddExecutionMode(main, spv::ExecutionModeOutputVertices, 3u);
 
-		const auto gl_in  = AddInterface(spv::StorageClassInput, Array(per_vertex_in, 3u));
-		const auto gl_out = AddInterface(spv::StorageClassOutput, per_vertex_out);
-		uint32_t   primitive_id_in  = 0;
+		const auto gl_in           = AddInterface(spv::StorageClassInput, Array(per_vertex_in, 3u));
+		const auto gl_out          = AddInterface(spv::StorageClassOutput, per_vertex_out);
+		uint32_t   primitive_id_in = 0;
 		uint32_t   primitive_id_out = 0;
 		if (interface.primitive_id) {
 			primitive_id_in = AddInterface(spv::StorageClassInput, int_type);
@@ -115,9 +114,8 @@ public:
 				}
 				bound[i].input = input;
 			}
-			const std::array<uint32_t, 3> locations {parameter.output_location,
-			                                         parameter.vertex1_location,
-			                                         parameter.vertex2_location};
+			const std::array<uint32_t, 3> locations {
+			    parameter.output_location, parameter.vertex1_location, parameter.vertex2_location};
 			for (uint32_t vertex = 0; vertex < (parameter.raw ? 3u : 1u); vertex++) {
 				bound[i].outputs[vertex] = AddInterface(spv::StorageClassOutput, vec4_float_type);
 				builder.AddAnnotation(spv::OpDecorate, bound[i].outputs[vertex],
@@ -129,14 +127,15 @@ public:
 
 		const auto ptr_in_vec4  = Pointer(spv::StorageClassInput, vec4_float_type);
 		const auto ptr_out_vec4 = Pointer(spv::StorageClassOutput, vec4_float_type);
-		const auto zero = builder.Constant(spv::OpConstantNull, vec4_float_type);
+		const auto zero         = builder.Constant(spv::OpConstantNull, vec4_float_type);
 
 		// Every input is read once, before the first EmitVertex.
 		std::array<uint32_t, 3> positions {};
 		std::array<uint32_t, 3> clips {};
 		std::array<uint32_t, 3> culls {};
 		for (uint32_t vertex = 0; vertex < 3u; vertex++) {
-			positions[vertex] = Load(vec4_float_type, Access(ptr_in_vec4, gl_in, Int(vertex), Int(0)));
+			positions[vertex] =
+			    Load(vec4_float_type, Access(ptr_in_vec4, gl_in, Int(vertex), Int(0)));
 			if (clip_member != 0) {
 				clips[vertex] = Load(clip_type, Access(Pointer(spv::StorageClassInput, clip_type),
 				                                       gl_in, Int(vertex), Int(clip_member)));
@@ -194,7 +193,8 @@ private:
 	}
 
 	uint32_t Array(uint32_t type, uint32_t size) {
-		return builder.Type(spv::OpTypeArray, type, builder.Constant(spv::OpConstant, uint_type, size));
+		return builder.Type(spv::OpTypeArray, type,
+		                    builder.Constant(spv::OpConstant, uint_type, size));
 	}
 
 	template <typename... Args>
@@ -218,7 +218,9 @@ private:
 
 	uint32_t Load(uint32_t type, uint32_t pointer) { return Result(spv::OpLoad, type, pointer); }
 
-	void Store(uint32_t pointer, uint32_t value) { builder.AddFunction(spv::OpStore, pointer, value); }
+	void Store(uint32_t pointer, uint32_t value) {
+		builder.AddFunction(spv::OpStore, pointer, value);
+	}
 
 	uint32_t Int(uint32_t value) { return builder.Constant(spv::OpConstant, int_type, value); }
 
@@ -251,9 +253,10 @@ bool PerVertexGeometryNeeded(const ShaderPixelInputInfo* pixel_info) {
 	    pixel_info->parameter_mode == ShaderPixelParameterMode::Rectangle) {
 		return false;
 	}
-	return std::ranges::any_of(pixel_info->stage.program->info.inputs, [](const IR::StageInput& input) {
-		return input.kind == IR::StageInputKind::Parameter && input.per_vertex;
-	});
+	return std::ranges::any_of(
+	    pixel_info->stage.program->info.inputs, [](const IR::StageInput& input) {
+		    return input.kind == IR::StageInputKind::Parameter && input.per_vertex;
+	    });
 }
 
 PerVertexGeometryInterface DescribePerVertexGeometry(const ShaderVertexInputInfo& vertex_info,
@@ -278,12 +281,13 @@ PerVertexGeometryInterface DescribePerVertexGeometry(const ShaderVertexInputInfo
 	const auto slots = ShaderPixelPerVertexSlots(pixel_info, active, raw);
 	std::array<bool, ShaderMaxPerVertexLocations> written {};
 	for (const auto& slot: slots) {
-		result.parameters.push_back({.input_location   = slot.source,
-		                             .output_location  = slot.locations[0],
-		                             .raw              = true,
-		                             .vertex1_location = slot.locations[1],
-		                             .vertex2_location = slot.locations[2],
-		                             .exported = (vertex.param_export_mask & (1u << slot.source)) != 0});
+		result.parameters.push_back(
+		    {.input_location   = slot.source,
+		     .output_location  = slot.locations[0],
+		     .raw              = true,
+		     .vertex1_location = slot.locations[1],
+		     .vertex2_location = slot.locations[2],
+		     .exported         = (vertex.param_export_mask & (1u << slot.source)) != 0});
 		for (const auto location: slot.locations) {
 			written[location] = true;
 		}
@@ -301,7 +305,8 @@ PerVertexGeometryInterface DescribePerVertexGeometry(const ShaderVertexInputInfo
 		     .exported        = (vertex.param_export_mask & (1u << (source & 31u))) != 0});
 	}
 
-	// The vertex shader's built-in outputs, as DefineOutputs (spirvEmitterModule.cpp) declares them.
+	// The vertex shader's built-in outputs, as DefineOutputs (spirvEmitterModule.cpp) declares
+	// them.
 	bool has_position = false;
 	for (const auto& output: vertex.info.outputs) {
 		switch (output.kind) {

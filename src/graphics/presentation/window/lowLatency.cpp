@@ -16,17 +16,17 @@ namespace Libs::Graphics::LowLatency {
 namespace {
 
 struct State {
-	std::atomic<bool>          enabled {false};
-	VkDevice                   device = VK_NULL_HANDLE;
-	PFN_vkSetLatencySleepModeNV set_sleep_mode = nullptr;
-	PFN_vkLatencySleepNV        sleep          = nullptr;
-	PFN_vkSetLatencyMarkerNV    marker         = nullptr;
-	PFN_vkGetLatencyTimingsNV   timings        = nullptr;
-	VkSemaphore                 semaphore      = VK_NULL_HANDLE;
-	std::atomic<uint64_t>       semaphore_value {0};
-	std::mutex                  mutex; // the swapchain's calls (externally synchronized)
-	VkSwapchainKHR              swapchain = VK_NULL_HANDLE;
-	bool                        sleep_on  = false; // mode 1: the driver's sleep is called
+	std::atomic<bool>              enabled {false};
+	VkDevice                       device         = VK_NULL_HANDLE;
+	PFN_vkSetLatencySleepModeNV    set_sleep_mode = nullptr;
+	PFN_vkLatencySleepNV           sleep          = nullptr;
+	PFN_vkSetLatencyMarkerNV       marker         = nullptr;
+	PFN_vkGetLatencyTimingsNV      timings        = nullptr;
+	VkSemaphore                    semaphore      = VK_NULL_HANDLE;
+	std::atomic<uint64_t>          semaphore_value {0};
+	std::mutex                     mutex; // the swapchain's calls (externally synchronized)
+	VkSwapchainKHR                 swapchain = VK_NULL_HANDLE;
+	bool                           sleep_on  = false; // mode 1: the driver's sleep is called
 	VkSwapchainLatencyCreateInfoNV create_info {};
 	// Guest frames: flips set since the last accounted submission; frames ended.
 	std::atomic<uint64_t> flips_set {0};
@@ -95,7 +95,7 @@ void EndGuestFrame(uint64_t frame) {
 		}
 	}
 	if (value != 0) {
-		const auto      start = NowNs();
+		const auto          start = NowNs();
 		VkSemaphoreWaitInfo wait {};
 		wait.sType          = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
 		wait.semaphoreCount = 1;
@@ -158,24 +158,26 @@ void Report(State& s) {
 			gpu += r.gpuRenderEndTimeUs - r.gpuRenderStartTimeUs;
 		}
 	}
-	const auto sleeps = s.sleeps.exchange(0, std::memory_order_relaxed);
-	const auto sleep_us = s.sleep_us.exchange(0, std::memory_order_relaxed);
-	const double d = static_cast<double>(filled == 0 ? 1 : filled);
-	std::printf("LowLatency 10s: driver reports %u (present times %llu, GPU times %llu, full %llu), "
-	            "sim start -> GPU end "
-	            "%.2f ms, guest frame %.2f ms, present -> GPU start %.2f ms, GPU %.2f ms | sleeps "
-	            "%llu avg %.2f ms, %llu timeouts | presents with ID %llu | flip packets %llu, frames guest %llu CP %llu\n",
-	            query.timingCount, static_cast<unsigned long long>(with_present),
-	            static_cast<unsigned long long>(with_gpu), static_cast<unsigned long long>(filled),
-	            static_cast<double>(total) / d / 1000.0, static_cast<double>(sim) / d / 1000.0,
-	            static_cast<double>(queue) / d / 1000.0, static_cast<double>(gpu) / d / 1000.0,
-	            static_cast<unsigned long long>(sleeps),
-	            sleeps == 0 ? 0.0 : static_cast<double>(sleep_us) / static_cast<double>(sleeps) / 1000.0,
-	            static_cast<unsigned long long>(s.sleep_timeouts.exchange(0)),
-	            static_cast<unsigned long long>(s.presents_with_id.exchange(0)),
-	            static_cast<unsigned long long>(s.flips_set.load()),
-	            static_cast<unsigned long long>(s.guest_frame.load()),
-	            static_cast<unsigned long long>(s.gpu_frame.load()));
+	const auto   sleeps   = s.sleeps.exchange(0, std::memory_order_relaxed);
+	const auto   sleep_us = s.sleep_us.exchange(0, std::memory_order_relaxed);
+	const double d        = static_cast<double>(filled == 0 ? 1 : filled);
+	std::printf(
+	    "LowLatency 10s: driver reports %u (present times %llu, GPU times %llu, full %llu), "
+	    "sim start -> GPU end "
+	    "%.2f ms, guest frame %.2f ms, present -> GPU start %.2f ms, GPU %.2f ms | sleeps "
+	    "%llu avg %.2f ms, %llu timeouts | presents with ID %llu | flip packets %llu, frames guest "
+	    "%llu CP %llu\n",
+	    query.timingCount, static_cast<unsigned long long>(with_present),
+	    static_cast<unsigned long long>(with_gpu), static_cast<unsigned long long>(filled),
+	    static_cast<double>(total) / d / 1000.0, static_cast<double>(sim) / d / 1000.0,
+	    static_cast<double>(queue) / d / 1000.0, static_cast<double>(gpu) / d / 1000.0,
+	    static_cast<unsigned long long>(sleeps),
+	    sleeps == 0 ? 0.0 : static_cast<double>(sleep_us) / static_cast<double>(sleeps) / 1000.0,
+	    static_cast<unsigned long long>(s.sleep_timeouts.exchange(0)),
+	    static_cast<unsigned long long>(s.presents_with_id.exchange(0)),
+	    static_cast<unsigned long long>(s.flips_set.load()),
+	    static_cast<unsigned long long>(s.guest_frame.load()),
+	    static_cast<unsigned long long>(s.gpu_frame.load()));
 	std::fflush(stdout);
 }
 
@@ -209,22 +211,24 @@ bool WantExtensions(bool has_low_latency2, bool has_present_id) {
 		return false;
 	}
 	if (!has_low_latency2 || !has_present_id) {
-		std::printf("LowLatency: requested but unavailable (VK_NV_low_latency2 %d, VK_KHR_present_id "
-		            "%d): off\n",
-		            has_low_latency2 ? 1 : 0, has_present_id ? 1 : 0);
+		std::printf(
+		    "LowLatency: requested but unavailable (VK_NV_low_latency2 %d, VK_KHR_present_id "
+		    "%d): off\n",
+		    has_low_latency2 ? 1 : 0, has_present_id ? 1 : 0);
 		return false;
 	}
 	return true;
 }
 
 void OnDeviceCreated(VkDevice device) {
-	auto& s = Get();
+	auto&      s   = Get();
 	const auto get = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
-	s.device         = device;
-	s.set_sleep_mode = reinterpret_cast<PFN_vkSetLatencySleepModeNV>(get(device, "vkSetLatencySleepModeNV"));
-	s.sleep          = reinterpret_cast<PFN_vkLatencySleepNV>(get(device, "vkLatencySleepNV"));
-	s.marker         = reinterpret_cast<PFN_vkSetLatencyMarkerNV>(get(device, "vkSetLatencyMarkerNV"));
-	s.timings        = reinterpret_cast<PFN_vkGetLatencyTimingsNV>(get(device, "vkGetLatencyTimingsNV"));
+	s.device       = device;
+	s.set_sleep_mode =
+	    reinterpret_cast<PFN_vkSetLatencySleepModeNV>(get(device, "vkSetLatencySleepModeNV"));
+	s.sleep   = reinterpret_cast<PFN_vkLatencySleepNV>(get(device, "vkLatencySleepNV"));
+	s.marker  = reinterpret_cast<PFN_vkSetLatencyMarkerNV>(get(device, "vkSetLatencyMarkerNV"));
+	s.timings = reinterpret_cast<PFN_vkGetLatencyTimingsNV>(get(device, "vkGetLatencyTimingsNV"));
 	if (s.set_sleep_mode == nullptr || s.sleep == nullptr || s.marker == nullptr ||
 	    s.timings == nullptr) {
 		std::printf("LowLatency: VK_NV_low_latency2 entry points missing: off\n");
@@ -268,12 +272,12 @@ void OnSwapchainCreated(VkSwapchainKHR swapchain) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(s.mutex);
-	VkLatencySleepModeInfoNV mode {};
+	VkLatencySleepModeInfoNV    mode {};
 	mode.sType             = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV;
 	mode.lowLatencyMode    = Mode() == 1 ? VK_TRUE : VK_FALSE;
 	mode.lowLatencyBoost   = Mode() == 1 ? VK_TRUE : VK_FALSE;
 	mode.minimumIntervalUs = 0;
-	const auto result = s.set_sleep_mode(s.device, swapchain, &mode);
+	const auto result      = s.set_sleep_mode(s.device, swapchain, &mode);
 	std::printf("LowLatency: swapchain sleep mode %s -> %s\n",
 	            Mode() == 1 ? "on (boost)" : "off (measure only)",
 	            result == VK_SUCCESS ? "ok" : "failed");

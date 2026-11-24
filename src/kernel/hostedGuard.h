@@ -65,11 +65,12 @@ public:
 		}
 		~Shared() {
 			if (m_slot != nullptr) {
-				m_slot->store(m_slot->load(std::memory_order_relaxed) - 1, std::memory_order_release);
+				m_slot->store(m_slot->load(std::memory_order_relaxed) - 1,
+				              std::memory_order_release);
 			}
 		}
-		Shared(const Shared&)            = delete;
-		Shared& operator=(const Shared&) = delete;
+		Shared(const Shared&)                       = delete;
+		Shared&            operator=(const Shared&) = delete;
 		[[nodiscard]] bool OnSlot() const noexcept { return m_slot != nullptr; }
 
 	private:
@@ -116,7 +117,8 @@ private:
 		Slot                  slots[SlotCount];
 		std::atomic<uint32_t> used {0}; // slots [0, used) were handed out at least once
 		std::mutex            free_mutex;
-		std::vector<uint32_t> free; // handed back by threads that ended (or moved to another object)
+		std::vector<uint32_t>
+		    free; // handed back by threads that ended (or moved to another object)
 
 		// A slot index, or SlotCount when none is left.
 		uint32_t Take() {
@@ -148,7 +150,7 @@ private:
 		std::shared_ptr<Table> table;
 		uint32_t               index = SlotCount;
 		uint32_t               tries = 0;
-		void Take() {
+		void                   Take() {
 			index = table->Take();
 			slot  = index < SlotCount ? &table->slots[index].depth : nullptr;
 		}
@@ -161,7 +163,7 @@ private:
 	};
 	struct ThreadEntries {
 		static constexpr uint32_t Count = 4;
-		Entry entries[Count];
+		Entry                     entries[Count];
 		// The thread ends: its slots go back (guards are scoped, so none is held).
 		~ThreadEntries() {
 			for (auto& entry: entries) {

@@ -30,7 +30,7 @@ struct PerVertexGeometryInterface {
 		// The output location; vertex 0's when raw.
 		uint32_t output_location = 0;
 		// Raw vertices: locations of vertices 1 and 2 (output_location is vertex 0's).
-		bool     raw = false;
+		bool     raw              = false;
 		uint32_t vertex1_location = 0;
 		uint32_t vertex2_location = 0;
 		// The vertex shader exports it (otherwise the outputs are zero).
@@ -50,12 +50,13 @@ struct PerVertexGeometryInterface {
 // per-vertex inputs and has some.
 [[nodiscard]] bool PerVertexGeometryNeeded(const ShaderPixelInputInfo* pixel_info);
 
-[[nodiscard]] PerVertexGeometryInterface DescribePerVertexGeometry(
-    const ShaderVertexInputInfo& vertex_info, const ShaderPixelInputInfo& pixel_info);
+[[nodiscard]] PerVertexGeometryInterface
+DescribePerVertexGeometry(const ShaderVertexInputInfo& vertex_info,
+                          const ShaderPixelInputInfo&  pixel_info);
 
 // The geometry stage's SPIR-V (triangles in, one triangle strip of three vertices out).
-[[nodiscard]] std::vector<uint32_t> BuildPerVertexGeometryShader(
-    const PerVertexGeometryInterface& interface);
+[[nodiscard]] std::vector<uint32_t>
+BuildPerVertexGeometryShader(const PerVertexGeometryInterface& interface);
 
 } // namespace Libs::Graphics
 

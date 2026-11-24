@@ -17,9 +17,9 @@
 // only write (LodStatsEarlyTests). That is the same result as late tests unless the shader changes
 // its own coverage (discard, alpha to mask) while the draw can write depth or stencil: a discarded
 // fragment would then still write them. Such a draw runs the feedback-free variant instead
-// (LodStatsEarlyTestsNeedPlain in host_gpu/renderer/lodStatsEarlyDraw.h; KYTY_LOD_STATS_PLAIN_VARIANT
-// must be on): it records nothing, and
-// the colour pass that follows records the same textures.
+// (LodStatsEarlyTestsNeedPlain in host_gpu/renderer/lodStatsEarlyDraw.h;
+// KYTY_LOD_STATS_PLAIN_VARIANT must be on): it records nothing, and the colour pass that follows
+// records the same textures.
 
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"

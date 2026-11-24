@@ -28,17 +28,17 @@ static inline __attribute__((always_inline)) uint64_t __rdtscp(unsigned int* aux
 	return nps5_rdtsc();
 }
 
-#define _MM_HINT_T0 3
-#define _MM_HINT_T1 2
-#define _MM_HINT_T2 1
-#define _MM_HINT_NTA 0
+#define _MM_HINT_T0                 3
+#define _MM_HINT_T1                 2
+#define _MM_HINT_T2                 1
+#define _MM_HINT_NTA                0
 #define _mm_prefetch(address, hint) __builtin_prefetch((address), 0, (hint))
 
 static inline void nps5_cpuid(int regs[4], int leaf) {
 	(void)leaf;
 	regs[0] = regs[1] = regs[2] = regs[3] = 0;
 }
-#define __cpuid(regs, leaf) nps5_cpuid((regs), (leaf))
+#define __cpuid(regs, leaf)            nps5_cpuid((regs), (leaf))
 #define __cpuidex(regs, leaf, subleaf) nps5_cpuid((regs), (leaf))
 
 static inline __attribute__((always_inline)) void _mm_lfence(void) {}

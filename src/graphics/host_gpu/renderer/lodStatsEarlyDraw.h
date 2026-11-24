@@ -22,14 +22,13 @@ namespace Libs::Graphics::ShaderRecompiler {
 	if (!dc.stencil_enable) {
 		return false;
 	}
-	const auto& sc = hw.GetStencilControl();
-	const auto& sm = hw.GetStencilMask();
-	const bool  front =
-	    sm.stencil_writemask != 0 &&
-	    (sc.stencil_fail != 0 || sc.stencil_zpass != 0 || sc.stencil_zfail != 0);
-	const bool back = dc.backface_enable && sm.stencil_writemask_bf != 0 &&
-	                  (sc.stencil_fail_bf != 0 || sc.stencil_zpass_bf != 0 ||
-	                   sc.stencil_zfail_bf != 0);
+	const auto& sc    = hw.GetStencilControl();
+	const auto& sm    = hw.GetStencilMask();
+	const bool  front = sm.stencil_writemask != 0 &&
+	                    (sc.stencil_fail != 0 || sc.stencil_zpass != 0 || sc.stencil_zfail != 0);
+	const bool  back =
+	    dc.backface_enable && sm.stencil_writemask_bf != 0 &&
+	    (sc.stencil_fail_bf != 0 || sc.stencil_zpass_bf != 0 || sc.stencil_zfail_bf != 0);
 	return front || back;
 }
 
@@ -37,7 +36,7 @@ namespace Libs::Graphics::ShaderRecompiler {
 // coverage while depth or stencil can be written: early tests would not be equivalent, the draw
 // takes the feedback-free variant.
 template <typename ProgramT>
-[[nodiscard]] bool LodStatsEarlyTestsNeedPlain(const ProgramT& program,
+[[nodiscard]] bool LodStatsEarlyTestsNeedPlain(const ProgramT&             program,
                                                const ShaderPixelInputInfo& ps,
                                                const HW::Context&          hw) {
 	return (ps.ps_pixel_kill_enable || hw.GetShaderRegisters().AlphaToMask()) &&

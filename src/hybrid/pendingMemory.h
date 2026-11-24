@@ -8,9 +8,10 @@
 #include <mutex>
 #include <vector>
 
-// nps5 hosted memory: the notifications a 1.6 host sends between init and start_graphics (it registers
-// everything mapped before the renderer exists). They are kept in order and applied once the library's
-// memory subsystem is up (kytyGpuBridge.cpp RendererBegin). Header only: tests/HybridSeamTests.cpp.
+// nps5 hosted memory: the notifications a 1.6 host sends between init and start_graphics (it
+// registers everything mapped before the renderer exists). They are kept in order and applied once
+// the library's memory subsystem is up (kytyGpuBridge.cpp RendererBegin). Header only:
+// tests/HybridSeamTests.cpp.
 namespace Hybrid {
 
 class PendingMemory {
@@ -24,8 +25,8 @@ public:
 		const void* alias = nullptr;
 	};
 
-	// Queues the note and returns true while the memory subsystem is not ready; false once it is (the
-	// caller then applies the note itself).
+	// Queues the note and returns true while the memory subsystem is not ready; false once it is
+	// (the caller then applies the note itself).
 	bool Queue(const Note& note) {
 		std::lock_guard lock(m_mutex);
 		if (m_ready) {
@@ -35,8 +36,9 @@ public:
 		return true;
 	}
 
-	// Applies every queued note in order through apply(note) and marks the subsystem ready; notes that
-	// arrive meanwhile wait on the lock and are then applied by their callers. Returns the count.
+	// Applies every queued note in order through apply(note) and marks the subsystem ready; notes
+	// that arrive meanwhile wait on the lock and are then applied by their callers. Returns the
+	// count.
 	template <typename Apply>
 	size_t Drain(Apply&& apply) {
 		std::lock_guard lock(m_mutex);
@@ -55,8 +57,10 @@ public:
 		std::lock_guard lock(m_mutex);
 		bool            covered = false;
 		for (const auto& note: m_notes) {
-			if (note.kind != Kind::Protect && note.base < base + size && base < note.base + note.size) {
-				covered = note.kind == Kind::Register && note.base <= base && base + size <= note.base + note.size;
+			if (note.kind != Kind::Protect && note.base < base + size &&
+			    base < note.base + note.size) {
+				covered = note.kind == Kind::Register && note.base <= base &&
+				          base + size <= note.base + note.size;
 			}
 		}
 		return covered;
@@ -75,8 +79,8 @@ private:
 	if (text == nullptr || text[0] == '\0') {
 		return fallback;
 	}
-	char* end = nullptr;
-	errno     = 0;
+	char* end        = nullptr;
+	errno            = 0;
 	const long value = std::strtol(text, &end, 10);
 	if (end == text || *end != '\0' || errno != 0 || value < 0 || value > (1L << 30)) {
 		return fallback;

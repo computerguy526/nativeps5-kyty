@@ -20,7 +20,7 @@ struct Range {
 	const uint8_t* alias = nullptr; // host view of the range's first byte, or null
 };
 
-using Map    = std::map<uint64_t, Range>;                // by guest base, never overlapping
+using Map    = std::map<uint64_t, Range>;                  // by guest base, never overlapping
 using Pieces = std::vector<std::pair<uint64_t, uint64_t>>; // (guest address, bytes)
 
 // Takes [base, base + size) out of `ranges`; a range that sticks out keeps its outer parts.
@@ -58,7 +58,8 @@ inline void Cut(Map& ranges, uint64_t base, uint64_t size, Pieces& removed) {
 
 // unregister_memory: false when nothing in [base, base + size) was registered.
 template <typename Exclusive>
-inline bool Unregister(Map& ranges, std::atomic<uint64_t>& generation, uint64_t base, uint64_t size, Pieces& removed) {
+inline bool Unregister(Map& ranges, std::atomic<uint64_t>& generation, uint64_t base, uint64_t size,
+                       Pieces& removed) {
 	const Exclusive lock;
 	Cut(ranges, base, size, removed);
 	if (!removed.empty()) {
@@ -69,10 +70,11 @@ inline bool Unregister(Map& ranges, std::atomic<uint64_t>& generation, uint64_t 
 
 // register_memory: [base, base + size) becomes one range; what was registered there before is in
 // `removed`. One step under one guard: a reader sees the old ranges or the new one, never the range
-// missing (the host registers the outer parts of a cut range again while the GPU threads read them).
+// missing (the host registers the outer parts of a cut range again while the GPU threads read
+// them).
 template <typename Exclusive>
-inline void Register(Map& ranges, std::atomic<uint64_t>& generation, uint64_t base, uint64_t size, uint32_t flags,
-                     const uint8_t* alias, Pieces& removed) {
+inline void Register(Map& ranges, std::atomic<uint64_t>& generation, uint64_t base, uint64_t size,
+                     uint32_t flags, const uint8_t* alias, Pieces& removed) {
 	const Exclusive lock;
 	Cut(ranges, base, size, removed);
 	ranges[base] = {size, flags, alias};

@@ -1,10 +1,11 @@
-// Motion sensors of the host's pad, relayed to the game (hybrid bridge). Pure helpers: no SDL calls, so they are
-// unit-tested without a controller (tests/PadMotionTests.cpp).
+// Motion sensors of the host's pad, relayed to the game (hybrid bridge). Pure helpers: no SDL
+// calls, so they are unit-tested without a controller (tests/PadMotionTests.cpp).
 //
-// SDL3 normalises every gamepad's sensors to one coordinate system (right-handed, x right, y up, z towards the
-// player when the pad is held flat in front of you; gravity at rest on a table is +y; gyro in rad/s, accelerometer
-// in m/s^2), so DualSense, DualShock 4, Switch Pro Controller and Joy-Cons need no per-model axis code; the host
-// pad library (libScePad) fuses the orientation from these values itself.
+// SDL3 normalises every gamepad's sensors to one coordinate system (right-handed, x right, y up, z
+// towards the player when the pad is held flat in front of you; gravity at rest on a table is +y;
+// gyro in rad/s, accelerometer in m/s^2), so DualSense, DualShock 4, Switch Pro Controller and
+// Joy-Cons need no per-model axis code; the host pad library (libScePad) fuses the orientation from
+// these values itself.
 #pragma once
 
 #include <algorithm>
@@ -26,7 +27,8 @@ struct Sample {
 	bool     valid   = false;                 // the pad has sensors and delivered a reading
 };
 
-// Plausibility window for a sample: a DualSense reports +-4 g / +-2000 deg/s; anything beyond is a glitch.
+// Plausibility window for a sample: a DualSense reports +-4 g / +-2000 deg/s; anything beyond is a
+// glitch.
 constexpr float kMaxAccel = 16.0f * kGravity;
 constexpr float kMaxGyro  = 40.0f; // rad/s (2290 deg/s)
 
@@ -39,8 +41,10 @@ inline bool Finite(const float* v, int n) {
 	return true;
 }
 
-// Kyty's pad data (accel in g, gyro rad/s) -> a relay sample. Returns false for non-finite readings.
-inline bool FromPadData(const float accel_g[3], const float gyro[3], uint64_t time_us, Sample* out) {
+// Kyty's pad data (accel in g, gyro rad/s) -> a relay sample. Returns false for non-finite
+// readings.
+inline bool FromPadData(const float accel_g[3], const float gyro[3], uint64_t time_us,
+                        Sample* out) {
 	if (!Finite(accel_g, 3) || !Finite(gyro, 3)) {
 		return false;
 	}
@@ -83,7 +87,7 @@ public:
 		}
 		m_last = std::max(m_last, time_us);
 	}
-	double Hz() const { return m_count > 0 && m_interval > 0.0 ? 1.0e6 / m_interval : 0.0; }
+	double   Hz() const { return m_count > 0 && m_interval > 0.0 ? 1.0e6 / m_interval : 0.0; }
 	uint64_t Count() const { return m_count; }
 
 private:
@@ -92,8 +96,9 @@ private:
 	double   m_interval = 0.0;
 };
 
-// Angular velocity from the change of an orientation quaternion (x y z w), for pads that report orientation but
-// no gyro (Kyty's emulated tilt). Body-frame rate from conj(prev) * q. dt in seconds.
+// Angular velocity from the change of an orientation quaternion (x y z w), for pads that report
+// orientation but no gyro (Kyty's emulated tilt). Body-frame rate from conj(prev) * q. dt in
+// seconds.
 inline bool RateFromOrientation(const float prev[4], const float q[4], float dt, float rate[3]) {
 	if (!(dt > 0.0005f && dt < 0.1f)) {
 		return false;
@@ -109,11 +114,13 @@ inline bool RateFromOrientation(const float prev[4], const float q[4], float dt,
 	return true;
 }
 
-// ---- trace (ASTROHYBRID_PAD_MOTION_REC=<file>): one sample per line, "<time_us> ax ay az gx gy gz", SDL units.
+// ---- trace (ASTROHYBRID_PAD_MOTION_REC=<file>): one sample per line, "<time_us> ax ay az gx gy
+// gz", SDL units.
 inline std::string FormatTraceLine(const Sample& s) {
 	char line[160];
-	std::snprintf(line, sizeof(line), "%llu %.6f %.6f %.6f %.6f %.6f %.6f\n", static_cast<unsigned long long>(s.time_us),
-	              s.accel[0], s.accel[1], s.accel[2], s.gyro[0], s.gyro[1], s.gyro[2]);
+	std::snprintf(line, sizeof(line), "%llu %.6f %.6f %.6f %.6f %.6f %.6f\n",
+	              static_cast<unsigned long long>(s.time_us), s.accel[0], s.accel[1], s.accel[2],
+	              s.gyro[0], s.gyro[1], s.gyro[2]);
 	return line;
 }
 inline bool ParseTraceLine(const char* line, Sample* s) {
@@ -122,7 +129,9 @@ inline bool ParseTraceLine(const char* line, Sample* s) {
 	}
 	unsigned long long t = 0;
 	float              v[6];
-	if (std::sscanf(line, "%llu %f %f %f %f %f %f", &t, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 7 || !Finite(v, 6)) {
+	if (std::sscanf(line, "%llu %f %f %f %f %f %f", &t, &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) !=
+	        7 ||
+	    !Finite(v, 6)) {
 		return false;
 	}
 	std::memcpy(s->accel, v, sizeof(float) * 3);
@@ -133,13 +142,16 @@ inline bool ParseTraceLine(const char* line, Sample* s) {
 }
 
 // The 1 Hz '[pad] motion' line (ASTROHYBRID_PAD_MOTION_LOG=1).
-inline std::string FormatLogLine(const char* type, double rate_hz, const Sample& s, uint64_t samples) {
+inline std::string FormatLogLine(const char* type, double rate_hz, const Sample& s,
+                                 uint64_t samples) {
 	char line[256];
-	std::snprintf(line, sizeof(line),
-	              "[pad] motion type=%s rate=%.0fHz n=%llu accel=%.2f,%.2f,%.2f m/s^2 (|a|=%.2f) gyro=%.3f,%.3f,%.3f rad/s", type,
-	              rate_hz, static_cast<unsigned long long>(samples), s.accel[0], s.accel[1], s.accel[2],
-	              std::sqrt(s.accel[0] * s.accel[0] + s.accel[1] * s.accel[1] + s.accel[2] * s.accel[2]), s.gyro[0],
-	              s.gyro[1], s.gyro[2]);
+	std::snprintf(
+	    line, sizeof(line),
+	    "[pad] motion type=%s rate=%.0fHz n=%llu accel=%.2f,%.2f,%.2f m/s^2 (|a|=%.2f) "
+	    "gyro=%.3f,%.3f,%.3f rad/s",
+	    type, rate_hz, static_cast<unsigned long long>(samples), s.accel[0], s.accel[1], s.accel[2],
+	    std::sqrt(s.accel[0] * s.accel[0] + s.accel[1] * s.accel[1] + s.accel[2] * s.accel[2]),
+	    s.gyro[0], s.gyro[1], s.gyro[2]);
 	return line;
 }
 

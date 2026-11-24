@@ -12,9 +12,11 @@
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/backend/msl/MslXform.h"
+#include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
+#include "kprcLoader.h"
 
 #include <cinttypes>
 #include <cstdio>
@@ -28,19 +30,15 @@
 #include <vector>
 
 namespace Common {
-int DbgExitIfHandler(const char *e, const char *, int) {
+void DbgExitIfHandler(const char *e, const char *, int) {
   std::fprintf(stderr, "EXIT_IF %s\n", e);
   _exit(3);
 }
-int DbgNotImplementedHandler(const char *e, const char *, int) {
+void DbgNotImplementedHandler(const char *e, const char *, int) {
   std::fprintf(stderr, "NOTIMPL %s\n", e);
   _exit(3);
 }
-int DbgExitHandler(const char *, int, std::string_view t) {
-  std::fprintf(stderr, "EXIT %.*s\n", (int)t.size(), t.data());
-  _exit(3);
-}
-int DbgExitHandler(const char *, int, fmt::text_style, std::string_view t) {
+void DbgExitHandler(const char *, int, std::string_view t) {
   std::fprintf(stderr, "EXIT %.*s\n", (int)t.size(), t.data());
   _exit(3);
 }
@@ -52,107 +50,28 @@ namespace SR = Libs::Graphics::ShaderRecompiler;
 
 namespace {
 
-struct Src {
-  uint32_t stage = 0, wave = 64, user_data_count = 0, user_data_base = 0;
-  uint64_t hash = 0;
-  std::vector<uint32_t> statics, code;
-  std::vector<uint32_t> back_code; // meshpath: merged GS back half (key tail)
-  std::string digest;
-};
-struct Perm {
-  int perm = 0;
-  std::string digest;
-  std::vector<uint8_t> spec;
-  uint32_t cursor = 0; // mslfix2: push-data cursor the permutation was compiled
-                       // with (VS data follows the PS's)
-};
+using Kprc::Perm;
+using Kprc::Src;
 
 bool ReadAll(const char *path, std::vector<uint8_t> &d) {
-  std::FILE *fp = std::fopen(path, "rb");
-  if (!fp)
-    return false;
-  uint8_t buf[1 << 16];
-  for (size_t n; (n = std::fread(buf, 1, sizeof(buf), fp)) > 0;)
-    d.insert(d.end(), buf, buf + n);
-  std::fclose(fp);
-  return true;
+  return Kprc::ReadFile(path, d);
 }
 
-// KPRC source records (programDiskCache.cpp BuildSourceKey layout), as
-// work/mslnative/tools/corpus_dec.cpp reads them.
+// KPRC source records: tools/msl-dump/kprcLoader.h (bounds-checked; parses the SAROS variant word of hand-shader keys).
+// A damaged file reports the first bad record on stderr and keeps the records before it.
 std::vector<Src> LoadPrograms(const char *path,
-                              std::vector<Perm> *perms = nullptr) {
-  std::vector<uint8_t> d;
-  std::vector<Src> out;
-  if (!ReadAll(path, d) || d.size() < 32)
-    return out;
-  size_t off = 16;
-  uint64_t n;
-  std::memcpy(&n, &d[off], 8);
-  off += 8 + n + 8;
-  int perm_idx = 0;
-  while (off + 24 <= d.size()) {
-    uint32_t magic, kind;
-    uint64_t size;
-    std::memcpy(&magic, &d[off], 4);
-    std::memcpy(&kind, &d[off + 4], 4);
-    std::memcpy(&size, &d[off + 8], 8);
-    if (magic != 0x4352504bu)
-      break;
-    const size_t p = off + 24, end = p + size;
-    if (kind == 1) {
-      size_t q = p + 16;
-      uint32_t kl;
-      std::memcpy(&kl, &d[q], 4);
-      q += 4;
-      const uint8_t *key = &d[q];
-      Src s;
-      s.digest.assign(reinterpret_cast<const char *>(&d[p]), 16);
-      uint32_t lay, ns, nc;
-      std::memcpy(&lay, key, 4);
-      std::memcpy(&s.stage, key + 4, 4);
-      std::memcpy(&s.hash, key + 8, 8);
-      std::memcpy(&s.user_data_count, key + 16, 4);
-      size_t k = 24;
-      std::memcpy(&ns, key + k, 4);
-      s.statics.resize(ns);
-      std::memcpy(s.statics.data(), key + k + 4, 4ull * ns);
-      k += 4 + 4ull * ns;
-      std::memcpy(&s.wave, key + k, 4);
-      std::memcpy(&s.user_data_base, key + k + 4, 4);
-      k += 8 + 1;
-      std::memcpy(&nc, key + k, 4);
-      k += 4;
-      s.code.resize(nc);
-      std::memcpy(s.code.data(), key + k, 4ull * nc);
-      k += 4ull * nc;
-      // meshpath: BuildSourceKey ends with PutWords(back_code) (count 0 for
-      // every stage without a separately compiled back half).
-      if (k + 4 <= kl) {
-        uint32_t nb;
-        std::memcpy(&nb, key + k, 4);
-        if (k + 4 + 4ull * nb <= kl) {
-          s.back_code.resize(nb);
-          std::memcpy(s.back_code.data(), key + k + 4, 4ull * nb);
-        }
-      }
-      out.push_back(std::move(s));
-    }
-    if (kind != 1) {
-      if (perms) {
-        Perm pm;
-        pm.perm = perm_idx;
-        pm.digest.assign(reinterpret_cast<const char *>(&d[p]), 16);
-        uint32_t sl;
-        std::memcpy(&sl, &d[p + 20], 4);
-        pm.spec.assign(&d[p + 24], &d[p + 24] + sl);
-        std::memcpy(&pm.cursor, &d[p + 16], 4);
-        perms->push_back(std::move(pm));
-      }
-      perm_idx++;
-    }
-    off = p + size;
-  }
+                              std::vector<Perm> *perms = nullptr,
+                              std::vector<uint8_t> *image = nullptr,
+                              size_t *head_len = nullptr) {
+  std::vector<uint8_t> local;
+  std::vector<uint8_t> &d = image ? *image : local;
+  if (!ReadAll(path, d))
+    return {};
+  std::string err;
+  auto out = Kprc::Parse(d, perms, &err, head_len);
+  if (!err.empty())
+    std::fprintf(stderr, "programs: %s (%zu sources loaded)\n", err.c_str(),
+                 out.size());
   return out;
 }
 
@@ -316,7 +235,8 @@ uint32_t g_loop_cap = 1u << 18u;
 
 int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
               const char *manifest_path = nullptr, const Perm *perm = nullptr,
-              const Src *link_ps = nullptr, const Perm *link_perm = nullptr) {
+              const Src *link_ps = nullptr, const Perm *link_perm = nullptr,
+              const char *kk_layout_path = nullptr) {
   ShaderComputeInputInfo info;
   ShaderVertexInputInfo vinfo;
   ShaderPixelInputInfo pinfo;
@@ -488,6 +408,15 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   }
   auto result =
       SR::CompileProgram(std::move(translated), options, spec, cursor);
+  if (kk_layout_path) { // kk_spv_lay layout file from program.bindings (no layout_dump)
+    const auto text = SR::Msl::KkLayoutText(result.program);
+    std::FILE *lf = std::fopen(kk_layout_path, "wb");
+    if (!lf || std::fwrite(text.data(), 1, text.size(), lf) != text.size()) {
+      std::fprintf(stderr, "--kk-layout: cannot write %s\n", kk_layout_path);
+      return 2;
+    }
+    std::fclose(lf);
+  }
   std::FILE *out = out_path ? std::fopen(out_path, "wb") : stdout;
   std::fwrite(result.msl.data(), 1, result.msl.size(), out);
   if (out_path)
@@ -505,6 +434,11 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
   for (const auto &u : result.msl_unsupported)
     std::fprintf(stderr, " %s", u.c_str());
   std::fprintf(stderr, "\n");
+  // A refusal (the emitter will not guess a binding, e.g. a bindless image table) is not a text
+  // with holes: exit 5, the reason is the "refused:" entry printed above.
+  for (const auto &u : result.msl_unsupported)
+    if (u.rfind("refused:", 0) == 0)
+      return 5;
   return 0;
 }
 
@@ -512,7 +446,7 @@ int Translate(const Src &s, const char *out_path, bool comments, uint32_t lanes,
 
 int main(int argc, char **argv) {
   const char *programs = nullptr, *bin = nullptr, *out = nullptr,
-             *manifest = nullptr;
+             *manifest = nullptr, *subset = nullptr, *kk_layout = nullptr;
   long index = -1, perm_sel = -1, link_perm = -1;
   bool xf_keys =
       false; // perfauto: print the KYTY_MSL_XF_TABLE key of every source
@@ -559,6 +493,10 @@ int main(int argc, char **argv) {
       }
     } else if (a == "--list")
       list = true;
+    else if (a == "--kk-layout")
+      kk_layout = next();
+    else if (a == "--subset")
+      subset = next();
     else if (a == "--perm")
       perm_sel = std::atol(next());
     else if (a == "--link-ps")
@@ -600,12 +538,36 @@ int main(int argc, char **argv) {
   std::vector<Perm> perms;
   const Perm *use_perm = nullptr;
   if (programs) {
-    srcs = LoadPrograms(programs, &perms);
+    std::vector<uint8_t> image;
+    size_t head_len = 0;
+    srcs = LoadPrograms(programs, &perms, subset ? &image : nullptr, &head_len);
+    if (subset) { // one permutation + its source record as a small KPRC file (readable by --programs OUT --perm 0)
+      std::vector<uint8_t> sub;
+      std::string e;
+      if (perm_sel < 0 ||
+          !Kprc::BuildSubset(image, head_len, srcs, perms, static_cast<int>(perm_sel), sub, &e)) {
+        std::fprintf(stderr, "--subset: %s\n", perm_sel < 0 ? "needs --perm N" : e.c_str());
+        return 2;
+      }
+      std::FILE *fp = std::fopen(subset, "wb");
+      if (!fp || std::fwrite(sub.data(), 1, sub.size(), fp) != sub.size()) {
+        std::fprintf(stderr, "--subset: cannot write %s\n", subset);
+        if (fp) std::fclose(fp);
+        return 2;
+      }
+      std::fclose(fp);
+      std::printf("subset perm=%ld bytes=%zu\n", perm_sel, sub.size());
+      return 0;
+    }
     if (list) {
-      for (size_t i = 0; i < srcs.size(); i++)
-        std::printf("%zu hash=%016" PRIx64 " stage=%u wave=%u words=%zu\n", i,
+      for (size_t i = 0; i < srcs.size(); i++) {
+        std::printf("%zu hash=%016" PRIx64 " stage=%u wave=%u words=%zu", i,
                     srcs[i].hash, srcs[i].stage, srcs[i].wave,
                     srcs[i].code.size());
+        if (srcs[i].has_variant) // SAROS hand shaders only; plain keys print as before
+          std::printf(" variant=%016" PRIx64, srcs[i].variant);
+        std::printf("\n");
+      }
       return 0;
     }
     if (xf_keys) { // "<vs|ps|cs> <guest hash> <source digest>": the table key
@@ -705,7 +667,7 @@ int main(int argc, char **argv) {
   const pid_t pid = std::getenv("KYTY_MSL_DUMP_NOFORK") ? 0 : fork();
   if (pid == 0) {
     const int rc = Translate(srcs[0], out, comments, lanes, manifest, use_perm,
-                             link_ptr, link_perm_ptr);
+                             link_ptr, link_perm_ptr, kk_layout);
     std::fflush(stdout);
     _exit(rc);
   }

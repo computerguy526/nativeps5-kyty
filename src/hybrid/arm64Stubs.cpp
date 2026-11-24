@@ -30,7 +30,7 @@ void RunThreadAtexitDestructors() {} // guest libc thread-exit destructors: the 
 
 namespace LibC {
 void InitLibC_1(Loader::SymbolDatabase* /*s*/) {} // no guest libc exports from this library
-int GetArgc() {
+int  GetArgc() {
 	return 0;
 }
 const char** GetArgv() {
@@ -45,10 +45,11 @@ namespace Loader {
 GuestInstructionHostFeatures GetGuestInstructionHostFeatures() {
 	return {};
 }
-void RegisterGuestInstructionPatchModule(void*, uint64_t, void*, uint64_t) {}
-void UnregisterGuestInstructionPatchModule(void*) {}
-GuestInstructionPatchResult PatchGuestInstructions(uint64_t, uint64_t, std::span<const uintptr_t>, bool, bool,
-                                                   GuestInstructionHostFeatures) {
+void                        RegisterGuestInstructionPatchModule(void*, uint64_t, void*, uint64_t) {}
+void                        UnregisterGuestInstructionPatchModule(void*) {}
+GuestInstructionPatchResult PatchGuestInstructions(uint64_t, uint64_t, std::span<const uintptr_t>,
+                                                   bool, bool, GuestInstructionHostFeatures,
+                                                   uint64_t) {
 	Unreachable("the guest instruction patcher");
 }
 bool DecodeEhFrameFunctionStarts(uint64_t, uint64_t, std::vector<uintptr_t>*) {
@@ -65,7 +66,7 @@ bool DecodeGuestLoad(void*, uint64_t, GuestLoad::Load&) {
 bool ApplyGuestLoad(void*, const GuestLoad::Load&, const void*) {
 	return false;
 }
-void ConfigureReciprocalSqrtStats() {}
+void                ConfigureReciprocalSqrtStats() {}
 ReciprocalSqrtStats GetReciprocalSqrtStats() {
 	return {};
 }

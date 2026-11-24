@@ -1,5 +1,6 @@
 // nps5: MetalFX in place of Astro Bot's temporal upscale pass (metalfx.h).
 #include "graphics/host_gpu/renderer/metalfx.h"
+#include "graphics/host_gpu/renderer/metalfxUe.h"
 
 #include "common/guestAddress.h"
 #include "graphics/host_gpu/renderer/astroTileGrid.h"
@@ -7,7 +8,6 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/image/image.h"
-#include "graphics/host_gpu/renderer/metalfxUe.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
@@ -24,6 +24,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,7 +40,8 @@ namespace MetalFx {
 
 namespace {
 
-// The driver command's argument (the patched KosmicKrisp driver, src/kosmickrisp/vulkan/kk_cmd_fx.c).
+// The driver command's argument (the patched KosmicKrisp driver,
+// src/kosmickrisp/vulkan/kk_cmd_fx.c).
 struct KkMetalFxInfo {
 	uint32_t size;
 	uint32_t mode; // 1 temporal, 2 spatial
@@ -51,17 +53,36 @@ struct KkMetalFxInfo {
 	uint32_t reset;
 	uint32_t depth_reversed;
 	uint32_t auto_exposure;
-	uint32_t depth_mode; // 0: the depth image; 1: colour.w is linear view depth (near / w, reversed)
-	float    depth_near;
+	uint32_t
+	      depth_mode; // 0: the depth image; 1: colour.w is linear view depth (near / w, reversed)
+	float depth_near;
 	uint32_t reserved;
+	// nps5 mfxreact: only read by a driver that accepts size == sizeof (an older one takes the 96-byte head).
+	VkImage  reactive;
+	uint32_t react_channel; // 0..3 = r g b a, 4 = max(r, g)
+	float    react_gain;
+	float    pre_exposure;
+	uint32_t reserved2;
 };
+constexpr uint32_t KK_INFO_V1_SIZE = 96; // offsetof(KkMetalFxInfo, reactive)
+static_assert(offsetof(KkMetalFxInfo, reactive) == KK_INFO_V1_SIZE);
 using KkCmdMetalFx = int (*)(VkCommandBuffer, const KkMetalFxInfo*);
 
 enum class Mode { Off, Temporal, Spatial };
 
-enum class Fallback : uint8_t { NoDriver, Bindings, Sizes, NoDepth, NoMotionVectors, Refused, NoUpscale, Count };
+enum class Fallback : uint8_t {
+	NoDriver,
+	Bindings,
+	Sizes,
+	NoDepth,
+	NoMotionVectors,
+	Refused,
+	NoUpscale,
+	Count
+};
 constexpr std::array<const char*, static_cast<size_t>(Fallback::Count)> FALLBACK_NAMES {
-    "no-driver-command", "bindings", "sizes", "no-depth", "no-mv", "metalfx-refused", "not-an-upscale"};
+    "no-driver-command", "bindings",      "sizes", "no-depth", "no-mv",
+    "metalfx-refused",   "not-an-upscale"};
 
 struct DepthPair {
 	ImageId color;
@@ -86,47 +107,49 @@ constexpr std::array<PassProfile, 2> KNOWN_PASSES {
     {{0x2936e5eca99d75e7ull, Layout::V1019}, {0x5a34b303576ee324ull, Layout::V1007}}};
 
 struct Pending {
-	bool     valid = false;
-	bool     after = false;
+	bool     valid    = false;
+	bool     after    = false;
 	bool     temporal = false;
-	Layout   layout = Layout::V1019;
+	Layout   layout   = Layout::V1019;
 	ImageId  color, motion, depth, output;
 	uint32_t in_w = 0, in_h = 0, out_w = 0, out_h = 0, frame = 0;
 	bool     cut = false;
 	float    jitter_uv[4] {};
 	float    mv_mul[2] {1.0f, 1.0f}; // Ue: the upscaler's own motion vector scale
+	ImageId  reactive;               // Ue, KYTY_METALFX_REACTIVE: 8-bit mask image of the render size
+	uint32_t react_channel = 4;
+	bool     force_reset   = false;  // Ue: the FSR3 block says the history is broken
 };
 
 std::atomic<uint64_t> g_flips {0};
 
 struct State {
-	Mode     mode           = Mode::Off;
-	bool     find           = false;
-	bool     find_all       = false;
-	bool     pass_auto      = false;
-	uint64_t pass_hash      = 0; // 0: KNOWN_PASSES
-	Layout   pass_layout    = Layout::V1007;
+	Mode     mode             = Mode::Off;
+	bool     find             = false;
+	bool     find_all         = false;
+	bool     pass_auto        = false;
+	uint64_t pass_hash        = 0; // 0: KNOWN_PASSES
+	Layout   pass_layout      = Layout::V1007;
 	bool     depth_attachment = false; // V1007: the depth attachment instead of colour.w
-	float    depth_near     = 0.1f;
-	float    mv_sign        = 1.0f;
-	uint32_t max_in_w       = 1920;
+	float    depth_near       = 0.1f;
+	float    mv_sign          = 1.0f;
+	uint32_t max_in_w         = 1920;
 	Pending  pending;
 	std::array<ImageId, 8> recent_depths {};
 	uint32_t               recent_depth_next = 0;
-	uint64_t pass_draws = 0;
-	bool     jitter         = false;
-	float    jitter_sign_y  = 1.0f;
-	uint64_t    cycle_every = 0;
-	uint64_t    cycle_from  = 1;
-	std::string cycle_list;
-	int         cycle_index = -1;
+	uint64_t               pass_draws        = 0;
+	bool                   jitter            = false;
+	float                  jitter_sign_y     = 1.0f;
+	uint64_t               cycle_every       = 0;
+	uint64_t               cycle_from        = 1;
+	std::string            cycle_list;
+	int                    cycle_index = -1;
 	// A compute pass that scales the scene colour to the output size (TryMetalFxCompute); 0 = none.
 	uint64_t    compute_hash = 0x4bf3b92602fbe696ull; // ASTRO BOT 01.007 levels
-	uint32_t    compute_in      = 0,
-	            compute_out     = 1;     // image indices of that pass (mfxlayer: <hash>:<in>:<out>)
-	bool        compute_replace = false; // KYTY_METALFX_COMPUTE_REPLACE
-	int         blit_index      = -1;    // KYTY_METALFX_PASS=<hash>:blit:<index>, -1 = auto
-	bool        blit_auto       = false; // KYTY_METALFX_PASS=auto:blit (no hash: by shape)
+	uint32_t    compute_in = 0, compute_out = 1; // image indices of that pass (mfxlayer: <hash>:<in>:<out>)
+	bool        compute_replace = false;         // KYTY_METALFX_COMPUTE_REPLACE
+	int         blit_index = -1;                 // KYTY_METALFX_PASS=<hash>:blit:<index>, -1 = auto
+	bool        blit_auto  = false;              // KYTY_METALFX_PASS=auto:blit (no hash: by shape)
 	uint64_t    win_draws = 0, win_scene = 0; // pass draws of the current cycle window; those with a scene-size input
 	uint32_t    win_in_w = 0, win_in_h = 0;
 	uint32_t jitter_index   = 0;
@@ -134,29 +157,40 @@ struct State {
 	float    jitter_sign    = 1.0f;
 	float    mv_jitter      = 1.0f;
 	bool     depth_reversed = false;
+	// mfxreact (default off): KYTY_METALFX_REACTIVE=1, _REACTIVE_IMG=<binding>, _REACTIVE_CH=r|g|b|a|max,
+	// _REACTIVE_GAIN=<f>, KYTY_METALFX_PRE_EXPOSURE=<f>, KYTY_METALFX_AUTO_EXPOSURE=0|1.
+	bool     reactive        = false;
+	int      reactive_img    = -1;
+	char     reactive_ch[8] {};
+	float    reactive_gain   = 1.0f;
+	float    pre_exposure    = 1.0f;
+	bool     auto_exposure   = true;
+	bool     react_refused   = false; // the driver took no 120-byte info: no mask from now on
+	uint64_t react_evals     = 0;
 	std::array<DepthPair, 16> depth_pairs {};
-	uint32_t                  depth_next = 0;
+	uint32_t                  depth_next   = 0;
 	bool                      lookup_tried = false;
 	KkCmdMetalFx              command      = nullptr;
-	uint32_t last_frame = 0;
-	uint32_t in_w = 0, in_h = 0, out_w = 0, out_h = 0;
-	float    last_jitter[2] {};
-	uint64_t evaluations = 0;
-	uint64_t resets      = 0;
+	uint32_t                  last_frame   = 0;
+	uint32_t                  in_w = 0, in_h = 0, out_w = 0, out_h = 0;
+	float                     last_jitter[2] {};
+	uint64_t                  evaluations = 0;
+	uint64_t                  resets      = 0;
 	std::array<uint64_t, static_cast<size_t>(Fallback::Count)> fallbacks {};
-	int64_t  print_ns = 0;
-	std::array<uint64_t, 64> logged_hashes {};
-	uint32_t                 logged_count = 0;
-	uint32_t                 find_cb_logged = 0;
+	int64_t                                                    print_ns = 0;
+	std::array<uint64_t, 64>                                   logged_hashes {};
+	uint32_t                                                   logged_count   = 0;
+	uint32_t                                                   find_cb_logged = 0;
 };
 
 State& Get() {
 	static State state = [] {
 		State s;
 		if (const char* value = std::getenv("KYTY_METALFX"); value != nullptr) {
-			s.mode = (std::strcmp(value, "1") == 0 || std::strcmp(value, "temporal") == 0) ? Mode::Temporal
-			         : std::strcmp(value, "spatial") == 0                                  ? Mode::Spatial
-			                                                                               : Mode::Off;
+			s.mode = (std::strcmp(value, "1") == 0 || std::strcmp(value, "temporal") == 0)
+			             ? Mode::Temporal
+			         : std::strcmp(value, "spatial") == 0 ? Mode::Spatial
+			                                              : Mode::Off;
 		}
 		if (const char* value = std::getenv("KYTY_METALFX_FIND"); value != nullptr) {
 			s.find     = std::strcmp(value, "1") == 0 || std::strcmp(value, "2") == 0;
@@ -195,7 +229,8 @@ State& Get() {
 		if (const char* value = std::getenv("KYTY_METALFX_JITTER_SIGN_Y"); value != nullptr) {
 			s.jitter_sign_y = std::strtof(value, nullptr) < 0 ? -1.0f : 1.0f;
 		}
-		if (const char* value = std::getenv("KYTY_METALFX_CYCLE"); value != nullptr && s.mode != Mode::Off) {
+		if (const char* value = std::getenv("KYTY_METALFX_CYCLE");
+		    value != nullptr && s.mode != Mode::Off) {
 			char* end     = nullptr;
 			s.cycle_every = std::strtoull(value, &end, 10);
 			s.cycle_list  = end != nullptr && *end == ',' ? end + 1 : "gst";
@@ -237,6 +272,26 @@ State& Get() {
 		if (const char* value = std::getenv("KYTY_METALFX_DEPTH_REVERSED"); value != nullptr) {
 			s.depth_reversed = std::strcmp(value, "0") != 0;
 		}
+		if (const char* value = std::getenv("KYTY_METALFX_REACTIVE"); value != nullptr) {
+			s.reactive = std::strcmp(value, "1") == 0;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_REACTIVE_IMG"); value != nullptr) {
+			s.reactive_img = std::atoi(value);
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_REACTIVE_CH"); value != nullptr) {
+			std::snprintf(s.reactive_ch, sizeof(s.reactive_ch), "%s", value);
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_REACTIVE_GAIN"); value != nullptr) {
+			const float g = std::strtof(value, nullptr);
+			s.reactive_gain = g > 0.0f && g <= 16.0f ? g : 1.0f;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_PRE_EXPOSURE"); value != nullptr) {
+			const float e = std::strtof(value, nullptr);
+			s.pre_exposure = e > 0.0f && e < 1.0e6f ? e : 1.0f;
+		}
+		if (const char* value = std::getenv("KYTY_METALFX_AUTO_EXPOSURE"); value != nullptr) {
+			s.auto_exposure = std::strcmp(value, "0") != 0;
+		}
 		return s;
 	}();
 	return state;
@@ -263,8 +318,11 @@ void Summary(State& s) {
 			text += " " + std::string(FALLBACK_NAMES[i]) + "=" + std::to_string(s.fallbacks[i]);
 		}
 	}
-	std::printf("MetalFX 10s: %s evaluations %llu of %llu pass draws, resets %llu (%ux%u -> %ux%u, jitter %.3f %.3f px) | game picture kept:%s\n",
-	            s.cycle_every != 0 ? "cycle" : s.mode == Mode::Spatial ? "spatial" : "temporal",
+	std::printf("MetalFX 10s: %s evaluations %llu of %llu pass draws, resets %llu (%ux%u -> %ux%u, "
+	            "jitter %.3f %.3f px) | game picture kept:%s\n",
+	            s.cycle_every != 0        ? "cycle"
+	            : s.mode == Mode::Spatial ? "spatial"
+	                                      : "temporal",
 	            static_cast<unsigned long long>(s.evaluations),
 	            static_cast<unsigned long long>(s.pass_draws),
 	            static_cast<unsigned long long>(s.resets), s.in_w, s.in_h, s.out_w, s.out_h,
@@ -322,8 +380,7 @@ bool LogOnce(State& s, uint64_t hash) {
 } // namespace
 
 bool Requested() {
-	static const bool requested =
-	    Get().mode != Mode::Off || Get().find || FindWide() || UeEnabled();
+	static const bool requested = Get().mode != Mode::Off || Get().find || FindWide() || UeEnabled();
 	return requested;
 }
 
@@ -332,11 +389,12 @@ bool JitterRequested() {
 	return requested;
 }
 
-bool ViewportJitter(uint32_t width, uint32_t height, bool has_depth, uint32_t vertices, float& x, float& y) {
+bool ViewportJitter(uint32_t width, uint32_t height, bool has_depth, uint32_t vertices, float& x,
+                    float& y) {
 	const auto& s = Get();
 	// (an indirect draw has no vertex count here: scene geometry)
-	if (!has_depth || (vertices != 0 && vertices <= 4) || width != s.in_w || height != s.in_h || s.in_w == 0 ||
-	    (s.jitter_px[0] == 0.0f && s.jitter_px[1] == 0.0f)) {
+	if (!has_depth || (vertices != 0 && vertices <= 4) || width != s.in_w || height != s.in_h ||
+	    s.in_w == 0 || (s.jitter_px[0] == 0.0f && s.jitter_px[1] == 0.0f)) {
 		return false;
 	}
 	x = s.jitter_px[0];
@@ -425,8 +483,7 @@ void NoteFlip() {
 
 bool ComputeReplace(uint64_t shader_hash) {
 	const auto& s = Get();
-	return s.compute_replace && s.mode != Mode::Off && s.compute_hash != 0 &&
-	       s.compute_hash == shader_hash;
+	return s.compute_replace && s.mode != Mode::Off && s.compute_hash != 0 && s.compute_hash == shader_hash;
 }
 
 namespace {
@@ -449,7 +506,7 @@ const KoConfig& Ko() {
 					c.hashes.push_back(hash);
 				}
 				at = *end == ',' ? end + 1 : end;
-				if (*end != ',') {
+				if (*end != ',' ) {
 					break;
 				}
 			}
@@ -473,12 +530,12 @@ bool CsKnockoutEnabled() {
 
 // Called on the command-processor thread for every compute dispatch while enabled.
 bool CsKnockout(uint64_t shader_hash) {
-	const auto&     c         = Ko();
-	static int64_t  first_ns  = 0;
-	static uint64_t base_flip = 0;
-	static int      state     = -1; // -1 before from_s, 0 off window, 1 on window
-	static uint64_t skipped   = 0;
-	const auto      now       = NowNs();
+	const auto&     c = Ko();
+	static int64_t  first_ns   = 0;
+	static uint64_t base_flip  = 0;
+	static int      state      = -1; // -1 before from_s, 0 off window, 1 on window
+	static uint64_t skipped    = 0;
+	const auto      now        = NowNs();
 	if (first_ns == 0) {
 		first_ns = now;
 	}
@@ -492,9 +549,9 @@ bool CsKnockout(uint64_t shader_hash) {
 	// The first window is OFF (a control window after from_s), then on, off, ...
 	const int want = c.cycle == 0 ? 1 : static_cast<int>(((flips - base_flip) / c.cycle) % 2);
 	if (want != state) {
-		std::printf("CsKo cycle: flip %llu t_us %lld %s skipped %llu\n",
-		            static_cast<unsigned long long>(flips), static_cast<long long>(now / 1000),
-		            want != 0 ? "on" : "off", static_cast<unsigned long long>(skipped));
+		std::printf("CsKo cycle: flip %llu t_us %lld %s skipped %llu\n", static_cast<unsigned long long>(flips),
+		            static_cast<long long>(now / 1000), want != 0 ? "on" : "off",
+		            static_cast<unsigned long long>(skipped));
 		std::fflush(stdout);
 		state   = want;
 		skipped = 0;
@@ -518,33 +575,30 @@ namespace {
 // KYTY_METALFX_FIND_ANCHOR (metalfx.h): the passes around one dispatch (a UE upscaler pass).
 struct AnchorRec {
 	struct Img {
-		uint32_t   w, h;
+		uint32_t w, h;
 		vk::Format format;
-		uint64_t   address;
+		uint64_t address;
 	};
 	struct Buf {
 		uint64_t address;
 		uint32_t size;
 	};
-	uint64_t            hash        = 0;
-	char                kind        = '?';
-	uint32_t            image_count = 0, buffer_count = 0;
-	Img                 out {};
+	uint64_t hash = 0;
+	char     kind = '?';
+	uint32_t image_count = 0, buffer_count = 0;
+	Img      out {};
 	std::array<Img, 16> images {};
 	std::array<Buf, 8>  buffers {};
 };
 
 std::string AnchorText(const AnchorRec& r) {
-	std::string text = fmt::format(
-	    "{} shader {:016x} output {} images:", r.kind == 'd' ? "draw" : "dispatch", r.hash,
-	    r.out.address != 0 ? fmt::format("{}x{}:{}@{:x}", r.out.w, r.out.h,
-	                                     vk::to_string(r.out.format), r.out.address)
-	                       : std::string("-"));
+	std::string text = fmt::format("{} shader {:016x} output {} images:", r.kind == 'd' ? "draw" : "dispatch", r.hash,
+	                               r.out.address != 0 ? fmt::format("{}x{}:{}@{:x}", r.out.w, r.out.h,
+	                                                                vk::to_string(r.out.format), r.out.address)
+	                                                  : std::string("-"));
 	for (uint32_t i = 0; i < r.image_count; i++) {
 		const auto& m = r.images[i];
-		text += m.address != 0
-		            ? fmt::format(" {}x{}:{}@{:x}", m.w, m.h, vk::to_string(m.format), m.address)
-		            : " -";
+		text += m.address != 0 ? fmt::format(" {}x{}:{}@{:x}", m.w, m.h, vk::to_string(m.format), m.address) : " -";
 	}
 	text += " buffers:";
 	for (uint32_t i = 0; i < r.buffer_count; i++) {
@@ -592,15 +646,14 @@ void AnchorWords(const AnchorRec& r) {
 			for (uint32_t k = at; k < at + 32 && (k + 1) * 4 <= b.size; k++) {
 				words += fmt::format(" {:08x}", w[k]);
 			}
-			std::printf("MetalFX anchor:   words %016llx %llx+%u @%u:%s\n",
-			            static_cast<unsigned long long>(r.hash),
+			std::printf("MetalFX anchor:   words %016llx %llx+%u @%u:%s\n", static_cast<unsigned long long>(r.hash),
 			            static_cast<unsigned long long>(b.address), b.size, at, words.c_str());
 		}
 	}
 }
 
-void FindAnchor(const char* kind, const PreparedBindings& bindings, TextureCache& cache,
-                const Image* out, uint64_t hash, bool started) {
+void FindAnchor(const char* kind, const PreparedBindings& bindings, TextureCache& cache, const Image* out,
+                uint64_t hash, bool started) {
 	static const uint64_t anchor = [] {
 		const char* value = std::getenv("KYTY_METALFX_FIND_ANCHOR");
 		return value != nullptr ? std::strtoull(value, nullptr, 16) : 0ull;
@@ -613,27 +666,25 @@ void FindAnchor(const char* kind, const PreparedBindings& bindings, TextureCache
 		return value != nullptr ? std::atoi(value) : 2;
 	}();
 	static std::array<AnchorRec, 64> ring;
-	static uint32_t                  ring_next = 0, ring_count = 0;
-	static AnchorRec                 anchor_rec;
-	static uint64_t                  anchor_flip = ~0ull;
-	static uint32_t                  after_count = 0;
+	static uint32_t  ring_next = 0, ring_count = 0;
+	static AnchorRec anchor_rec;
+	static uint64_t  anchor_flip = ~0ull;
+	static uint32_t  after_count = 0;
 
 	AnchorRec r;
 	r.hash = hash;
 	r.kind = kind[1] == 'r' ? 'd' : 'c'; // "draw" / "dispatch"
 	if (out != nullptr) {
-		r.out = {out->info.extent.width, out->info.extent.height, out->backing.format,
-		         out->info.data.address};
+		r.out = {out->info.extent.width, out->info.extent.height, out->backing.format, out->info.data.address};
 	}
 	for (const auto& binding: bindings.images) {
 		if (r.image_count == r.images.size()) {
 			break;
 		}
 		const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
-		r.images[r.image_count++] =
-		    image != nullptr ? AnchorRec::Img {image->info.extent.width, image->info.extent.height,
-		                                       image->backing.format, image->info.data.address}
-		                     : AnchorRec::Img {};
+		r.images[r.image_count++] = image != nullptr ? AnchorRec::Img {image->info.extent.width, image->info.extent.height,
+		                                                                image->backing.format, image->info.data.address}
+		                                             : AnchorRec::Img {};
 	}
 	for (const auto& source: bindings.buffer_sources) {
 		if (r.buffer_count == r.buffers.size()) {
@@ -651,27 +702,23 @@ void FindAnchor(const char* kind, const PreparedBindings& bindings, TextureCache
 		anchor_flip = flips;
 		anchor_rec  = r;
 		after_count = 0;
-		std::printf("MetalFX anchor: ==== flip %llu %s\n", static_cast<unsigned long long>(flips),
-		            AnchorText(r).c_str());
+		std::printf("MetalFX anchor: ==== flip %llu %s\n", static_cast<unsigned long long>(flips), AnchorText(r).c_str());
 		AnchorWords(r);
 		std::array<uint8_t, 64> level {};
 		for (uint32_t k = 0; k < ring_count; k++) {
-			level[k] =
-			    AnchorShares(r, ring[(ring_next + ring.size() - 1 - k) % ring.size()]) ? 1 : 0;
+			level[k] = AnchorShares(r, ring[(ring_next + ring.size() - 1 - k) % ring.size()]) ? 1 : 0;
 		}
 		for (uint32_t k = 0; k < ring_count; k++) {
 			const auto& rk = ring[(ring_next + ring.size() - 1 - k) % ring.size()];
 			for (uint32_t j = 0; level[k] == 0 && j < ring_count; j++) {
-				if (level[j] == 1 &&
-				    AnchorShares(ring[(ring_next + ring.size() - 1 - j) % ring.size()], rk)) {
+				if (level[j] == 1 && AnchorShares(ring[(ring_next + ring.size() - 1 - j) % ring.size()], rk)) {
 					level[k] = 2;
 				}
 			}
 		}
 		for (uint32_t k = 0; k < ring_count; k++) {
 			const auto& rk = ring[(ring_next + ring.size() - 1 - k) % ring.size()];
-			std::printf("MetalFX anchor: -%u L%u %s\n", k + 1, static_cast<unsigned>(level[k]),
-			            AnchorText(rk).c_str());
+			std::printf("MetalFX anchor: -%u L%u %s\n", k + 1, static_cast<unsigned>(level[k]), AnchorText(rk).c_str());
 			if (level[k] == 1 && rk.kind == 'c') {
 				AnchorWords(rk);
 			}
@@ -693,15 +740,15 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 	if (bindings.runtime == nullptr || !*bindings.runtime) {
 		return;
 	}
-	const Image* out   = output ? cache.TryGetImage(output) : nullptr;
+	const Image* out    = output ? cache.TryGetImage(output) : nullptr;
 	bool         wanted = out != nullptr && out->info.extent.width == width;
 	if (out == nullptr) {
 		for (const auto& binding: bindings.images) {
 			const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
-			wanted = wanted || (image != nullptr && image->info.extent.width == width);
+			wanted             = wanted || (image != nullptr && image->info.extent.width == width);
 		}
 	}
-	auto& s = Get();
+	auto&      s    = Get();
 	const auto hash = bindings.runtime->program->shader_hash;
 	// KYTY_METALFX_FIND_RESET_S=<s>: the once-per-shader list starts again that many seconds after
 	// the first call (the steady scene instead of the loading screens), and from then the pass
@@ -721,28 +768,32 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 	if (reset_s > 0 && !reset_done && now - first_ns > reset_s * 1'000'000'000LL) {
 		reset_done     = true;
 		s.logged_count = 0;
-		std::printf("MetalFX find3: ---- list restarted after %lld s ----\n", static_cast<long long>(reset_s));
+		std::printf("MetalFX find3: ---- list restarted after %lld s ----\n",
+		            static_cast<long long>(reset_s));
 	}
 	if (reset_done && s.pass_hash != 0 && hash == s.pass_hash && pass_calls < 6) {
 		const uint32_t call = pass_calls++;
 		std::string    text;
 		for (const auto& binding: bindings.images) {
-			if (const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
+			if (const Image* image =
+			        binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
 			    image != nullptr) {
-				text += fmt::format(" {}x{}:{}@{:x}", image->info.extent.width, image->info.extent.height,
-				                    vk::to_string(image->backing.format), image->info.data.address);
+				text += fmt::format(" {}x{}:{}@{:x}", image->info.extent.width,
+				                    image->info.extent.height, vk::to_string(image->backing.format),
+				                    image->info.data.address);
 			} else {
 				text += " -";
 			}
 		}
 		std::printf("MetalFX find3: pass call %u output %llx images:%s\n", call,
-		            static_cast<unsigned long long>(out != nullptr ? out->info.data.address : 0), text.c_str());
+		            static_cast<unsigned long long>(out != nullptr ? out->info.data.address : 0),
+		            text.c_str());
 		uint32_t index = 0;
 		for (const auto& source: bindings.buffer_sources) {
 			if (source.address != 0 && source.size >= 4 && source.size <= 65536) {
-				const char* dir  = std::getenv("KYTY_DUMP_DIR");
-				const auto  path = fmt::format("{}/mfxcb_{}_{}_{:x}.bin", dir != nullptr ? dir : ".", call, index,
-				                               source.address);
+				const char* dir = std::getenv("KYTY_DUMP_DIR");
+				const auto path = fmt::format("{}/mfxcb_{}_{}_{:x}.bin", dir != nullptr ? dir : ".",
+				                              call, index, source.address);
 				if (auto* file = std::fopen(path.c_str(), "wb"); file != nullptr) {
 					std::fwrite(Guest::Ptr<const uint8_t>(source.address), 1, source.size, file);
 					std::fclose(file);
@@ -760,18 +811,20 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 	for (const auto& binding: bindings.images) {
 		if (const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
 		    image != nullptr) {
-			text += fmt::format(" {}x{}:{}@{:x}", image->info.extent.width, image->info.extent.height,
-			                    vk::to_string(image->backing.format), image->info.data.address);
+			text +=
+			    fmt::format(" {}x{}:{}@{:x}", image->info.extent.width, image->info.extent.height,
+			                vk::to_string(image->backing.format), image->info.data.address);
 		} else {
 			text += " -";
 		}
 	}
 	std::printf("MetalFX find3: %s shader %016llx targets %u output %s images:%s\n", kind,
 	            static_cast<unsigned long long>(hash), color_count,
-	            out != nullptr ? fmt::format("{}x{}:{}@{:x}", out->info.extent.width, out->info.extent.height,
-	                                         vk::to_string(out->backing.format), out->info.data.address)
-	                                 .c_str()
-	                           : "-",
+	            out != nullptr
+	                ? fmt::format("{}x{}:{}@{:x}", out->info.extent.width, out->info.extent.height,
+	                              vk::to_string(out->backing.format), out->info.data.address)
+	                      .c_str()
+	                : "-",
 	            text.c_str());
 	for (const auto& source: bindings.buffer_sources) {
 		if (source.address == 0 || source.size < 16 || source.size > 512) {
@@ -783,7 +836,8 @@ void FindLog(const char* kind, const PreparedBindings& bindings, TextureCache& c
 		for (uint32_t i = 0; i < 24 && (i + 1) * 4 <= source.size; i++) {
 			words += fmt::format(" {}:{:x}({:.5g})", i, w[i], static_cast<double>(f[i]));
 		}
-		std::printf("MetalFX find3:   buffer %llx+%u:%s\n", static_cast<unsigned long long>(source.address),
+		std::printf("MetalFX find3:   buffer %llx+%u:%s\n",
+		            static_cast<unsigned long long>(source.address),
 		            static_cast<unsigned>(source.size), words.c_str());
 	}
 	std::fflush(stdout);
@@ -1076,7 +1130,7 @@ void RenderExecutor::NoteMetalFxTargets(std::span<const RenderColorInfo> colors,
 	if (!depth) {
 		return;
 	}
-	bool  recent = false;
+	bool recent = false;
 	for (const auto id: s.recent_depths) {
 		recent = recent || id == depth;
 	}
@@ -1107,45 +1161,66 @@ namespace MetalFx {
 namespace {
 
 bool SameSize(const Image& image, uint32_t w, uint32_t h) {
-	return image.info.extent.width == w && image.info.extent.height == h && image.backing.image != nullptr &&
-	       image.info.samples == 1;
+	return image.info.extent.width == w && image.info.extent.height == h &&
+	       image.backing.image != nullptr && image.info.samples == 1;
 }
 
 // Records the upscale of a decoded pass (outside rendering). False: nothing was recorded.
 bool Execute(State& s, TextureCache& cache, CommandBuffer& buffer, const Pending& p) {
 	const auto alive = [&cache](ImageId id) { return id && cache.TryGetImage(id) != nullptr; };
-	if (!alive(p.color) || !alive(p.output) || (p.temporal && !alive(p.motion)) || (p.depth && !alive(p.depth))) {
+	if (!alive(p.color) || !alive(p.output) || (p.temporal && !alive(p.motion)) ||
+	    (p.depth && !alive(p.depth))) {
 		return Fail(s, Fallback::Bindings);
 	}
 	auto&  color = cache.GetImage(p.color);
 	auto&  out   = cache.GetImage(p.output);
 	Image* mv    = p.temporal ? &cache.GetImage(p.motion) : nullptr;
 	Image* depth = p.temporal && p.depth ? &cache.GetImage(p.depth) : nullptr;
+	// mfxreact: the mask must be a live render-size image that is no other input; any doubt = no mask.
+	Image* react = nullptr;
+	if (p.temporal && p.reactive && !s.react_refused && alive(p.reactive) && p.reactive != p.color &&
+	    p.reactive != p.motion && p.reactive != p.depth && p.reactive != p.output) {
+		react = &cache.GetImage(p.reactive);
+		if (!SameSize(*react, p.in_w, p.in_h)) {
+			react = nullptr;
+		}
+	}
 	if (!SameSize(color, p.in_w, p.in_h) || !SameSize(out, p.out_w, p.out_h) ||
 	    (mv != nullptr && !SameSize(*mv, p.in_w, p.in_h)) ||
-	    (depth != nullptr &&
-	     (!SameSize(*depth, p.in_w, p.in_h) ||
-	      (!depth->info.IsDepth() &&
-	       !(p.layout == Layout::Ue && depth->backing.format == vk::Format::eR32Sfloat))))) {
+	    (depth != nullptr && (!SameSize(*depth, p.in_w, p.in_h) ||
+	                          (!depth->info.IsDepth() &&
+	                           !(p.layout == Layout::Ue && depth->backing.format == vk::Format::eR32Sfloat))))) {
 		return Fail(s, Fallback::Sizes);
 	}
 
 	// Native recording: outside rendering, the recorder drained (CommandBuffer::Handle).
 	buffer.EndRendering();
 	const auto cmd = buffer.Handle();
-	color.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
+	color.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead,
+	              {}, cmd);
 	if (mv != nullptr) {
-		mv->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
+		mv->Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+		            vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
 	}
 	if (depth != nullptr) {
-		depth->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {},
-		               cmd);
+		depth->Transit(vk::ImageLayout::eShaderReadOnlyOptimal,
+		               vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
+	}
+	if (react != nullptr) {
+		react->Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderSampledRead, {}, cmd);
 	}
 	out.Transit(vk::ImageLayout::eGeneral,
-	            vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite, {}, cmd);
+	            vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+	            {}, cmd);
 
 	KkMetalFxInfo info {};
-	info.size   = sizeof(info);
+	info.size   = react != nullptr ? sizeof(info) : KK_INFO_V1_SIZE;
+	if (react != nullptr) {
+		info.reactive      = static_cast<VkImage>(react->backing.image);
+		info.react_channel = p.react_channel;
+		info.react_gain    = s.reactive_gain;
+	}
+	info.pre_exposure = s.pre_exposure;
 	info.mode   = p.temporal ? 1 : 2;
 	info.color  = static_cast<VkImage>(color.backing.image);
 	info.depth  = depth != nullptr ? static_cast<VkImage>(depth->backing.image) : VK_NULL_HANDLE;
@@ -1163,16 +1238,29 @@ bool Execute(State& s, TextureCache& cache, CommandBuffer& buffer, const Pending
 	info.mv_bias[1]  = s.mv_jitter * (p.jitter_uv[1] - p.jitter_uv[3]);
 	// A camera cut, a gap in the pass's frame counter or a new size (the game's dynamic resolution
 	// selects another scaler in the driver, with an old history): the history starts again.
-	info.reset = (p.cut || (s.last_frame != 0 && p.frame != s.last_frame + 1) || p.in_w != s.in_w ||
+	info.reset = (p.cut || p.force_reset || (s.last_frame != 0 && p.frame != s.last_frame + 1) || p.in_w != s.in_w ||
 	              p.in_h != s.in_h || p.out_w != s.out_w || p.out_h != s.out_h)
 	                 ? 1
 	                 : 0;
 	info.depth_reversed = s.depth_reversed ? 1 : 0;
-	info.auto_exposure  = 1;
+	info.auto_exposure  = s.auto_exposure ? 1 : 0;
 	info.depth_mode     = p.temporal && depth == nullptr ? 1 : 0;
 	info.depth_near     = s.depth_near;
-	const int result    = s.command(static_cast<VkCommandBuffer>(cmd), &info);
+	int result          = s.command(static_cast<VkCommandBuffer>(cmd), &info);
+	if (result != 1 && react != nullptr) {
+		// An older driver only knows the 96-byte info: draw without the mask from now on.
+		s.react_refused = true;
+		std::printf("MetalFX reactive: the driver refused the extended info (or the mask): no reactive mask from now on\n");
+		std::fflush(stdout);
+		react        = nullptr;
+		info.size    = KK_INFO_V1_SIZE;
+		info.reactive = VK_NULL_HANDLE;
+		result       = s.command(static_cast<VkCommandBuffer>(cmd), &info);
+	}
 	buffer.ForgetBoundState();
+	if (react != nullptr) {
+		s.react_evals++;
+	}
 	if (result != 1) {
 		// Nothing was encoded: the game's picture stays.
 		return Fail(s, Fallback::Refused);
@@ -1200,17 +1288,20 @@ char CycleConfig(State& s, bool& changed) {
 	changed     = false;
 	if (s.cycle_every != 0) {
 		const auto flips = g_flips.load(std::memory_order_relaxed);
-		const int  index = flips < s.cycle_from
-		                       ? 0
-		                       : static_cast<int>(((flips - s.cycle_from) / s.cycle_every) % s.cycle_list.size());
+		const int  index =
+		    flips < s.cycle_from
+		        ? 0
+		        : static_cast<int>(((flips - s.cycle_from) / s.cycle_every) % s.cycle_list.size());
 		config = s.cycle_list[static_cast<size_t>(index)];
 		if (index != s.cycle_index) {
-			// "prev": the window that just ended (pass draws, those upscaling from a scene size, the last
-			// input size), so an analysis can tell level windows from loading screens.
-			std::printf("MetalFX cycle: flip %llu t_us %lld config %c prev draws %llu scene %llu in %ux%u\n",
-			            static_cast<unsigned long long>(flips), static_cast<long long>(NowNs() / 1000), config,
-			            static_cast<unsigned long long>(s.win_draws), static_cast<unsigned long long>(s.win_scene),
-			            s.win_in_w, s.win_in_h);
+			// "prev": the window that just ended (pass draws, those upscaling from a scene size,
+			// the last input size), so an analysis can tell level windows from loading screens.
+			std::printf("MetalFX cycle: flip %llu t_us %lld config %c prev draws %llu scene %llu "
+			            "in %ux%u\n",
+			            static_cast<unsigned long long>(flips),
+			            static_cast<long long>(NowNs() / 1000), config,
+			            static_cast<unsigned long long>(s.win_draws),
+			            static_cast<unsigned long long>(s.win_scene), s.win_in_w, s.win_in_h);
 			s.win_draws = 0;
 			s.win_scene = 0;
 			std::fflush(stdout);
@@ -1221,15 +1312,20 @@ char CycleConfig(State& s, bool& changed) {
 	return config;
 }
 
+
 struct UeState {
 	bool     log = false, adapter = false, skip = true;
-	uint64_t flip  = ~0ull;
+	uint64_t flip = ~0ull;
 	uint32_t index = 0;
 	ImageId  depth, depth_r32, motion, replaced;
-	uint32_t healthy    = 0;
+	uint32_t healthy = 0;
 	uint64_t cool_until = 0, last_eval_flip = 0;
 	uint64_t skipped = 0, kept = 0;
 	int64_t  print_ns = 0;
+	Fsr3ResetTracker tracker;
+	uint64_t last_seen_flip = ~0ull;
+	uint64_t block_resets = 0;
+	uint32_t react_logged = 0;
 };
 UeState& Ue() {
 	static UeState state = [] {
@@ -1287,7 +1383,12 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 	const auto     hash  = bindings.runtime->program->shader_hash;
 	ImageId        color {}, output {};
 	uint32_t       out_colors = 0;
+	std::array<MaskCandidate, 16> masks {};
+	std::array<ImageId, 16>       mask_ids {};
+	size_t                        mask_count = 0;
+	uint32_t                      binding_index = 0;
 	for (const auto& binding: bindings.images) {
+		const uint32_t this_binding = binding_index++;
 		const Image* image = binding.image_id ? cache.TryGetImage(binding.image_id) : nullptr;
 		if (image == nullptr) {
 			continue;
@@ -1296,8 +1397,17 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 		const auto     format     = image->backing.format;
 		const bool     render     = w == f.in_w && h == f.in_h;
 		const bool     upscaled   = w == f.out_w && h == f.out_h;
-		const bool     color_like = format == vk::Format::eB10G11R11UfloatPack32 ||
-		                            format == vk::Format::eR16G16B16A16Sfloat;
+		const bool     color_like = format == vk::Format::eB10G11R11UfloatPack32 || format == vk::Format::eR16G16B16A16Sfloat;
+		if (s.reactive && mask_count < masks.size() && render) {
+			const MaskFormat mf = format == vk::Format::eR8Unorm        ? MaskFormat::R8
+			                      : format == vk::Format::eR8G8Unorm    ? MaskFormat::RG8
+			                      : format == vk::Format::eR8G8B8A8Unorm ? MaskFormat::RGBA8
+			                                                            : MaskFormat::Other;
+			const auto&  info_images = bindings.runtime->program->info.images;
+			masks[mask_count]    = {this_binding, w, h, mf, this_binding < info_images.size() && info_images[this_binding].written};
+			mask_ids[mask_count] = binding.image_id;
+			mask_count++;
+		}
 		if (render && image->info.IsDepth() && !u.depth) {
 			u.depth = binding.image_id;
 		} else if (render && format == vk::Format::eR32Sfloat && !u.depth_r32) {
@@ -1313,19 +1423,30 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 	}
 	const bool last = color && out_colors >= 2;
 	if (LogOnce(s, hash ^ 0x7777777777777777ull)) {
-		std::printf("MetalFX ue: fsr3 #%u shader %016llx role %s render %ux%u (max %ux%u) upscale "
-		            "%ux%u jitter %.4f %.4f mv scale %.3f %.3f | depth %d r32 %d motion %d colour "
-		            "%d outputs %u\n",
-		            index, static_cast<unsigned long long>(hash),
-		            last         ? "last"
-		            : index == 0 ? "first"
-		                         : "mid",
-		            f.in_w, f.in_h, f.max_w, f.max_h, f.out_w, f.out_h,
-		            static_cast<double>(f.jitter[0]), static_cast<double>(f.jitter[1]),
-		            static_cast<double>(f.mv_scale[0]), static_cast<double>(f.mv_scale[1]),
-		            u.depth ? 1 : 0, u.depth_r32 ? 1 : 0, u.motion ? 1 : 0, color ? 1 : 0,
-		            out_colors);
+		std::printf("MetalFX ue: fsr3 #%u shader %016llx role %s render %ux%u (max %ux%u) upscale %ux%u jitter %.4f %.4f mv scale %.3f %.3f | depth %d r32 %d motion %d colour %d outputs %u\n",
+		            index, static_cast<unsigned long long>(hash), last ? "last" : index == 0 ? "first" : "mid", f.in_w,
+		            f.in_h, f.max_w, f.max_h, f.out_w, f.out_h, static_cast<double>(f.jitter[0]),
+		            static_cast<double>(f.jitter[1]), static_cast<double>(f.mv_scale[0]),
+		            static_cast<double>(f.mv_scale[1]), u.depth ? 1 : 0, u.depth_r32 ? 1 : 0, u.motion ? 1 : 0,
+		            color ? 1 : 0, out_colors);
 		std::fflush(stdout);
+		if (s.reactive || s.pre_exposure != 1.0f) {
+			const uint32_t* raw = nullptr;
+			for (const auto& source: bindings.buffer_sources) {
+				Fsr3Frame probe;
+				if (source.address != 0 && source.size >= 144 && source.size <= 256 &&
+				    ParseFsr3Constants(Guest::Ptr<const uint32_t>(source.address), source.size, probe)) {
+					raw = Guest::Ptr<const uint32_t>(source.address);
+					break;
+				}
+			}
+			if (raw != nullptr) {
+				std::printf("MetalFX ue block words 24-35 (shader %016llx): %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+				            static_cast<unsigned long long>(hash), raw[24], raw[25], raw[26], raw[27], raw[28], raw[29],
+				            raw[30], raw[31], raw[32], raw[33], raw[34], raw[35]);
+				std::fflush(stdout);
+			}
+		}
 	}
 	if (!u.adapter || s.mode != Mode::Temporal) {
 		return 0;
@@ -1338,9 +1459,12 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 	}
 	if (const auto now = NowNs(); now - u.print_ns > 10'000'000'000LL) {
 		if (u.print_ns != 0) {
-			std::printf("MetalFX ue 10s: fsr3 dispatches skipped %llu kept %llu healthy %u\n",
-			            static_cast<unsigned long long>(u.skipped),
-			            static_cast<unsigned long long>(u.kept), u.healthy);
+			std::printf("MetalFX ue 10s: fsr3 dispatches skipped %llu kept %llu healthy %u | block resets %llu (jitter %llu index %llu) reactive evals %llu%s\n",
+			            static_cast<unsigned long long>(u.skipped), static_cast<unsigned long long>(u.kept), u.healthy,
+			            static_cast<unsigned long long>(u.block_resets),
+			            static_cast<unsigned long long>(u.tracker.jitter_breaks),
+			            static_cast<unsigned long long>(u.tracker.index_breaks),
+			            static_cast<unsigned long long>(s.react_evals), s.react_refused ? " (refused)" : "");
 			std::fflush(stdout);
 		}
 		u.print_ns = now;
@@ -1363,6 +1487,11 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 		s.win_in_w = f.in_w;
 		s.win_in_h = f.in_h;
 	}
+	// mfxreact: continuity of the plugin's own block (previous jitter, frame index) -> history restart.
+	// The tracker sees every frame's "last" dispatch (also while evaluations are cooling down).
+	const bool block_reset = u.tracker.Observe(f, u.last_seen_flip + 1 == flips);
+	u.last_seen_flip       = flips;
+	u.block_resets += block_reset ? 1 : 0;
 	const auto fail = [&](Fallback reason) {
 		u.healthy    = 0;
 		u.cool_until = flips + 300;
@@ -1377,8 +1506,7 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 	if (!depth) {
 		return fail(Fallback::NoDepth);
 	}
-	if (f.in_w >= f.out_w || f.in_h >= f.out_h || f.in_w > s.max_in_w || f.out_w > 3 * f.in_w ||
-	    f.out_h > 3 * f.in_h) {
+	if (f.in_w >= f.out_w || f.in_h >= f.out_h || f.in_w > s.max_in_w || f.out_w > 3 * f.in_w || f.out_h > 3 * f.in_h) {
 		return fail(Fallback::NoUpscale);
 	}
 	if (!s.lookup_tried) {
@@ -1389,26 +1517,47 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 		return fail(Fallback::NoDriver);
 	}
 	Pending p;
-	p.temporal     = true;
-	p.layout       = Layout::Ue;
-	p.color        = color;
-	p.motion       = u.motion;
-	p.depth        = depth;
-	p.output       = output;
-	p.in_w         = f.in_w;
-	p.in_h         = f.in_h;
-	p.out_w        = f.out_w;
-	p.out_h        = f.out_h;
-	p.frame        = s.last_frame + 1;
-	p.cut          = changed || u.last_eval_flip + 1 != flips;
+	p.temporal = true;
+	p.layout   = Layout::Ue;
+	p.color    = color;
+	p.motion   = u.motion;
+	p.depth    = depth;
+	p.output   = output;
+	p.in_w     = f.in_w;
+	p.in_h     = f.in_h;
+	p.out_w    = f.out_w;
+	p.out_h    = f.out_h;
+	p.frame    = s.last_frame + 1;
+	p.cut      = changed || u.last_eval_flip + 1 != flips;
+	p.force_reset = block_reset;
+	if (s.reactive && !s.react_refused) {
+		const int pick = PickReactiveMask(masks.data(), mask_count, f.in_w, f.in_h, s.reactive_img);
+		if (u.react_logged < 12 && (u.react_logged < 3 || u.react_logged % 4 == 0)) {
+			for (size_t i = 0; i < mask_count; i++) {
+				std::printf("MetalFX reactive: candidate binding %u format %d %ux%u %s%s\n", masks[i].binding,
+				            static_cast<int>(masks[i].format), masks[i].width, masks[i].height,
+				            masks[i].written ? "written " : "read ", static_cast<int>(i) == pick ? "<- picked" : "");
+			}
+			if (mask_count == 0 || pick < 0) {
+				std::printf("MetalFX reactive: no render-size 8-bit mask image in the Accumulate dispatch (%zu candidates)\n",
+				            mask_count);
+			}
+			std::fflush(stdout);
+		}
+		u.react_logged++;
+		if (pick >= 0) {
+			const auto& m   = masks[static_cast<size_t>(pick)];
+			p.reactive      = mask_ids[static_cast<size_t>(pick)];
+			p.react_channel = ReactiveChannel(s.reactive_ch, m.format);
+		}
+	}
 	p.jitter_uv[0] = f.jitter[0] / static_cast<float>(f.in_w);
 	p.jitter_uv[1] = s.jitter_sign_y * f.jitter[1] / static_cast<float>(f.in_h);
 	p.jitter_uv[2] = p.jitter_uv[0];
 	p.jitter_uv[3] = p.jitter_uv[1];
 	p.mv_mul[0]    = f.mv_scale[0];
 	p.mv_mul[1]    = f.mv_scale[1];
-	// mfxlexec: cycle letters a/b/c flip the jitter sign, the motion sign, both
-	// (KYTY_METALFX_CYCLE=80,tabc).
+	// mfxlexec: cycle letters a/b/c flip the jitter sign, the motion sign, both (KYTY_METALFX_CYCLE=80,tabc).
 	const float saved_jitter_sign = s.jitter_sign, saved_mv_sign = s.mv_sign;
 	if (config == 'a' || config == 'c') {
 		s.jitter_sign = -s.jitter_sign;
@@ -1436,8 +1585,8 @@ int UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureC
 
 // True: the pass was replaced (V1019), the draw is done. False: the draw runs; when the pass is one
 // that keeps its own draw (V1007) FinishMetalFx records the upscale after it.
-bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& pixel, ImageId output,
-                                       uint32_t color_count) {
+bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& pixel,
+                                       ImageId output, uint32_t color_count) {
 	using namespace MetalFx;
 	auto& s         = Get();
 	s.pending.valid = false;
@@ -1471,13 +1620,11 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 		auto&        blit_cache = m_context.GetTextureCache();
 		const Image* target     = output ? blit_cache.TryGetImage(output) : nullptr;
 		if (s.blit_auto) {
-			// By shape (experiments only): one colour target at least 2560 wide and exactly one
-			// bound image larger than 8 texels, which is smaller than the target and has its
-			// aspect.
+			// By shape (experiments only): one colour target at least 2560 wide and exactly one bound
+			// image larger than 8 texels, which is smaller than the target and has its aspect.
 			uint32_t big = 0, fit = 0;
 			for (const auto& binding: pixel.images) {
-				const Image* image =
-				    binding.image_id ? blit_cache.TryGetImage(binding.image_id) : nullptr;
+				const Image* image = binding.image_id ? blit_cache.TryGetImage(binding.image_id) : nullptr;
 				if (image == nullptr || image->info.extent.width <= 8 || target == nullptr) {
 					continue;
 				}
@@ -1485,22 +1632,18 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 				const uint32_t w = image->info.extent.width, h = image->info.extent.height;
 				const int64_t  skew = static_cast<int64_t>(w) * target->info.extent.height -
 				                      static_cast<int64_t>(h) * target->info.extent.width;
-				fit +=
-				    (w < target->info.extent.width && h < target->info.extent.height && w >= 960 &&
-				     std::llabs(skew) <= static_cast<int64_t>(target->info.extent.width +
-				                                              target->info.extent.height))
-				        ? 1
-				        : 0;
+				fit += (w < target->info.extent.width && h < target->info.extent.height && w >= 960 &&
+				        std::llabs(skew) <= static_cast<int64_t>(target->info.extent.width + target->info.extent.height))
+				           ? 1
+				           : 0;
 			}
-			if (color_count != 1 || target == nullptr || target->info.extent.width < 2560 ||
-			    big != 1 || fit != 1) {
+			if (color_count != 1 || target == nullptr || target->info.extent.width < 2560 || big != 1 || fit != 1) {
 				s.pass_draws--;
 				return false;
 			}
 			if (LogOnce(s, hash ^ 0x5555555555555555ull)) {
-				std::printf("MetalFX blit: auto shader %016llx target %ux%u:%s\n",
-				            static_cast<unsigned long long>(hash), target->info.extent.width,
-				            target->info.extent.height,
+				std::printf("MetalFX blit: auto shader %016llx target %ux%u:%s\n", static_cast<unsigned long long>(hash),
+				            target->info.extent.width, target->info.extent.height,
 				            vk::to_string(target->backing.format).c_str());
 				std::fflush(stdout);
 			}
@@ -1517,18 +1660,14 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 		p.out_w    = target->info.extent.width;
 		p.out_h    = target->info.extent.height;
 		for (size_t i = 0; i < pixel.images.size(); i++) {
-			const Image* image = pixel.images[i].image_id
-			                         ? blit_cache.TryGetImage(pixel.images[i].image_id)
-			                         : nullptr;
+			const Image* image = pixel.images[i].image_id ? blit_cache.TryGetImage(pixel.images[i].image_id) : nullptr;
 			if (image == nullptr || (s.blit_index >= 0 && static_cast<size_t>(s.blit_index) != i)) {
 				continue;
 			}
 			const uint32_t w = image->info.extent.width, h = image->info.extent.height;
 			// the target's aspect within one texel, smaller than the target, the widest such image
-			const int64_t skew =
-			    static_cast<int64_t>(w) * p.out_h - static_cast<int64_t>(h) * p.out_w;
-			if (w < p.out_w && h < p.out_h && w > p.in_w &&
-			    std::llabs(skew) <= static_cast<int64_t>(p.out_w + p.out_h)) {
+			const int64_t skew = static_cast<int64_t>(w) * p.out_h - static_cast<int64_t>(h) * p.out_w;
+			if (w < p.out_w && h < p.out_h && w > p.in_w && std::llabs(skew) <= static_cast<int64_t>(p.out_w + p.out_h)) {
 				p.color = pixel.images[i].image_id;
 				p.in_w  = w;
 				p.in_h  = h;
@@ -1574,7 +1713,8 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 			const auto* sizes = Guest::Ptr<const uint32_t>(pixel.buffer_sources[0].address);
 			s.win_in_w        = sizes[2];
 			s.win_in_h        = sizes[3];
-			if (sizes[2] != 0 && sizes[2] < sizes[0] && sizes[3] < sizes[1] && sizes[2] <= s.max_in_w) {
+			if (sizes[2] != 0 && sizes[2] < sizes[0] && sizes[3] < sizes[1] &&
+			    sizes[2] <= s.max_in_w) {
 				s.win_scene++;
 			}
 		}
@@ -1599,15 +1739,16 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 	if (s.command == nullptr) {
 		return Fail(s, Fallback::NoDriver);
 	}
-	// nps5: guest bytes are at guest + bias (dlss.cpp reads the guest address itself: Windows identity map).
+	// nps5: guest bytes are at guest + bias (dlss.cpp reads the guest address itself: Windows
+	// identity map).
 	const auto* cb = Guest::Ptr<const uint32_t>(pixel.buffer_sources[0].address);
 	Pending     p;
-	p.temporal = config != 's';
-	p.layout   = layout;
-	p.output   = output;
-	p.motion   = pixel.images[0].image_id;
-	p.color    = pixel.images[1].image_id;
-	p.after    = v1007;
+	p.temporal    = config != 's';
+	p.layout      = layout;
+	p.output      = output;
+	p.motion      = pixel.images[0].image_id;
+	p.color       = pixel.images[1].image_id;
+	p.after       = v1007;
 	bool mv_valid = false;
 	if (v1007) {
 		p.out_w = cb[0];
@@ -1624,12 +1765,14 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 		if (s.jitter) {
 			// The offset the frame's scene draws had (ViewportJitter), then the next frame's.
 			static constexpr float SIGNS[4][2] {{1, 1}, {-1, -1}, {1, -1}, {-1, 1}};
-			const auto* sign    = SIGNS[jittered ? config - 'a' : 0];
-			const bool  applied = jittered && p.in_w == s.in_w && p.in_h == s.in_h;
+			const auto*            sign    = SIGNS[jittered ? config - 'a' : 0];
+			const bool             applied = jittered && p.in_w == s.in_w && p.in_h == s.in_h;
 			p.jitter_uv[0] = applied ? sign[0] * s.jitter_px[0] / static_cast<float>(p.in_w) : 0.0f;
-			p.jitter_uv[1] = applied ? sign[1] * s.jitter_sign_y * s.jitter_px[1] / static_cast<float>(p.in_h) : 0.0f;
-			p.jitter_uv[2] = p.jitter_uv[0];
-			p.jitter_uv[3] = p.jitter_uv[1];
+			p.jitter_uv[1] =
+			    applied ? sign[1] * s.jitter_sign_y * s.jitter_px[1] / static_cast<float>(p.in_h)
+			            : 0.0f;
+			p.jitter_uv[2]    = p.jitter_uv[0];
+			p.jitter_uv[3]    = p.jitter_uv[1];
 			const auto halton = [](uint32_t index, uint32_t base) {
 				float f = 1.0f, r = 0.0f;
 				for (; index > 0; index /= base) {
@@ -1638,11 +1781,12 @@ bool RenderExecutor::TryMetalFxUpscale(CommandBuffer& buffer, PreparedBindings& 
 				}
 				return r;
 			};
-			const float ratio  = static_cast<float>(p.out_w) / static_cast<float>(p.in_w);
-			const auto  phases = std::max<uint32_t>(8, static_cast<uint32_t>(8.0f * ratio * ratio + 0.999f));
-			s.jitter_index     = (s.jitter_index + 1) % phases;
-			s.jitter_px[0]     = jittered ? halton(s.jitter_index + 1, 2) - 0.5f : 0.0f;
-			s.jitter_px[1]     = jittered ? halton(s.jitter_index + 1, 3) - 0.5f : 0.0f;
+			const float ratio = static_cast<float>(p.out_w) / static_cast<float>(p.in_w);
+			const auto  phases =
+			    std::max<uint32_t>(8, static_cast<uint32_t>(8.0f * ratio * ratio + 0.999f));
+			s.jitter_index = (s.jitter_index + 1) % phases;
+			s.jitter_px[0] = jittered ? halton(s.jitter_index + 1, 2) - 0.5f : 0.0f;
+			s.jitter_px[1] = jittered ? halton(s.jitter_index + 1, 3) - 0.5f : 0.0f;
 		}
 	} else {
 		std::memcpy(p.jitter_uv, cb, sizeof(p.jitter_uv));
@@ -1704,7 +1848,7 @@ bool RenderExecutor::FinishMetalFx(CommandBuffer& buffer) {
 		return false;
 	}
 	s.pending.valid = false;
-	auto& cache = m_context.GetTextureCache();
+	auto& cache     = m_context.GetTextureCache();
 	if (!Execute(s, cache, buffer, s.pending)) {
 		return false;
 	}
@@ -1720,16 +1864,15 @@ bool RenderExecutor::FinishMetalFx(CommandBuffer& buffer) {
 bool RenderExecutor::TryMetalFxCompute(CommandBuffer& buffer, const PreparedBindings& bindings) {
 	using namespace MetalFx;
 	auto& s = Get();
-	if (s.mode == Mode::Off || s.compute_hash == 0 || bindings.runtime == nullptr || !*bindings.runtime ||
-	    bindings.runtime->program->shader_hash != s.compute_hash) {
+	if (s.mode == Mode::Off || s.compute_hash == 0 || bindings.runtime == nullptr ||
+	    !*bindings.runtime || bindings.runtime->program->shader_hash != s.compute_hash) {
 		return false;
 	}
 	s.pass_draws++;
 	auto& cache = m_context.GetTextureCache();
 	const uint32_t ci = s.compute_in, co = s.compute_out;
 	if (bindings.images.size() <= std::max(ci, co) || ci == co || !bindings.images[ci].image_id ||
-	    !bindings.images[co].image_id ||
-	    cache.TryGetImage(bindings.images[ci].image_id) == nullptr ||
+	    !bindings.images[co].image_id || cache.TryGetImage(bindings.images[ci].image_id) == nullptr ||
 	    cache.TryGetImage(bindings.images[co].image_id) == nullptr) {
 		return Fail(s, Fallback::Bindings);
 	}

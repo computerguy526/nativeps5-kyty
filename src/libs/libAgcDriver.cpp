@@ -2,8 +2,8 @@
 #define KYTY_LIB_GUEST_POINTERS 1
 #include "common/abi.h"
 #include "libs/agc.h"
-#include "libs/libs.h"
 #include "libs/guestCallTrace.h" // nps5: KYTY_GPU_CALL_TRACE
+#include "libs/libs.h"
 #include "loader/symbolDatabase.h"
 
 namespace Libs {
@@ -81,6 +81,7 @@ LIB_DEFINE(InitAgcDriver_1) {
 	LIB_FUNC("b-oySn+G2tE", Gen5::AgcAcbJumpGetSize);
 	LIB_FUNC("DwICrVxerkY", Gen5::AgcAcbRewind);
 	LIB_FUNC("htn36gPnBk4", Gen5::AgcAcbWaitRegMem);
+	LIB_FUNC("q4VuU-QsLOE", Gen5::AgcAcbMemSemaphore);
 	LIB_FUNC("idlaArvdXEs", Gen5::AgcAcbWaitOnAddressGetSize);
 	LIB_FUNC("-RnpfpxIhec", Gen5::AgcAcbDmaData);
 	LIB_FUNC("qzMN2XKGA4k", Gen5::AgcAcbCopyData);

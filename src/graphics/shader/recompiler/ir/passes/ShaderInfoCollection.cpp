@@ -2,8 +2,8 @@
 
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/sarosHandShaders.h"
+#include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -127,8 +127,9 @@ void ValidateValueReferences(const Program& program, ShaderStageInputInfo input_
 					if (program.stage != ShaderType::Pixel || !inst.Arg(0).IsImmediate() ||
 					    inst.Arg(0).GetType() != Type::U32 || !inst.Arg(1).IsImmediate() ||
 					    inst.Arg(1).GetType() != Type::U32 ||
-					    inst.Arg(0).U32() >= input_info.pixel->input_num || inst.Arg(1).U32() >= 64u ||
-					    (inst.Arg(1).U32() & 7u) == 0u || (inst.Arg(1).U32() & 7u) > 4u) {
+					    inst.Arg(0).U32() >= input_info.pixel->input_num ||
+					    inst.Arg(1).U32() >= 64u || (inst.Arg(1).U32() & 7u) == 0u ||
+					    (inst.Arg(1).U32() & 7u) > 4u) {
 						return Fail("parameter field reference is invalid");
 					}
 					break;
@@ -154,6 +155,7 @@ void ValidateValueReferences(const Program& program, ShaderStageInputInfo input_
 						case StageInputKind::PrimitiveId:
 						case StageInputKind::InstanceIndex:
 						case StageInputKind::BaseInstance:
+						case StageInputKind::BaseVertex:
 						case StageInputKind::FrontFacing:
 						case StageInputKind::LocalInvocationIndex:
 							if (component != 0u) {
@@ -177,6 +179,7 @@ void ValidateValueReferences(const Program& program, ShaderStageInputInfo input_
 							break;
 						case StageInputKind::TessCoord:
 						case StageInputKind::WorkgroupId:
+						case StageInputKind::NumWorkgroups: // call-split wave index (CallSplit.h)
 						case StageInputKind::LocalInvocationId:
 						case StageInputKind::GlobalInvocationId:
 							if (component >= 3u) {
@@ -255,9 +258,9 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 				const auto input = inst.Arg(0).U32();
 				const auto mode  = inst.Arg(2).U32();
 				used[input] = true;
-				// KYTY_PS_PER_VERTEX=0: no raw-vertex inputs (the reads take the interpolated
-				// value). sarosnanite: KYTY_SAROS_NANITE_RAW pixel shaders read the raw vertices
-				// from the mesh program's per-primitive copy.
+				// KYTY_PS_PER_VERTEX=0: no raw-vertex inputs (the reads take the interpolated value).
+				// sarosnanite: KYTY_SAROS_NANITE_RAW pixel shaders read the raw vertices from the mesh
+				// program's per-primitive copy.
 				per_vertex[input] =
 				    (ShaderPixelRawVertexInputs(*pixel) || SarosNaniteRawPs(program.shader_hash)) &&
 				    (per_vertex[input] || mode < 2u || !ShaderPixelParameterIsFlat(*pixel, input));
@@ -307,12 +310,14 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 		const auto slots   = ShaderPixelFieldSlots(*pixel, active, fields, &dropped);
 		for (const auto& slot: slots) {
 			info.inputs.push_back({StageInputKind::ParameterField, slot.location, slot.Pack(),
-			                       fmt::format("in_field_{}_{}", slot.input, slot.location), false});
+			                       fmt::format("in_field_{}_{}", slot.input, slot.location),
+			                       false});
 		}
 		if (dropped != 0) {
-			std::printf("nps5: pixel shader 0x%016llx: %u unpacked parameter fields found no interface "
-			            "location (read as zero)\n",
-			            static_cast<unsigned long long>(program.shader_hash), dropped);
+			std::printf(
+			    "nps5: pixel shader 0x%016llx: %u unpacked parameter fields found no interface "
+			    "location (read as zero)\n",
+			    static_cast<unsigned long long>(program.shader_hash), dropped);
 		}
 	}
 	for (uint32_t input = 0; input < pixel->input_num; input++) {
@@ -362,6 +367,9 @@ void CollectBuiltinInputs(const Program& program, ShaderInfo& info) {
 					break;
 				case StageInputKind::BaseInstance:
 					AddInput(info, kind, 0, 1, "gl_BaseInstance");
+					break;
+				case StageInputKind::BaseVertex:
+					AddInput(info, kind, 0, 1, "gl_BaseVertex");
 					break;
 				case StageInputKind::InvocationId:
 					AddInput(info, kind, 0, 1, "gl_InvocationID");
@@ -528,6 +536,21 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 	}
 	CollectBuiltinInputs(program, next);
 	CollectOutputs(program, input_info, next);
+	// KYTY_OBJPRIM_ID (based on Erlou93/KytyPS5-Yotei): the slot the hardware writes VGT_OBJECT_ID
+	// (+ the primitive index) to; the guest pixel shader does not export it.
+	if (program.stage == ShaderType::Pixel && input_info.pixel != nullptr &&
+	    input_info.pixel->HasObjprimOutput()) {
+		if (std::any_of(next.outputs.begin(), next.outputs.end(), [&](const auto& output) {
+			    return output.kind == StageOutputKind::Mrt &&
+			           output.location == input_info.pixel->objprim_slot;
+		    })) {
+			return Fail("ObjPrimID slot is also an exported MRT");
+		}
+		AddOutput(next, StageOutputKind::ObjPrimId, 0, input_info.pixel->objprim_slot, "out_objprim_id");
+		if (input_info.pixel->objprim_add_prim_id) {
+			AddInput(next, StageInputKind::PrimitiveId, 0, 1, "gl_PrimitiveID");
+		}
+	}
 	program.shader_info_complete = true;
 }
 

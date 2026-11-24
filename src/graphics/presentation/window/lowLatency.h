@@ -2,14 +2,13 @@
 #define EMULATOR_SRC_GRAPHICS_PRESENTATION_WINDOW_LOWLATENCY_H_
 
 #include <cstdint>
-
 #include <vulkan/vulkan_core.h>
 
 // ASTROHYBRID_LOW_LATENCY=1 (default 0; "measure": markers and driver reports with the
-// low-latency mode and its sleep off, for comparison): NVIDIA low-latency mode through VK_NV_low_latency2 (the
-// Vulkan side of Reflex), driven by Kyty itself. Enabled only when the device reports both
-// VK_NV_low_latency2 and VK_KHR_present_id with its presentId feature; otherwise the switch is
-// ignored and logged as unavailable.
+// low-latency mode and its sleep off, for comparison): NVIDIA low-latency mode through
+// VK_NV_low_latency2 (the Vulkan side of Reflex), driven by Kyty itself. Enabled only when the
+// device reports both VK_NV_low_latency2 and VK_KHR_present_id with its presentId feature;
+// otherwise the switch is ignored and logged as unavailable.
 //
 // Frames are numbered by guest flips, in the order the guest issues them:
 //  - guest render thread: a DCB submission that carries a flip packet (AgcDcbSetFlip since the
@@ -33,16 +32,16 @@ namespace Libs::Graphics::LowLatency {
 // Device creation: whether to add the two extensions (both present in `available`).
 [[nodiscard]] bool WantExtensions(bool has_low_latency2, bool has_present_id);
 // After vkCreateDevice with them and presentId enabled.
-void OnDeviceCreated(VkDevice device);
+void               OnDeviceCreated(VkDevice device);
 [[nodiscard]] bool Enabled();
 // Swapchain creation: the pNext to chain into VkSwapchainCreateInfoKHR (nullptr when disabled).
 [[nodiscard]] const void* SwapchainCreateNext(const void* next);
-void OnSwapchainCreated(VkSwapchainKHR swapchain);
-void OnSwapchainDestroyed(VkSwapchainKHR swapchain);
+void                      OnSwapchainCreated(VkSwapchainKHR swapchain);
+void                      OnSwapchainDestroyed(VkSwapchainKHR swapchain);
 
 // Guest side.
-void NoteFlipPacket();      // AgcDcbSetFlip (any thread)
-void AfterDcbSubmit();      // the bridge's DCB submission returned (guest thread)
+void NoteFlipPacket(); // AgcDcbSetFlip (any thread)
+void AfterDcbSubmit(); // the bridge's DCB submission returned (guest thread)
 // sceVideoOutSubmitFlip (guest thread): Begin numbers the frame before its reservation (the
 // reservation takes the number with TakeCpuFlipFrame), End ends it once the flip is queued.
 [[nodiscard]] uint64_t BeginCpuFlip();
@@ -56,7 +55,7 @@ void SetNextPresentFrame(uint64_t frame);
 // Around vkQueuePresentKHR (present thread): Begin returns the present ID to chain (0: none) and
 // takes the swapchain mutex; End marks PRESENT_END and releases it.
 [[nodiscard]] uint64_t BeginPresent(VkSwapchainKHR swapchain);
-void EndPresent(VkSwapchainKHR swapchain, uint64_t present_id);
+void                   EndPresent(VkSwapchainKHR swapchain, uint64_t present_id);
 
 } // namespace Libs::Graphics::LowLatency
 

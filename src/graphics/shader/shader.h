@@ -4,13 +4,14 @@
 #include "common/abi.h"
 #include "common/common.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/guest_gpu/viewportTransform.h"
 #include "graphics/shader/recompiler/ir/ResourceSnapshot.h"
 #include "graphics/shader/shaderBindings.h"
 
 #include <array>
 #include <compare>
-#include <cstring>
 #include <cstddef>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -41,6 +42,8 @@ enum class ShaderType {
 	Unknown,
 	Vertex,
 	Pixel,
+	// Unused by our stages, kept so the values stored in shader journals and pipeline lists keep
+	// their meaning (upstream 45b35fafb dropped it).
 	Fetch,
 	Compute,
 	Mesh,
@@ -87,6 +90,10 @@ struct ShaderClipSpaceTransform {
 	float offset[2]      = {};
 	float half_extent[2] = {};
 	bool  enabled        = false;
+	// KYTY_VTE_CNTL: PA_CL_VTE_CNTL's position format (ViewportTransform::PackPositionFormat; 0 is
+	// the default clip position). In padding: the struct keeps its size, and stored journals and
+	// pipeline lists read it as zero (ShaderSanitizeStoredInputInfo).
+	uint8_t vte_format = 0;
 };
 
 struct ShaderWorkgroupInputInfo {
@@ -109,7 +116,28 @@ struct ShaderMeshInputInfo: ShaderWorkgroupInputInfo {
 	// IR::PushData::MeshFirstGroupDword, to WorkgroupId.x. 0 (NVIDIA: X equals the total) keeps
 	// the six draw dwords and the program as before.
 	uint32_t split_groups         = 0;
+	bool     fast_launch          = false;
+	// A subgroup larger than a host mesh workgroup may be (VK_EXT_mesh_shader limits) runs its
+	// waves in this many sequential passes of equal size, each on the whole workgroup.
+	uint32_t passes               = 1;
 
+	[[nodiscard]] constexpr uint32_t Waves() const {
+		return (threads_num[0] * threads_num[1] * threads_num[2] + wave_size - 1u) / wave_size;
+	}
+	// Host invocations for all waves at once: a wave64 on a 32-wide subgroup takes 32.
+	[[nodiscard]] constexpr uint32_t HostThreads() const {
+		return Waves() * (host_subgroup_size < wave_size ? host_subgroup_size : wave_size);
+	}
+	// The fewest passes of whole waves whose invocations fit max_invocations; 0 when none do.
+	[[nodiscard]] constexpr uint32_t PassesFor(uint32_t max_invocations) const {
+		const auto waves = Waves();
+		for (uint32_t count = 1; count <= waves; count++) {
+			if (waves % count == 0 && HostThreads() / count <= max_invocations) {
+				return count;
+			}
+		}
+		return waves == 0 ? 1u : 0u;
+	}
 	[[nodiscard]] constexpr uint32_t InputPrimitiveSize() const {
 		switch (static_cast<Prospero::PrimitiveType>(input_primitive)) {
 			case Prospero::PrimitiveType::kPointList: return 1u;
@@ -143,6 +171,15 @@ struct ShaderTessellationInputInfo {
 	uint32_t domain                = 0;
 	uint32_t partitioning          = 0;
 	uint32_t output_topology       = 0;
+	// VGT_HOS_MIN/MAX_TESS_LEVEL as f32 bits: the hardware clamps every factor to them.
+	uint32_t min_tess_level        = 0;
+	uint32_t max_tess_level        = 0;
+	// KYTY_TESS_MERGED_CARRY (with KYTY_TESS_MERGED_HULL; based on Erlou93/KytyPS5-Yotei): the VGPRs
+	// the HS part of a split merged LS+HS program reads before writing them. On the hardware one
+	// wave runs both parts, so they still hold what the LS part left in the lane. The LS stage
+	// exports them after its outputs and the HS stage starts with them; bit k = v<k>. Empty for
+	// every other pair.
+	std::array<uint32_t, 8> carried_vgprs {};
 };
 
 struct ShaderVertexInputInfo {
@@ -177,6 +214,11 @@ struct ShaderVertexInputInfo {
 	// Last: journals and pipeline lists store the fields before them (ShaderStoredInputInfoSize).
 	uint32_t                param_alias_mask = 0;
 	std::array<uint32_t, 32> param_alias_source {};
+	// KYTY_INDIRECT_VERTEX_BASE (upstream a833e1b73): an indirect draw's vertex index excludes its
+	// record's base vertex, which goes only to this user SGPR (s8 + GS user data index; -1: none).
+	// Not stored in journals and lists (a later build recompiles such a program).
+	bool                    indirect_vertex_base = false;
+	int32_t                 base_vertex_sgpr     = -1;
 };
 
 // Bytes of an input info that shader journals and pipeline lists store. A vertex input info is
@@ -204,14 +246,27 @@ struct ShaderComputeInputInfo: ShaderWorkgroupInputInfo {
 	// Last before the runtime field: the fields above keep the offsets older shader journals and
 	// pipeline lists stored.
 	bool               async_compute              = false;
+	// KYTY_INDIRECT_THREADS_GPU: a thread-dimension DISPATCH_INDIRECT whose thread counts the
+	// shader reads from GPU memory; the dispatch-thread shader data dwords hold their device
+	// address instead of the counts. In the padding before the runtime field (stored size kept).
+	bool               dispatch_dimensions_indirect = false;
 	ShaderStageRuntime stage;
 };
 
-enum class ShaderAlphaBlendSource : uint8_t { None, SourceAlpha, SourceAlphaOne, SourceAlphaZero };
+// OneAlphaZero (KYTY_BLEND_ALPHA_REMAP with KYTY_UI_TEXT_BLEND=1, usa-ratt/KytyPS5-GT7 429692dd3,
+// from Franseven): colour One, alpha Zero over a source-alpha destination factor (UI text).
+enum class ShaderAlphaBlendSource : uint8_t {
+	None,
+	SourceAlpha,
+	SourceAlphaOne,
+	SourceAlphaZero,
+	OneAlphaZero
+};
 enum class ShaderPixelParameterMode : uint8_t { FirstVertex, LastVertex, Rectangle };
-// Interface locations a pixel shader may use with KYTY_PS_PER_VERTEX=gs (ShaderPixelPerVertexSlots):
-// the 32 guest parameter locations plus copies of raw vertices; within Vulkan's minimum of 64
-// fragment input components only when few are used, so the device's limit is checked.
+// Interface locations a pixel shader may use with KYTY_PS_PER_VERTEX=gs
+// (ShaderPixelPerVertexSlots): the 32 guest parameter locations plus copies of raw vertices; within
+// Vulkan's minimum of 64 fragment input components only when few are used, so the device's limit is
+// checked.
 inline constexpr uint32_t ShaderMaxPerVertexLocations = 32;
 
 struct ShaderPixelInputInfo {
@@ -233,8 +288,16 @@ struct ShaderPixelInputInfo {
 	uint32_t                                       target_shader_mask           = UINT32_MAX;
 	std::array<Prospero::ColorComponentMapping, 8> target_export_mapping        = {};
 	uint32_t                                       scratch_size_dwords          = 0;
-	// EXTRA_LDS_SIZE: LDS reserved beyond the interpolants (VGPR spills to LDS).
-	uint32_t                                       lds_size_dwords              = 0;
+	// EXTRA_LDS_SIZE: LDS reserved beyond the interpolants (VGPR spills to LDS); at most 255 * 128
+	// dwords, so 16 bits. The two bytes after it were its always-zero high half in stored journals
+	// and pipeline lists.
+	uint16_t                                       lds_size_dwords              = 0;
+	// KYTY_INT_MRT_OUTPUTS (upstream 26ca60923): exports to UINT and SINT targets, which take
+	// integer outputs of the same signedness. In the old high half of lds_size_dwords (the padding
+	// before `stage` holds the ObjPrimID fields); journals and pipeline lists read them as zero
+	// (ShaderSanitizeStoredInputInfo).
+	uint8_t                                        target_uint_mask             = 0;
+	uint8_t                                        target_sint_mask             = 0;
 	bool                                           ps_pos_x                     = false;
 	bool                                           ps_pos_y                     = false;
 	bool                                           ps_pos_z                     = false;
@@ -258,10 +321,29 @@ struct ShaderPixelInputInfo {
 	// Last before the runtime field: the fields above keep the offsets older shader journals and
 	// pipeline lists stored.
 	ShaderPixelParameterMode                       parameter_mode = ShaderPixelParameterMode::FirstVertex;
+	// KYTY_FLOAT_STORE_CLAMP: MRT i goes to a 16-bit float render target (bit i); its 32-bit
+	// exports clamp to the half range. In padding before `stage`: the struct keeps its size, and
+	// stored journals and pipeline lists read it as zero (ShaderSanitizeStoredInputInfo).
+	uint8_t                                        target_half_float_mask = 0;
+	// KYTY_OBJPRIM_ID (based on Erlou93/KytyPS5-Yotei): the colour slot that receives the draw's
+	// hardware ObjPrimID write (VGT_OBJECT_ID, plus the primitive index with
+	// PA_CL_OBJPRIM_ID_CNTL.ADD_PIPED_PRIM_ID), 0xff for none. VGT_OBJECT_ID changes every draw, so
+	// the program reads it from push-constant dword objprim_push_dword. In the padding before
+	// `stage` (offsets 213..215): the struct keeps its size; stored journals read them as "none"
+	// (ShaderSanitizeStoredInputInfo).
+	uint8_t                                        objprim_slot           = 0xffu;
+	uint8_t                                        objprim_push_dword     = 0xffu;
+	bool                                           objprim_add_prim_id    = false;
 	ShaderStageRuntime                             stage;
 
 	bool HasPositionInput() const { return ps_pos_x || ps_pos_y || ps_pos_z || ps_pos_w; }
+	bool HasObjprimOutput() const { return objprim_slot < 8u; }
 };
+// Journals and pipeline lists store the whole pixel input info: the masks above must stay in padding.
+static_assert(offsetof(ShaderPixelInputInfo, target_uint_mask) == offsetof(ShaderPixelInputInfo, lds_size_dwords) + 2,
+              "ShaderPixelInputInfo: the integer target masks must stay in lds_size_dwords' old high half");
+static_assert(offsetof(ShaderPixelInputInfo, stage) == 216,
+              "ShaderPixelInputInfo layout changed: stored journals and pipeline lists would break");
 
 // Journals and pipeline lists written before async_compute / parameter_mode existed hold padding
 // bytes where those fields now sit (sizeof did not change). Called after a stored input info is
@@ -273,6 +355,15 @@ inline void ShaderSanitizeStoredInputInfo(ShaderPixelInputInfo& info) {
 	if (mode > static_cast<uint8_t>(ShaderPixelParameterMode::Rectangle)) {
 		info.parameter_mode = ShaderPixelParameterMode::FirstVertex;
 	}
+	info.target_half_float_mask = 0;
+	info.objprim_slot           = 0xffu;
+	info.objprim_push_dword     = 0xffu;
+	info.objprim_add_prim_id    = false;
+	info.target_uint_mask       = 0;
+	info.target_sint_mask       = 0;
+}
+inline void ShaderSanitizeStoredInputInfo(ShaderVertexInputInfo& info) {
+	info.clip_space.vte_format = 0;
 }
 inline void ShaderSanitizeStoredInputInfo(ShaderComputeInputInfo& info) {
 	uint8_t async = 0;
@@ -311,6 +402,9 @@ uint32_t ShaderPixelParameterMappedLocation(const ShaderPixelInputInfo& info, ui
 // compact, as on AMD hardware: MRT export i is written to the i-th colour target whose
 // CB_SHADER_MASK nibble is non-zero. Off: export i is written to target i.
 bool     ShaderCbShaderMaskExports();
+// KYTY_OBJPRIM_ID=1 (startup, default off): the hardware ObjPrimID write (PipelineCache
+// ObjprimIdSlot, ShaderPixelInputInfo::objprim_slot).
+bool     ShaderObjprimIdEnabled();
 // The colour target of MRT export `export_index` under `shader_mask`; UINT32_MAX for none.
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 uint32_t ShaderPixelParameterLocation(const ShaderPixelInputInfo& info,
@@ -325,7 +419,7 @@ bool     ShaderPixelParameterIsFlat(const ShaderPixelInputInfo& info, uint32_t i
 // vertices: PerVertexKHR inputs, or with KYTY_PS_PER_VERTEX=gs the generated geometry stage,
 // which rectangle lists (expanded by tessellation stages) do not have. False: the reads take the
 // interpolated or flat value (KYTY_PS_PER_VERTEX=0).
-bool     ShaderPixelRawVertexInputs(const ShaderPixelInputInfo& info);
+bool ShaderPixelRawVertexInputs(const ShaderPixelInputInfo& info);
 // KYTY_PS_PER_VERTEX=gs: the three flat locations that carry the raw vertices 0..2 of one
 // per-vertex parameter (perVertexShader.h writes them, the pixel shader reads them). `source` is
 // the parameter's mapped location (the vertex shader's export). Vertex 0 keeps that location;
@@ -334,16 +428,17 @@ struct ShaderPerVertexSlot {
 	uint32_t                source = 0;
 	std::array<uint32_t, 3> locations {};
 };
-// active_inputs: the pixel shader's parameter inputs; per_vertex_inputs: those read as raw vertices.
-std::vector<ShaderPerVertexSlot> ShaderPixelPerVertexSlots(const ShaderPixelInputInfo& info,
-                                                           std::span<const uint32_t> active_inputs,
-                                                           std::span<const uint32_t> per_vertex_inputs);
+// active_inputs: the pixel shader's parameter inputs; per_vertex_inputs: those read as raw
+// vertices.
+std::vector<ShaderPerVertexSlot>
+ShaderPixelPerVertexSlots(const ShaderPixelInputInfo& info, std::span<const uint32_t> active_inputs,
+                          std::span<const uint32_t> per_vertex_inputs);
 bool     ShaderPixelParameterIsCustom(const ShaderPixelInputInfo& info, uint32_t input);
 
-// KYTY_PS_PER_VERTEX=unpack (nps5 kart2): raw-vertex reads without raw vertices. A pixel shader that
-// reads the three vertices of a packed (custom-interpolation) parameter unpacks 16-bit fields and
-// interpolates them itself; the host interpolates each field instead. A field is one 16-bit word
-// (or the whole dword, Raw) of one channel of one pixel input. The vertex shader exports up to
+// KYTY_PS_PER_VERTEX=unpack (nps5 kart2): raw-vertex reads without raw vertices. A pixel shader
+// that reads the three vertices of a packed (custom-interpolation) parameter unpacks 16-bit fields
+// and interpolates them itself; the host interpolates each field instead. A field is one 16-bit
+// word (or the whole dword, Raw) of one channel of one pixel input. The vertex shader exports up to
 // four fields of one parameter as floats at a spare location (a slot); the pixel shader reads the
 // slot as an ordinary smooth input (Raw: flat) and uses that one value for P0, P10 and P20.
 enum class ShaderParameterFieldKind : uint8_t {
@@ -354,8 +449,8 @@ enum class ShaderParameterFieldKind : uint8_t {
 	Raw  = 4, // the dword's bits, flat (a parameter only read at P0)
 };
 // kind | channel << 3 | word << 5; zero: no field.
-[[nodiscard]] constexpr uint32_t ShaderParameterFieldCode(ShaderParameterFieldKind kind, uint32_t channel,
-                                                          uint32_t word) {
+[[nodiscard]] constexpr uint32_t ShaderParameterFieldCode(ShaderParameterFieldKind kind,
+                                                          uint32_t channel, uint32_t word) {
 	return static_cast<uint32_t>(kind) | ((channel & 3u) << 3u) | ((word & 1u) << 5u);
 }
 [[nodiscard]] constexpr ShaderParameterFieldKind ShaderParameterFieldCodeKind(uint32_t code) {
@@ -374,8 +469,8 @@ struct ShaderParameterField {
 	auto operator<=>(const ShaderParameterField&) const = default;
 };
 struct ShaderParameterFieldSlot {
-	uint32_t                location = 0; // the interface location that carries the fields
-	uint32_t                input    = 0; // pixel input index (pixel side) or vertex export (vertex side)
+	uint32_t location = 0; // the interface location that carries the fields
+	uint32_t input    = 0; // pixel input index (pixel side) or vertex export (vertex side)
 	std::array<uint32_t, 4> codes {};
 
 	[[nodiscard]] bool Flat() const {
@@ -384,17 +479,20 @@ struct ShaderParameterFieldSlot {
 	// input | codes << 5: what a pixel program's StageInput (kind ParameterField, component_count)
 	// and a vertex input info's param_alias_source entry hold.
 	[[nodiscard]] constexpr uint32_t Pack() const {
-		return (input & 31u) | (codes[0] << 5u) | (codes[1] << 11u) | (codes[2] << 17u) | (codes[3] << 23u);
+		return (input & 31u) | (codes[0] << 5u) | (codes[1] << 11u) | (codes[2] << 17u) |
+		       (codes[3] << 23u);
 	}
-	[[nodiscard]] static constexpr ShaderParameterFieldSlot Unpack(uint32_t location, uint32_t packed) {
+	[[nodiscard]] static constexpr ShaderParameterFieldSlot Unpack(uint32_t location,
+	                                                               uint32_t packed) {
 		return {location,
 		        packed & 31u,
-		        {(packed >> 5u) & 63u, (packed >> 11u) & 63u, (packed >> 17u) & 63u, (packed >> 23u) & 63u}};
+		        {(packed >> 5u) & 63u, (packed >> 11u) & 63u, (packed >> 17u) & 63u,
+		         (packed >> 23u) & 63u}};
 	}
 	auto operator<=>(const ShaderParameterFieldSlot&) const = default;
 };
 // A param_alias_source entry: the source export, and the fields of a field alias (zero: a copy).
-inline constexpr uint32_t ShaderParamAliasSourceMask = 31u;
+inline constexpr uint32_t        ShaderParamAliasSourceMask = 31u;
 [[nodiscard]] constexpr uint32_t ShaderParamAliasFields(uint32_t alias_source) {
 	return alias_source >> 5u;
 }
@@ -404,10 +502,9 @@ bool ShaderPixelRawVertexUnpack(const ShaderPixelInputInfo& info);
 // The slots of a pixel shader's fields: the fields sorted, grouped by input (Raw fields apart),
 // four to a slot, at the highest locations that no active input maps or is relocated to.
 // Fields that find no location are left out (`dropped`, when given, counts them).
-std::vector<ShaderParameterFieldSlot> ShaderPixelFieldSlots(const ShaderPixelInputInfo& info,
-                                                            std::span<const uint32_t> active_inputs,
-                                                            std::span<const ShaderParameterField> fields,
-                                                            uint32_t* dropped = nullptr);
+std::vector<ShaderParameterFieldSlot>
+ShaderPixelFieldSlots(const ShaderPixelInputInfo& info, std::span<const uint32_t> active_inputs,
+                      std::span<const ShaderParameterField> fields, uint32_t* dropped = nullptr);
 // Whether the bound pixel program reads field slots (its vertex stage must be linked).
 bool ShaderPixelHasFieldSlots(const ShaderPixelInputInfo& info);
 
@@ -510,6 +607,12 @@ void ShaderMapUserData(uint64_t addr, const ShaderMappedData& data);
 void ShaderUnmapCode(uint64_t addr, uint64_t size);
 // Changes after every shader map update (draw-prep certificates compare it).
 [[nodiscard]] uint64_t ShaderMapGeneration();
+// GetDeclaredShaderHash for tests: the binary-info hash of the code at shader_addr, or 0.
+uint64_t ShaderDeclaredHashForTest(uint64_t shader_addr, uint32_t code_size_bytes);
+// KYTY_SKIP_INVALID: true (and cleared) when the last PrepareProgram on this thread found the
+// stage undescribable (null or uncommitted vertex tables, a GS that emits no vertex): the draw is
+// skipped. Already logged.
+bool ShaderTakePrepareFailed();
 
 void     ShaderDbgDumpInputInfo(const ShaderVertexInputInfo& info);
 void     ShaderDbgDumpInputInfo(const ShaderPixelInputInfo& info);

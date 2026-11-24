@@ -1,27 +1,30 @@
 #include "graphics/host_gpu/memoryTracker.h"
+#include "common/staticOnce.h"
+
+#include <cstdio>
+#include <execinfo.h>
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "graphics/host_gpu/watchRange.h"
 
 #include <atomic>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <execinfo.h>
 
 namespace Libs::Graphics {
 
 void MemoryTracker::ReportUploadReentry() noexcept {
 	void*     frames[64];
 	const int count = ::backtrace(frames, 64);
-	std::fprintf(
-	    stderr, "[memtrk] memory tracker re-entered from upload callback; backtrace (%d frames):\n",
-	    count);
+	std::fprintf(stderr, "[memtrk] memory tracker re-entered from upload callback; backtrace (%d frames):\n",
+	             count);
 	std::fflush(stderr);
 	::backtrace_symbols_fd(frames, count, 2);
 	EXIT("memory tracker re-entered from upload callback\n");
 	std::abort();
 }
+
 
 static_assert(std::atomic<void*>::is_always_lock_free);
 
@@ -133,6 +136,17 @@ void MemoryTracker::AdvanceCpuMutationEpoch() noexcept {
 }
 
 void MemoryTracker::NotifyCpuMutation(uint64_t vaddr, uint64_t size) noexcept {
+	if (m_reach_log_on.load(std::memory_order_acquire) && size != 0) {
+		std::scoped_lock lock(m_dirtied_mutex);
+		if (!m_reach_log_overflow) {
+			if (m_reach_log.Size() >= DirtiedLogMaxRanges) {
+				m_reach_log_overflow = true;
+				m_reach_log.Clear();
+			} else {
+				m_reach_log.Add(vaddr, size);
+			}
+		}
+	}
 	if (!m_track_cpu_mutations) {
 		return;
 	}
@@ -165,8 +179,17 @@ bool MemoryTracker::TakeDirtiedRanges(RangeSet& ranges, uint64_t& epoch) {
 	return complete;
 }
 
+bool MemoryTracker::TakeReachLog(RangeSet& ranges) {
+	std::scoped_lock lock(m_dirtied_mutex);
+	ranges.Clear();
+	std::swap(ranges, m_reach_log);
+	const bool complete  = !m_reach_log_overflow;
+	m_reach_log_overflow = false;
+	return complete;
+}
+
 std::pair<uint64_t, uint64_t> MemoryTracker::FaultWindow(uint64_t offset, uint64_t bytes,
-                                                         uint64_t ahead) noexcept {
+                                                         uint64_t ahead, bool sequential) noexcept {
 	// Page indices as RegionManager::MarkWriteFault computes its window.
 	const uint64_t start = offset / TRACKER_PAGE_SIZE;
 	const uint64_t end   = (offset + bytes + TRACKER_PAGE_SIZE - 1) / TRACKER_PAGE_SIZE;
@@ -174,8 +197,12 @@ std::pair<uint64_t, uint64_t> MemoryTracker::FaultWindow(uint64_t offset, uint64
 		return {start * TRACKER_PAGE_SIZE, end * TRACKER_PAGE_SIZE};
 	}
 	const uint64_t window_begin = start / ahead * ahead;
-	const uint64_t window_end =
+	uint64_t window_end =
 	    std::min<uint64_t>((end + ahead - 1) / ahead * ahead, TRACKER_REGION_PAGES);
+	if (sequential) {
+		// The forward window [start, start + ahead) of a sequential fill (a superset either way).
+		window_end = std::max(window_end, std::min<uint64_t>(start + ahead, TRACKER_REGION_PAGES));
+	}
 	return {window_begin * TRACKER_PAGE_SIZE, std::max(end, window_end) * TRACKER_PAGE_SIZE};
 }
 
@@ -240,10 +267,12 @@ namespace {
 std::atomic<MemoryTracker::OwnerThreadFn> g_lockfree_owner {nullptr};
 
 bool LockFreeDirtyHere() noexcept {
-	static const bool enabled = [] {
+	static constexpr auto enabled_init = [] {
 		const auto* value = std::getenv("KYTY_TRACKER_LOCKFREE_DIRTY");
 		return value != nullptr && std::strcmp(value, "1") == 0;
-	}();
+	};
+	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(enabled_init())>> enabled_once;
+	const bool& enabled = enabled_once.Get(enabled_init);
 	if (!enabled) {
 		return false;
 	}
@@ -398,6 +427,8 @@ bool MemoryTracker::GpuMirrorMatches(uint64_t vaddr, uint64_t size) {
 }
 
 void MemoryTracker::MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size) {
+	WatchRange::Note("tracker CPU-modified", vaddr, size);
+	WatchRange::NoteWriter("cpu-fault", vaddr, size);
 	CheckNotInUploadCallback();
 	Iterate<true>(vaddr, size, [this](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 		std::scoped_lock lock(manager->lock);
@@ -407,6 +438,8 @@ void MemoryTracker::MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size) {
 }
 
 void MemoryTracker::MarkRegionAsGpuModified(uint64_t vaddr, uint64_t size) {
+	WatchRange::Note("tracker GPU-modified", vaddr, size);
+	WatchRange::NoteWriter("tracker-gpu", vaddr, size);
 	CheckNotInUploadCallback();
 	CleanVerdict::Invalidate(vaddr, size, Coherence::Source::TrackerGpuMark);
 	Iterate<true>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
@@ -416,6 +449,7 @@ void MemoryTracker::MarkRegionAsGpuModified(uint64_t vaddr, uint64_t size) {
 }
 
 void MemoryTracker::UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size) {
+	WatchRange::Note("tracker GPU-unmark", vaddr, size);
 	CheckNotInUploadCallback();
 	CleanVerdict::Invalidate(vaddr, size, Coherence::Source::TrackerGpuUnmark);
 	Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
@@ -431,16 +465,6 @@ void MemoryTracker::MarkReadbackPending(uint64_t vaddr, uint64_t size) {
 		std::scoped_lock lock(manager->lock);
 		manager->MarkReadbackPending(manager->GetCpuAddr() + offset, bytes);
 	});
-}
-
-uint64_t MemoryTracker::RelaxRead(uint64_t vaddr, uint64_t size) {
-	CheckNotInUploadCallback();
-	uint64_t pages = 0;
-	Iterate<false>(vaddr, size, [&pages](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-		std::scoped_lock lock(manager->lock);
-		pages += manager->RelaxRead(manager->GetCpuAddr() + offset, bytes);
-	});
-	return pages;
 }
 
 uint64_t MemoryTracker::OpenRead(uint64_t vaddr, uint64_t size) {

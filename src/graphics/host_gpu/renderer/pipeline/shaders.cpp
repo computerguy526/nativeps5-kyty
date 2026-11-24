@@ -1,3 +1,4 @@
+#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -7,10 +8,13 @@
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/debug.h"
+#include "graphics/host_gpu/renderer/pipeline/aaMaskCoverage.h"
+#include "graphics/host_gpu/renderer/pipeline/bindlessTable.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
-#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineFeedback.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.h"
+#include "graphics/host_gpu/renderer/pipeline/pixelRateVariant.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -23,15 +27,15 @@
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
-#include <mutex>
 #include <unordered_map>
+#include <mutex>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
+#include <dlfcn.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <dlfcn.h>
 #include <limits>
 #include <span>
 #include <vector>
@@ -199,14 +203,27 @@ static void AddLayoutBindings(std::vector<vk::DescriptorSetLayoutBinding>& descr
 	}
 }
 
+static bool UsesBindless(const ShaderRecompiler::IR::CompiledShaderInfo& program) {
+	return std::ranges::any_of(program.info.images, &ShaderRecompiler::IR::ImageResource::bindless) ||
+	       std::ranges::any_of(program.info.samplers,
+	                           &ShaderRecompiler::IR::SamplerResource::bindless);
+}
+
 // Set 0 plus one push-constant range {push_stages, 0, NativePushConstantSize}; interned by
-// binding signature (pipelineLayoutCache.h, KYTY_LAYOUT_INTERN).
+// binding signature (pipelineLayoutCache.h, KYTY_LAYOUT_INTERN). A pipeline that samples bindless
+// images (pipeline.uses_bindless) also gets set 1, the shared bindless table (Senaxx).
 static void AssignPipelineLayout(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
                                  std::span<const vk::DescriptorSetLayoutBinding> bindings,
                                  vk::ShaderStageFlags                            push_stages) {
 	EXIT_IF(pipeline.pipeline_layout != nullptr || pipeline.descriptor_set_layout != nullptr);
+	vk::DescriptorSetLayout bindless_set = nullptr;
+	if (pipeline.uses_bindless) {
+		bindless_set = BindlessSetLayout(graphics);
+		EXIT_IF(bindless_set == nullptr);
+	}
 	const auto layouts = AcquirePipelineLayout(graphics, bindings, push_stages,
-	                                           ShaderRecompiler::IR::NativePushConstantSize);
+	                                           ShaderRecompiler::IR::NativePushConstantSize,
+	                                           bindless_set);
 	pipeline.descriptor_set_layout = layouts.set_layout;
 	pipeline.pipeline_layout       = layouts.pipeline_layout;
 	pipeline.uses_push_descriptors = layouts.uses_push_descriptors;
@@ -222,7 +239,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const PipelineCache::GraphicsPrograms& programs,
                             const PipelineStaticParameters&        static_params,
                             vk::PipelineCache                      driver_cache,
-                            const GraphicsPipelineCreateHook*      create_hook) {
+                            const GraphicsPipelineCreateHook*      create_hook,
+                            vk::Result*                            result_out) {
 	CompileProgress::LiveScope title_live; // window-title "compiling shader (live)"
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
@@ -247,32 +265,20 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		const auto shaders =
 		    BuildRectListShaders(vs_input_info, ps_active ? ps_input_info : nullptr);
 		tess_control_shader_module = CompileSPV(shaders.control, graphics.device);
-		if (graphics_debug_dump_enabled()) {
-			LOGF("PipelineTrace: vkCreateShaderModule RectList TCS done module=%p\n",
-			     static_cast<void*>(tess_control_shader_module));
-		}
-
-		tess_eval_shader_module = CompileSPV(shaders.evaluation, graphics.device);
-		if (graphics_debug_dump_enabled()) {
-			LOGF("PipelineTrace: vkCreateShaderModule RectList TES done module=%p\n",
-			     static_cast<void*>(tess_eval_shader_module));
-		}
+		tess_eval_shader_module    = CompileSPV(shaders.evaluation, graphics.device);
 	}
-
-	EXIT_NOT_IMPLEMENTED(
-	    rect_list && (tess_control_shader_module == nullptr || tess_eval_shader_module == nullptr));
 
 	// nps5, KYTY_PS_PER_VERTEX=gs: the pixel shader reads raw vertices as flat inputs that a
 	// generated geometry stage writes (perVertexShader.h).
 	vk::ShaderModule per_vertex_geometry_module = nullptr;
 	if (ps_active && PerVertexGeometryNeeded(ps_input_info)) {
-		const bool triangles = static_params.topology == vk::PrimitiveTopology::eTriangleList ||
-		                       static_params.topology == vk::PrimitiveTopology::eTriangleStrip ||
-		                       static_params.topology == vk::PrimitiveTopology::eTriangleFan;
-		const char* missing = mesh           ? "a mesh program"
-		                      : tessellation ? "tessellation stages"
-		                      : !triangles   ? "a non-triangle topology"
-		                                     : nullptr;
+		const bool  triangles = static_params.topology == vk::PrimitiveTopology::eTriangleList ||
+		                        static_params.topology == vk::PrimitiveTopology::eTriangleStrip ||
+		                        static_params.topology == vk::PrimitiveTopology::eTriangleFan;
+		const char* missing   = mesh           ? "a mesh program"
+		                        : tessellation ? "tessellation stages"
+		                        : !triangles   ? "a non-triangle topology"
+		                                       : nullptr;
 		if (missing == nullptr) {
 			const auto interface = DescribePerVertexGeometry(vs_input_info, *ps_input_info);
 			if (interface.unsupported) {
@@ -284,12 +290,13 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 				static std::atomic<uint32_t> built {0};
 				const auto count = built.fetch_add(1, std::memory_order_relaxed) + 1;
 				if (count <= 8 || (count & (count - 1)) == 0) {
-					std::printf("nps5: per-vertex geometry stage for VS 0x%016llx PS 0x%016llx "
-					            "(%zu parameters, %u clip, %u cull; %u pipelines)\n",
-					            static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
-					            static_cast<unsigned long long>(ps_input_info->stage.program->shader_hash),
-					            interface.parameters.size(), interface.clip_distances,
-					            interface.cull_distances, count);
+					std::printf(
+					    "nps5: per-vertex geometry stage for VS 0x%016llx PS 0x%016llx "
+					    "(%zu parameters, %u clip, %u cull; %u pipelines)\n",
+					    static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
+					    static_cast<unsigned long long>(ps_input_info->stage.program->shader_hash),
+					    interface.parameters.size(), interface.clip_distances,
+					    interface.cull_distances, count);
 				}
 			}
 		}
@@ -297,23 +304,33 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 			static std::atomic<uint32_t> skipped {0};
 			const auto count = skipped.fetch_add(1, std::memory_order_relaxed) + 1;
 			if (count <= 16 || (count & (count - 1)) == 0) {
-				std::printf("nps5: no per-vertex geometry stage with %s, VS 0x%016llx PS 0x%016llx: "
-				            "the pixel shader's raw-vertex inputs are undefined (%u pipelines)\n",
-				            missing,
-				            static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
-				            static_cast<unsigned long long>(ps_input_info->stage.program->shader_hash),
-				            count);
+				std::printf(
+				    "nps5: no per-vertex geometry stage with %s, VS 0x%016llx PS 0x%016llx: "
+				    "the pixel shader's raw-vertex inputs are undefined (%u pipelines)\n",
+				    missing,
+				    static_cast<unsigned long long>(vs_input_info.stage.program->shader_hash),
+				    static_cast<unsigned long long>(ps_input_info->stage.program->shader_hash),
+				    count);
 			}
 		}
 	}
 
 	vk::PipelineShaderStageCreateInfo shader_stages[5] {};
 	uint32_t                          shader_stage_count = 0;
+	// KYTY_LAYER_CLAMP: the bound layer count for the exported layer index's clamp.
+	const uint32_t                   layer_limit_value = rendering.layer_limit;
+	const vk::SpecializationMapEntry layer_limit_entry {ShaderRecompiler::IR::LayerLimitSpecId, 0,
+	                                                    sizeof(uint32_t)};
+	const vk::SpecializationInfo layer_limit_spec {1, &layer_limit_entry, sizeof(uint32_t),
+	                                               &layer_limit_value};
 	for (uint32_t i = 0; i < vertex_info.size(); i++) {
 		shader_stages[shader_stage_count++] = {.stage =
 		                                           NativeShaderStage(vertex_info[i].logical_stage),
 		                                       .module = programs.vertex[i].module,
 		                                       .pName  = "main"};
+		if (layer_limit_value != 0) {
+			shader_stages[shader_stage_count - 1].pSpecializationInfo = &layer_limit_spec;
+		}
 	}
 	if (rect_list) {
 		shader_stages[shader_stage_count++] = {.stage =
@@ -331,9 +348,42 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                       .pName  = "main"};
 	}
 	if (ps_active) {
+		// KYTY_EQAA_MIXED through NV mixed samples (fewer colour than raster samples) must not
+		// shade per sample (VUID-VkPipelineMultisampleStateCreateInfo-rasterizationSamples-01415):
+		// a pixel shader that reads its sample index runs its per-pixel copy (pixelRateVariant.h;
+		// draws of one without a copy are skipped, RenderExecutor::ExecutePreparedDraw).
+		auto module     = pixel_program.module;
+		bool pixel_rate = false;
+		if (rendering.color_samples != 0 &&
+		    graphics.mixed_attachment_samples == GraphicContext::MixedAttachmentSamples::Nv &&
+		    !EqaaPerSampleShading()) {
+			if (const auto variant = PixelRate::Find(pixel_program.id); variant.module != nullptr) {
+				module     = variant.module;
+				pixel_rate = true;
+			}
+		}
+		// KYTY_AA_MASK_COVERAGE: the copy that applies the key's AA masks (of the per-pixel copy
+		// above when the draw runs that one).
+		if (static_params.aa_mask[0] != 0xffffffffu || static_params.aa_mask[1] != 0xffffffffu) {
+			if (const auto masked = AaMaskCoverage::Lookup(pixel_program.id, pixel_rate, static_params.aa_mask[0],
+			                                               static_params.aa_mask[1]);
+			    masked != nullptr) {
+				module = masked;
+			}
+		}
 		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
-		                                       .module = pixel_program.module,
+		                                       .module = module,
 		                                       .pName  = "main"};
+	} else if (static_params.aa_mask[0] != 0xffffffffu || static_params.aa_mask[1] != 0xffffffffu) {
+		// KYTY_AA_MASK_COVERAGE: a draw without a pixel shader whose AA masks leave samples out (the
+		// stencil marks of a ghost car): a fragment shader that only writes its coverage.
+		if (const auto masked =
+		        AaMaskCoverage::Lookup(0, false, static_params.aa_mask[0], static_params.aa_mask[1]);
+		    masked != nullptr && shader_stage_count < std::size(shader_stages)) {
+			shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
+			                                       .module = masked,
+			                                       .pName  = "main"};
+		}
 	}
 	// One guest wave per host subgroup where the device lets the stage require it (mesh and
 	// pixel shaders on AMD); GraphicsSubgroupSize and the mesh's host_subgroup_size
@@ -342,7 +392,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	for (uint32_t index = 0; index < shader_stage_count; index++) {
 		auto&      stage   = shader_stages[index];
 		const bool is_mesh = stage.stage == vk::ShaderStageFlagBits::eMeshEXT;
-		if (!is_mesh && (stage.stage != vk::ShaderStageFlagBits::eFragment || !ps_input_info->stage)) {
+		if (!is_mesh && (stage.stage != vk::ShaderStageFlagBits::eFragment || ps_input_info == nullptr ||
+		                 !ps_input_info->stage)) {
 			continue;
 		}
 		const auto wave_size = is_mesh ? vs_input_info.mesh.wave_size
@@ -535,22 +586,20 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
 	vk::ShaderStageFlags graphics_stages = vk::ShaderStageFlagBits::eFragment;
+	pipeline.uses_bindless               = false;
 	for (const auto& stage: vertex_info) {
 		const auto native_stage = NativeShaderStage(stage.logical_stage);
 		AddLayoutBindings(descriptor_bindings, *stage.stage.program, native_stage);
 		graphics_stages |= native_stage;
+		pipeline.uses_bindless |= UsesBindless(*stage.stage.program);
 	}
 	if (ps_active) {
 		EXIT_IF(!ps_input_info->stage);
 		AddLayoutBindings(descriptor_bindings, *ps_input_info->stage.program,
 		                  vk::ShaderStageFlagBits::eFragment);
+		pipeline.uses_bindless |= UsesBindless(*ps_input_info->stage.program);
 	}
 	AssignPipelineLayout(graphics, pipeline, descriptor_bindings, graphics_stages);
-	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: pipeline layout VS=%" PRIu64 " PS=%" PRIu64 " layout=%p push=%d\n",
-		     vertex_program.id, ps_active ? pixel_program.id : 0,
-		     static_cast<void*>(pipeline.pipeline_layout), pipeline.uses_push_descriptors ? 1 : 0);
-	}
 	vk::Result result = vk::Result::eSuccess;
 
 	vk::PipelineDepthStencilStateCreateInfo depth_stencil_info {};
@@ -606,6 +655,41 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	rendering_info.pColorAttachmentFormats = rendering.color_formats.data();
 	rendering_info.depthAttachmentFormat   = rendering.depth_format;
 	rendering_info.stencilAttachmentFormat = rendering.stencil_format;
+	// KYTY_EQAA_MIXED (usa-ratt/KytyPS5-GT7 18979e65b, df310f7a9): mixed attachment samples,
+	// rasterization at the larger count and each attachment at its own
+	// (VK_AMD_mixed_attachment_samples / VK_NV_framebuffer_mixed_samples). Through NV's the colour
+	// sample takes its own raster sample's coverage (TRUNCATE) where the device lists it: with
+	// MERGE a pixel whose raster samples two triangles of one blended mesh share blends twice.
+	std::array<vk::SampleCountFlagBits, RENDER_COLOR_ATTACHMENTS_MAX> color_attachment_samples {};
+	vk::AttachmentSampleCountInfoAMD               attachment_sample_count {};
+	vk::PipelineCoverageReductionStateCreateInfoNV coverage_reduction {};
+	if (rendering.color_samples != 0) {
+		EXIT_IF(graphics.mixed_attachment_samples ==
+		        GraphicContext::MixedAttachmentSamples::None);
+		for (uint32_t i = 0; i < rendering.color_count; i++) {
+			color_attachment_samples[i] = vulkan_sample_count(rendering.color_samples);
+		}
+		attachment_sample_count.colorAttachmentCount    = rendering.color_count;
+		attachment_sample_count.pColorAttachmentSamples = color_attachment_samples.data();
+		attachment_sample_count.depthStencilAttachmentSamples =
+		    vulkan_sample_count(rendering.depth_samples);
+		attachment_sample_count.pNext = rendering_info.pNext;
+		rendering_info.pNext          = &attachment_sample_count;
+		const auto raster_samples     = static_cast<uint32_t>(multisampling.rasterizationSamples);
+		if (graphics.mixed_attachment_samples == GraphicContext::MixedAttachmentSamples::Nv &&
+		    graphics.CoverageTruncate(raster_samples, rendering.depth_samples,
+		                              rendering.color_samples)) {
+			coverage_reduction.coverageReductionMode = vk::CoverageReductionModeNV::eTruncate;
+			coverage_reduction.pNext                 = multisampling.pNext;
+			multisampling.pNext                      = &coverage_reduction;
+			static std::atomic_bool logged           = false;
+			if (!logged.exchange(true, std::memory_order_relaxed)) {
+				LOGF("Pipeline: NV mixed samples (raster %u, depth %u, colour %u): coverage "
+				     "reduction TRUNCATE\n",
+				     raster_samples, rendering.depth_samples, rendering.color_samples);
+			}
+		}
+	}
 	pipeline_info.pNext                    = &rendering_info;
 	pipeline_info.stageCount               = shader_stage_count;
 	pipeline_info.pStages                  = shader_stages;
@@ -624,17 +708,6 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	pipeline_info.layout                  = pipeline.pipeline_layout;
 	pipeline_info.basePipelineIndex       = -1;
 
-	EXIT_IF(pipeline.pipeline != nullptr);
-
-	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreateGraphicsPipelines begin VS=%" PRIu64 " PS=%" PRIu64
-		     " topology=%" PRIu32 " color_mask=0x%08" PRIx32
-		     " depth=%s blend=%s dyn_states=%" PRIu32 "\n",
-		     vertex_program.id, ps_active ? pixel_program.id : 0,
-		     static_cast<uint32_t>(static_params.topology), static_params.color_mask[0],
-		     (with_depth ? "true" : "false"), (static_params.blend_enable[0] ? "true" : "false"),
-		     dynamic_state.dynamicStateCount);
-	}
 	const auto driver_begin = std::chrono::steady_clock::now();
 	if (create_hook != nullptr) {
 		// The pipeline-library path shares libraries only between identically defined layouts.
@@ -668,30 +741,68 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 				    static_cast<vk::ShaderStageFlags::MaskType>(binding.stageFlags));
 			}
 		}
+		if (pipeline.uses_bindless) {
+			// Set 1 (the bindless table): one word more, so no other layout shares the key and the
+			// journal replay, which reads four words per binding, leaves such pipelines out.
+			layout_signature.push_back(0xb1d1e55u);
+		}
 		result = (*create_hook)(pipeline_info, layout_signature, &pipeline.pipeline);
 	} else {
-		result = graphics.device.createGraphicsPipelines(driver_cache, 1, &pipeline_info, nullptr,
-		                                                 &pipeline.pipeline);
+		result = PipelineFeedback::CreateGraphics(graphics.device, driver_cache, pipeline_info, &pipeline.pipeline,
+		                                          PipelineFeedback::Path::Sync);
 	}
 	Profiler::AddFrameWait(Profiler::FrameWait::GraphicsPipelineDriver, 1,
 	                       static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
 	                                                 std::chrono::steady_clock::now() - driver_begin)
 	                                                 .count()));
-	if (graphics_debug_dump_enabled()) {
-		LOGF("PipelineTrace: vkCreateGraphicsPipelines done result=%s pipeline=%p\n",
-		     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
+	const auto destroy_tess_modules = [&] {
+		if (per_vertex_geometry_module != nullptr) {
+			graphics.device.destroyShaderModule(per_vertex_geometry_module, nullptr);
+		}
+		if (tess_control_shader_module != nullptr) {
+			graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
+		}
+		if (tess_eval_shader_module != nullptr) {
+			graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
+		}
+	};
+	if (result_out != nullptr) {
+		// The caller can do without this pipeline (KYTY_PIPELINE_SKIP_PROBE's driver-cache lookup):
+		// the result is returned, and what was created for a failed one given back.
+		*result_out = result;
+		if (result != vk::Result::eSuccess || pipeline.pipeline == nullptr) {
+			if (result == vk::Result::eSuccess) {
+				*result_out = vk::Result::eErrorUnknown;
+			}
+			if (pipeline.pipeline != nullptr) {
+				graphics.device.destroyPipeline(pipeline.pipeline, nullptr);
+				pipeline.pipeline = nullptr;
+			}
+			ReleasePipelineLayout(graphics, pipeline.pipeline_layout, pipeline.descriptor_set_layout);
+			pipeline.pipeline_layout       = nullptr;
+			pipeline.descriptor_set_layout = nullptr;
+			destroy_tess_modules();
+			return;
+		}
 	}
 #if defined(__APPLE__)
 	// nps5 (KosmicKrisp): a pipeline the driver cannot build (a shader feature Metal lacks) is
 	// reported and left null; PipelineCache skips its draws instead of ending the process.
 	if (result != vk::Result::eSuccess || pipeline.pipeline == nullptr) {
 		static std::atomic<uint32_t> failures {0};
-		const auto count = failures.fetch_add(1, std::memory_order_relaxed) + 1;
+		const auto                   count = failures.fetch_add(1, std::memory_order_relaxed) + 1;
 		if (count <= 32 || (count & (count - 1)) == 0) {
-			std::printf("nps5: graphics pipeline build failed (%s), VS 0x%016llx PS 0x%016llx; its draws are skipped (%u failures)\n",
-			            vk::to_string(result).c_str(),
-			            static_cast<unsigned long long>(vs_input_info.stage.program != nullptr ? vs_input_info.stage.program->shader_hash : 0),
-			            static_cast<unsigned long long>(ps_active && ps_input_info->stage.program != nullptr ? ps_input_info->stage.program->shader_hash : 0), count);
+			std::printf(
+			    "nps5: graphics pipeline build failed (%s), VS 0x%016llx PS 0x%016llx; its draws "
+			    "are skipped (%u failures)\n",
+			    vk::to_string(result).c_str(),
+			    static_cast<unsigned long long>(vs_input_info.stage.program != nullptr
+			                                        ? vs_input_info.stage.program->shader_hash
+			                                        : 0),
+			    static_cast<unsigned long long>(ps_active && ps_input_info->stage.program != nullptr
+			                                        ? ps_input_info->stage.program->shader_hash
+			                                        : 0),
+			    count);
 		}
 		pipeline.pipeline = nullptr;
 	}
@@ -701,15 +812,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	EXIT_NOT_IMPLEMENTED(pipeline.pipeline == nullptr);
 #endif
 
-	if (per_vertex_geometry_module != nullptr) {
-		graphics.device.destroyShaderModule(per_vertex_geometry_module, nullptr);
-	}
-	if (tess_control_shader_module != nullptr) {
-		graphics.device.destroyShaderModule(tess_control_shader_module, nullptr);
-	}
-	if (tess_eval_shader_module != nullptr) {
-		graphics.device.destroyShaderModule(tess_eval_shader_module, nullptr);
-	}
+	destroy_tess_modules();
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -746,10 +849,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
 	AddLayoutBindings(descriptor_bindings, *input_info.stage.program,
 	                  vk::ShaderStageFlagBits::eCompute);
+	pipeline.uses_bindless = UsesBindless(*input_info.stage.program);
 	AssignPipelineLayout(graphics, pipeline, descriptor_bindings,
 	                     vk::ShaderStageFlagBits::eCompute);
-	LOGF("PipelineTrace: pipeline layout CS layout=%p push=%d\n",
-	     static_cast<void*>(pipeline.pipeline_layout), pipeline.uses_push_descriptors ? 1 : 0);
 	vk::Result result = vk::Result::eSuccess;
 
 	vk::ComputePipelineCreateInfo info {};
@@ -761,9 +863,11 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	info.stage             = comp_shader_stage_info;
 	info.layout            = pipeline.pipeline_layout;
 	info.basePipelineIndex = -1;
-
-	EXIT_IF(pipeline.pipeline != nullptr);
-
+	// KYTY_PIPELINE_STATS (pipelineFeedback.h): the driver's statistics of selected shaders.
+	const bool stats = PipelineStats::Enabled() && PipelineStats::Selected(compute_module);
+	if (stats) {
+		info.flags |= vk::PipelineCreateFlagBits::eCaptureStatisticsKHR;
+	}
 	LOGF("PipelineTrace: vkCreateComputePipelines begin layout=%p\n",
 	     static_cast<void*>(pipeline.pipeline_layout));
 	if (input_info.stage.program != nullptr) {
@@ -776,8 +880,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		result = graphics.device.createComputePipelines(driver_cache, 1, &info, nullptr,
 		                                                &pipeline.pipeline);
 	}
-	LOGF("PipelineTrace: vkCreateComputePipelines done result=%s pipeline=%p\n",
-	     vk::to_string(result).c_str(), static_cast<void*>(pipeline.pipeline));
+	if (stats && result == vk::Result::eSuccess && pipeline.pipeline != nullptr) {
+		PipelineStats::Print(graphics.device, pipeline.pipeline, PipelineStats::Describe(&info.stage, 1), info.flags);
+	}
 	if (result_out != nullptr) {
 		// The caller can live without this pipeline (an optional ray-tracing kernel): report the
 		// failure instead of stopping the emulator, and give back what was created for it.
@@ -825,8 +930,7 @@ KkTagFn KkTagFunction() {
 			}
 		}
 #endif
-		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n",
-		             sym != nullptr ? "found" : "NOT found");
+		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n", sym != nullptr ? "found" : "NOT found");
 		return reinterpret_cast<KkTagFn>(sym);
 	}();
 	return fn;
@@ -840,8 +944,7 @@ void KkTagRegisterModule(vk::ShaderModule module, uint64_t program_hash) {
 		return;
 	}
 	std::scoped_lock lock(g_kk_tag_mutex);
-	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] =
-	    program_hash;
+	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] = program_hash;
 }
 
 KkTagScope::KkTagScope(vk::ShaderModule module) {
@@ -852,8 +955,7 @@ KkTagScope::KkTagScope(vk::ShaderModule module) {
 	uint64_t hash = 0;
 	{
 		std::scoped_lock lock(g_kk_tag_mutex);
-		const auto       it =
-		    g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
+		const auto it = g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
 		if (it != g_kk_tag_modules.end()) {
 			hash = it->second;
 		}

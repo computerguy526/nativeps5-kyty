@@ -30,8 +30,7 @@ void ForEachSetBitRun(Word&& word, size_t first, size_t last, Func&& func) {
 		while (bits != 0) {
 			const auto     lo      = static_cast<size_t>(__builtin_ctzll(bits));
 			const uint64_t shifted = bits >> lo;
-			const size_t   n =
-			    ~shifted == 0 ? 64u - lo : static_cast<size_t>(__builtin_ctzll(~shifted));
+			const size_t   n = ~shifted == 0 ? 64u - lo : static_cast<size_t>(__builtin_ctzll(~shifted));
 			func(base + lo, base + lo + n);
 			bits = lo + n >= 64u ? 0 : bits & (~uint64_t {0} << (lo + n));
 		}
@@ -71,15 +70,14 @@ void ForEachDirtyOrMissingRun(uint64_t vaddr, uint64_t size, uint64_t region_siz
 	uint64_t offset = vaddr % region_size;
 	uint64_t left   = size;
 	while (left != 0) {
-		const auto  bytes   = region_size - offset < left ? region_size - offset : left;
-		const auto  base    = index * region_size;
+		const auto bytes   = region_size - offset < left ? region_size - offset : left;
+		const auto base    = index * region_size;
 		const auto* manager = region(index);
 		if (manager == nullptr) {
 			add(base + offset, base + offset + bytes);
 		} else {
 			const auto first_page = static_cast<size_t>(offset / page_size);
-			const auto last_page =
-			    static_cast<size_t>((offset + bytes + page_size - 1) / page_size);
+			const auto last_page  = static_cast<size_t>((offset + bytes + page_size - 1) / page_size);
 			ForEachSetBitRun([&](size_t w) { return word(manager, w); }, first_page, last_page,
 			                 [&](size_t page, size_t page_end) {
 				                 add(base + page * page_size, base + page_end * page_size);

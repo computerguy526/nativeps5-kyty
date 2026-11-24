@@ -264,9 +264,8 @@ void CloseDevice(Stream* stream) {
 bool IsWireless(int controller) {
 	SDL_LockJoysticks();
 	auto*      pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(controller));
-	const bool wireless =
-	    pad != nullptr && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5 &&
-	    SDL_GetGamepadConnectionState(pad) != SDL_JOYSTICK_CONNECTION_WIRED;
+	const bool wireless = pad != nullptr && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5 &&
+	                      SDL_GetGamepadConnectionState(pad) != SDL_JOYSTICK_CONNECTION_WIRED;
 	SDL_UnlockJoysticks();
 	return wireless;
 }
@@ -539,8 +538,8 @@ uint64_t Queue(Stream* stream, int controller, const void* data, uint32_t frames
 			const float mono = (values[0] != 0.0f && values[1] != 0.0f)
 			                       ? 0.5f * (values[0] + values[1])
 			                       : (values[0] + values[1]);
-			values[0] = mono;
-			values[1] = mono;
+			values[0]        = mono;
+			values[1]        = mono;
 		}
 		for (uint32_t ch = 0; ch < 2; ch++) {
 			const float value = values[ch];

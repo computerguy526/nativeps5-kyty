@@ -54,6 +54,34 @@ enum class DispatchAction : uint8_t {
 	return DispatchAction::Skip;
 }
 
+// What kind of background-built program a dispatch runs.
+enum class KernelClass : uint8_t {
+	Direct,    // a software RT kernel run as one dispatch (uses_bvh, no call split)
+	CallSplit, // a call-split program (KYTY_SHADER_CALLS_SPLIT): its chain resumes past it
+	Huge,      // KYTY_COMPUTE_BACKGROUND_WORDS: a huge compute program, not an RT kernel
+};
+
+// The first-dispatch wait budgets: kernel_ms for direct RT kernels, other_ms for huge programs.
+// Defaults: KYTY_RT_KERNEL_WAIT_MS (120000) and KYTY_RT_PIPELINE_WAIT_MS (250).
+//
+// A direct RT kernel waits for its build at its first dispatch. Skipping it is not always one frame
+// of lag: some kernels are dispatched only for a short window and never again (Astro Bot, Sky
+// Garden: four kernels 304 times each while the level loads, one about 135 times right after it
+// starts). With a cold driver cache such a kernel (125k-230k SPIR-V words) takes 3-10 s to build;
+// when that outlasts its window it never runs, and the GI lighting it computes stays missing for
+// the whole level (shadowed surfaces much too dark). A warm cache builds them in milliseconds (and
+// the shader precompile starts them before the level), so the wait costs nothing there. A
+// call-split program never waits: its chain resumes past callees that are not built (another
+// title's reflections: some 200 of them per area, about 3 s each).
+[[nodiscard]] inline uint32_t FirstWaitBudgetMs(KernelClass kind, uint32_t kernel_ms, uint32_t other_ms) {
+	switch (kind) {
+		case KernelClass::Direct: return kernel_ms;
+		case KernelClass::CallSplit: return 0;
+		case KernelClass::Huge: return other_ms;
+	}
+	return other_ms;
+}
+
 // Budget guard (KYTY_RT_BUDGET_GUARD, default on). A RT kernel that traverses an invalid BVH (level
 // still streaming, stale upload) runs every lane to KYTY_RT_NODE_BUDGET: bounded, but seconds of
 // GPU time per dispatch, and the dispatches of the next frames queue behind it (GPU stalls and, by
@@ -185,6 +213,97 @@ private:
 	uint64_t m_until   = 0;
 	uint64_t m_since   = 0;
 	uint64_t m_holds   = 0;
+};
+
+// Probe gate (KYTY_RT_PROBE, default off since kyty-rebase-best): the direct validity check. The only reliable statement
+// about the BVH a RT kernel is about to traverse comes from the kernel itself: lanes that run to
+// KYTY_RT_NODE_BUDGET found cyclic or garbage nodes. The command processor records commands ahead
+// of the GPU, so the budget guard sees that counter rise only after a frame or two of RT dispatches
+// (dozens) are already queued on the bad data; that queue, not one dispatch, is what stalls the
+// GPU. The gate therefore admits exactly ONE RT dispatch (the probe) whenever validity is unknown:
+// at the first RT dispatch of the session, after every load hold, and after every guard trip. Every
+// other RT dispatch is skipped until the GPU has completed the probe (`completed`, the scheduler's
+// tick). Then the counter is exact: no rise = the BVH is valid, RT runs freely; a rise = still
+// invalid, RT stays closed for `retry_ms` (doubling to `max_retry_ms`) and the next dispatch probes
+// again. A probe the GPU has not completed after `timeout_ms` counts as invalid. Timing (the load
+// hold) only decides when to start probing; it no longer decides that the data is good.
+struct ProbeGate {
+	uint32_t trip_lanes   = 1024;
+	uint64_t retry_ms     = 1000;
+	uint64_t max_retry_ms = 8000;
+	uint64_t timeout_ms   = 4000;
+
+	enum class State : uint8_t { Open, Armed, Waiting, Closed };
+
+	// Validity is unknown again (a load hold ended, a level opened): the next dispatch probes.
+	void Arm() {
+		if (m_state == State::Open) m_state = State::Armed;
+	}
+	// The budget guard saw lanes exhaust while the gate was open: closed, then probe.
+	void Close(uint64_t now_ms) {
+		if (m_state == State::Open || m_state == State::Armed) Fail(now_ms);
+	}
+	// True when this RT dispatch may run. Ask only for a dispatch that would really run (pipeline
+	// ready). `probe_sent` is set when this dispatch is the probe: the caller notes its tick and
+	// passes `completed` = "the GPU finished that tick" from then on.
+	[[nodiscard]] bool Allow(uint32_t exhausted, bool completed, uint64_t now_ms,
+	                         bool& probe_sent) {
+		probe_sent = false;
+		if (m_state == State::Closed) {
+			if (now_ms < m_until) return false;
+			m_state = State::Armed;
+		}
+		switch (m_state) {
+			case State::Open: return true;
+			case State::Armed:
+				m_baseline = exhausted;
+				m_sent     = now_ms;
+				m_state    = State::Waiting;
+				m_probes++;
+				probe_sent = true;
+				return true;
+			case State::Waiting: {
+				if (!completed && now_ms - m_sent < timeout_ms) return false;
+				const uint32_t rise = exhausted - m_baseline; // unsigned: correct across a wrap
+				if (!completed || rise >= trip_lanes) {
+					Fail(now_ms);
+					return false;
+				}
+				m_state       = State::Open;
+				m_consecutive = 0;
+				m_opened++;
+				return true;
+			}
+			case State::Closed: break;
+		}
+		return false;
+	}
+	[[nodiscard]] State    Current() const { return m_state; }
+	[[nodiscard]] uint64_t Probes() const { return m_probes; }
+	[[nodiscard]] uint64_t Failed() const { return m_failed; }
+	[[nodiscard]] uint64_t Opened() const { return m_opened; }
+	[[nodiscard]] uint64_t RetryMs() const { return m_cur_retry; }
+
+private:
+	void Fail(uint64_t now_ms) {
+		m_cur_retry = retry_ms;
+		for (uint32_t i = 0; i < m_consecutive && m_cur_retry < max_retry_ms; i++)
+			m_cur_retry *= 2;
+		if (m_cur_retry > max_retry_ms) m_cur_retry = max_retry_ms;
+		m_consecutive++;
+		m_failed++;
+		m_until = now_ms + m_cur_retry;
+		m_state = State::Closed;
+	}
+	State    m_state       = State::Armed; // the first RT dispatch of a session is a probe
+	uint32_t m_baseline    = 0;
+	uint32_t m_consecutive = 0;
+	uint64_t m_sent        = 0;
+	uint64_t m_until       = 0;
+	uint64_t m_cur_retry   = 0;
+	uint64_t m_probes      = 0;
+	uint64_t m_failed      = 0;
+	uint64_t m_opened      = 0;
 };
 
 } // namespace Libs::Graphics::RtSession
