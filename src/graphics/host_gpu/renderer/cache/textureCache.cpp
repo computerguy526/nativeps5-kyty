@@ -2189,18 +2189,19 @@ bool TextureCache::CopyD16(Image& destination, Image& source) {
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	// Converts guest D16 between a four-byte host depth aspect (D24/D32, stenciled) and two-byte
 	// color or native D16 depth (upstream 0685bffb2: D16 <-> D24/D32 depth copies exited).
-	const auto pair = CopyResolvePlan::ClassifyD16Pair(DepthAspectTransferBytes(source.backing.format),
-	                                                   DepthAspectTransferBytes(destination.backing.format));
+	const auto pair =
+	    CopyResolvePlan::ClassifyD16Pair(DepthAspectTransferBytes(source.backing.format),
+	                                     DepthAspectTransferBytes(destination.backing.format));
 	if (!pair.convert) {
 		return false;
 	}
-	const bool source_wide = pair.source_wide;
+	const bool source_wide    = pair.source_wide;
 	const bool source_depth   = source_wide;
 	auto&      depth          = source_wide ? source : destination;
 	auto&      color          = source_wide ? destination : source;
 	const auto transfer_bytes = sizeof(uint32_t);
-	const auto narrow_aspect  = color.info.IsDepth() ? vk::ImageAspectFlagBits::eDepth
-	                                                 : vk::ImageAspectFlagBits::eColor;
+	const auto narrow_aspect =
+	    color.info.IsDepth() ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor;
 	if (depth.info.bytes_per_block != sizeof(uint16_t) ||
 	    color.info.bytes_per_block != sizeof(uint16_t)) {
 		return false;

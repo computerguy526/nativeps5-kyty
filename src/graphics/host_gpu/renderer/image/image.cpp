@@ -5,13 +5,13 @@
 #include "common/profiler.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/copyResolvePlan.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/residentTrim.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
 #include "kernel/memory.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
 #include <array>
@@ -732,8 +732,9 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 	const auto destination_height =
 	    std::max(backing.extent.height >> destination_range.base_level, 1u);
 	const bool copy = source.backing.samples == 1;
-	EXIT_IF(layers == 0 || (copy ? !ImageViewOps::FormatsCompatible(source.backing.format, backing.format)
-	                             : source.backing.format != backing.format));
+	EXIT_IF(layers == 0 ||
+	        (copy ? !ImageViewOps::FormatsCompatible(source.backing.format, backing.format)
+	              : source.backing.format != backing.format));
 	auto resolved_source_range             = source_range;
 	auto resolved_destination_range        = destination_range;
 	resolved_source_range.layer_count      = layers;
@@ -741,9 +742,9 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 	// Upstream 17a0f53d3: a target the texture cache placed at a level of a larger image (or one
 	// whose level is smaller than the image's own extent) resolves the area both levels have,
 	// where this was an abort. Extents that fit resolve the image's extent, as before.
-	const auto plan_extent = CopyResolvePlan::ResolveExtent({info.extent.width, info.extent.height},
-	                                                        {source_width, source_height},
-	                                                        {destination_width, destination_height});
+	const auto plan_extent = CopyResolvePlan::ResolveExtent(
+	    {info.extent.width, info.extent.height}, {source_width, source_height},
+	    {destination_width, destination_height});
 	const vk::Extent3D resolve_extent {plan_extent.width, plan_extent.height, 1};
 
 	m_scheduler.EndRendering();
