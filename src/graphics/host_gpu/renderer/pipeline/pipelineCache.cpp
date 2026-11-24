@@ -76,6 +76,7 @@
 #include "graphics/shader/shaderVertexAliases.h"
 #include "graphics/host_gpu/renderer/pipeline/bgQueue.h"
 #include "graphics/host_gpu/renderer/pipeline/levelDb.h"
+#include "graphics/host_gpu/renderer/pipeline/levelSchedule.h"
 #include "graphics/host_gpu/renderer/pipeline/levelTier.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -8071,39 +8072,19 @@ struct PipelineCache::JournalReplay {
 		LevelTier::Config config;
 		config.earliest = static_cast<unsigned>(EnvU64("KYTY_SHADER_PREPARE_EARLIEST", 2));
 		config.ahead    = static_cast<unsigned>(EnvU64("KYTY_SHADER_PREPARE_AHEAD", 2));
-		const auto& boot = Level();
-		const auto  plan = LevelTier::PlanTiers(tier_db, slots, config, boot);
-		std::vector<uint32_t>      decodable;
-		std::vector<uint64_t>      keys;
-		std::unordered_set<uint64_t> seen_keys;
+		std::vector<LevelSchedule::ItemKey> decodable;
 		for (uint32_t i = 0; i < items.size(); i++) {
 			JournalPayload payload;
 			if (!DecodeJournalPayload(items[i].record.payload, payload)) continue;
-			decodable.push_back(i);
-			if (seen_keys.insert(items[i].record.key).second) keys.push_back(items[i].record.key);
+			decodable.push_back({i, items[i].record.key});
 		}
-		const auto pp = LevelTier::PlanPipelines(tier_db, plan, keys, EnvU64("KYTY_SHADER_PREPARE_ALL_ROWS", 0) == 0);
-		std::unordered_map<uint64_t, uint32_t> position;
-		std::vector<uint32_t>                  scene_of(pp.entries.size(), 0);
-		for (uint32_t i = 0; i < pp.entries.size(); i++) {
-			position[pp.entries[i].key] = i;
-			scene_of[i]                 = pp.entries[i].scene;
-		}
-		std::stable_sort(decodable.begin(), decodable.end(), [&](uint32_t a, uint32_t b) {
-			return position[items[a].record.key] < position[items[b].record.key];
-		});
-		order.reserve(decodable.size());
-		std::vector<BgQueue::Job> jobs;
-		tier_scenes = plan.tier1;
-		tier_scenes.insert(tier_scenes.end(), plan.tier2.begin(), plan.tier2.end());
-		for (const auto i: decodable) {
-			const auto pos = position[items[i].record.key];
-			if (pp.entries[pos].tier == 1) {
-				order.push_back(i);
-			} else {
-				jobs.push_back({items[i].record.key, i, scene_of[pos]});
-			}
-		}
+		const auto& boot     = Level();
+		auto        schedule = LevelSchedule::Build(tier_db, slots, config, boot, decodable, EnvU64("KYTY_SHADER_PREPARE_ALL_ROWS", 0) == 0);
+		const auto& plan     = schedule.plan;
+		tier_scenes          = schedule.scene_names;
+		order                = schedule.tier1;
+		std::vector<BgQueue::Job> jobs = std::move(schedule.jobs);
+		const auto                pp_unattributed = schedule.unattributed;
 		first_level = static_cast<uint32_t>(order.size());
 		tier1_items = first_level;
 		for (const auto& job: jobs) order.push_back(job.index);
@@ -8111,7 +8092,7 @@ struct PipelineCache::JournalReplay {
 		bg_queue.Reset(std::move(jobs), bg_workers, static_cast<unsigned>(EnvU64("KYTY_SHADER_BG_PROMOTE_BOOST", 1)));
 		PipelineCacheLog("Launch phase (tier): {} slot(s) read, target '{}': tier 1 = {} scenes, {} of {} pipelines ({} unattributed) hold the "
 		                 "game, {} build behind it on {} worker(s)",
-		                 slots.size(), boot, plan.tier1.size(), first_level, order.size(), pp.unattributed, order.size() - first_level, bg_workers);
+		                 slots.size(), boot, plan.tier1.size(), first_level, order.size(), pp_unattributed, order.size() - first_level, bg_workers);
 		if (first_level == 0) LaunchHoldRelease();
 		total.store(order.size(), std::memory_order_release);
 		CompileProgress::Get().pipeline_total.store(order.size(), std::memory_order_relaxed);
@@ -9034,8 +9015,7 @@ void PipelineCache::InitializePipelineJournal() {
 		replay.hold_scene = replay_all;
 	}
 	// tier: the level database decides what holds the game (see JournalReplay::BuildTierOrder).
-	if (const auto* mode = std::getenv("KYTY_SHADER_PREPARE");
-	    mode != nullptr && std::strcmp(mode, "tier") == 0) {
+	if (LevelSchedule::IsTierMode(std::getenv("KYTY_SHADER_PREPARE"))) {
 		replay.hold_tier = replay_all;
 	}
 	// Last-scene memory, next to the journal (KYTY_PIPELINE_LAST_SCENE_PATH names another file).

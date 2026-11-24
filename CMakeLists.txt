@@ -780,6 +780,8 @@ add_executable(level_tier_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelTierTes
 target_include_directories(level_tier_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(bg_queue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BgQueueTests.cpp")
 target_include_directories(bg_queue_tests PRIVATE "${KYTY_SOURCE_DIR}")
+add_executable(level_schedule_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelScheduleTests.cpp")
+target_include_directories(level_schedule_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
 # nps5: per-page per-frame served-read-fault counter (header only).
 add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")
