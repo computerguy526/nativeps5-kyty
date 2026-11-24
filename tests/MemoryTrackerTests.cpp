@@ -2981,6 +2981,16 @@ bool HandleStackFault(const Common::HostException::ExceptionInfo &info) {
 }
 
 // A stack write must fault before any signal frame can use the protected stack.
+#if defined(__aarch64__)
+__attribute__((naked)) void WriteProtectedStack(void *) {
+  asm volatile("mov x9, sp\n"
+               "mov sp, x0\n"
+               "str x9, [sp, #-16]!\n"
+               "ldr x9, [sp], #16\n"
+               "mov sp, x9\n"
+               "ret\n");
+}
+#else
 __attribute__((naked)) void WriteProtectedStack(void *) {
   asm volatile("mov %rsp, %rax\n"
                "mov %rdi, %rsp\n"
@@ -2988,6 +2998,7 @@ __attribute__((naked)) void WriteProtectedStack(void *) {
                "pop %rsp\n"
                "ret\n");
 }
+#endif
 
 void TestFaultOnProtectedStack() {
   const pid_t pid = ::fork();

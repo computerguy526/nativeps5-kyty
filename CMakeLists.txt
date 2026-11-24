@@ -640,6 +640,11 @@ endif()
 function(add_kyty_full_emulator_test target source)
 	add_executable(${target} EXCLUDE_FROM_ALL ${source} ${kyty_full_test_src})
 	target_link_libraries(${target} ${kyty_emulator_link_libraries})
+	if(APPLE AND KYTY_HOST_ARM64)
+		# The weak reference of libs/agc.cpp to the hybrid bridge (hybrid/kytyGpuBridge.cpp, only in
+		# kyty_gpu) stays null in a test binary.
+		target_link_options(${target} PRIVATE -Wl,-U,_KytyGpuHostedPendingCovers)
+	endif()
 	target_include_directories(${target} PRIVATE ${inc_headers})
 	if (WIN32)
 		target_link_libraries(${target} iphlpapi)
@@ -1060,6 +1065,7 @@ target_include_directories(bda_scan_walk_tests PRIVATE ${inc_headers})
 
 add_executable(memory_tracker_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/MemoryTrackerTests.cpp"
+	"${KYTY_TESTS_DIR}/support/HostedActiveStub.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/pageManager.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/memoryTracker.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/faultCost.cpp"
