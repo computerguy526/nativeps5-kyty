@@ -9096,9 +9096,14 @@ void PipelineCache::InitializePipelineList() {
 		                 stats.resolved, stats.shaders, stats.mismatched, stats.other_input_layout, file.info.producer);
 		return;
 	}
-	if (file.info.state_format != PipelineList::StateFormat && !file.pipelines.empty()) {
-		PipelineCacheLog("Pipeline list: {} was made by {} with pipeline state format {} (this build: {}); its {} "
-		                 "pipelines are not replayed, only its shaders are precompiled",
+	if (file.info.state_format == 0 && !file.pipelines.empty()) {
+		PipelineCacheLog("Pipeline list: {} has no pipeline state stamp (made by {}): its {} pipelines replay as state "
+		                 "format {}",
+		                 Common::PathToString(path), file.info.producer, file.pipelines.size(), PipelineList::StateFormat);
+	}
+	if (!PipelineList::StateFormatReplayable(file.info.state_format) && !file.pipelines.empty()) {
+		PipelineCacheLog("WARNING Pipeline list: {} was made by {} with pipeline state format {} (this build: {}); its {} "
+		                 "pipelines are REJECTED and not replayed, only its shaders are precompiled",
 		                 Common::PathToString(path), file.info.producer, file.info.state_format,
 		                 PipelineList::StateFormat, file.pipelines.size());
 		file.pipelines.clear();

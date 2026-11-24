@@ -110,6 +110,15 @@ struct Info {
 // graphics pipeline create infos it makes for the same draw state (released lists then keep only
 // their shaders until they are re-recorded).
 inline constexpr uint32_t StateFormat = 1;
+// Format 0 is a list older than the stamp (every v1.3.x list). The stamp was introduced together with
+// format 1 and the pipeline create infos did not change with it, so such a list replays as format 1;
+// any other value is another renderer's state and is not replayed.
+[[nodiscard]] inline constexpr uint32_t NormalizedStateFormat(uint32_t format) {
+	return format == 0 ? StateFormat : format;
+}
+[[nodiscard]] inline constexpr bool StateFormatReplayable(uint32_t format) {
+	return NormalizedStateFormat(format) == StateFormat;
+}
 
 struct Shader {
 	CodeFile file      = CodeFile::Executable;

@@ -246,6 +246,21 @@ void TestExportAndRoundTrip() {
 	CHECK(decoded.info.title_id == "PPSA00000" && decoded.info.app_version == "01.000.000" &&
 	      decoded.info.input_info_sizes == InputSizes && decoded.info.created_unix == 1234 &&
 	      decoded.info.state_format == PipelineList::StateFormat);
+	// v1.4: lists without the state stamp (format 0, every v1.3.x list) replay as the current format; others do not.
+	CHECK(PipelineList::StateFormatReplayable(0) && PipelineList::StateFormatReplayable(PipelineList::StateFormat) &&
+	      !PipelineList::StateFormatReplayable(PipelineList::StateFormat + 1) &&
+	      PipelineList::NormalizedStateFormat(0) == PipelineList::StateFormat);
+	{
+		// A synthetic list of each format survives Encode/Decode with its stamp and both count as replayable.
+		for (const uint32_t format : {0u, PipelineList::StateFormat}) {
+			PipelineList::File f = file;
+			f.info.state_format  = format;
+			PipelineList::File back;
+			std::string        err;
+			CHECK(PipelineList::Decode(PipelineList::Encode(f), back, &err));
+			CHECK(back.info.state_format == format && PipelineList::StateFormatReplayable(back.info.state_format));
+		}
+	}
 	CHECK(decoded.levels == file.levels && decoded.shaders.size() == 2 && decoded.permutations.size() == 3);
 	CHECK(decoded.shaders[1].static_state == file.shaders[1].static_state &&
 	      decoded.shaders[1].input_info == file.shaders[1].input_info &&

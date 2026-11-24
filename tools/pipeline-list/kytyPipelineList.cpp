@@ -271,7 +271,7 @@ void LoadBase(const Arguments& args, GameFiles& game, const PipelineList::Info& 
 	}
 	const auto listed_shaders   = file.shaders.size();
 	const auto listed_pipelines = file.pipelines.size();
-	const bool other_state      = file.info.state_format != PipelineList::StateFormat;
+	const bool other_state      = !PipelineList::StateFormatReplayable(file.info.state_format);
 	if (int21 || other_state) file.pipelines.clear();
 	PipelineList::ResolveStats  resolve;
 	auto                        resolved = ResolveWith(game, file, image, info.input_info_sizes, resolve);
@@ -625,7 +625,8 @@ int Merge(const Arguments& args) {
 			info.created_unix = NowUnix();
 			builder           = std::make_unique<PipelineList::Builder>(info);
 		} else if (file.info.title_id != info.title_id || file.info.app_version != info.app_version ||
-		           file.info.input_info_sizes != info.input_info_sizes || file.info.state_format != info.state_format) {
+		           file.info.input_info_sizes != info.input_info_sizes || PipelineList::NormalizedStateFormat(file.info.state_format) !=
+                          PipelineList::NormalizedStateFormat(info.state_format)) {
 			std::fprintf(stderr, "%s is for another title, version, input layout or pipeline state format\n", input.c_str());
 			return 2;
 		}
