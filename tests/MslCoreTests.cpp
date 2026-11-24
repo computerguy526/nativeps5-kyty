@@ -1181,12 +1181,13 @@ void TestSpecializationCompat() {
                 IR::ImageResource::NoIndirectImage,
         "spec compat: the old layout decodes, buffer strides kept, no image "
         "group");
-  // skipfix: the replay re-encodes a legacy blob in the current layout (what a draw publishes), so
-  // permutation identities match modules built today.
+  // skipfix: the replay re-encodes a legacy blob in the current layout (what a
+  // draw publishes), so permutation identities match modules built today.
   {
     std::vector<uint8_t> reenc;
     IR::EncodeSpecialization(oldback, reenc);
-    Check(reenc == cur, "spec compat: a legacy blob re-encodes to the current bytes");
+    Check(reenc == cur,
+          "spec compat: a legacy blob re-encodes to the current bytes");
   }
   IR::ResourceSpecialization keep = spec;
   for (size_t cut : {size_t{1}, size_t{3}, old.size() / 2}) {

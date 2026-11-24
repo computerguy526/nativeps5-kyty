@@ -62,10 +62,11 @@ public:
 		if (index >= kReasons) return;
 		counts[index].fetch_add(1, std::memory_order_relaxed);
 		std::lock_guard lock(mutex);
-		auto& list = samples[index];
+		auto&           list = samples[index];
 		if (list.size() < kSamples) {
 			char text[40];
-			std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(source_hash));
+			std::snprintf(text, sizeof(text), "%016llx",
+			              static_cast<unsigned long long>(source_hash));
 			list.push_back(detail.empty() ? std::string(text) : std::string(text) + " " + detail);
 		}
 	}
@@ -73,10 +74,12 @@ public:
 	// Details of a static key mismatch: stage kind, word counts and the first differing word.
 	static std::string DescribeStaticKey(const char* kind, std::span<const uint32_t> stored,
 	                                     std::span<const uint32_t> built) {
-		const auto at = ReplayFirstKeyDiff(stored, built);
-		char       text[160];
-		const unsigned long long s = at < stored.size() ? stored[at] : 0, b = at < built.size() ? built[at] : 0;
-		std::snprintf(text, sizeof(text), "%s words stored %zu built %zu first diff @%zu stored %s%llx built %s%llx",
+		const auto               at = ReplayFirstKeyDiff(stored, built);
+		char                     text[160];
+		const unsigned long long s = at < stored.size() ? stored[at] : 0,
+		                         b = at < built.size() ? built[at] : 0;
+		std::snprintf(text, sizeof(text),
+		              "%s words stored %zu built %zu first diff @%zu stored %s%llx built %s%llx",
 		              kind, stored.size(), built.size(), at, at < stored.size() ? "0x" : "-", s,
 		              at < built.size() ? "0x" : "-", b);
 		return text;
@@ -84,31 +87,35 @@ public:
 
 	uint64_t Total() const {
 		uint64_t sum = 0;
-		for (const auto& c: counts) sum += c.load(std::memory_order_relaxed);
+		for (const auto& c: counts)
+			sum += c.load(std::memory_order_relaxed);
 		return sum;
 	}
 	uint64_t Count(ReplaySkipReason reason) const {
 		return counts[static_cast<size_t>(reason)].load(std::memory_order_relaxed);
 	}
 
-	// "Shader precompile: N skipped: key-static 560 [h1 h2 ...]; ..." (reasons with count 0 omitted).
+	// "Shader precompile: N skipped: key-static 560 [h1 h2 ...]; ..." (reasons with count 0
+	// omitted).
 	std::string Summary() {
-		std::string out;
+		std::string     out;
 		std::lock_guard lock(mutex);
 		for (size_t i = 0; i < kReasons; ++i) {
 			const auto n = counts[i].load(std::memory_order_relaxed);
 			if (n == 0) continue;
 			if (!out.empty()) out += "; ";
-			out += std::string(ReplaySkipReasonName(static_cast<ReplaySkipReason>(i))) + " " + std::to_string(n) + " [";
-			for (size_t s = 0; s < samples[i].size(); ++s) out += (s != 0 ? " | " : "") + samples[i][s];
+			out += std::string(ReplaySkipReasonName(static_cast<ReplaySkipReason>(i))) + " " +
+			       std::to_string(n) + " [";
+			for (size_t s = 0; s < samples[i].size(); ++s)
+				out += (s != 0 ? " | " : "") + samples[i][s];
 			out += "]";
 		}
 		return out;
 	}
 
 private:
-	std::array<std::atomic<uint64_t>, kReasons> counts {};
-	std::mutex                                  mutex;
+	std::array<std::atomic<uint64_t>, kReasons>    counts {};
+	std::mutex                                     mutex;
 	std::array<std::vector<std::string>, kReasons> samples;
 };
 
