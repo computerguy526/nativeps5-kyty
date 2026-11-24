@@ -21579,7 +21579,6 @@ public:
               DecodeColorDwordFill(vk::Format::eR32G32Sfloat, 0x3f800000u, clear) &&
                   clear.float32[0] == 1.0f && clear.float32[1] == 1.0f,
               "a repeated DWORD fill was decoded as a two-register clear");
-    }
     struct UintCase {
       vk::Format format;
       uint64_t word;
@@ -21603,10 +21602,7 @@ public:
                 DecodeColorDwordFill(vk::Format::eR8G8Unorm, 0x00ff00ffu, clear) &&
                 clear.float32[0] == 1.0f && clear.float32[1] == 0.0f,
             "alternating RG8 pixels were treated as a uniform clear");
-    Require(name, "RG32 DWORD fill",
-            DecodeColorDwordFill(vk::Format::eR32G32Sfloat, 0x3f800000u, clear) &&
-                clear.float32[0] == 1.0f && clear.float32[1] == 1.0f,
-            "a repeated DWORD fill was decoded as a two-register clear");
+    }
     constexpr uintptr_t base = 0x0000000204100000ull;
     constexpr uint64_t allocation_size = 0x200000;
     constexpr uint64_t allocation_alignment = 0x10000;
