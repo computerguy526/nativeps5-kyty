@@ -5773,7 +5773,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	return {source, stage_offset};
 }
 
-void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds) {
+void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool is_gds, bool keep_images) {
 	if ((vaddr & 3u) != 0 || size == 0 || (size & 3u) != 0 || size > UINT64_MAX - vaddr) {
 		EXIT("BufferCache: fill range must be dword aligned\n");
 	}
@@ -5801,7 +5801,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	// Obtaining the destination moves overlapping GPU-modified images into it first (their
 	// bytes outside the fill survive); only then do those images lose GPU ownership.
 	const bool preserve_images = ImageWritebackOnGpuWriteEnabled();
-	if (!preserve_images) {
+	if (!preserve_images && !keep_images) {
 		{ // KYTY_TILER_TRACE: who marks images buffer-modified
 			const TilerTrace::Reason bwrite_reason("fill");
 			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);
@@ -5809,7 +5809,7 @@ void BufferCache::FillBuffer(uint64_t vaddr, uint64_t size, uint32_t value, bool
 	}
 	HangTrace::ScopedGpuWriteKind trace_kind(HangTrace::GpuWriteKind::Fill);
 	auto [dst, dst_offset] = ObtainBuffer(vaddr, size, true, true);
-	if (preserve_images) {
+	if (preserve_images && !keep_images) {
 		{ // KYTY_TILER_TRACE: who marks images buffer-modified
 			const TilerTrace::Reason bwrite_reason("fill");
 			m_texture_cache.InvalidateMemoryFromGPU(vaddr, size);

@@ -737,6 +737,13 @@ private:
 	// must be untouched. DccGpuRefreshVerify{Checks,Mismatches}; exit stops on a mismatch.
 	bool m_dcc_gpu_refresh        = false;
 	int  m_dcc_gpu_refresh_verify = 0;
+	// cphot 1b: KYTY_DCC_KNOWN_FILL_ALIASED (0 off, 1 take the recorded uniform fill of an aliased
+	// DCC range instead of the CPU readback, 2 verify against the readback), KYTY_CMASK_GPU_REFRESH
+	// (the CMASK native inspection may refresh a registered image first, as DCC's does).
+	int     m_dcc_known_fill_aliased = 0;
+	bool    m_cmask_gpu_refresh      = false;
+	ImageId m_diag_target_id {};
+	void    DccKnownAliasedDiag(const GuestRange& range, const ImageDesc& desc, uint32_t known_byte, bool uniform);
 	// Atomic: the verify's deferred comparison runs on whichever thread pops pending operations.
 	struct DccRefreshTotals {
 		std::atomic<uint64_t> refreshes {0}; // slices inspected through the refresh

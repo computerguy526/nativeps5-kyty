@@ -485,6 +485,19 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 			m_dcc_gpu_refresh_verify = std::strcmp(verify, "exit") == 0 ? 2 : 1;
 		}
 	}
+	// cphot 1b: KYTY_DCC_KNOWN_FILL_ALIASED=1|verify, KYTY_CMASK_GPU_REFRESH=1 (default off).
+	if (const auto* known = std::getenv("KYTY_DCC_KNOWN_FILL_ALIASED"); known != nullptr) {
+		m_dcc_known_fill_aliased = std::strcmp(known, "1") == 0 ? 1 : std::strcmp(known, "verify") == 0 ? 2 : 0;
+	}
+	{
+		const auto* cmask_refresh = std::getenv("KYTY_CMASK_GPU_REFRESH");
+		m_cmask_gpu_refresh      = cmask_refresh != nullptr && std::strcmp(cmask_refresh, "1") == 0;
+	}
+	if (m_dcc_known_fill_aliased != 0 || m_cmask_gpu_refresh) {
+		std::fprintf(stderr, "ClearMeta: KYTY_DCC_KNOWN_FILL_ALIASED=%s KYTY_CMASK_GPU_REFRESH=%d\n",
+		             m_dcc_known_fill_aliased == 1 ? "1" : m_dcc_known_fill_aliased == 2 ? "verify" : "0",
+		             m_cmask_gpu_refresh ? 1 : 0);
+	}
 	if (m_graphics.CanReportMemoryUsage()) {
 		constexpr int64_t GiB = 1024ll * 1024 * 1024;
 		const auto        budget =
@@ -3785,7 +3798,7 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 	// KYTY_DCC_GPU_REFRESH (textureCache.h): a DCC image that is registered, matches the view and
 	// is fully resident is accepted while waiting for a refresh or not GPU-owned; it is refreshed
 	// right before the inspection, as the CPU fallback's ClearImage refreshes it.
-	const bool refresh_allowed = m_dcc_gpu_refresh && !cmask;
+	const bool refresh_allowed = cmask ? m_cmask_gpu_refresh : m_dcc_gpu_refresh;
 	const auto eligible = [&]() -> std::optional<Event> {
 		const auto* image = m_slot_images.try_get(id);
 		const bool  matches = image != nullptr && image->registered && !image->depth_id &&
@@ -4002,6 +4015,79 @@ void TextureCache::RecordDccRefreshVerify(Buffer& metadata, uint64_t offset, uin
 	});
 }
 
+namespace {
+// cphot 1b: counters of the clear-metadata decisions (printed every 10 s while a switch is on).
+struct ClearMetaStats {
+	std::atomic<uint64_t> known_aliased {0};   // aliased-range decisions taken from the recorded fill (=1)
+	std::atomic<uint64_t> verify_checks {0};   // slices compared against the recorded fill (=verify)
+	std::atomic<uint64_t> verify_mismatch {0};
+	std::atomic<uint64_t> dcc_readbacks {0};
+	std::atomic<uint64_t> dcc_readback_ns {0};
+	std::atomic<int64_t>  last_print_ns {0};
+};
+ClearMetaStats g_clear_meta;
+void ClearMetaMaybePrint(bool force_on) {
+	if (!force_on) {
+		return;
+	}
+	const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                        std::chrono::steady_clock::now().time_since_epoch()).count();
+	int64_t last = g_clear_meta.last_print_ns.load(std::memory_order_relaxed);
+	if (last == 0) {
+		g_clear_meta.last_print_ns.compare_exchange_strong(last, now);
+		return;
+	}
+	if (now - last < 10'000'000'000ll || !g_clear_meta.last_print_ns.compare_exchange_strong(last, now)) {
+		return;
+	}
+	std::fprintf(stderr,
+	             "ClearMeta 10s totals: dcc known-aliased %" PRIu64 " | dcc readbacks %" PRIu64 " wait_ms %" PRIu64
+	             " | verify checks %" PRIu64 " mismatches %" PRIu64 "\n",
+	             g_clear_meta.known_aliased.load(), g_clear_meta.dcc_readbacks.load(),
+	             g_clear_meta.dcc_readback_ns.load() / 1'000'000ull, g_clear_meta.verify_checks.load(),
+	             g_clear_meta.verify_mismatch.load());
+	std::fflush(stderr);
+}
+} // namespace
+
+// KYTY_CLEAR_TRACE=2: once per metadata address, the images aliasing a recorded-fill DCC range.
+void TextureCache::DccKnownAliasedDiag(const GuestRange& range, const ImageDesc& desc, uint32_t known_byte,
+                                       bool uniform) {
+	static const bool enabled = [] {
+		const auto* value = std::getenv("KYTY_CLEAR_TRACE");
+		return value != nullptr && std::strcmp(value, "2") == 0;
+	}();
+	if (!enabled) {
+		return;
+	}
+	static std::mutex                   mutex;
+	static std::unordered_set<uint64_t> seen;
+	{
+		std::scoped_lock lock(mutex);
+		if (!seen.insert(range.address).second) {
+			return;
+		}
+	}
+	std::scoped_lock lock {m_lock};
+	const auto       ids = FindImagesInRegion(range.address, range.size, false);
+	std::fprintf(stderr, "ClearMeta alias: meta=0x%" PRIx64 "+0x%" PRIx64 " known=0x%02x uniform=%d target=%ux%u data=0x%" PRIx64 " aliases=%zu\n",
+	             range.address, range.size, known_byte, uniform ? 1 : 0, desc.info.extent.width,
+	             desc.info.extent.height, desc.info.data.address, static_cast<size_t>(ids.size()));
+	for (const auto iid : ids) {
+		const auto* image = m_slot_images.try_get(iid);
+		if (image == nullptr) {
+			continue;
+		}
+		std::fprintf(stderr,
+		             "ClearMeta alias:   data=0x%" PRIx64 "+0x%" PRIx64 " %ux%u fmt=%u gpu_mod=%d cpu_dirty=%d buf_mod=%d same_target=%d\n",
+		             image->info.data.address, image->info.data.size, image->info.extent.width,
+		             image->info.extent.height, static_cast<uint32_t>(image->backing.format),
+		             image->IsGpuModified() ? 1 : 0, image->IsCpuDirty() ? 1 : 0,
+		             image->IsBufferModified() ? 1 : 0, iid == m_diag_target_id ? 1 : 0);
+	}
+	std::fflush(stderr);
+}
+
 void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
                                        uint32_t metadata_base_layer, MetadataNoop* noop) {
 	if (noop != nullptr) {
@@ -4059,6 +4145,10 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 	// Why this decision is not a provable no-op (instrumentation; the paths below refine it).
 	m_dcc_noop_refusal = Profiler::FrameEvent::TargetRecordDccGuest;
 	const bool gpu_written = m_buffer_cache.IsRegionGpuModified(range.address, range.size);
+	// KYTY_DCC_KNOWN_FILL_ALIASED=verify: the recorded fill of an aliased range, checked against the
+	// bytes the CPU fallback reads back (every slice must hold the known byte).
+	std::optional<uint8_t> verify_known;
+	ClearMetaMaybePrint(m_dcc_known_fill_aliased != 0);
 	if (gpu_written) {
 		// The guest's DCC fast clear is a uniform fill of the metadata. When the whole range still
 		// holds a recorded fill (nothing wrote it since), every slice's code is that byte: no
@@ -4074,7 +4164,18 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 			pages     = noop != nullptr && CaptureMetadataPages(range, decided);
 		}
 		const uint32_t known_byte = known ? (*known & 0xffu) : 0u;
-		if (known && !(unaliased && *known == known_byte * 0x01010101u)) {
+		const bool     uniform_known = known && *known == known_byte * 0x01010101u;
+		// KYTY_DCC_KNOWN_FILL_ALIASED=1: a uniform recorded fill decides the clear even when images
+		// alias the metadata bytes (the CPU fallback would read back exactly this fill).
+		const bool take_known = uniform_known && (unaliased || m_dcc_known_fill_aliased == 1);
+		if (uniform_known && !unaliased && m_dcc_known_fill_aliased == 2) {
+			verify_known = static_cast<uint8_t>(known_byte);
+		}
+		if (known && !unaliased) {
+			m_diag_target_id = id;
+			DccKnownAliasedDiag(range, desc, known_byte, uniform_known);
+		}
+		if (known && !take_known) {
 			ClearTrace("DCC", unaliased ? "known-nonuniform" : "known-aliased", range.address, range.size,
 			           desc.info.data.address, desc.info.data.size, desc.info.extent.width,
 			           desc.info.extent.height, *known);
@@ -4082,7 +4183,10 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 			ClearTrace("DCC", "gpu-written-no-known-fill", range.address, range.size, desc.info.data.address,
 			           desc.info.data.size, desc.info.extent.width, desc.info.extent.height, 0);
 		}
-		if (known && unaliased && *known == known_byte * 0x01010101u) {
+		if (take_known) {
+			if (!unaliased) {
+				g_clear_meta.known_aliased.fetch_add(1, std::memory_order_relaxed);
+			}
 			Profiler::CountFrameEvent(Profiler::FrameEvent::DccKnownFillClears);
 			vk::ClearValue clear {};
 			const bool known_decoded = DecodeDccClear(desc, static_cast<uint8_t>(known_byte), clear.color);
@@ -4091,7 +4195,7 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 			           desc.info.extent.height, known_byte);
 			if (!known_decoded) {
 				// Decided by the GPU-dirty state, the recorded fill and the images over the bytes.
-				if (pages) {
+				if (pages && unaliased) {
 					decided.fill_generation = fill_generation;
 					decided.gpu_ranges[0]   = range;
 					decided.gpu_range_count = 1;
@@ -4120,8 +4224,10 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 					return;
 				}
 				if (desc.type != BindingType::VideoOut) {
+					// Aliased range: consume the key without touching the images over it (the CPU
+					// fallback's "not a guest write", upstream 190608ae2).
 					m_buffer_cache.FillBuffer(range.address + slice_size * (first + slice),
-					                          slice_size, UINT32_MAX, false);
+					                          slice_size, UINT32_MAX, false, !unaliased);
 				}
 			}
 			return;
@@ -4247,7 +4353,15 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 		                                            : std::chrono::steady_clock::time_point {};
 		{
 			Profiler::ScopedFrameWait frame_wait(Profiler::FrameWait::DccFallback);
+			const auto                rb_start = std::chrono::steady_clock::now();
 			m_buffer_cache.ReadMemory(range.address, range.size, false);
+			if (m_dcc_known_fill_aliased != 0) {
+				g_clear_meta.dcc_readbacks.fetch_add(1, std::memory_order_relaxed);
+				g_clear_meta.dcc_readback_ns.fetch_add(
+				    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+				                              std::chrono::steady_clock::now() - rb_start).count()),
+				    std::memory_order_relaxed);
+			}
 		}
 		if (sample_fallback) {
 			const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -4283,6 +4397,22 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 		}
 		vk::ClearValue clear {};
 		const bool     decoded = DecodeDccClear(desc, code, clear.color);
+		if (verify_known) {
+			bool match = code == *verify_known;
+			if (match) {
+				std::vector<uint8_t> check(slice_size);
+				match = LibKernel::Memory::TryReadBacking(address, check.data(), check.size()) &&
+				        std::all_of(check.begin(), check.end(), [&](uint8_t b) { return b == *verify_known; });
+			}
+			g_clear_meta.verify_checks.fetch_add(1, std::memory_order_relaxed);
+			if (!match) {
+				if (g_clear_meta.verify_mismatch.fetch_add(1, std::memory_order_relaxed) < 16) {
+					std::fprintf(stderr,
+					             "ClearMeta VERIFY MISMATCH: meta=0x%" PRIx64 " slice=%u known=0x%02x read=0x%02x\n",
+					             address, first + slice, unsigned(*verify_known), unsigned(code));
+				}
+			}
+		}
 		if (guest_keys) {
 			if (decoded) {
 				guest_keys = false; // the rest of the slice decides
