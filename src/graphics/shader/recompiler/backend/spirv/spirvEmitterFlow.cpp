@@ -634,9 +634,18 @@ void EmitSetAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 		if (state.program.stage != ShaderType::Mesh && variable == 0) {
 			return;
 		}
-		const bool uint_output = MrtOutputMode(state, exp) == 7u;
-		const auto vector_type = uint_output ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4);
+		const bool sint_output = MrtOutputMode(state, exp) == 10u;
+		const bool uint_output = MrtOutputMode(state, exp) == 7u || sint_output;
+		const auto vector_type = sint_output   ? TypeI32Vector(state, 4)
+		                         : uint_output ? TypeU32Vector(state, 4)
+		                                       : TypeF32Vector(state, 4);
 		auto       value       = ExportVector(ctx, data, exp, uint_output);
+		if (sint_output) {
+			// raw export dwords, bit-exact, to the int4 output of a SINT attachment
+			const auto bits = state.builder.AllocateId();
+			state.builder.AddFunction(spv::OpBitcast, vector_type, bits, value);
+			value = bits;
+		}
 		if (state.program.stage == ShaderType::Pixel && exp.kind == IR::ExportTargetKind::Mrt &&
 		    exp.index == 0 && !uint_output &&
 		    state.input_info.pixel->alpha_blend_source != ShaderAlphaBlendSource::None) {

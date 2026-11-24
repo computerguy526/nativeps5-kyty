@@ -7393,7 +7393,7 @@ void ApplyDualSourceBlending(const HW::Context& context, ShaderPixelInputInfo& p
 		pixel_info.target_output_mode[1]    = pixel_info.target_output_mode[0];
 		pixel_info.target_export_mapping[1] = pixel_info.target_export_mapping[0];
 	} else if (BlendAlphaRemapEnabled() && blending && pixel_info.target_output_mode[0] != 0 &&
-	           pixel_info.target_output_mode[0] != 7 &&
+	           pixel_info.target_output_mode[0] != 7 && pixel_info.target_output_mode[0] != 10 &&
 	           std::all_of(std::begin(pixel_info.target_output_mode) + 1,
 	                       std::end(pixel_info.target_output_mode),
 	                       [](uint8_t mode) { return mode == 0; })) {
@@ -7434,6 +7434,22 @@ static bool PsUint32TargetsEnabled() {
 		return v != nullptr && v[0] == '1';
 	}();
 	return enabled;
+}
+
+static bool IsSintColorFormat(vk::Format format) {
+	switch (format) {
+		case vk::Format::eR8Sint:
+		case vk::Format::eR8G8Sint:
+		case vk::Format::eR8G8B8A8Sint:
+		case vk::Format::eR16Sint:
+		case vk::Format::eR16G16Sint:
+		case vk::Format::eR16G16B16A16Sint:
+		case vk::Format::eR32Sint:
+		case vk::Format::eR32G32Sint:
+		case vk::Format::eR32G32B32A32Sint:
+		case vk::Format::eA2B10G10R10SintPack32: return true;
+		default: return false;
+	}
 }
 
 static bool IsUintColorFormat(vk::Format format) {
@@ -7479,6 +7495,14 @@ void ApplyUint32Targets(const HW::Context& context, ShaderPixelInputInfo& pixel_
 				std::fprintf(stderr,
 				             "[uint32targets] export %u -> slot %u %s: mode %u -> uint output\n", i,
 				             slot, vk::to_string(format).c_str(), mode);
+			}
+		} else if (IsSintColorFormat(format)) {
+			// Internal mode 10 (not a hardware SPI_SHADER_COL_FORMAT): int4 output carrying the raw export bits.
+			pixel_info.target_output_mode[i] = 10;
+			static std::atomic<uint32_t> logged_sint {0};
+			if (logged_sint.fetch_add(1, std::memory_order_relaxed) < 8) {
+				std::fprintf(stderr, "[uint32targets] export %u -> slot %u %s: mode %u -> sint output\n", i, slot,
+				             vk::to_string(format).c_str(), mode);
 			}
 		}
 	}

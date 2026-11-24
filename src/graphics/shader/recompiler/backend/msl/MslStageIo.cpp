@@ -1144,8 +1144,10 @@ std::shared_ptr<GfxIo> GfxSetup(MslCtx& c) {
 			if (o.kind == IR::StageOutputKind::Mrt) {
 				const bool u = o.index < std::size(pi.target_output_mode) &&
 				               pi.target_output_mode[o.index] == 7u;
-				b.Line(fmt::format("{} c{} [[color({})]];", u ? "uint4" : "float4", o.index,
-				                   o.location));
+				const bool s = o.index < std::size(pi.target_output_mode) &&
+				               pi.target_output_mode[o.index] == 10u;
+				b.Line(fmt::format("{} c{} [[color({})]];", u ? "uint4" : s ? "int4" : "float4",
+				                   o.index, o.location));
 				any_out = true;
 			} else if (o.kind == IR::StageOutputKind::Depth) {
 				b.Line("float depth [[depth(any)]];");
@@ -1413,14 +1415,18 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 					b.Line(
 					    fmt::format("out.p{} = {};", exp.index, ExportExpr(g, "xd", exp, false)));
 			} else if (exp.kind == IR::ExportTargetKind::Mrt && g.ps) {
-				const bool u   = exp.index < std::size(g.pinfo->target_output_mode) &&
-				                 g.pinfo->target_output_mode[exp.index] == 7u;
+				const bool s   = exp.index < std::size(g.pinfo->target_output_mode) &&
+				                 g.pinfo->target_output_mode[exp.index] == 10u;
+				const bool u   = s || (exp.index < std::size(g.pinfo->target_output_mode) &&
+				                      g.pinfo->target_output_mode[exp.index] == 7u);
 				bool       has = false;
 				for (const auto& x: c.program.info.outputs)
 					has |= x.kind == IR::StageOutputKind::Mrt && x.index == exp.index;
 				if (has) {
 					std::string v = ExportExpr(g, "xd", exp, u);
-					b.Line(fmt::format("{} xv = {};", u ? "uint4" : "float4", v));
+					if (s)
+						v = fmt::format("as_type<int4>({})", v);
+					b.Line(fmt::format("{} xv = {};", s ? "int4" : u ? "uint4" : "float4", v));
 					if (exp.index == 0 && !u &&
 					    g.pinfo->alpha_blend_source != ShaderAlphaBlendSource::None) {
 						bool has1 = false;
@@ -1448,7 +1454,7 @@ bool GfxEmitInst(MslCtx& c, GfxIo& g, const IR::Inst& inst) {
 						const auto m = g.pinfo->target_export_mapping[exp.index];
 						if (!m.IsIdentity())
 							b.Line(fmt::format("xv = {}4(xv[{}], xv[{}], xv[{}], xv[{}]);",
-							                   u ? "uint" : "float", m.Map(0), m.Map(1), m.Map(2),
+							                   s ? "int" : u ? "uint" : "float", m.Map(0), m.Map(1), m.Map(2),
 							                   m.Map(3)));
 					}
 					if (const auto kb = g.kk_blend.find(exp.index); kb != g.kk_blend.end() && !u)
