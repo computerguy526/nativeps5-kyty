@@ -67,6 +67,7 @@ int main() {
 	CHECK(fs::exists(AsidePath(cache)) && fs::file_size(cache) == 200);
 	// finished: prepared, aside removed (one generation), next start warm
 	CHECK(ReplayComplete(false, 0));
+	CHECK(ReplayComplete(false, 4772));                                     // cut by the limit: still complete (the note records it)
 	CHECK(RemoveAside(cache) == 1000);
 	CHECK(Write(stamp, Stamp {v14, true}));
 	CHECK(!fs::exists(AsidePath(cache)));
@@ -79,9 +80,17 @@ int main() {
 	CHECK(fs::file_size(AsidePath(cache)) == 200);
 	CHECK(!SetAside(cache));                                                // no cache file: nothing moved
 
-	// an incomplete replay never earns "prepared"
+	// a stopped replay (quit midway) never earns "prepared"; one that attempted every record does, failures or not
 	CHECK(!ReplayComplete(true, 0));
-	CHECK(!ReplayComplete(false, 4772));
+	CHECK(!ReplayComplete(true, 4772));
+	CHECK(ReplayComplete(false, 0));
+	// the note survives a round trip and does not change the decision
+	{
+		Stamp noted {v14, true, "failed=2;beyond_limit=3"};
+		CHECK(Parse(Format(noted)) == std::optional<Stamp>(noted));
+		CHECK(Decide(Parse(Format(noted)), v14, true, false) == Action::Warm);
+		CHECK(Decide(Parse(Format(noted)), v13, true, false) == Action::Upgrade);
+	}
 
 	// the replay limit follows the cap (7/8)
 	CHECK(DefaultReplayLimitMb(512) == 448);

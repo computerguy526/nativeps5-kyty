@@ -36,6 +36,7 @@ enum class Action { Fresh, Warm, Resume, Upgrade };
 struct Stamp {
 	std::string identity;
 	bool        prepared = false;
+	std::string note; // prepared only: how the replay ended ("failed=2;beyond_limit=0"); informational
 	bool        operator==(const Stamp&) const = default;
 };
 
@@ -62,7 +63,7 @@ inline std::string Hash16(std::string_view data) {
 }
 
 inline std::string Format(const Stamp& s) {
-	return "identity=" + s.identity + "\nstate=" + (s.prepared ? "prepared" : "preparing") + "\n";
+	return "identity=" + s.identity + "\nstate=" + (s.prepared ? "prepared" : "preparing") + "\n" + (s.note.empty() ? "" : "note=" + s.note + "\n");
 }
 
 // nullopt for text that is not a stamp (torn, foreign, empty): the caller treats it as "no stamp".
@@ -78,6 +79,8 @@ inline std::optional<Stamp> Parse(std::string_view text) {
 		if (line.rfind("identity=", 0) == 0) {
 			s.identity    = std::string(line.substr(9));
 			have_identity = !s.identity.empty();
+		} else if (line.rfind("note=", 0) == 0) {
+			s.note = std::string(line.substr(5));
 		} else if (line.rfind("state=", 0) == 0) {
 			const auto v = line.substr(6);
 			if (v == "prepared") s.prepared = true;
@@ -153,7 +156,8 @@ inline uint64_t RemoveAside(const std::filesystem::path& cache_file) {
 // The replay limit default follows the file cap (7/8: the replay must stop before the next start would discard the file).
 inline uint64_t DefaultReplayLimitMb(uint64_t cap_mb) { return cap_mb / 8u * 7u; }
 
-// A replay finished the whole list when nothing was cut by the cache limit and it was not stopped.
-inline bool ReplayComplete(bool stopped, uint64_t beyond_limit) { return !stopped && beyond_limit == 0; }
+// A replay is complete when it was not stopped: every record was attempted. Records that failed or that the cache limit cut are
+// counted in the stamp's note; running the replay again would not change them.
+inline bool ReplayComplete(bool stopped, uint64_t /*beyond_limit*/) { return !stopped; }
 
 } // namespace Libs::Graphics::CacheUpgrade

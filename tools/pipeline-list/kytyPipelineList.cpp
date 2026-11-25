@@ -82,6 +82,7 @@ struct Arguments {
 	std::string                                      out, game, exe, list, title, app_ver, producer = "kyty_pipeline_list";
 	std::vector<std::string>                         shaders, pipelines, inputs, data;
 	bool                                             scan = false;
+	bool                                             allow_partial = false; // merge/upgrade: keep going when a specialization reads as no known layout
 	std::string                                      base;
 };
 
@@ -615,7 +616,7 @@ bool Load(const std::string& path, PipelineList::File& file) {
 // get the added fields at their defaults, the image specializations are written in this build's record. Pipelines stay as they are
 // (they name permutations by index). False when the list has another layout, or tessellation shaders that cannot be filled in.
 struct Int21UpgradeStats {
-	uint64_t infos = 0, specializations = 0, skipped = 0;
+	uint64_t infos = 0, specializations = 0, skipped = 0, unreadable = 0;
 };
 bool IsInt21List(const PipelineList::File& file) {
 	return file.info.input_info_sizes[0] == Int21VertexLayout().from_size &&
@@ -632,6 +633,11 @@ bool UpgradeInt21List(PipelineList::File& file, Int21UpgradeStats& stats) {
 	if (upgrade.skipped != 0) return false; // the layout field stays old: a mixed list is not written
 	for (auto& permutation: file.permutations) {
 		stats.specializations += PipelineListTool::UpgradeInt21Specialization(permutation.specialization) ? 1 : 0;
+		// A specialization that reads as none of this build's, int21's or v1.3.x's layouts (a record that names an indirect group, a
+		// truncated blob) stays as it is, and the emulator then drops that permutation and every pipeline that uses it.
+		size_t   at     = 0;
+		uint32_t images = 0;
+		if (!PipelineListTool::ReadsAsSpecialization(permutation.specialization, false, &at, &images)) stats.unreadable++;
 	}
 	return file.info.input_info_sizes[0] == now;
 }
@@ -656,11 +662,15 @@ int Merge(const Arguments& args) {
 			}
 			std::printf("%s: int21 layout upgraded: %llu vertex input infos, %llu specializations\n", input.c_str(),
 			            static_cast<unsigned long long>(up.infos), static_cast<unsigned long long>(up.specializations));
+			if (up.unreadable != 0) {
+				std::fprintf(stderr, "%s: %llu specializations read as no known layout; the emulator drops those permutations and their pipelines%s\n",
+				             input.c_str(), static_cast<unsigned long long>(up.unreadable), args.allow_partial ? " (--allow-partial)" : ": refused (rc 2)");
+				if (!args.allow_partial) return 2;
+			}
 		}
-		const bool recorded_raw = file.info.state_format == 0; // no stamp: the records' words stay as recorded (no twin collapse)
 		if (builder == nullptr) {
 			info              = file.info;
-			info.state_format = PipelineList::StateFormat; // the merged list is stamped: format 0 replays as format 1 anyway
+			info.state_format = PipelineList::StateFormat; // honest: the records are written normalized (twins collapse: the replay builds one pipeline for both, 2,422 built + 2,973 known of 4,892 in a cold prepare)
 			info.producer     = args.producer;
 			info.created_unix = NowUnix();
 			builder           = std::make_unique<PipelineList::Builder>(info);
@@ -670,7 +680,7 @@ int Merge(const Arguments& args) {
 			std::fprintf(stderr, "%s is for another title, version, input layout or pipeline state format\n", input.c_str());
 			return 2;
 		}
-		builder->AddList(file, stats, !recorded_raw);
+		builder->AddList(file, stats);
 	}
 	PrintExport(stats);
 	return Write(builder->Finish(), args.out);
@@ -719,6 +729,11 @@ int Upgrade(const Arguments& args) {
 			std::fprintf(stderr, "%s: %llu tessellation vertex shaders cannot be upgraded (their clamp levels come from guest registers)\n",
 			             args.inputs[0].c_str(), static_cast<unsigned long long>(up.skipped));
 			return 2;
+		}
+		if (up.unreadable != 0) {
+			std::fprintf(stderr, "%llu specializations read as no known layout; the emulator drops those permutations and their pipelines%s\n",
+			             static_cast<unsigned long long>(up.unreadable), args.allow_partial ? " (--allow-partial)" : ": refused (rc 2)");
+			if (!args.allow_partial) return 2;
 		}
 		std::printf("int21 layout upgraded as the emulator upgrades it: %llu vertex input infos, %llu specializations; %zu pipelines kept\n",
 		            static_cast<unsigned long long>(up.infos), static_cast<unsigned long long>(up.specializations), file.pipelines.size());
@@ -998,6 +1013,8 @@ int main(int argc, char** argv) {
 			args.base = value();
 		} else if (arg == "--scan") {
 			args.scan = true;
+		} else if (arg == "--allow-partial") {
+			args.allow_partial = true;
 		} else {
 			args.inputs.push_back(arg);
 		}

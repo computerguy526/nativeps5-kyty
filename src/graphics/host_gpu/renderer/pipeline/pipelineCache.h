@@ -536,6 +536,11 @@ private:
 	std::filesystem::path         m_cache_stamp_path;
 	std::string                   m_cache_identity;
 	std::atomic<bool>             m_cache_replay_complete {false};
+	bool                          m_cache_had_file = false;
+	std::string                   m_cache_note;
+	std::mutex                    m_driver_cache_write_mutex;
+	void                          DecideCacheUpgrade();
+	bool                          RestartDriverCacheEmpty();
 	void                          WriteCacheStamp(bool prepared);
 	void                          FinishCacheStamp(); // the preparation completed: stamp "prepared", drop the set-aside cache
 	// Keys of pipelines the driver cache holds (KYTY_PIPELINE_KNOWN, written with the driver cache

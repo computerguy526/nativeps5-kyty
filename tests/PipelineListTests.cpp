@@ -361,7 +361,14 @@ void TestMergeRawTwins() {
 		PipelineList::Builder     b(file.info);
 		PipelineList::ExportStats st;
 		b.AddList(file, st, true);
-		CHECK(b.Finish().pipelines.size() == count - 1);
+		const auto merged = b.Finish();
+		CHECK(merged.pipelines.size() == count - 1);
+		// merge(merge(x)) = merge(x): the collapsed list merges into itself without losing or gaining a record (autowarm re-merges its own output)
+		PipelineList::Builder     again(merged.info);
+		PipelineList::ExportStats st2;
+		again.AddList(merged, st2, true);
+		again.AddList(merged, st2, true);
+		CHECK(again.Finish().pipelines.size() == merged.pipelines.size());
 	}
 }
 

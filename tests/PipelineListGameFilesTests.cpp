@@ -275,6 +275,9 @@ void TestSpecializationUpgrade() {
 	auto group = v13;
 	group[first + 32] = 3; // a record that names a group is refused: left as it is
 	CHECK(unchanged(group));
+	// M11: such a blob reads as no layout of this build after the upgrade attempt: the tool counts it and refuses unless --allow-partial.
+	CHECK(!ReadsAsSpecialization(group, false, &at, &images) && !ReadsAsSpecialization(group, true, &at, &images) && !ReadsAsSpecializationV13(group, &at, &images));
+	CHECK(ReadsAsSpecialization(v13now, false, &at, &images));
 }
 
 // export --base --scan: the base list's data files first, then their folders' other files, then the rest.
