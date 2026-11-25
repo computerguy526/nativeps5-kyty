@@ -182,18 +182,24 @@ inline RelayPlan PlanRelay(bool pad_has_sensors, bool live) {
 inline std::string FormatStatusLine(bool pad_has_sensors, bool live, uint64_t accel_events,
                                     uint64_t gyro_events, uint64_t events_total,
                                     uint64_t events_unrouted, uint64_t rearms, bool flagged,
-                                    uint64_t queued = 0, uint64_t window_steps = 0) {
-	char line[256];
+                                    uint64_t queued = 0, uint64_t window_steps = 0,
+                                    int keyboard_focus = -1, int background_input = -1) {
+	// keyboard_focus / background_input: 1, 0 or -1 (not known). focus=NO with bg_input=0 is SDL
+	// dropping every pad event (padFocus.h): the reason for live=NO, not the pad.
+	char line[320];
 	std::snprintf(line, sizeof(line),
 	              "[pad] motion status: sensors=%s live=%s motion=%s sdl_events accel=%llu "
-	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu sdl_queued=%llu window_steps=%llu",
+	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu sdl_queued=%llu window_steps=%llu "
+	              "focus=%s bg_input=%s",
 	              pad_has_sensors ? "yes" : "no", live ? "yes" : "NO",
 	              flagged ? "NEUTRAL-DEFAULT(no sensor data)" : "ok", static_cast<unsigned long long>(accel_events),
 	              static_cast<unsigned long long>(gyro_events),
 	              static_cast<unsigned long long>(events_total),
 	              static_cast<unsigned long long>(events_unrouted),
 	              static_cast<unsigned long long>(rearms), static_cast<unsigned long long>(queued),
-	              static_cast<unsigned long long>(window_steps));
+	              static_cast<unsigned long long>(window_steps),
+	              keyboard_focus < 0 ? "?" : (keyboard_focus != 0 ? "yes" : "NO"),
+	              background_input < 0 ? "?" : (background_input != 0 ? "1" : "0"));
 	return line;
 }
 

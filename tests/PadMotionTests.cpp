@@ -1,6 +1,7 @@
 // Motion relay helpers (hybrid/padMotion.h): unit conversion, per-controller mocks (DualSense, DualShock 4, Switch Pro
 // Controller, Joy-Con), sign conventions, rate estimation, orientation-derived rates, trace record/replay, hotplug.
 // No SDL calls and no controller.
+#include "graphics/presentation/window/padFocus.h"
 #include "hybrid/padMotion.h"
 
 #include <SDL3/SDL_gamepad.h>
@@ -271,10 +272,37 @@ void TestNeutralNotPublished() {
 	const std::string ok = PM::FormatStatusLine(true, true, 10, 10, 20, 0, 1, false);
 	Expect(ok.find("live=yes") != std::string::npos && ok.find("rearms=1") != std::string::npos,
 	       "the status line shows live sensors");
+	// gyrofable: the line says whether SDL delivers pad events at all (keyboard focus / background input).
+	Expect(ok.find("focus=? bg_input=?") != std::string::npos, "focus is '?' when not passed");
+	const std::string dropped = PM::FormatStatusLine(true, false, 0, 0, 0, 0, 0, true, 0, 100, 0, 0);
+	Expect(dropped.find("focus=NO bg_input=0") != std::string::npos, "the status line names the focus drop");
+	const std::string bg = PM::FormatStatusLine(true, true, 5, 5, 10, 0, 0, false, 0, 100, 0, 1);
+	Expect(bg.find("focus=NO bg_input=1") != std::string::npos, "the status line shows background input");
+}
+
+// padFocus.h: the pad is taken without keyboard focus unless KYTY_PAD_BACKGROUND_INPUT=0, and the
+// model of SDL's rule (what the relay's focus line reports).
+void TestPadFocusPolicy() {
+	using namespace Libs::Graphics;
+	Expect(PadBackgroundInputWanted(nullptr), "background pad input is on by default");
+	Expect(PadBackgroundInputWanted("1") && PadBackgroundInputWanted("") && PadBackgroundInputWanted("00"),
+	       "only the exact value 0 turns background pad input off");
+	Expect(!PadBackgroundInputWanted("0"), "KYTY_PAD_BACKGROUND_INPUT=0 turns it off");
+	Expect(!PadEventsDelivered(false, true, false), "SDL default, window without focus: pad events dropped");
+	Expect(PadEventsDelivered(false, true, true), "SDL default, focused window: delivered");
+	Expect(PadEventsDelivered(false, false, false), "no window (tools, tests): delivered");
+	Expect(PadEventsDelivered(true, true, false), "background input: delivered without focus");
+	Expect(ApplyPadBackgroundInput(nullptr), "the hint is set on by default");
+	const char* hint = SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
+	Expect(hint != nullptr && hint[0] == '1', "SDL's hint reads 1 after the default");
+	Expect(!ApplyPadBackgroundInput("0"), "the hint is set off with 0");
+	hint = SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS);
+	Expect(hint != nullptr && hint[0] == '0', "SDL's hint reads 0 after KYTY_PAD_BACKGROUND_INPUT=0");
 }
 
 int main(int argc, char** argv) {
 	TestNeutralNotPublished();
+	TestPadFocusPolicy();
 	TestTypeNames();
 	TestConversionPerController();
 	TestRateEstimator();

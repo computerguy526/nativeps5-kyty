@@ -24,6 +24,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/hostInput.h"
+#include "graphics/presentation/window/padFocus.h"
 #include "graphics/presentation/window/windowInternal.h"
 #include "kytyGitVersion.h"
 #include "libs/controller.h"
@@ -1375,6 +1376,8 @@ static void WindowCreate(WindowContext& context) {
 	if (const char* mfi = std::getenv("KYTY_SDL_JOYSTICK_MFI"); mfi != nullptr && mfi[0] != 0) {
 		SDL_SetHint(SDL_HINT_JOYSTICK_MFI, mfi);
 	}
+	// Pad input (motion sensors above all) must not depend on the window's keyboard focus: padFocus.h.
+	(void)ApplyPadBackgroundInput();
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
 	}

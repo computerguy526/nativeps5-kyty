@@ -31,6 +31,7 @@
 #include "hybrid/kytyGpuApi.h"
 #include "kytyGitVersion.h"
 #include "hybrid/mainLoopGate.h"
+#include "graphics/presentation/window/padFocus.h"
 #include "hybrid/padMotion.h"
 #include "hybrid/virtualPad.h"
 #include "hybrid/pendingMemory.h"
@@ -432,6 +433,8 @@ void Relay() {
 	const bool  has_sensors = pad_sensors(&pad_type, &pad_rate);
 	bool        pad_has_sensors = has_sensors; // the pad's real sensors, re-read twice a second
 	int         logged_pad_id   = -1;
+	int         logged_focus    = -1;
+	const bool  pad_background  = Libs::Graphics::ApplyPadBackgroundInput();
 	bool        motion_held     = false;       // motion values are the neutral default (no live SDL sensor data)
 	const char* motion_env  = std::getenv("ASTROHYBRID_PAD_MOTION");
 	// Re-evaluated twice a second: the pad may connect (or change) after the relay started.
@@ -488,6 +491,18 @@ void Relay() {
 					    path != nullptr ? path : "?", now_has ? "yes" : "no");
 				}
 				SDL_UnlockJoysticks();
+			}
+			// The window's keyboard focus decides whether SDL delivers pad events at all unless
+			// background input is on (padFocus.h): say so once per change, it explains a dead pad.
+			if (const int focus = SDL_GetKeyboardFocus() != nullptr ? 1 : 0;
+			    Libs::Graphics::WindowStepCount() > 0 && focus != logged_focus) {
+				logged_focus = focus;
+				Log(0, "input relay: the game window %s the keyboard focus; pad input %s (%s)",
+				    focus != 0 ? "has" : "does NOT have",
+				    Libs::Graphics::PadEventsDelivered(pad_background, true, focus != 0)
+				        ? "is delivered"
+				        : "is DROPPED by SDL until the window is clicked",
+				    pad_background ? "background input on" : "KYTY_PAD_BACKGROUND_INPUT=0");
 			}
 			Controller::KeepHostPadSensors(); // re-arms sensors that stopped delivering events
 			const bool want =
@@ -592,7 +607,9 @@ void Relay() {
 					                             0, SDL_PeepEvents(nullptr, 0, SDL_PEEKEVENT,
 					                                               SDL_EVENT_GAMEPAD_SENSOR_UPDATE,
 					                                               SDL_EVENT_GAMEPAD_SENSOR_UPDATE))),
-					                         Libs::Graphics::WindowStepCount())
+					                         Libs::Graphics::WindowStepCount(),
+					                         SDL_GetKeyboardFocus() != nullptr ? 1 : 0,
+					                         pad_background ? 1 : 0)
 					        .c_str());
 				}
 			}
@@ -1635,6 +1652,7 @@ static int ResolvePadAudioController(bool prefer_ps5) {
 		if (const char* mfi = std::getenv("KYTY_SDL_JOYSTICK_MFI"); mfi != nullptr && mfi[0] != 0) {
 			SDL_SetHint(SDL_HINT_JOYSTICK_MFI, mfi);
 		}
+		(void)Libs::Graphics::ApplyPadBackgroundInput();
 		(void)SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 	}
 	SDL_UpdateGamepads();

@@ -18,6 +18,7 @@
 
 #include "graphics/presentation/window/eventDrain.h"
 #include "graphics/presentation/window/gamepadSensorDispatch.h"
+#include "graphics/presentation/window/padFocus.h"
 #include "hybrid/virtualPad.h"
 
 #include "libs/controller.cpp"
@@ -226,11 +227,53 @@ void TestKind(VP::Kind kind, const char* name) {
 	Check(old_loop.max_backlog > 500 && old_loop.worst_lag_samples > 500 && !old_loop.button_in_step,
 	      "the old one-event-per-step loop was not detected by this test");
 }
+
+// gyrofable (2026-11-25), the defect behind "gyro does nothing": the game HAS a window and that window
+// does not have the keyboard focus (a start from a launcher / terminal on macOS until the player
+// clicks it; any time the player looks at another window). SDL then drops every pad sensor sample.
+// The runs above have no window, so SDL never dropped anything in them and they stayed green while
+// the game was broken. Here: a real SDL window (dummy video driver, never shown = never focused).
+//  - SDL's default (KYTY_PAD_BACKGROUND_INPUT=0): the defect, reproduced (no sample, no button).
+//  - the library's default (ApplyPadBackgroundInput): motion live, exact, button handled.
+void TestWindowWithoutFocus(VP::Kind kind, const char* name) {
+	std::fprintf(stderr, "PadMotionE2ETests: %s, window without keyboard focus\n", name);
+	SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+	if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+		Check(false, "SDL video (dummy driver) did not start");
+		return;
+	}
+	SDL_Window* window = SDL_CreateWindow("pad focus test", 64, 64, SDL_WINDOW_HIDDEN);
+	Check(window != nullptr, "the test window was not created");
+	Check(SDL_GetKeyboardFocus() == nullptr, "the hidden test window has the keyboard focus");
+
+	Check(!Libs::Graphics::ApplyPadBackgroundInput("0"), "SDL default not restored");
+	const Result dropped = Run(kind, Libs::Graphics::kEventDrainBudget, 60);
+	std::fprintf(stderr, "  SDL default: live after %d steps, worst lag %d samples, button %d\n",
+	             dropped.live_after_steps, dropped.worst_lag_samples, dropped.button_in_step ? 1 : 0);
+	Check(dropped.live_after_steps < 0 && dropped.worst_lag_samples > 500 && !dropped.button_in_step,
+	      "SDL's focus rule was not reproduced: this test no longer covers the defect");
+
+	Check(Libs::Graphics::ApplyPadBackgroundInput(nullptr), "background pad input is not the default");
+	const Result r = Run(kind, Libs::Graphics::kEventDrainBudget, kSteps);
+	std::fprintf(stderr, "  library default: live after %d steps, worst lag %d samples, accel err %.3f g, button %d\n",
+	             r.live_after_steps, r.worst_lag_samples, static_cast<double>(r.max_accel_error_g),
+	             r.button_in_step ? 1 : 0);
+	Check(SDL_GetKeyboardFocus() == nullptr, "the test window gained the keyboard focus during the run");
+	Check(r.live_after_steps >= 1 && r.live_after_steps <= 6, "no keyboard focus: motion not live within 100 ms",
+	      r.live_after_steps);
+	Check(r.worst_lag_samples == 0, "no keyboard focus: sensor samples were dropped", r.worst_lag_samples);
+	Check(r.max_accel_error_g < 0.02f, "no keyboard focus: accel does not track the ramp");
+	Check(r.peak_az_g > 2.5f && r.peak_gx > 9.0f, "no keyboard focus: the shake spike is not visible");
+	Check(r.button_in_step && r.button_released, "no keyboard focus: the button was not handled");
+
+	SDL_DestroyWindow(window);
+	SDL_QuitSubSystem(SDL_INIT_VIDEO);
+}
 } // namespace
 
 int main() {
 	Config::Initialize();
-	SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+	(void)Libs::Graphics::ApplyPadBackgroundInput(nullptr); // what the library sets (padFocus.h)
 	SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
 	SDL_SetHint(SDL_HINT_JOYSTICK_MFI, "0");
 	if (!SDL_Init(SDL_INIT_GAMEPAD)) {
@@ -239,6 +282,8 @@ int main() {
 	}
 	TestKind(VP::Kind::PS5, "virtual DualSense");
 	TestKind(VP::Kind::SwitchPro, "virtual Switch Pro");
+	TestWindowWithoutFocus(VP::Kind::PS5, "virtual DualSense");
+	TestWindowWithoutFocus(VP::Kind::SwitchPro, "virtual Switch Pro");
 	SDL_Quit();
 	Config::Shutdown();
 	std::fprintf(stderr, "PadMotionE2ETests: %d failures\n", g_failures);
