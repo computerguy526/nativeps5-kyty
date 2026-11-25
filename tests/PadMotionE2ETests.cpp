@@ -161,6 +161,15 @@ Result Run(VP::Kind kind, int per_step_budget, int steps) {
 					r.max_accel_error_g = std::max(r.max_accel_error_g, std::fabs(g - want.accel[i] / VP::kG));
 				}
 			}
+			if (std::getenv("PAD_E2E_TRACE") != nullptr && (step - connect_step) % 6 == 0) {
+				std::fprintf(stderr, "  t=%llu q=(%.3f %.3f %.3f %.3f) want_roll=%.1f deg gyro=(%.2f %.2f %.2f) ev=%llu/%llu\n",
+				             static_cast<unsigned long long>(sim_ms), static_cast<double>(data.orientation_x),
+				             static_cast<double>(data.orientation_y), static_cast<double>(data.orientation_z),
+				             static_cast<double>(data.orientation_w), static_cast<double>(want.roll_rad * 57.29578f),
+				             static_cast<double>(data.angular_velocity_x), static_cast<double>(data.angular_velocity_y),
+				             static_cast<double>(data.angular_velocity_z),
+				             static_cast<unsigned long long>(status.accel_events), static_cast<unsigned long long>(injected));
+			}
 			r.peak_az_g = std::max(r.peak_az_g, data.acceleration_z);
 			r.peak_gx   = std::max(r.peak_gx, data.angular_velocity_x);
 			r.peak_orientation_x = std::max(r.peak_orientation_x, std::fabs(data.orientation_x));
