@@ -904,6 +904,7 @@ void TileManager::VerifyOnCompletion(const char* operation, uint64_t guest_addre
 			}
 		}
 		Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageVerifyChecks);
+		TilerTrace::Count(("verify." + label).c_str(), 1, mismatches);
 		if (mismatches != 0) {
 			Profiler::CountFrameEvent(Profiler::FrameEvent::TilerImageVerifyMismatches);
 			static std::atomic<uint32_t> logged {0};
