@@ -10,6 +10,10 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <cmath>
+#include <string>
+
+#include "hybrid/padMotion.h"
 
 namespace {
 void Check(bool condition, const char* text) {
@@ -32,6 +36,18 @@ std::array<Rumble, 6>               pad_rumble {};
 std::vector<int>                    closed_pads;
 std::array<std::array<Uint8, 3>, 6> pad_colors {};
 std::array<bool, 6>                 mono_led {};
+// A fake pad's sensor side: what SDL reports (type, has sensors, "enabled" flags) and what the HID
+// driver does (the IMU stream runs only after an enable; an output write can stop it).
+struct FakePad {
+	SDL_GamepadType type                = SDL_GAMEPAD_TYPE_PS5;
+	bool            has_sensor          = false;
+	bool            enabled[2]          = {false, false}; // accel, gyro (SDL's flag)
+	bool            streaming           = false;          // the driver really sends IMU reports
+	bool            output_clears_flag  = false;          // an LED / rumble write clears SDL's flag
+	bool            output_stops_stream = false;          // ... or the IMU stream only
+	int             enable_calls        = 0;
+};
+std::array<FakePad, 6> fake_pad {};
 // SDL's joystick lock: every SDL gamepad call takes it (recursive in SDL). On only in TestLockOrder.
 std::recursive_mutex sdl_joystick_lock;
 std::atomic<bool>    sdl_lock_model {false};
@@ -61,12 +77,23 @@ SDL_Gamepad* GetGamepadFromID(SDL_JoystickID id) {
 	return id >= 1 && id <= 5 ? reinterpret_cast<SDL_Gamepad*>(static_cast<uintptr_t>(id))
 	                          : nullptr;
 }
-SDL_GamepadType GetGamepadType(SDL_Gamepad*) {
-	return SDL_GAMEPAD_TYPE_PS5;
+void PadOutput(SDL_Gamepad* pad) {
+	auto& f = fake_pad[reinterpret_cast<uintptr_t>(pad)];
+	if (f.output_clears_flag) {
+		f.enabled[0] = f.enabled[1] = false;
+		f.streaming                 = false;
+	}
+	if (f.output_stops_stream) {
+		f.streaming = false;
+	}
+}
+SDL_GamepadType GetGamepadType(SDL_Gamepad* pad) {
+	return fake_pad[reinterpret_cast<uintptr_t>(pad)].type;
 }
 bool RumbleGamepad(SDL_Gamepad* pad, Uint16 large, Uint16 small, Uint32 duration) {
 	rumble.push_back({large, small, duration});
 	pad_rumble[reinterpret_cast<uintptr_t>(pad)] = rumble.back();
+	PadOutput(pad);
 	return true;
 }
 bool SendGamepadEffect(SDL_Gamepad*, const void* data, int size) {
@@ -79,13 +106,25 @@ bool SendGamepadEffect(SDL_Gamepad*, const void* data, int size) {
 bool SetGamepadLED(SDL_Gamepad* pad, Uint8 r, Uint8 g, Uint8 b) {
 	SdlCall sdl;
 	pad_colors[reinterpret_cast<uintptr_t>(pad)] = {r, g, b};
+	PadOutput(pad);
 	return true;
 }
-bool GamepadHasSensor(SDL_Gamepad*, SDL_SensorType) {
+bool GamepadHasSensor(SDL_Gamepad* pad, SDL_SensorType) {
 	SdlCall sdl;
-	return false;
+	return fake_pad[reinterpret_cast<uintptr_t>(pad)].has_sensor;
 }
-bool SetGamepadSensorEnabled(SDL_Gamepad*, SDL_SensorType, bool) {
+bool GamepadSensorEnabled(SDL_Gamepad* pad, SDL_SensorType type) {
+	return fake_pad[reinterpret_cast<uintptr_t>(pad)].enabled[type == SDL_SENSOR_GYRO ? 1 : 0];
+}
+bool SetGamepadSensorEnabled(SDL_Gamepad* pad, SDL_SensorType type, bool enabled) {
+	auto&     f     = fake_pad[reinterpret_cast<uintptr_t>(pad)];
+	const int index = type == SDL_SENSOR_GYRO ? 1 : 0;
+	if (f.enabled[index] == enabled) {
+		return true; // SDL returns early: the driver is not asked again
+	}
+	f.enabled[index] = enabled;
+	f.enable_calls++;
+	f.streaming = f.enabled[0] && f.enabled[1];
 	return true;
 }
 void CloseGamepad(SDL_Gamepad* pad) {
@@ -108,6 +147,7 @@ bool GetBooleanProperty(SDL_PropertiesID pad, const char* name, bool) {
 #define SDL_SetGamepadLED           Fake::SetGamepadLED
 #define SDL_GamepadHasSensor        Fake::GamepadHasSensor
 #define SDL_SetGamepadSensorEnabled Fake::SetGamepadSensorEnabled
+#define SDL_GamepadSensorEnabled    Fake::GamepadSensorEnabled
 #define SDL_CloseGamepad            Fake::CloseGamepad
 #define SDL_Delay                   Fake::Delay
 #define SDL_GetGamepadProperties    Fake::GetGamepadProperties
@@ -121,6 +161,7 @@ bool GetBooleanProperty(SDL_PropertiesID pad, const char* name, bool) {
 #undef SDL_SetGamepadLED
 #undef SDL_GamepadHasSensor
 #undef SDL_SetGamepadSensorEnabled
+#undef SDL_GamepadSensorEnabled
 #undef SDL_CloseGamepad
 #undef SDL_Delay
 #undef SDL_GetGamepadProperties
@@ -158,8 +199,11 @@ namespace {
 using namespace Libs::Controller;
 
 struct Controller {
-	Controller() {
+	explicit Controller(SDL_GamepadType type = SDL_GAMEPAD_TYPE_PS5, bool sensors = false) {
 		now                    = 1000;
+		fake_pad               = {};
+		fake_pad[1].type       = type;
+		fake_pad[1].has_sensor = sensors;
 		haptics_handles_rumble = false;
 		Initialize();
 		Check(PadInit() == 0 && PadOpen(Config::GetUserId(), 0, 0, nullptr) == 1,
@@ -777,6 +821,203 @@ void TestTouchWithoutClick() {
 	      "a host input touch did not press the touch pad button");
 }
 
+
+// ---- motion: synthetic SDL sensor events -> GameController::Motion -> pad_fill_data -> PadData ----
+namespace PM = Hybrid::PadMotion;
+
+// One SDL sensor update pair (accel m/s^2, gyro rad/s), as the window thread forwards it:
+// Controller::SetSensor(id, ...) with the sensor timestamp in microseconds.
+void SdlSensorPair(int id, const float accel[3], const float gyro[3], uint64_t time_us) {
+	SetSensor(id, Sensor::Accel, accel, time_us);
+	SetSensor(id, Sensor::Gyro, gyro, time_us);
+}
+
+// What the fake HID driver delivers: samples every 5 ms (200 Hz) while the IMU stream runs.
+void RunPad(int id, int ms, const float accel[3], const float gyro[3], uint64_t* time_us) {
+	for (int i = 0; i < ms; i += 5) {
+		now += 5;
+		*time_us += 5000;
+		if (fake_pad[id].streaming) {
+			SdlSensorPair(id, accel, gyro, *time_us);
+		}
+	}
+}
+
+struct MotionModel {
+	const char*     name;
+	SDL_GamepadType type;
+	float           bias[3]; // gyro bias at rest
+};
+
+void TestMotionPath() {
+	const MotionModel models[] = {
+	    {"switch-pro", SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, {-0.002f, 0.0f, 0.017f}},
+	    {"dualsense", SDL_GAMEPAD_TYPE_PS5, {0.001f, -0.003f, 0.002f}},
+	    {"dualshock4", SDL_GAMEPAD_TYPE_PS4, {0.004f, 0.002f, -0.006f}},
+	};
+	for (const auto& model: models) {
+		Controller controller(model.type, true);
+		Check(fake_pad[1].enabled[0] && fake_pad[1].enabled[1] && fake_pad[1].streaming,
+		      "connecting a pad with sensors did not enable accel and gyro");
+		MotionStatus status {};
+		Check(PadGetMotionStatus(1, &status) && !status.live && status.accel_events == 0,
+		      "a pad that delivered nothing was live");
+		// Before any event the pad data is Kyty's neutral default pose: it must never count as live.
+		PadData data {};
+		Check(PadReadState(1, &data) == 0 && data.acceleration_x == 0.0f &&
+		          data.acceleration_y == 1.0f && data.angular_velocity_x == 0.0f,
+		      "the default pose changed");
+		Check(!PM::Publishable(true, status.live), "neutral default would be published as live data");
+
+		uint64_t    t       = 1000000;
+		const float rest[3] = {0.05f, SDL_STANDARD_GRAVITY, -0.03f};
+		RunPad(1, 100, rest, model.bias, &t);
+		Check(PadGetMotionStatus(1, &status) && status.live && status.accel_events >= 15 &&
+		          status.gyro_events >= 15,
+		      model.name);
+		Check(PadReadState(1, &data) == 0, "read failed");
+		Check(std::fabs(data.acceleration_y - 1.0f) < 0.01f &&
+		          std::fabs(data.acceleration_x - 0.05f / SDL_STANDARD_GRAVITY) < 0.01f &&
+		          std::fabs(data.angular_velocity_z - model.bias[2]) < 1e-6f &&
+		          data.angular_velocity_x == model.bias[0],
+		      "resting accel / gyro did not reach PadData");
+		PM::Sample  rest_sample;
+		const float accel_g[3] = {data.acceleration_x, data.acceleration_y, data.acceleration_z};
+		const float gyro_v[3]  = {data.angular_velocity_x, data.angular_velocity_y,
+		                          data.angular_velocity_z};
+		Check(PM::FromPadData(accel_g, gyro_v, t, &rest_sample) && !PM::IsNeutralDefault(rest_sample),
+		      "a real resting reading looked like the neutral default");
+
+		// Shake: a 3 g spike and a 10 rad/s swing; the orientation must move off identity.
+		const float spike[3] = {0.0f, SDL_STANDARD_GRAVITY, 3.0f * SDL_STANDARD_GRAVITY};
+		const float swing[3] = {10.0f, 0.0f, 0.0f};
+		RunPad(1, 50, spike, swing, &t);
+		Check(PadReadState(1, &data) == 0 && std::fabs(data.acceleration_z - 3.0f) < 0.01f &&
+		          std::fabs(data.angular_velocity_x - 10.0f) < 1e-4f &&
+		          std::fabs(data.orientation_x) > 0.05f,
+		      "a shake did not reach accel / gyro / orientation");
+		const float norm = std::sqrt(data.orientation_x * data.orientation_x +
+		                             data.orientation_y * data.orientation_y +
+		                             data.orientation_z * data.orientation_z +
+		                             data.orientation_w * data.orientation_w);
+		Check(std::fabs(norm - 1.0f) < 1e-3f, "orientation is not a unit quaternion");
+
+		// Steady tilt: 30 degrees, no rotation: accel follows, gyro stays at the bias.
+		const float tilt[3] = {0.5f * SDL_STANDARD_GRAVITY, 0.866f * SDL_STANDARD_GRAVITY, 0.0f};
+		RunPad(1, 200, tilt, model.bias, &t);
+		Check(PadReadState(1, &data) == 0 && std::fabs(data.acceleration_x - 0.5f) < 0.01f &&
+		          std::fabs(data.acceleration_y - 0.866f) < 0.01f &&
+		          data.angular_velocity_x == model.bias[0],
+		      "a steady tilt did not reach accel");
+		Check(PadGetMotionStatus(1, &status) && status.live, "tilting pad not live");
+
+		// The pad goes silent: after 250 ms it is not live any more.
+		fake_pad[1].streaming = false;
+		RunPad(1, 400, tilt, model.bias, &t);
+		Check(PadGetMotionStatus(1, &status) && !status.live, "a silent pad stayed live");
+	}
+}
+
+void TestSensorsSurviveOutputsAndReopen() {
+	// An LED / rumble write that clears SDL's flag: re-asserted right after the write.
+	{
+		Controller controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
+		fake_pad[1].output_clears_flag = true;
+		const PadLightBarParam color {10, 20, 30, 0};
+		Check(PadSetLightBar(1, &color) == 0, "light bar failed");
+		Check(fake_pad[1].enabled[0] && fake_pad[1].enabled[1] && fake_pad[1].streaming,
+		      "an LED write left the sensors off");
+		fake_pad[1].streaming = false;
+		SetRumble(200, 200);
+		Check(fake_pad[1].enabled[0] && fake_pad[1].enabled[1] && fake_pad[1].streaming,
+		      "a rumble write left the sensors off");
+	}
+	// An output write that stops the IMU stream behind SDL's back (flag stays on): no events; the
+	// stale check re-arms once, then events flow again; no re-arm storm.
+	{
+		Controller  controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
+		uint64_t    t       = 1000000;
+		const float rest[3] = {0.0f, SDL_STANDARD_GRAVITY, 0.0f};
+		const float bias[3] = {0.001f, 0.0f, 0.002f};
+		RunPad(1, 100, rest, bias, &t);
+		fake_pad[1].output_stops_stream = true;
+		SetRumble(200, 200);
+		fake_pad[1].output_stops_stream = false;
+		Check(!fake_pad[1].streaming && fake_pad[1].enabled[0], "model: the stream should be stopped");
+		MotionStatus status {};
+		RunPad(1, 1000, rest, bias, &t);
+		KeepHostPadSensors();
+		Check(!fake_pad[1].streaming, "re-armed before the stale time");
+		RunPad(1, 1000, rest, bias, &t);
+		KeepHostPadSensors();
+		Check(fake_pad[1].streaming && fake_pad[1].enabled[0] && fake_pad[1].enabled[1],
+		      "a stalled IMU stream was not re-armed");
+		Check(PadGetMotionStatus(1, &status) && status.rearms == 1, "re-arm not counted once");
+		const int calls = fake_pad[1].enable_calls;
+		RunPad(1, 100, rest, bias, &t);
+		KeepHostPadSensors();
+		Check(fake_pad[1].enable_calls == calls, "a live pad was re-armed");
+		Check(PadGetMotionStatus(1, &status) && status.live, "events did not resume after the re-arm");
+		fake_pad[1].streaming = false; // stalls again at once: rate limit (3 s)
+		RunPad(1, 2000, rest, bias, &t);
+		KeepHostPadSensors();
+		Check(PadGetMotionStatus(1, &status) && status.rearms == 1,
+		      "re-arm storm: second re-arm within 3 s");
+	}
+	// Re-open: the pad leaves and returns (a fresh SDL gamepad: flags off, no stream).
+	{
+		Controller controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
+		Disconnect(1);
+		fake_pad[1].enabled[0] = fake_pad[1].enabled[1] = fake_pad[1].streaming = false;
+		Connect(1);
+		Check(fake_pad[1].enabled[0] && fake_pad[1].enabled[1] && fake_pad[1].streaming,
+		      "a re-opened pad did not get its sensors enabled");
+		uint64_t    t       = 1000000;
+		const float rest[3] = {0.0f, SDL_STANDARD_GRAVITY, 0.1f};
+		const float bias[3] = {0.001f, 0.0f, 0.002f};
+		RunPad(1, 50, rest, bias, &t);
+		MotionStatus status {};
+		PadData      data {};
+		Check(PadGetMotionStatus(1, &status) && status.live && PadReadState(1, &data) == 0 &&
+		          data.angular_velocity_z == 0.002f,
+		      "a re-opened pad's readings did not arrive");
+	}
+}
+
+void TestNoNeutralPublishWhileSensorsClaimed() {
+	{
+		Controller   controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
+		MotionStatus status {};
+		PadData      data {};
+		// Sensors are claimed, SDL delivers nothing: the default pose is flagged, not live.
+		Check(PadGetMotionStatus(1, &status) && !status.live, "not live expected");
+		Check(PadReadState(1, &data) == 0 && data.acceleration_y == 1.0f &&
+		          data.angular_velocity_x == 0.0f && data.angular_velocity_y == 0.0f &&
+		          data.angular_velocity_z == 0.0f,
+		      "default pose expected");
+		Check(!PM::Publishable(true, status.live),
+		      "relay gate: neutral published while sensors are claimed");
+		Check(PM::Publishable(false, status.live), "relay gate: emulated tilt must still publish");
+		// Events for a pad no player owns are counted, not applied.
+		const float accel[3] = {1.0f, 2.0f, 3.0f};
+		const float gyro[3]  = {1.0f, 1.0f, 1.0f};
+		SdlSensorPair(77, accel, gyro, 5000);
+		Check(PadGetMotionStatus(1, &status) && status.events_unrouted == 2 && !status.live &&
+		          status.accel_events == 0,
+		      "an unrouted sensor event was applied or not counted");
+	}
+	// Emulated tilt (a pad without sensors): live by definition.
+	{
+		Controller   controller;
+		MotionStatus status {};
+		ToggleGyroEmulation(1);
+		Check(PadGetMotionStatus(1, &status) && status.live, "emulated tilt not live");
+	}
+	const std::string line = PM::FormatStatusLine(true, false, 0, 0, 5, 2, 0, false);
+	Check(line.find("live=NO") != std::string::npos && line.find("held back") != std::string::npos,
+	      "the status line does not flag the dead sensors");
+}
+
 } // namespace
 
 // The pad relay thread reads the active controller while SDL's joystick lock is held (kytyGpuBridge.cpp pad_sensors
@@ -835,6 +1076,9 @@ int main() {
 	TestTouchWithoutClick();
 	TestMultiplayerRouting();
 	TestDedicatedKeyboardOutputs();
+	TestMotionPath();
+	TestSensorsSurviveOutputsAndReopen();
+	TestNoNeutralPublishWhileSensorsClaimed();
 	TestLockOrder();
 	Config::Shutdown();
 	return 0;

@@ -155,6 +155,38 @@ inline std::string FormatLogLine(const char* type, double rate_hz, const Sample&
 	return line;
 }
 
+// The default pose a Kyty pad reports before any sensor event arrived: accel exactly (0, 1 g, 0),
+// gyro exactly 0. A real sensor never reads exactly this (it always has noise).
+inline bool IsNeutralDefault(const Sample& s) {
+	return s.accel[0] == 0.0f && s.accel[1] == kGravity && s.accel[2] == 0.0f && s.gyro[0] == 0.0f &&
+	       s.gyro[1] == 0.0f && s.gyro[2] == 0.0f;
+}
+
+// Whether a sample may go to the host: a pad that claims real sensors must have delivered live SDL
+// sensor events (the neutral default pose is never published as if it were a reading); emulated
+// tilt (a pad without sensors) is always live.
+inline bool Publishable(bool pad_has_sensors, bool live) {
+	return !pad_has_sensors || live;
+}
+
+// The status part of the 1 Hz log line: how many SDL sensor events arrived, whether they are live
+// now, and whether the relay is holding the samples back.
+inline std::string FormatStatusLine(bool pad_has_sensors, bool live, uint64_t accel_events,
+                                    uint64_t gyro_events, uint64_t events_total,
+                                    uint64_t events_unrouted, uint64_t rearms, bool published) {
+	char line[256];
+	std::snprintf(line, sizeof(line),
+	              "[pad] motion status: sensors=%s live=%s published=%s sdl_events accel=%llu "
+	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu",
+	              pad_has_sensors ? "yes" : "no", live ? "yes" : "NO",
+	              published ? "yes" : "NO(held back)", static_cast<unsigned long long>(accel_events),
+	              static_cast<unsigned long long>(gyro_events),
+	              static_cast<unsigned long long>(events_total),
+	              static_cast<unsigned long long>(events_unrouted),
+	              static_cast<unsigned long long>(rearms));
+	return line;
+}
+
 // ASTROHYBRID_PAD_MOTION: unset/"auto" = on when the pad has sensors; "0" = off; "1" = on.
 inline bool Wanted(const char* env, bool pad_has_sensors) {
 	if (env != nullptr && env[0] == '0') {

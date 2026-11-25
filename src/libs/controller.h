@@ -85,6 +85,20 @@ void SetRightStick(int id, int x, int y);
 // A host input controller touch also presses the touch pad button unless click is false.
 void SetTouchPad(int id, int finger, bool down, float x, float y, bool click = true);
 void SetSensor(int id, Sensor sensor, const float* data, uint64_t time_us);
+// What the active pad's motion sensors deliver (hybrid relay: never publish the neutral default
+// pose as live data while the pad claims sensors).
+struct MotionStatus {
+	uint64_t accel_events    = 0; // SDL sensor events for this player's pad
+	uint64_t gyro_events     = 0;
+	uint64_t rearms          = 0; // stale-sensor re-arms done
+	uint64_t events_total    = 0; // all SDL sensor events seen by the router
+	uint64_t events_unrouted = 0; // ... that belonged to no player's pad
+	bool     live            = false; // both sensors delivered within the last 250 ms, or emulated tilt
+	bool     emulated        = false;
+};
+bool PadGetMotionStatus(int handle, MotionStatus* status);
+// Re-arms the sensors of pads that stopped delivering events; cheap, call at ~2 Hz.
+void KeepHostPadSensors();
 void ToggleGyroEmulation(int id);
 void ResetInputState();
 int  GetActiveControllerId();

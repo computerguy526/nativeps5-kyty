@@ -143,6 +143,8 @@ public:
 	void RightStick(int id, int x, int y);
 	void TouchPad(int id, int finger, bool down, float x, float y, bool click);
 	void Motion(int id, Sensor sensor, const float* data, uint64_t time_us);
+	void GetMotionStatus(MotionStatus* status);
+	void KeepSensors();
 	void SetMotionSensorState(bool enable);
 	void ResetOrientation();
 	void ToggleGyroEmulation(int id);
@@ -181,6 +183,12 @@ private:
 	bool             m_connected       = false;
 	int              m_connected_count = 0;
 	bool             m_motion_enabled  = true;
+	// SDL sensor events seen for the active pad (accel, gyro), the newest one's time, when the
+	// sensors were last armed, and the re-arms done (SDL_GetTicks ms).
+	std::array<uint64_t, 2> m_sensor_events {};
+	uint64_t                m_sensor_last_ms  = 0;
+	uint64_t                m_sensor_armed_ms = 0;
+	uint64_t                m_sensor_rearms   = 0;
 	uint64_t         m_gyro_time       = 0;
 	bool             m_gyro_emulation  = false;
 	uint64_t         m_emulated_time   = 0;
@@ -223,6 +231,34 @@ static uint32_t g_keyboard_player = 0;
 
 static void RefreshPlayers();
 static void StopHostPad(SDL_Gamepad* pad);
+
+// Motion sensors of a host pad: enabled in SetDevices, re-asserted after output writes (LED, rumble)
+// and re-armed (off, on) by KeepHostPadSensors when SDL stops delivering sensor events. SDL's own
+// "enabled" flag cannot tell that the pad's driver dropped the IMU stream, so staleness is the check.
+static constexpr uint64_t SENSOR_LIVE_MS  = 250;  // newest event this young = live data
+static constexpr uint64_t SENSOR_STALE_MS = 1500; // no event for this long on an enabled pad = re-arm
+static constexpr uint64_t SENSOR_REARM_MS = 3000; // at most one re-arm per this
+static std::atomic<uint64_t> g_sensor_events_total {0};
+static std::atomic<uint64_t> g_sensor_events_unrouted {0};
+
+// Enables the pad's accelerometer and gyroscope; returns true if the pad has both. force: also
+// when SDL believes they are on (off, on makes a HIDAPI driver send its IMU enable again).
+static bool ArmHostPadSensors(SDL_Gamepad* pad, bool force) {
+	bool both = true;
+	for (auto sensor: {SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO}) {
+		if (!SDL_GamepadHasSensor(pad, sensor)) {
+			both = false;
+			continue;
+		}
+		if (force && SDL_GamepadSensorEnabled(pad, sensor)) {
+			(void)SDL_SetGamepadSensorEnabled(pad, sensor, false);
+		}
+		if (!SDL_GamepadSensorEnabled(pad, sensor) && !SDL_SetGamepadSensorEnabled(pad, sensor, true)) {
+			LOGF("\t enabling controller sensor failed: %s\n", SDL_GetError());
+		}
+	}
+	return both;
+}
 
 // A mono LED cannot show the colour, and on Switch pads each write waits for the pad's reply.
 static void SetHostPadLED(SDL_Gamepad* pad, uint8_t r, uint8_t g, uint8_t b) {
@@ -1136,12 +1172,7 @@ void GameController::SetDevices(int active_id) {
 			if (const auto& color = Config::GetControllerColor()) {
 				SetHostPadLED(pad, (*color)[0], (*color)[1], (*color)[2]);
 			}
-			for (auto sensor: {SDL_SENSOR_ACCEL, SDL_SENSOR_GYRO}) {
-				if (SDL_GamepadHasSensor(pad, sensor) &&
-				    !SDL_SetGamepadSensorEnabled(pad, sensor, true)) {
-					LOGF("\t enabling controller sensor failed: %s\n", SDL_GetError());
-				}
-			}
+			(void)ArmHostPadSensors(pad, false);
 		}
 	}
 
@@ -1156,6 +1187,9 @@ void GameController::SetDevices(int active_id) {
 	m_active_id     = active_id;
 	m_connected     = new_connected;
 	m_state         = {};
+	m_sensor_events = {};
+	m_sensor_last_ms  = 0;
+	m_sensor_armed_ms = SDL_GetTicks();
 	m_gyro_time     = 0;
 	m_gyro_emulation = false;
 	m_emulated_time  = 0;
@@ -1336,7 +1370,12 @@ float Length(const Vec3& v) {
 
 void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t time_us) {
 	Common::LockGuard lock(m_mutex);
-	if (id != m_active_id || !m_motion_enabled) {
+	if (id != m_active_id) {
+		return;
+	}
+	m_sensor_events[sensor == Sensor::Accel ? 0 : 1]++;
+	m_sensor_last_ms = SDL_GetTicks();
+	if (!m_motion_enabled) {
 		return;
 	}
 
@@ -1397,6 +1436,57 @@ void GameController::Motion(int id, Sensor sensor, const float* data, uint64_t t
 	}
 	m_state.time = LibKernel::KernelGetProcessTime();
 	AddState();
+}
+
+void GameController::GetMotionStatus(MotionStatus* status) {
+	Common::LockGuard lock(m_mutex);
+	status->accel_events = m_sensor_events[0];
+	status->gyro_events  = m_sensor_events[1];
+	status->rearms       = m_sensor_rearms;
+	status->emulated     = m_gyro_emulation;
+	status->live         = m_gyro_emulation ||
+	                       (m_sensor_events[0] != 0 && m_sensor_events[1] != 0 &&
+	                        SDL_GetTicks() - m_sensor_last_ms <= SENSOR_LIVE_MS);
+}
+
+// SDL calls without m_mutex (lock order above); the caller holds g_router_mutex.
+void GameController::KeepSensors() {
+	int      id;
+	uint64_t reference;
+	{
+		Common::LockGuard lock(m_mutex);
+		id        = m_active_id;
+		reference = std::max(m_sensor_last_ms, m_sensor_armed_ms);
+	}
+	if (id == HOST_INPUT_CONTROLLER_ID || id < 0) {
+		return;
+	}
+	auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(id));
+	if (pad == nullptr || !SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) ||
+	    !SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL)) {
+		return;
+	}
+	const uint64_t now   = SDL_GetTicks();
+	const bool     stale = now - reference >= SENSOR_STALE_MS;
+	if (!stale) {
+		(void)ArmHostPadSensors(pad, false); // a flag the driver cleared
+		return;
+	}
+	Common::LockGuard lock(m_mutex);
+	if (now - m_sensor_armed_ms < SENSOR_REARM_MS) {
+		return;
+	}
+	m_sensor_armed_ms = now;
+	m_sensor_rearms++;
+	std::fprintf(stderr,
+	             "[astrohybrid 0] pad %d: no sensor events for %llu ms (accel %llu, gyro %llu "
+	             "so far): re-arming the sensors (#%llu)\n",
+	             id, static_cast<unsigned long long>(now - reference),
+	             static_cast<unsigned long long>(m_sensor_events[0]),
+	             static_cast<unsigned long long>(m_sensor_events[1]),
+	             static_cast<unsigned long long>(m_sensor_rearms));
+	std::fflush(stderr);
+	(void)ArmHostPadSensors(pad, true);
 }
 
 void GameController::SetMotionSensorState(bool enable) {
@@ -1585,6 +1675,7 @@ void GameController::ApplyVibration() {
 	if (!SDL_RumbleGamepad(pad, large, small, duration)) {
 		LOGF("\t rumble failed: %s\n", SDL_GetError());
 	}
+	(void)ArmHostPadSensors(pad, false); // an output write must not leave the IMU off
 }
 
 int GameController::GetActiveControllerId() {
@@ -1602,6 +1693,7 @@ void GameController::SetLightBar(uint8_t r, uint8_t g, uint8_t b) {
 	if (auto* pad = SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(m_active_id));
 	    pad != nullptr) {
 		SetHostPadLED(pad, r, g, b);
+		(void)ArmHostPadSensors(pad, false);
 	}
 }
 
@@ -2021,8 +2113,31 @@ void SetTouchPad(int id, int finger, bool down, float x, float y, bool click) {
 
 void SetSensor(int id, Sensor sensor, const float* data, uint64_t time_us) {
 	Common::LockGuard lock(g_router_mutex);
+	g_sensor_events_total.fetch_add(1, std::memory_order_relaxed);
 	if (auto* player = PlayerForDevice(id)) {
 		player->Motion(id, sensor, data, time_us);
+	} else {
+		g_sensor_events_unrouted.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+bool PadGetMotionStatus(int handle, MotionStatus* status) {
+	if (status == nullptr || PadCheckHandle(handle) != OK) {
+		return false;
+	}
+	*status = {};
+	PlayerForHandle(handle)->GetMotionStatus(status);
+	status->events_total    = g_sensor_events_total.load(std::memory_order_relaxed);
+	status->events_unrouted = g_sensor_events_unrouted.load(std::memory_order_relaxed);
+	return true;
+}
+
+void KeepHostPadSensors() {
+	Common::LockGuard lock(g_router_mutex);
+	for (const auto& player: g_players) {
+		if (player != nullptr) {
+			player->KeepSensors();
+		}
 	}
 }
 

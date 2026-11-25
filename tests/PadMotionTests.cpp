@@ -246,7 +246,29 @@ void TestReplay(const char* path, bool synthetic) {
 }
 } // namespace
 
+// The neutral default pose is never published as live data while the pad claims sensors.
+void TestNeutralNotPublished() {
+	PM::Sample neutral; // Sample's default: accel (0, g, 0), gyro 0
+	Expect(PM::IsNeutralDefault(neutral), "the default sample is the neutral pose");
+	PM::Sample real = neutral;
+	real.gyro[2]    = 0.017f;
+	Expect(!PM::IsNeutralDefault(real), "a sample with gyro noise is not neutral");
+	real      = neutral;
+	real.accel[0] = -0.32f;
+	Expect(!PM::IsNeutralDefault(real), "a tilted sample is not neutral");
+	Expect(!PM::Publishable(true, false), "claimed sensors without live data: held back");
+	Expect(PM::Publishable(true, true), "claimed sensors with live data: published");
+	Expect(PM::Publishable(false, false), "emulated tilt (no sensors) is published");
+	const std::string line = PM::FormatStatusLine(true, false, 0, 0, 0, 0, 0, false);
+	Expect(line.find("live=NO") != std::string::npos && line.find("held back") != std::string::npos,
+	       "the status line flags dead sensors");
+	const std::string ok = PM::FormatStatusLine(true, true, 10, 10, 20, 0, 1, true);
+	Expect(ok.find("live=yes") != std::string::npos && ok.find("rearms=1") != std::string::npos,
+	       "the status line shows live sensors");
+}
+
 int main(int argc, char** argv) {
+	TestNeutralNotPublished();
 	TestTypeNames();
 	TestConversionPerController();
 	TestRateEstimator();

@@ -416,6 +416,8 @@ void Relay() {
 	int         pad_type    = 0;
 	float       pad_rate    = 0.0f;
 	const bool  has_sensors = pad_sensors(&pad_type, &pad_rate);
+	bool        pad_has_sensors = has_sensors; // the pad's real sensors, re-read twice a second
+	bool        motion_held     = false;       // samples held back: no live SDL sensor data
 	const char* motion_env  = std::getenv("ASTROHYBRID_PAD_MOTION");
 	// Re-evaluated twice a second: the pad may connect (or change) after the relay started.
 	bool motion       = PM::Wanted(motion_env, has_sensors) && g_host.publish_pad_motion != nullptr;
@@ -451,6 +453,8 @@ void Relay() {
 		    t - motion_check >= std::chrono::milliseconds(500)) {
 			motion_check       = t;
 			const bool now_has = pad_sensors(&pad_type, &pad_rate);
+			pad_has_sensors    = now_has;
+			Controller::KeepHostPadSensors(); // re-arms sensors that stopped delivering events
 			const bool want =
 			    PM::Wanted(motion_env, now_has) && g_host.publish_pad_motion != nullptr;
 			if (want != motion) {
@@ -494,7 +498,24 @@ void Relay() {
 				const float accel_g[3] = {data.acceleration_x, data.acceleration_y,
 				                          data.acceleration_z};
 				PM::Sample  sample;
-				if (PM::FromPadData(accel_g, gyro, now_us, &sample)) {
+				Controller::MotionStatus motion_status {};
+				const bool have_status = Controller::PadGetMotionStatus(handle, &motion_status);
+				const bool publish =
+				    PM::Publishable(pad_has_sensors, have_status && motion_status.live);
+				if (publish != !motion_held) {
+					motion_held = !publish;
+					Log(0,
+					    "input relay: motion %s (pad type %s, sdl sensor events accel %llu gyro "
+					    "%llu, unrouted %llu)",
+					    publish ? "live: publishing the pad's readings"
+					            : "NOT live: the pad claims sensors but SDL delivers none; not "
+					              "publishing the neutral default pose",
+					    PM::TypeName(pad_type),
+					    static_cast<unsigned long long>(motion_status.accel_events),
+					    static_cast<unsigned long long>(motion_status.gyro_events),
+					    static_cast<unsigned long long>(motion_status.events_unrouted));
+				}
+				if (publish && PM::FromPadData(accel_g, gyro, now_us, &sample)) {
 					KytyGpuPadMotion sensors {};
 					std::memcpy(sensors.acceleration, sample.accel, sizeof(sensors.acceleration));
 					std::memcpy(sensors.angular_velocity, sample.gyro,
@@ -525,6 +546,13 @@ void Relay() {
 					                      motion_n)
 					        .c_str(),
 					    static_cast<double>(pad_rate));
+					Log(0, "%s",
+					    PM::FormatStatusLine(pad_has_sensors, motion_status.live,
+					                         motion_status.accel_events, motion_status.gyro_events,
+					                         motion_status.events_total,
+					                         motion_status.events_unrouted, motion_status.rearms,
+					                         !motion_held)
+					        .c_str());
 				}
 			}
 			static uint32_t last_buttons = 0;
