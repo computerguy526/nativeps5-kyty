@@ -768,6 +768,8 @@ add_executable(progress_overlay_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Progre
 target_include_directories(progress_overlay_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
 # nps5: load card self-present watchdog state machine (header only), no GPU.
+add_executable(nps5_frame_exit_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Nps5FrameExitTests.cpp")
+target_include_directories(nps5_frame_exit_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(load_card_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LoadCardTests.cpp")
 target_include_directories(load_card_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(launch_phase_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LaunchPhaseTests.cpp")
@@ -3289,6 +3291,7 @@ if(BUILD_TESTING)
 		"Tests: failed: ;Tests: [^\n]* failed at ;Tests: [^\n]* failed: ;FAILED: ;test failed: ;SaveDataMemoryTests:[0-9]+: ")
 
 	add_custom_target(kyty_tests DEPENDS
+		nps5_frame_exit_tests
 		hang_watchdog_tests
 		ime_dialog_tests
 		shader_cfg_tests

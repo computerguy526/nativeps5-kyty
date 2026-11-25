@@ -45,7 +45,11 @@ inline uint64_t SaveLoadQuietNs() {
 // Steady ns of the last load sign seen up to `now` (0 = none yet). Thread-safe; samples the runtime
 // counters on every call.
 inline uint64_t LastLoadSignNs(uint64_t now) {
-	static std::mutex m;
+	// Never destroyed: the cache savers (PipelineCacheSaver, ProgramCacheSaver) call this from their own threads and can still be
+	// running while the process exits. A function-local static mutex was destroyed by exit(), the next lock threw
+	// std::system_error ("mutex lock failed: Invalid argument"), std::terminate aborted, and the crash handler then waited forever:
+	// the process never ended after a window close / SIGTERM (v1.4 gate, laptop playtest).
+	static std::mutex& m = *new std::mutex;
 	static uint64_t   last_ns = 0, last_bytes = 0, last_sign = 0;
 	static int        last_phase = -1;
 #if defined(__APPLE__) || defined(__linux__)
