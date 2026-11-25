@@ -40,3 +40,5 @@ KYTY_PS_UINT32_TARGETS       # SAROS sarosclay: raw 32-bit PS exports to UINT co
 NPS5_PAD_NET                 # NetPad loopback forwarder
 KYTY_HOSTED_RETRIED_WRITES   # ASTRO faultwin FW=1 (v1.3.x parity port)
 KYTY_CP_PASS_STATS           # diagnostic (with KYTY_CP_GAP_STATS=1)
+KYTY_GDS_EOP_STATS           # diagnostic counters (SAROS saroscp)
+KYTY_UNMAP_STATS             # diagnostic counters (SAROS saroscp)

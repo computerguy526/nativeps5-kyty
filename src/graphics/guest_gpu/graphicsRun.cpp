@@ -4940,6 +4940,28 @@ static bool GdsEopDeferEnabled() {
 	return enabled;
 }
 
+// nps5 saroscp: the GDS end-of-pipe reads that still drain the GPU. Counted always; "[gdswait]" at
+// exit with KYTY_GDS_EOP_STATS=1 (the first 32 reads by GDS offset / size / destination are logged).
+static void GdsWaitNote(uint32_t dw_offset, uint32_t dw_size, uint64_t dst) {
+	static std::atomic<uint64_t> calls {0};
+	static const bool            stats = [] {
+		const auto* v  = std::getenv("KYTY_GDS_EOP_STATS");
+		const bool  on = v != nullptr && std::strcmp(v, "1") == 0;
+		if (on) {
+			std::atexit([] {
+				std::fprintf(stderr, "[gdswait] total gds eop sync reads=%llu\n",
+				             static_cast<unsigned long long>(calls.load()));
+			});
+		}
+		return on;
+	}();
+	const auto n = calls.fetch_add(1, std::memory_order_relaxed);
+	if (stats && n < 32) {
+		std::fprintf(stderr, "[gdswait] #%llu gds_dw_off=%u dw=%u dst=0x%llx\n", static_cast<unsigned long long>(n),
+		             dw_offset, dw_size, static_cast<unsigned long long>(dst));
+	}
+}
+
 bool CommandProcessor::TryDeferGdsRead(uint32_t* dst, uint32_t dw_offset, uint32_t dw_size,
                                        bool interrupt, uint32_t interrupt_context_id) {
 	if (!GdsEopDeferEnabled() || dst == nullptr || dw_size == 0) {
@@ -5199,6 +5221,7 @@ void CommandProcessor::WriteAtEndOfPipe(uint32_t cache_policy, uint32_t event_wr
 						                            value >> 16u);
 						return;
 					}
+					GdsWaitNote(value & 0xffffu, value >> 16u, reinterpret_cast<uint64_t>(dst));
 					Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitGds);
 					SynchronizeGpu();
 					StreamCopyDefer::NoteGuestWrite(reinterpret_cast<uint64_t>(dst), uint64_t {value >> 16u} * 4u);
