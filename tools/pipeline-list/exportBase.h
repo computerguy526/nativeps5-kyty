@@ -66,11 +66,54 @@ inline bool ReadsAsSpecialization(std::span<const uint8_t> bytes, bool int21, si
 // DecodeSpecializationInt21): the added fields get their defaults (false, false, 0, false). This
 // does the same on the bytes. True when `bytes` were rewritten; bytes that read as this build's, or
 // as neither, stay as they are.
+// v1.3.x lists: the image record has one more word, `indirect_group`, before the flags cube and fmask (DecodeSpecializationV13);
+// a record that names a group is refused (it names a resource this build cannot bind). The emulator reads these through
+// DecodeSpecializationCompat when it loads a list, so the upgrade must write them in this build's record as well.
+inline constexpr size_t SpecializationImageV13Bytes = 9 * 4 + 2;
+inline bool ReadsAsSpecializationV13(std::span<const uint8_t> bytes, size_t* images_at, uint32_t* images) {
+	size_t pos = 0;
+	const auto word = [&](uint32_t& v) { if (bytes.size() - pos < 4) return false; std::memcpy(&v, bytes.data() + pos, 4); pos += 4; return true; };
+	uint32_t buffers = 0;
+	if (!word(buffers) || buffers > bytes.size() - pos) return false;
+	for (uint32_t i = 0; i < buffers; i++) {
+		if (bytes.size() - pos < 12 + 1 || bytes[pos + 12] > 1) return false;
+		pos += 13;
+	}
+	uint32_t count = 0;
+	if (!word(count) || count > bytes.size() - pos) return false;
+	*images_at = pos;
+	*images    = count;
+	if (bytes.size() - pos != size_t {count} * SpecializationImageV13Bytes) return false;
+	for (uint32_t i = 0; i < count; i++) {
+		const auto record = pos + size_t {i} * SpecializationImageV13Bytes;
+		uint32_t   group  = 0;
+		std::memcpy(&group, bytes.data() + record + 32, 4);
+		if (group != UINT32_MAX || bytes[record + 36] > 1 || bytes[record + 37] > 1) return false;
+	}
+	return true;
+}
+
+// A v1.3.x specialization (no group named) as this build's: the group word dropped, the added fields at their defaults.
+inline bool UpgradeV13Specialization(std::vector<uint8_t>& bytes) {
+	size_t   images_at = 0;
+	uint32_t images    = 0;
+	if (!ReadsAsSpecializationV13(bytes, &images_at, &images)) return false;
+	std::vector<uint8_t> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(images_at));
+	for (uint32_t i = 0; i < images; i++) {
+		const auto record = bytes.begin() + static_cast<std::ptrdiff_t>(images_at + size_t {i} * SpecializationImageV13Bytes);
+		out.insert(out.end(), record, record + 32);
+		out.insert(out.end(), record + 36, record + 38);
+		out.insert(out.end(), SpecializationImageBytes - SpecializationImageInt21Bytes, uint8_t {0});
+	}
+	bytes = std::move(out);
+	return true;
+}
+
 inline bool UpgradeInt21Specialization(std::vector<uint8_t>& bytes) {
 	size_t   images_at = 0;
 	uint32_t images    = 0;
 	if (ReadsAsSpecialization(bytes, false, &images_at, &images)) return false;
-	if (!ReadsAsSpecialization(bytes, true, &images_at, &images)) return false;
+	if (!ReadsAsSpecialization(bytes, true, &images_at, &images)) return UpgradeV13Specialization(bytes);
 	std::vector<uint8_t> out;
 	out.reserve(bytes.size() + size_t {images} * (SpecializationImageBytes - SpecializationImageInt21Bytes));
 	out.insert(out.end(), bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(images_at));
