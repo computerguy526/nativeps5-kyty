@@ -3515,6 +3515,14 @@ if(APPLE)
 	target_include_directories(kyty_gpu PRIVATE ${inc_headers})
 	set_target_properties(kyty_gpu PROPERTIES PREFIX "" OUTPUT_NAME "kyty_gpu" SUFFIX ".dylib")
 	target_link_options(kyty_gpu PRIVATE -Wl,-undefined,error)
+	# KYTY_GPU_IPO=ON (default off): ThinLTO of the kyty_gpu dylib (the emulator-only KYTY_EMULATOR_IPO
+	# never reached it). With KYTY_PGO_GENERATE the dylib dumps its profile from a thread started at
+	# load (kytyGpuBridge.cpp, KYTY_PGO_FILE / KYTY_PGO_DUMP_SECONDS).
+	option(KYTY_GPU_IPO "ThinLTO for kyty_gpu.dylib (clang)" OFF)
+	if(KYTY_GPU_IPO)
+		target_compile_options(kyty_gpu PRIVATE -flto=thin)
+		target_link_options(kyty_gpu PRIVATE -flto=thin)
+	endif()
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)
