@@ -62167,6 +62167,10 @@ int main(int argc, char **argv) {
   if (std::getenv("KYTY_CB_SHADER_MASK_EXPORTS") == nullptr) {
     SetEnvironment("KYTY_CB_SHADER_MASK_EXPORTS", "1");
   }
+  // Upstream 6dcdcd44's HTile depth-prefix rebind case needs its (default-off here, v1.4 review M6) gate.
+  if (std::getenv("KYTY_HTILE_PREFIX_REBIND") == nullptr) {
+    SetEnvironment("KYTY_HTILE_PREFIX_REBIND", "1");
+  }
   if ((argc == 3 || argc == 4) && std::strcmp(argv[1], "--gi-decode-inventory") == 0) {
     EnsureConfigInitialized();
     return GiProbeTests::GiDecodeInventory(argv[2], argc == 4 ? argv[3] : nullptr);

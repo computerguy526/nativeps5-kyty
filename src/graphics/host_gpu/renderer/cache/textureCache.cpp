@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include "graphics/host_gpu/renderer/cache/htilePrefixRebind.h"
 #include "graphics/host_gpu/renderer/nanProbe.h"
 
 #include "common/alignment.h"
@@ -4864,8 +4865,13 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	// PPSA04264, PPSA04288
 	// A depth or storage view can cover a prefix of the same array. HTile describes the
 	// depth view separately from the texel layout preserved in either direction.
+	// KYTY_HTILE_PREFIX_REBIND (default off, v1.4 review M6): PrefixLayoutGuard keeps the v1.3.1 address / bytes-per-block /
+	// cached-layers / no-metadata checks unless the gate is on (htilePrefixRebind.h).
 	const bool retain_cached_layout =
 	    requested.samples == 1 && cached.info.samples == 1 && cached.backing.samples == 1 &&
+	    PrefixLayoutGuard(HtilePrefixRebindEnabled(), requested.bytes_per_block == cached.info.bytes_per_block,
+	                      requested.data.address == cached.info.data.address, cached.info.resources.layers != 0,
+	                      !requested.HasMetadata(), requested.metadata.kind == ImageMetadataKind::Htile) &&
 	    requested.data.size < cached.info.data.size && requested.extent == cached.info.extent &&
 	    requested.resources.levels == 1 && cached.info.resources.levels == 1 &&
 	    requested.resources.layers != 0 &&
@@ -4880,8 +4886,6 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    requested.data.size / requested.resources.layers ==
 	        cached.info.data.size / cached.info.resources.layers &&
 	    !requested.HasStencil() && !cached.info.HasStencil() &&
-	    (requested.metadata.kind == ImageMetadataKind::None ||
-	     requested.metadata.kind == ImageMetadataKind::Htile) &&
 	    (cached.info.metadata.kind == ImageMetadataKind::None ||
 	     cached.info.metadata.kind == ImageMetadataKind::Htile);
 	// Depth bytes sampled through a color format no depth view provides (16_UINT, 8_8_UNORM)

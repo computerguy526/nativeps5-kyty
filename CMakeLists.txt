@@ -782,6 +782,9 @@ add_executable(bg_queue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BgQueueTests.c
 target_include_directories(bg_queue_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(level_schedule_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelScheduleTests.cpp")
 target_include_directories(level_schedule_tests PRIVATE "${KYTY_SOURCE_DIR}")
+# v1.4 review M6: the HTile prefix rebind guard (htilePrefixRebind.h, KYTY_HTILE_PREFIX_REBIND, default off). Run with and without an argument.
+add_executable(htile_prefix_rebind_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HtilePrefixRebindTests.cpp")
+target_include_directories(htile_prefix_rebind_tests PRIVATE "${KYTY_SOURCE_DIR}")
 # v1.4 review M4/M5: the tier-1 hold state machine of the journal replay (tierGate.h), threaded fake Replay.
 add_executable(tier_gate_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/TierGateTests.cpp")
 target_include_directories(tier_gate_tests PRIVATE "${KYTY_SOURCE_DIR}")
