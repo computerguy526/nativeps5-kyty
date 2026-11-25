@@ -4,6 +4,7 @@
 #include "graphics/shader/shader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <array>
@@ -14,6 +15,18 @@
 #include <utility>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
+
+namespace {
+std::atomic<bool> g_dpp_always_update {false};
+} // namespace
+
+void SetDppAlwaysUpdate(bool on) {
+	g_dpp_always_update.store(on, std::memory_order_relaxed);
+}
+
+bool DppAlwaysUpdate() {
+	return g_dpp_always_update.load(std::memory_order_relaxed);
+}
 
 static IR::DppMoveFlags DppFlags(const Decoder::Operand& operand) {
 	return {
@@ -352,7 +365,9 @@ void Translator::WriteRawU32(const Decoder::Operand& operand, IR::U32 value) {
 			const auto old = ir.GetVectorReg(reg);
 			// DPP skips EXEC lanes only through row/bank masks, or for invalid sources without
 			// BOUND_CTRL (dpp8 reads zero); otherwise it is a plain masked write.
-			if (operand.dpp && (operand.dpp_row_mask != 0xfu || operand.dpp_bank_mask != 0xfu ||
+			// reprofix: DppAlwaysUpdate() (kyty_msl_dump only) keeps the pre-169afe2d5 form for every DPP write.
+			if (operand.dpp && (DppAlwaysUpdate() || operand.dpp_row_mask != 0xfu ||
+			                    operand.dpp_bank_mask != 0xfu ||
 			                    (!operand.dpp_bound_ctrl && !operand.dpp8))) {
 				value = IR::U32(ir.Emit(IR::ValueOpcode::DppUpdateU32, {value, old, ir.GetExec()},
 				                        DppFlags(operand)));

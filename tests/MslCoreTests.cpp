@@ -4,6 +4,7 @@
 // code 0 = pass.
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/frontend/translate/Translate.h"
 #include "graphics/shader/recompiler/backend/msl/MslBufferOps.h"
 #include "graphics/shader/recompiler/backend/msl/MslBuilder.h"
 #include "graphics/shader/recompiler/backend/msl/MslEmitter.h"
@@ -1632,6 +1633,44 @@ void TestOrderedCompareReadsOperandsFirst() {
   }
 }
 
+// reprofix: SetDppAlwaysUpdate (kyty_msl_dump) keeps every DPP write a DppUpdateU32, the IR the verified Metal rows were
+// made from; off (the runtime default) a full-mask BOUND_CTRL write is a plain EXEC select (169afe2d5, upstream 9dcff95e8).
+//   v_lshlrev_b32 v2, 2, v0 / v_mov_b32_dpp v1, v0 quad_perm:[1,0,3,2] row_mask:0xf bank_mask:0xf bound_ctrl:1
+//   ds_write_b32 v2, v1 / s_endpgm   (synthetic, no game code)
+void TestDppAlwaysUpdatePin() {
+  const std::vector<uint32_t> code = {0x34040082u, 0x7e0202fau, 0xff08b100u, 0xd8340000u, 0x00000102u, 0xbf810000u};
+  ShaderComputeInputInfo info;
+  info.threads_num[0] = 64;
+  info.threads_num[1] = 1;
+  info.threads_num[2] = 1;
+  info.host_subgroup_size = 32;
+  info.thread_ids_num = 1;
+  info.lds_storage = true;
+  SR::CompileOptions options;
+  options.stage = ShaderType::Compute;
+  options.wave_size = 64;
+  options.dump_ir = false;
+  options.emit_msl = true;
+  options.emit_spirv = false;
+  std::vector<uint32_t> ud(16, 0);
+  options.user_data = ud;
+  options.input_info.compute = &info;
+  Check(!SR::Frontend::DppAlwaysUpdate(), "dpp pin: off by default (runtime form)");
+  size_t updates[2] = {0, 0};
+  for (const bool pin : {false, true}) {
+    SR::Frontend::SetDppAlwaysUpdate(pin);
+    auto translated = SR::TranslateProgram(code, options);
+    for (auto *block : translated.program.blocks) {
+      for (const auto &inst : block->Instructions()) {
+        updates[pin] += inst.GetOpcode() == ValueOpcode::DppUpdateU32 ? 1 : 0;
+      }
+    }
+  }
+  SR::Frontend::SetDppAlwaysUpdate(false);
+  Check(updates[0] == 0, "dpp pin off: full-mask bound_ctrl write is a plain select (" + std::to_string(updates[0]) + ")");
+  Check(updates[1] == 1, "dpp pin on: the write is a DppUpdateU32 (" + std::to_string(updates[1]) + ")");
+}
+
 int main() {
   TestBuilder();
   TestAluGolden();
@@ -1661,6 +1700,7 @@ int main() {
   TestVsLiveAdce();
   TestKkLayoutText();
   TestOrderedCompareReadsOperandsFirst();
+  TestDppAlwaysUpdatePin();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

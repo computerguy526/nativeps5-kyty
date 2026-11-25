@@ -11,6 +11,7 @@
 // unsupported encodings). Game-derived output stays local; never commit it.
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
+#include "graphics/shader/recompiler/frontend/translate/Translate.h"
 #include "graphics/shader/recompiler/backend/msl/MslXform.h"
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
@@ -457,6 +458,9 @@ int main(int argc, char **argv) {
   uint32_t lanes = 0, wave = 64, ud = 16;
   uint32_t stage = static_cast<uint32_t>(ShaderType::Compute),
            threads[3] = {64, 1, 1};
+  // reprofix: the lists' texts were made with every DPP write as DppUpdateU32 (Translate.h SetDppAlwaysUpdate);
+  // --dpp-upstream emits the runtime's form instead (diagnostics only, its texts match no list row).
+  SR::Frontend::SetDppAlwaysUpdate(true);
   for (int i = 1; i < argc; i++) {
     std::string_view a = argv[i];
     auto next = [&]() { return i + 1 < argc ? argv[++i] : ""; };
@@ -503,6 +507,8 @@ int main(int argc, char **argv) {
       link_perm = std::atol(next());
     else if (a == "--lanes")
       lanes = static_cast<uint32_t>(std::atoi(next()));
+    else if (a == "--dpp-upstream")
+      SR::Frontend::SetDppAlwaysUpdate(false);
     else if (a == "--no-comments")
       comments = false;
     else if (a == "--loop-cap")

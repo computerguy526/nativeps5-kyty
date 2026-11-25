@@ -35,6 +35,14 @@ struct TranslateOptions {
 IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& cfg,
                              const TranslateOptions& options);
 
+// reprofix: the verified Metal override rows (games/<id>/metal-*.tsv, emitter pinned in their header) were made before
+// upstream 9dcff95e8 / our 169afe2d5, when every DPP vector write was a DppUpdateU32. 169afe2d5 writes a DPP result that
+// reaches every active lane as a plain EXEC select instead: the same values, a different IR, so a different MSL text whose
+// sha256 no list row matches. kyty_msl_dump (the offline generator of those texts, not the runtime) turns this on so the
+// rows reproduce byte for byte; the runtime keeps the upstream form (SPIR-V, Street Fighter 6 crash fix). Default off.
+void SetDppAlwaysUpdate(bool on);
+[[nodiscard]] bool DppAlwaysUpdate();
+
 // KYTY_LANE_LOCAL (LaneLocal.cpp, chenxiao07/KytyPS5 9907780e1 + 9bb47e15d): a wave64 program whose
 // results in each lane depend on no lane outside its 32-lane half. On a host with 32-wide subgroups it
 // runs one guest lane per invocation instead of two. reason: why not. uniform_loads: proven only with
