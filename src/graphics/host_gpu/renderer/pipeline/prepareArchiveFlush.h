@@ -23,6 +23,28 @@ struct PrepareFlushOutcome {
 	std::string note;            // why the sleep was used although the gate was on
 };
 
+// v1.4 review M3: the Vulkan loader opens the KosmicKrisp ICD RTLD_LOCAL, so dlsym(RTLD_DEFAULT, ...) never finds its exports.
+// `global` is the RTLD_DEFAULT lookup, `from_images` walks the loaded images and resolves the symbol from the handle of the
+// KosmicKrisp one (shaders.cpp KkTag, metalfx.cpp do the same with _dyld_image_*). `via` (optional) receives which path found it.
+inline void* ResolveDriverSymbol(const char* name, const std::function<void*(const char*)>& global,
+                                 const std::function<void*(const char*)>& from_images, const char** via = nullptr) {
+	const char* path = "not found";
+	void*       sym  = global ? global(name) : nullptr;
+	if (sym != nullptr) {
+		path = "global namespace";
+	} else if (from_images) {
+		sym = from_images(name);
+		if (sym != nullptr) path = "driver image handle";
+	}
+	if (via != nullptr) *via = path;
+	return sym;
+}
+
+// KYTY_PREPARE_FLUSH_WAIT_MS: the lock wait handed to the driver; a uint32 cast used to wrap large values and 0 meant "forever".
+inline uint32_t ClampFlushWaitMs(uint64_t ms) {
+	return ms < 1 ? 1u : (ms > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<uint32_t>(ms));
+}
+
 // sleep: called at most once with the seconds to wait. flush may be null (symbol missing).
 inline PrepareFlushOutcome PrepareArchiveWait(bool archive_dir_set, bool sync_gate, ArchiveFlushFn flush, uint32_t wait_ms,
                                               double flush_period_s, const std::function<void(double)>& sleep) {
