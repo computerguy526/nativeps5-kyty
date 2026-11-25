@@ -25,6 +25,15 @@ int main() {
 	CHECK(FormatStatus({.replay_done = 5, .replay_total = 5}).empty()); // a finished replay shows nothing
 	CHECK(FormatStatus({.live = -1}).empty());
 
+	// Window title: always valid UTF-8 (a nil NSString from invalid bytes crashed -[NSWindow setTitle:]).
+	CHECK(ValidUtf8Title("Game") == "Game");
+	CHECK(ValidUtf8Title("Game \xE2\x80\x94 x\xE2\x80\xA6") == "Game \xE2\x80\x94 x\xE2\x80\xA6");
+	CHECK(ValidUtf8Title("A\xE2\x80") == "A\xEF\xBF\xBD\xEF\xBF\xBD");   // truncated sequence
+	CHECK(ValidUtf8Title("A\xFF" "B") == "A\xEF\xBF\xBD" "B");
+	CHECK(ValidUtf8Title("A\xC0\xAF") == "A\xEF\xBF\xBD\xEF\xBF\xBD");  // overlong
+	CHECK(ValidUtf8Title("A\xED\xA0\x80") == "A\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD"); // surrogate
+	CHECK(ValidUtf8Title(std::string("ab\0cd", 5)) == "ab");
+	CHECK(ValidUtf8Title("").empty());
 	CHECK(ComposeTitle("Game", {}, true) == "Game");
 	CHECK(ComposeTitle("Game", {}, false) == "Game \xE2\x80\x94 loading\xE2\x80\xA6");
 	CHECK(ComposeTitle("Game", {.replay_done = 3, .replay_total = 9}, false) ==

@@ -920,9 +920,9 @@ bool QueryWindowScreen(SDL_Window* window, AutoCap::Screen& out) {
 
 void RefreshProgressTitle(SDL_Window* window, uint64_t now_ms) {
 	auto&      state = GetProgressTitle();
-	const auto text =
+	const auto text = CompileProgress::ValidUtf8Title(
 	    CompileProgress::ComposeTitle(state.first_frame ? state.base : ProgressTitleName(),
-	                                  CompileProgress::Read(), state.first_frame);
+	                                  CompileProgress::Read(), state.first_frame));
 	if (!state.throttle.ShouldSet(now_ms, text)) {
 		return;
 	}
