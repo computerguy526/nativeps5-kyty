@@ -326,6 +326,52 @@ void TestExportAndRoundTrip() {
 	CHECK(hits != 0);
 }
 
+
+// v14prep: a list of pipeline state format 0 (no stamp) is merged with its records as recorded: two records that differ only in the
+// device values (feedback-loop dynamic state) stay two, a self-merge keeps the counts, and the stamped (normalized) path still collapses them.
+void TestMergeRawTwins() {
+	auto                      recording = MakeRecording("level_a", vk::PrimitiveTopology::eTriangleList);
+	std::vector<uint64_t>     offsets;
+	const auto                image = Image(recording.sources, offsets);
+	PipelineList::Builder     builder(TestInfo());
+	PipelineList::ExportStats export_stats;
+	builder.AddJournals(recording.sources, recording.entries, recording.pipelines, LocatorFor(image), export_stats);
+	auto file = builder.Finish();
+	CHECK(!file.pipelines.empty());
+	// The recorded twin: the same pipeline as a device with the feedback-loop feature recorded it.
+	auto twin = file.pipelines[0];
+	uint32_t with_state = 0, without_state = 0;
+	const auto withf = PipelineWords(vk::PrimitiveTopology::eTriangleList, with_state, true);
+	const auto without = PipelineWords(vk::PrimitiveTopology::eTriangleList, without_state, false);
+	CHECK(withf != without);
+	file.pipelines[0].words          = without;
+	file.pipelines[0].snapshot_words = without_state;
+	twin.words                       = withf;
+	twin.snapshot_words              = with_state;
+	file.pipelines.push_back(twin);
+	const auto count = file.pipelines.size();
+	{ // as recorded (format 0): both kept, a self-merge changes nothing
+		PipelineList::Builder     b(file.info);
+		PipelineList::ExportStats st;
+		b.AddList(file, st, false);
+		b.AddList(file, st, false);
+		CHECK(b.Finish().pipelines.size() == count);
+	}
+	{ // the stamped path: the device values are erased, the twins are one
+		PipelineList::Builder     b(file.info);
+		PipelineList::ExportStats st;
+		b.AddList(file, st, true);
+		const auto merged = b.Finish();
+		CHECK(merged.pipelines.size() == count - 1);
+		// merge(merge(x)) = merge(x): the collapsed list merges into itself without losing or gaining a record (autowarm re-merges its own output)
+		PipelineList::Builder     again(merged.info);
+		PipelineList::ExportStats st2;
+		again.AddList(merged, st2, true);
+		again.AddList(merged, st2, true);
+		CHECK(again.Finish().pipelines.size() == merged.pipelines.size());
+	}
+}
+
 void TestResolve() {
 	auto                  recording = MakeRecording("level_a", vk::PrimitiveTopology::eTriangleList);
 	std::vector<uint64_t> offsets;
@@ -811,6 +857,7 @@ int main() {
 	TestMergedStage();
 	TestMerge();
 	TestDeviceState();
+	TestMergeRawTwins();
 	TestMergeAcrossDevices();
 	TestReplayInput();
 	TestRewrite();

@@ -791,6 +791,10 @@ target_include_directories(tier_gate_tests PRIVATE "${KYTY_SOURCE_DIR}")
 find_package(Threads)
 target_link_libraries(tier_gate_tests PRIVATE Threads::Threads)
 
+# nps5 v14prep: shader-cache upgrade decision + stamp files (header only).
+add_executable(cache_upgrade_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CacheUpgradeTests.cpp")
+target_include_directories(cache_upgrade_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5: per-page per-frame served-read-fault counter (header only).
 add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")
 target_include_directories(read_fault_frame_burst_tests PRIVATE "${KYTY_SOURCE_DIR}")

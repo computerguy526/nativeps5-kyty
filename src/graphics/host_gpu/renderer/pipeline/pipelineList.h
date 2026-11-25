@@ -246,8 +246,10 @@ public:
 	                 const std::vector<PipelineJournal::Record>& pipelines, const LocateFn& locate, ExportStats& stats);
 	// The data file named `path` (relative to /app0) as a CodeFile, added to the list's table once.
 	CodeFile AddFile(const std::string& path);
-	// Another list (merge).
-	void AddList(const File& other, ExportStats& stats);
+	// Another list (merge). `normalize_pipelines` false (a list of pipeline state format 0, which carries no stamp): its records
+	// keep their words as recorded, so two records that differ only in the values NormalizePipelineDeviceState erases stay two
+	// (the coarse identity collapsed 4,892 pipelines to 2,446; the replay builds both, 4,844 of 4,892 built in a cold prepare).
+	void AddList(const File& other, ExportStats& stats, bool normalize_pipelines = true);
 
 	[[nodiscard]] File Finish() const { return m_file; }
 
@@ -255,7 +257,7 @@ private:
 	uint32_t AddShader(const Shader& shader, bool& added);
 	uint32_t AddPermutation(const Permutation& permutation, bool& added);
 	uint16_t AddLevel(const std::string& level);
-	void     AddPipeline(Pipeline pipeline, ExportStats& stats);
+	void     AddPipeline(Pipeline pipeline, ExportStats& stats, bool normalize = true);
 
 	File                                          m_file;
 	std::unordered_multimap<uint64_t, uint32_t>   m_shaders;      // identity digest -> index

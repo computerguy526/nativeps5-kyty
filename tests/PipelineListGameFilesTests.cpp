@@ -248,6 +248,37 @@ void TestSpecializationUpgrade() {
 	word(beyond, 0xffffffffu);
 	CHECK(unchanged(beyond));
 	CHECK(unchanged({}));
+
+	// v14prep: a v1.3.x list's records carry `indirect_group` (all ones = none) before the flags: written in this build's record, same as int21's.
+	std::vector<uint8_t> v13;
+	word(v13, 2);
+	for (uint32_t b = 0; b < 2; b++) {
+		word(v13, 16 + b);
+		word(v13, 7);
+		word(v13, 0x688);
+		v13.push_back(static_cast<uint8_t>(b));
+	}
+	word(v13, 2);
+	for (uint32_t i = 0; i < 2; i++) {
+		for (uint32_t w = 0; w < 8; w++) word(v13, 100 * (i + 1) + w);
+		word(v13, 0xffffffffu);
+		v13.push_back(1);
+		v13.push_back(static_cast<uint8_t>(i));
+	}
+	CHECK(v13.size() == first + 2 * SpecializationImageV13Bytes && SpecializationImageV13Bytes == 38);
+	CHECK(ReadsAsSpecializationV13(v13, &at, &images) && images == 2 && at == first);
+	CHECK(!ReadsAsSpecialization(v13, true, &at, &images) && !ReadsAsSpecialization(v13, false, &at, &images));
+	auto v13now = v13;
+	CHECK(UpgradeInt21Specialization(v13now));
+	// The same bytes as the int21 form of the same records, upgraded.
+	CHECK(v13now == now);
+	auto group = v13;
+	group[first + 32] = 3; // a record that names a group is refused: left as it is
+	CHECK(unchanged(group));
+	// M11: such a blob reads as no layout of this build after the upgrade attempt: the tool counts it and refuses unless --allow-partial.
+	CHECK(!ReadsAsSpecialization(group, false, &at, &images) && !ReadsAsSpecialization(group, true, &at, &images) && !ReadsAsSpecializationV13(group, &at, &images));
+	CHECK(ReadsAsSpecialization(v13now, false, &at, &images));
+	CHECK(PartialExitCode(0, false) == 0 && PartialExitCode(3, false) == 2 && PartialExitCode(3, true) == 0); // the tool's rc 2 path
 }
 
 // export --base --scan: the base list's data files first, then their folders' other files, then the rest.
