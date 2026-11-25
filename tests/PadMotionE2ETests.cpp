@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <thread>
 
 #include "graphics/presentation/window/eventDrain.h"
@@ -69,6 +70,7 @@ struct Result {
 	float    max_accel_error_g  = 0.0f;
 	float    peak_az_g = 0.0f, peak_gx = 0.0f, peak_orientation_x = 0.0f;
 	bool     button_in_step = false, button_released = false;
+	std::string trace;
 	uint64_t unrouted = 0;
 };
 
@@ -161,14 +163,16 @@ Result Run(VP::Kind kind, int per_step_budget, int steps) {
 					r.max_accel_error_g = std::max(r.max_accel_error_g, std::fabs(g - want.accel[i] / VP::kG));
 				}
 			}
-			if (std::getenv("PAD_E2E_TRACE") != nullptr && (step - connect_step) % 6 == 0) {
-				std::fprintf(stderr, "  t=%llu q=(%.3f %.3f %.3f %.3f) want_roll=%.1f deg gyro=(%.2f %.2f %.2f) ev=%llu/%llu\n",
+			if ((step - connect_step) % 9 == 0 && step - connect_step < 80) {
+				char line[256];
+				std::snprintf(line, sizeof(line), "  t=%llu q=(%.3f %.3f %.3f %.3f) want_roll=%.1f deg gyro=(%.2f %.2f %.2f) ev=%llu/%llu\n",
 				             static_cast<unsigned long long>(sim_ms), static_cast<double>(data.orientation_x),
 				             static_cast<double>(data.orientation_y), static_cast<double>(data.orientation_z),
 				             static_cast<double>(data.orientation_w), static_cast<double>(want.roll_rad * 57.29578f),
 				             static_cast<double>(data.angular_velocity_x), static_cast<double>(data.angular_velocity_y),
 				             static_cast<double>(data.angular_velocity_z),
 				             static_cast<unsigned long long>(status.accel_events), static_cast<unsigned long long>(injected));
+				r.trace += line;
 			}
 			r.peak_az_g = std::max(r.peak_az_g, data.acceleration_z);
 			r.peak_gx   = std::max(r.peak_gx, data.angular_velocity_x);
@@ -204,6 +208,9 @@ void TestKind(VP::Kind kind, const char* name) {
 	      r.live_after_steps);
 	Check(r.max_backlog < 64, "sensor event backlog grows", r.max_backlog);
 	Check(r.worst_lag_samples == 0, "the game's pad lags the pad by samples", r.worst_lag_samples);
+	if (r.max_roll_error_deg >= 4.0f) {
+		std::fprintf(stderr, "%s", r.trace.c_str());
+	}
 	Check(r.max_roll_error_deg < 4.0f, "orientation does not track the ramp", static_cast<int>(r.max_roll_error_deg * 10));
 	Check(r.peak_orientation_x > 0.1f, "the shake did not move the orientation");
 	Check(r.max_accel_error_g < 0.02f, "accel does not track the ramp");
