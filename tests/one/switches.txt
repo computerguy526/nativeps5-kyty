@@ -38,3 +38,5 @@ KYTY_PS_UINT32_TARGETS       # SAROS sarosclay: raw 32-bit PS exports to UINT co
 # upbase: not on this base (skipped series): KYTY_DEPTH_STENCIL_ALIAS_SYNC (int22: KYTY_STENCIL_DEPTH_ALIAS), KYTY_SAROS_ASYNC_CS, KYTY_SAROS_HS_DYNIDX (hand-shader chain, series A)
 # Controller forwarding (padfwd, USER playtest convenience)
 NPS5_PAD_NET                 # NetPad loopback forwarder
+KYTY_HOSTED_RETRIED_WRITES   # ASTRO faultwin FW=1 (v1.3.x parity port)
+KYTY_CP_PASS_STATS           # diagnostic (with KYTY_CP_GAP_STATS=1)
