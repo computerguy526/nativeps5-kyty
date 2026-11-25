@@ -43,8 +43,9 @@ static int Math() {
 }
 
 int main(int argc, char** argv) {
-    Require(argc >= 2, "expected mode argument");
-    if (std::string_view(argv[1]) == "--math") return Math();
+    // No argument (a plain `./thread_qos_tests`, as CI and remote builds run every test target): the pure math and parser checks.
+    // The Mode()/GroupOn() cases need the environment of their ctest entry (thread_qos_off/qos/rt/killed/group_off) and take a mode argument.
+    if (argc < 2 || std::string_view(argv[1]) == "--math") return Math();
     Require(ThreadQos::Mode() == std::atoi(argv[1]), "Mode()");
     Require(std::string_view(ThreadQos::GroupName(ThreadQos::Group::Commit)) == "COMMIT", "group name");
     if (argc >= 3) {
