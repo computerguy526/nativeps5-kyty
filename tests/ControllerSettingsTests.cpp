@@ -867,7 +867,7 @@ void TestMotionPath() {
 		Check(PadReadState(1, &data) == 0 && data.acceleration_x == 0.0f &&
 		          data.acceleration_y == 1.0f && data.angular_velocity_x == 0.0f,
 		      "the default pose changed");
-		Check(!PM::Publishable(true, status.live), "neutral default would be published as live data");
+		Check(PM::PlanRelay(true, status.live).motion_flagged, "neutral default is not flagged");
 
 		uint64_t    t       = 1000000;
 		const float rest[3] = {0.05f, SDL_STANDARD_GRAVITY, -0.03f};
@@ -964,6 +964,27 @@ void TestSensorsSurviveOutputsAndReopen() {
 		Check(PadGetMotionStatus(1, &status) && status.rearms == 1,
 		      "re-arm storm: second re-arm within 3 s");
 	}
+	// A pad that never sends an IMU stream: re-arms back off and stop at the cap.
+	{
+		Controller  controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
+		uint64_t    t       = 1000000;
+		const float rest[3] = {0.0f, SDL_STANDARD_GRAVITY, 0.0f};
+		fake_pad[1].output_stops_stream = true;
+		SetRumble(200, 200); // the stream never runs, a re-arm toggle does not help either
+		fake_pad[1].output_stops_stream = false;
+		int calls_after_cap = 0;
+		for (int second = 0; second < 600; second++) {
+			fake_pad[1].streaming = false;
+			RunPad(1, 1000, rest, rest, &t);
+			KeepHostPadSensors();
+			if (second == 300) {
+				calls_after_cap = fake_pad[1].enable_calls;
+			}
+		}
+		MotionStatus status {};
+		Check(PadGetMotionStatus(1, &status) && status.rearms == 6, "re-arms did not stop at the cap");
+		Check(fake_pad[1].enable_calls == calls_after_cap, "a pad was toggled after the re-arm cap");
+	}
 	// Re-open: the pad leaves and returns (a fresh SDL gamepad: flags off, no stream).
 	{
 		Controller controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
@@ -995,9 +1016,19 @@ void TestNoNeutralPublishWhileSensorsClaimed() {
 		          data.angular_velocity_x == 0.0f && data.angular_velocity_y == 0.0f &&
 		          data.angular_velocity_z == 0.0f,
 		      "default pose expected");
-		Check(!PM::Publishable(true, status.live),
-		      "relay gate: neutral published while sensors are claimed");
-		Check(PM::Publishable(false, status.live), "relay gate: emulated tilt must still publish");
+		Check(PM::PlanRelay(true, status.live).motion_flagged,
+		      "neutral default not flagged while sensors are claimed");
+		Check(!PM::PlanRelay(false, status.live).motion_flagged, "emulated tilt flagged");
+		// Buttons, sticks, triggers and the connection are published whatever motion does.
+		const auto plan = PM::PlanRelay(true, status.live);
+		Check(plan.publish_state && plan.publish_motion, "the relay holds back state");
+		SetButton(1, PAD_BUTTON_CROSS, true);
+		SetAxis(1, Axis::LeftX, 200);
+		SetAxis(1, Axis::TriggerRight, 255);
+		Check(PadReadState(1, &data) == 0 && data.connected && data.buttons == PAD_BUTTON_CROSS &&
+		          data.left_stick_x == 200 && data.analog_buttons_r2 == 255,
+		      "buttons / sticks / triggers not available while motion is not live");
+		Check(PadGetMotionStatus(1, &status) && !status.live, "still not live");
 		// Events for a pad no player owns are counted, not applied.
 		const float accel[3] = {1.0f, 2.0f, 3.0f};
 		const float gyro[3]  = {1.0f, 1.0f, 1.0f};
@@ -1013,8 +1044,8 @@ void TestNoNeutralPublishWhileSensorsClaimed() {
 		ToggleGyroEmulation(1);
 		Check(PadGetMotionStatus(1, &status) && status.live, "emulated tilt not live");
 	}
-	const std::string line = PM::FormatStatusLine(true, false, 0, 0, 5, 2, 0, false);
-	Check(line.find("live=NO") != std::string::npos && line.find("held back") != std::string::npos,
+	const std::string line = PM::FormatStatusLine(true, false, 0, 0, 5, 2, 0, true);
+	Check(line.find("live=NO") != std::string::npos && line.find("NEUTRAL-DEFAULT") != std::string::npos,
 	      "the status line does not flag the dead sensors");
 }
 

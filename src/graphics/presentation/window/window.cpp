@@ -1364,6 +1364,11 @@ static void WindowCreate(WindowContext& context) {
 		SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11,wayland");
 	}
 #endif
+	// KYTY_SDL_JOYSTICK_MFI=0: SDL does not use macOS's GameController framework for pads (a Switch Pro
+	// that the framework took instead of the HIDAPI driver has no IMU); unset: SDL's default.
+	if (const char* mfi = std::getenv("KYTY_SDL_JOYSTICK_MFI"); mfi != nullptr && mfi[0] != 0) {
+		SDL_SetHint(SDL_HINT_JOYSTICK_MFI, mfi);
+	}
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
 	}

@@ -162,24 +162,32 @@ inline bool IsNeutralDefault(const Sample& s) {
 	       s.gyro[1] == 0.0f && s.gyro[2] == 0.0f;
 }
 
-// Whether a sample may go to the host: a pad that claims real sensors must have delivered live SDL
-// sensor events (the neutral default pose is never published as if it were a reading); emulated
-// tilt (a pad without sensors) is always live.
-inline bool Publishable(bool pad_has_sensors, bool live) {
-	return !pad_has_sensors || live;
+// What the relay sends while a pad claims sensors but SDL delivers none: everything, as always.
+// Buttons, sticks, triggers, touch and the connection are NEVER held back for motion (a held-back
+// pad state starved the game of input, rc11). The motion fields then carry Kyty's neutral default
+// pose; that is flagged (motion_flagged: status log line), not suppressed.
+struct RelayPlan {
+	bool publish_state  = true; // buttons, sticks, triggers, touch, connected: always
+	bool publish_motion = true;
+	bool motion_flagged = false; // sensors claimed but not live: the motion values are the default pose
+};
+inline RelayPlan PlanRelay(bool pad_has_sensors, bool live) {
+	RelayPlan plan;
+	plan.motion_flagged = pad_has_sensors && !live;
+	return plan;
 }
 
 // The status part of the 1 Hz log line: how many SDL sensor events arrived, whether they are live
 // now, and whether the relay is holding the samples back.
 inline std::string FormatStatusLine(bool pad_has_sensors, bool live, uint64_t accel_events,
                                     uint64_t gyro_events, uint64_t events_total,
-                                    uint64_t events_unrouted, uint64_t rearms, bool published) {
+                                    uint64_t events_unrouted, uint64_t rearms, bool flagged) {
 	char line[256];
 	std::snprintf(line, sizeof(line),
-	              "[pad] motion status: sensors=%s live=%s published=%s sdl_events accel=%llu "
+	              "[pad] motion status: sensors=%s live=%s motion=%s sdl_events accel=%llu "
 	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu",
 	              pad_has_sensors ? "yes" : "no", live ? "yes" : "NO",
-	              published ? "yes" : "NO(held back)", static_cast<unsigned long long>(accel_events),
+	              flagged ? "NEUTRAL-DEFAULT(no sensor data)" : "ok", static_cast<unsigned long long>(accel_events),
 	              static_cast<unsigned long long>(gyro_events),
 	              static_cast<unsigned long long>(events_total),
 	              static_cast<unsigned long long>(events_unrouted),

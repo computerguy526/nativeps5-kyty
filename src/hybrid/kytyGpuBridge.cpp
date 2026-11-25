@@ -417,7 +417,8 @@ void Relay() {
 	float       pad_rate    = 0.0f;
 	const bool  has_sensors = pad_sensors(&pad_type, &pad_rate);
 	bool        pad_has_sensors = has_sensors; // the pad's real sensors, re-read twice a second
-	bool        motion_held     = false;       // samples held back: no live SDL sensor data
+	int         logged_pad_id   = -1;
+	bool        motion_held     = false;       // motion values are the neutral default (no live SDL sensor data)
 	const char* motion_env  = std::getenv("ASTROHYBRID_PAD_MOTION");
 	// Re-evaluated twice a second: the pad may connect (or change) after the relay started.
 	bool motion       = PM::Wanted(motion_env, has_sensors) && g_host.publish_pad_motion != nullptr;
@@ -454,6 +455,26 @@ void Relay() {
 			motion_check       = t;
 			const bool now_has = pad_sensors(&pad_type, &pad_rate);
 			pad_has_sensors    = now_has;
+			if (const int pad_id = Controller::GetActiveControllerId(); pad_id != logged_pad_id) {
+				logged_pad_id = pad_id;
+				// Which SDL driver owns the pad (HIDAPI sends the Switch IMU; macOS's GameController
+				// framework path does not): vendor:product, path, connection.
+				SDL_LockJoysticks();
+				if (auto* sdl_pad = pad_id > 0 ? SDL_GetGamepadFromID(
+				                                     static_cast<SDL_JoystickID>(pad_id))
+				                               : nullptr) {
+					const char* path = SDL_GetGamepadPath(sdl_pad);
+					Log(0,
+					    "input relay: pad '%s' %04x:%04x type %s, connection %d, path '%.60s', "
+					    "sensors %s",
+					    SDL_GetGamepadName(sdl_pad) != nullptr ? SDL_GetGamepadName(sdl_pad) : "?",
+					    SDL_GetGamepadVendor(sdl_pad), SDL_GetGamepadProduct(sdl_pad),
+					    PM::TypeName(static_cast<int>(SDL_GetGamepadType(sdl_pad))),
+					    static_cast<int>(SDL_GetGamepadConnectionState(sdl_pad)),
+					    path != nullptr ? path : "?", now_has ? "yes" : "no");
+				}
+				SDL_UnlockJoysticks();
+			}
 			Controller::KeepHostPadSensors(); // re-arms sensors that stopped delivering events
 			const bool want =
 			    PM::Wanted(motion_env, now_has) && g_host.publish_pad_motion != nullptr;
@@ -500,22 +521,23 @@ void Relay() {
 				PM::Sample  sample;
 				Controller::MotionStatus motion_status {};
 				const bool have_status = Controller::PadGetMotionStatus(handle, &motion_status);
-				const bool publish =
-				    PM::Publishable(pad_has_sensors, have_status && motion_status.live);
-				if (publish != !motion_held) {
-					motion_held = !publish;
+				const auto plan =
+				    PM::PlanRelay(pad_has_sensors, have_status && motion_status.live);
+				if (plan.motion_flagged != motion_held) {
+					motion_held = plan.motion_flagged;
 					Log(0,
 					    "input relay: motion %s (pad type %s, sdl sensor events accel %llu gyro "
 					    "%llu, unrouted %llu)",
-					    publish ? "live: publishing the pad's readings"
-					            : "NOT live: the pad claims sensors but SDL delivers none; not "
-					              "publishing the neutral default pose",
+					    plan.motion_flagged
+					        ? "NOT live: the pad claims sensors but SDL delivers none; the motion "
+					          "values are the neutral default pose (buttons and sticks unaffected)"
+					        : "live: the pad's readings",
 					    PM::TypeName(pad_type),
 					    static_cast<unsigned long long>(motion_status.accel_events),
 					    static_cast<unsigned long long>(motion_status.gyro_events),
 					    static_cast<unsigned long long>(motion_status.events_unrouted));
 				}
-				if (publish && PM::FromPadData(accel_g, gyro, now_us, &sample)) {
+				if (PM::FromPadData(accel_g, gyro, now_us, &sample)) {
 					KytyGpuPadMotion sensors {};
 					std::memcpy(sensors.acceleration, sample.accel, sizeof(sensors.acceleration));
 					std::memcpy(sensors.angular_velocity, sample.gyro,
@@ -551,7 +573,7 @@ void Relay() {
 					                         motion_status.accel_events, motion_status.gyro_events,
 					                         motion_status.events_total,
 					                         motion_status.events_unrouted, motion_status.rearms,
-					                         !motion_held)
+					                         motion_held)
 					        .c_str());
 				}
 			}
@@ -1591,6 +1613,9 @@ static int ResolvePadAudioController(bool prefer_ps5) {
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_JOY_CONS, "1");
 		SDL_SetHint(SDL_HINT_JOYSTICK_ENHANCED_REPORTS, "1");
+		if (const char* mfi = std::getenv("KYTY_SDL_JOYSTICK_MFI"); mfi != nullptr && mfi[0] != 0) {
+			SDL_SetHint(SDL_HINT_JOYSTICK_MFI, mfi);
+		}
 		(void)SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 	}
 	SDL_UpdateGamepads();

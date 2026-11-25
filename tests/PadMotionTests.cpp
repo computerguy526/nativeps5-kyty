@@ -256,13 +256,19 @@ void TestNeutralNotPublished() {
 	real      = neutral;
 	real.accel[0] = -0.32f;
 	Expect(!PM::IsNeutralDefault(real), "a tilted sample is not neutral");
-	Expect(!PM::Publishable(true, false), "claimed sensors without live data: held back");
-	Expect(PM::Publishable(true, true), "claimed sensors with live data: published");
-	Expect(PM::Publishable(false, false), "emulated tilt (no sensors) is published");
-	const std::string line = PM::FormatStatusLine(true, false, 0, 0, 0, 0, 0, false);
-	Expect(line.find("live=NO") != std::string::npos && line.find("held back") != std::string::npos,
+	Expect(PM::PlanRelay(true, false).motion_flagged, "claimed sensors without live data: flagged");
+	Expect(!PM::PlanRelay(true, true).motion_flagged, "claimed sensors with live data: not flagged");
+	Expect(!PM::PlanRelay(false, false).motion_flagged, "emulated tilt (no sensors) is not flagged");
+	for (bool has: {false, true}) {
+		for (bool live: {false, true}) {
+			const auto plan = PM::PlanRelay(has, live);
+			Expect(plan.publish_state && plan.publish_motion, "pad state is never held back");
+		}
+	}
+	const std::string line = PM::FormatStatusLine(true, false, 0, 0, 0, 0, 0, true);
+	Expect(line.find("live=NO") != std::string::npos && line.find("NEUTRAL-DEFAULT") != std::string::npos,
 	       "the status line flags dead sensors");
-	const std::string ok = PM::FormatStatusLine(true, true, 10, 10, 20, 0, 1, true);
+	const std::string ok = PM::FormatStatusLine(true, true, 10, 10, 20, 0, 1, false);
 	Expect(ok.find("live=yes") != std::string::npos && ok.find("rearms=1") != std::string::npos,
 	       "the status line shows live sensors");
 }
