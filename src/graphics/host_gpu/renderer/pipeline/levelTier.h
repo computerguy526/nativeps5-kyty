@@ -120,6 +120,11 @@ inline bool SlotInProgress(const SlotProgress& s) {
 struct Config {
 	unsigned earliest = 2; // the first N story levels are always tier 1
 	unsigned ahead    = 2; // levels ahead of a slot's furthest level that are tier 1
+	// v14lvl progression mode (KYTY_SHADER_PREPARE_PROGRESSION=1): levels are reachable only after earlier ones, so a slot is a
+	// frontier. Tier 1 = the always classes + each in-progress slot's current level, its unlocked-but-never-entered levels and
+	// `ahead` levels after the furthest one (the "earliest" levels only when a slot is new or there is no save). Tier 2 order =
+	// other unlocked levels, then cleared ones (replays), then locked ones, bonus / unknown last; ties by distance from the frontier.
+	bool progression = false;
 };
 
 struct Plan {
@@ -164,7 +169,19 @@ inline Plan PlanTiers(const File& db, const std::vector<SlotProgress>& slots, co
 		if (LevelDb::IsAlwaysClass(s.cls)) add1(s.name, 0);
 	}
 	if (!target_scene.empty() && LevelDb::FindScene(db, target_scene) >= 0) add1(std::string(target_scene), 1);
-	for (unsigned i = 0; i < config.earliest && i < level_orders.size(); i++) add1(by_order(level_orders[i])->name, 2 + static_cast<int>(i));
+	// Progression mode: the earliest levels are only for a new game (a returning player has them as cleared replays).
+	bool any_new = slots.empty();
+	for (const auto& slot: slots) any_new = any_new || !SlotInProgress(slot);
+	if (!config.progression || any_new) {
+		for (unsigned i = 0; i < config.earliest && i < level_orders.size(); i++) add1(by_order(level_orders[i])->name, 2 + static_cast<int>(i));
+	}
+	// Progression state per scene (best over the in-progress slots): 0 frontier, 1 open (unlocked, entered, not cleared), 2 cleared, 3 locked.
+	std::map<std::string, int> state;
+	const auto                 note_state = [&](const std::string& name, int st) {
+        const auto it = state.find(name);
+        if (it == state.end()) state[name] = st;
+        else it->second = std::min(it->second, st);
+	};
 	// Distance of every level order from the nearest slot frontier (for tier 2 order).
 	std::map<uint16_t, int> distance;
 	for (const auto& slot: slots) {
@@ -178,11 +195,20 @@ inline Plan PlanTiers(const File& db, const std::vector<SlotProgress>& slots, co
 		const auto current_id = !slot.last_entered.empty() ? slot.last_entered : slot.playing;
 		if (const auto* cur = detail::BySaveId(db, current_id)) {
 			add1(cur->name, 10);
+			note_state(cur->name, 0);
 			if (cur->order != LevelDb::UnknownOrder) furthest = std::max(furthest, cur->order);
 		}
 		for (const auto& l: slot.levels) {
 			const auto* scene = detail::BySaveId(db, l.id);
-			if (scene && l.unlocked && !l.cleared && scene->cls != SceneClass::Hub) add1(scene->name, 11);
+			if (!scene || scene->cls == SceneClass::Hub) continue;
+			if (config.progression) {
+				if (!l.unlocked) note_state(scene->name, 3);
+				else if (l.cleared) note_state(scene->name, 2);
+				else if (!l.entered) note_state(scene->name, 0), add1(scene->name, 11); // newly unlocked: the frontier
+				else note_state(scene->name, 1);
+			} else if (l.unlocked && !l.cleared) {
+				add1(scene->name, 11);
+			}
 		}
 		// `ahead` next level scenes after the furthest one.
 		unsigned taken = 0;
@@ -190,6 +216,7 @@ inline Plan PlanTiers(const File& db, const std::vector<SlotProgress>& slots, co
 			if (o <= furthest) continue;
 			if (taken >= config.ahead) break;
 			add1(by_order(o)->name, 12 + static_cast<int>(taken));
+			note_state(by_order(o)->name, 0);
 			taken++;
 		}
 		for (const auto o: level_orders) {
@@ -225,7 +252,13 @@ inline Plan PlanTiers(const File& db, const std::vector<SlotProgress>& slots, co
 		const auto it = distance.find(s->order);
 		return it == distance.end() ? 0x4000 + s->order : it->second;
 	};
+	const auto prog_rank = [&](const LevelDb::Scene* s) {
+		if (!config.progression) return 0;
+		const auto it = state.find(s->name);
+		return it == state.end() ? (s->cls == SceneClass::Level ? 2 : 4) : it->second; // no state: bonus / unknown after locked
+	};
 	std::sort(rest.begin(), rest.end(), [&](const auto* a, const auto* b) {
+		if (prog_rank(a) != prog_rank(b)) return prog_rank(a) < prog_rank(b);
 		if (dist(a) != dist(b)) return dist(a) < dist(b);
 		if (story(a) != story(b)) return story(a) < story(b);
 		return a->name < b->name;
@@ -253,7 +286,12 @@ struct PipelinePlan {
 // Which rows count: `strict_first` (default) = a key with a first-seen or used row is placed by those rows only, and
 // its inferred rows (a superset: state variants of used shader sets) matter only for keys with no other row, the ones
 // that were untagged. false = every row counts (a bigger tier 1, fewer live compiles at a first level entry).
-inline PipelinePlan PlanPipelines(const File& db, const Plan& plan, const std::vector<uint64_t>& all_keys, bool strict_first = true) {
+//
+// weak_pre_scene (v14lvl, KYTY_SHADER_PREPARE_WEAK_PRESCENE=1): the "pre_scene" scene collects shaders seen before the first
+// picture in >= 3 runs; a key with any other row is placed by those rows (the levels that really use it) and its pre_scene row is
+// ignored. A key with only the pre_scene row stays where pre_scene puts it (tier 1: the safe direction).
+inline PipelinePlan PlanPipelines(const File& db, const Plan& plan, const std::vector<uint64_t>& all_keys, bool strict_first = true,
+                                  bool weak_pre_scene = false) {
 	PipelinePlan out;
 	std::map<std::string, uint32_t> scene_pos;
 	uint32_t                        pos = 0;
@@ -269,10 +307,18 @@ inline PipelinePlan PlanPipelines(const File& db, const Plan& plan, const std::v
 		const auto it   = db.pipelines.find(key);
 		uint32_t   best = 0xFFFFFFFFu, ms = LevelDb::UnknownMs;
 		if (it != db.pipelines.end()) {
-			bool direct = false;
-			for (const auto& r: it->second) direct = direct || (r.flags & (LevelDb::FirstSeen | LevelDb::Used)) != 0;
+			bool direct = false, other_rows = false;
+			const auto is_pre = [&](const LevelDb::Row& r) { return r.scene < db.scenes.size() && db.scenes[r.scene].name == "pre_scene"; };
+			if (weak_pre_scene) {
+				for (const auto& r: it->second) other_rows = other_rows || !is_pre(r);
+			}
+			for (const auto& r: it->second) {
+				if (weak_pre_scene && other_rows && is_pre(r)) continue;
+				direct = direct || (r.flags & (LevelDb::FirstSeen | LevelDb::Used)) != 0;
+			}
 			for (const auto& r: it->second) {
 				if (r.scene >= db.scenes.size()) continue;
+				if (weak_pre_scene && other_rows && is_pre(r)) continue;
 				if (strict_first && direct && (r.flags & (LevelDb::FirstSeen | LevelDb::Used)) == 0) continue;
 				const auto sp = scene_pos.find(db.scenes[r.scene].name);
 				if (sp == scene_pos.end()) continue;

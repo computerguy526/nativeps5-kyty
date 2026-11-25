@@ -8037,6 +8037,7 @@ struct PipelineCache::JournalReplay {
 		LevelTier::Config config;
 		config.earliest = static_cast<unsigned>(EnvU64("KYTY_SHADER_PREPARE_EARLIEST", 2));
 		config.ahead    = static_cast<unsigned>(EnvU64("KYTY_SHADER_PREPARE_AHEAD", 2));
+		config.progression = EnvU64("KYTY_SHADER_PREPARE_PROGRESSION", 0) != 0; // v14lvl: frontier tier 1, unlocked > cleared > locked
 		std::vector<LevelSchedule::ItemKey> decodable;
 		for (uint32_t i = 0; i < items.size(); i++) {
 			JournalPayload payload;
@@ -8044,7 +8045,8 @@ struct PipelineCache::JournalReplay {
 			decodable.push_back({i, items[i].record.key});
 		}
 		const auto& boot     = Level();
-		auto        schedule = LevelSchedule::Build(tier_db, slots, config, boot, decodable, EnvU64("KYTY_SHADER_PREPARE_ALL_ROWS", 0) == 0);
+		auto        schedule = LevelSchedule::Build(tier_db, slots, config, boot, decodable, EnvU64("KYTY_SHADER_PREPARE_ALL_ROWS", 0) == 0,
+		                                        EnvU64("KYTY_SHADER_PREPARE_WEAK_PRESCENE", 0) != 0);
 		const auto& plan     = schedule.plan;
 		tier_scenes          = schedule.scene_names;
 		order                = schedule.tier1;

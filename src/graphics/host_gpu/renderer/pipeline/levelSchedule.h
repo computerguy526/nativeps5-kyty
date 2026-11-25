@@ -42,7 +42,7 @@ struct Schedule {
 // `items` = the decodable replay items (several items may share a key). Items of one key keep their relative order.
 // all_rows=false (default): a key with a first-seen or used row is placed by those rows only (KYTY_SHADER_PREPARE_ALL_ROWS=0).
 inline Schedule Build(const LevelDb::File& db, const std::vector<LevelTier::SlotProgress>& slots, const LevelTier::Config& config,
-                      std::string_view boot_scene, const std::vector<ItemKey>& items, bool strict_first = true) {
+                      std::string_view boot_scene, const std::vector<ItemKey>& items, bool strict_first = true, bool weak_pre_scene = false) {
 	Schedule out;
 	out.plan = LevelTier::PlanTiers(db, slots, config, boot_scene);
 	std::vector<uint64_t>        keys;
@@ -50,7 +50,7 @@ inline Schedule Build(const LevelDb::File& db, const std::vector<LevelTier::Slot
 	for (const auto& item: items) {
 		if (seen.insert(item.key).second) keys.push_back(item.key);
 	}
-	const auto                             pp = LevelTier::PlanPipelines(db, out.plan, keys, strict_first);
+	const auto                             pp = LevelTier::PlanPipelines(db, out.plan, keys, strict_first, weak_pre_scene);
 	std::unordered_map<uint64_t, uint32_t> position;
 	std::vector<uint32_t>                  scene_of(pp.entries.size(), 0);
 	for (uint32_t i = 0; i < pp.entries.size(); i++) {

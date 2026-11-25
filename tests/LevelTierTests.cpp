@@ -207,6 +207,60 @@ int main() {
 		for (size_t i = 0; same && i < pp.entries.size(); i++) same = again.entries[i].key == pp.entries[i].key;
 		CHECK(same);
 	}
+	// ---- v14lvl: progression mode (frontier tier 1; tier 2 = unlocked, then cleared, then locked) ----
+	{
+		// slot: l1 l2 cleared, l3 entered (current), l4 unlocked not entered, l5 l6 locked
+		const auto slots = ParseSaveSlots(Slot(1, "worldmap", "s3", Levels(3, 2)));
+		Config     pc;
+		pc.progression = true;
+		pc.ahead       = 0;
+		const auto plan = PlanTiers(db, slots, pc);
+		CHECK(Has(plan.tier1, "l3") && Has(plan.tier1, "l4")); // current + newly unlocked
+		CHECK(!Has(plan.tier1, "l1") && !Has(plan.tier1, "l2") && !Has(plan.tier1, "l5") && !Has(plan.tier1, "l6"));
+		CHECK(Has(plan.tier1, "title") && Has(plan.tier1, "hub") && Has(plan.tier1, "intro")); // the always classes stay
+		// tier 2 order: cleared levels (replays) before the locked ones, bonus / unknown last
+		auto pos = [&](const char* n) { return std::find(plan.tier2.begin(), plan.tier2.end(), n) - plan.tier2.begin(); };
+		CHECK(pos("l1") < pos("l5") && pos("l2") < pos("l5") && pos("l5") < pos("l6") && pos("l6") < pos("b1"));
+		// ahead adds the next level after the furthest one
+		pc.ahead = 1;
+		CHECK(Has(PlanTiers(db, slots, pc).tier1, "l4"));
+		// an open (entered, not cleared) older level is tier 2 and sorts before the cleared ones
+		const auto open = ParseSaveSlots(Slot(1, "worldmap", "s4", Levels(4, 3) + Lv("s2", true, true, false)));
+		pc.ahead        = 0;
+		const auto p2   = PlanTiers(db, open, pc);
+		CHECK(Has(p2.tier1, "l4") && !Has(p2.tier1, "l2"));
+		CHECK(std::find(p2.tier2.begin(), p2.tier2.end(), "l2") < std::find(p2.tier2.begin(), p2.tier2.end(), "l1"));
+		// the earliest levels are only for a new game: no save, or a new slot next to a played one, brings them back
+		CHECK(Has(PlanTiers(db, {}, pc).tier1, "l1") && Has(PlanTiers(db, {}, pc).tier1, "l2"));
+		const auto mixed = ParseSaveSlots(Slot(1, "worldmap", "s5", Levels(5, 4)) + Slot(2, "", "", Lv("hub_id", true, true, true)));
+		CHECK(Has(PlanTiers(db, mixed, pc).tier1, "l1"));
+		// union of two played slots: both frontiers are tier 1
+		const auto two = ParseSaveSlots(Slot(1, "worldmap", "s2", Levels(2, 1)) + Slot(3, "worldmap", "s5", Levels(5, 4)));
+		const auto p3  = PlanTiers(db, two, pc);
+		CHECK(Has(p3.tier1, "l2") && Has(p3.tier1, "l3") && Has(p3.tier1, "l5") && Has(p3.tier1, "l6") && !Has(p3.tier1, "l1"));
+		// default config is the old behaviour (the new field is off)
+		CHECK(!Config {}.progression);
+	}
+	// ---- v14lvl: weak pre_scene (a key used by a level is placed by that level, a pre_scene-only key stays tier 1) ----
+	{
+		File g = db;
+		const std::vector<Scene> meta;
+		NotePipeline(g, 400, "pre_scene", FirstSeen | PreOpen); // used by l3 (tier 2 below) too
+		NotePipeline(g, 400, "l6", Used);
+		NotePipeline(g, 401, "pre_scene", FirstSeen | PreOpen); // nothing else known
+		g.scenes[static_cast<size_t>(FindScene(g, "pre_scene"))].cls = SceneClass::Boot;
+		const auto slots = ParseSaveSlots(Slot(1, "worldmap", "s1", Levels(1, 0)));
+		Config     pc;
+		pc.progression = true;
+		pc.ahead       = 0;
+		const auto plan = PlanTiers(g, slots, pc);
+		CHECK(Has(plan.tier1, "pre_scene") && !Has(plan.tier1, "l6"));
+		std::map<uint64_t, uint8_t> strong, weak;
+		for (const auto& e: PlanPipelines(g, plan, {400, 401}).entries) strong[e.key] = e.tier;
+		for (const auto& e: PlanPipelines(g, plan, {400, 401}, true, true).entries) weak[e.key] = e.tier;
+		CHECK(strong[400] == 1 && strong[401] == 1);
+		CHECK(weak[400] == 2 && weak[401] == 1);
+	}
 	std::printf("LevelTierTests: %d checks, %d failed\n", g_checks, g_failed);
 	return g_failed == 0 ? 0 : 1;
 }

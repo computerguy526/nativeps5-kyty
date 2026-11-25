@@ -389,13 +389,15 @@ inline int Query(const std::vector<std::string>& a) {
 inline int Tiers(const std::vector<std::string>& a) {
 	std::string path, list_path, save_path, target;
 	LevelTier::Config config;
-	bool              all_rows = false;
+	bool              all_rows = false, weak_pre = false;
 	for (size_t i = 0; i < a.size(); i++) {
 		const auto v = [&]() { return i + 1 < a.size() ? a[++i] : std::string(); };
 		if (a[i] == "--list") list_path = v();
 		else if (a[i] == "--save") save_path = v();
 		else if (a[i] == "--target") target = v();
 		else if (a[i] == "--all-rows") all_rows = true;
+		else if (a[i] == "--weak-pre-scene") weak_pre = true;
+		else if (a[i] == "--progression") config.progression = true;
 		else if (a[i] == "--earliest") config.earliest = static_cast<unsigned>(std::atoi(v().c_str()));
 		else if (a[i] == "--ahead") config.ahead = static_cast<unsigned>(std::atoi(v().c_str()));
 		else path = a[i];
@@ -418,7 +420,7 @@ inline int Tiers(const std::vector<std::string>& a) {
 	const auto plan = LevelTier::PlanTiers(db, slots, config, target);
 	std::vector<uint64_t> keys;
 	for (const auto& [k, s]: KeyShaders(list)) keys.push_back(k);
-	const auto pp = LevelTier::PlanPipelines(db, plan, keys, !all_rows);
+	const auto pp = LevelTier::PlanPipelines(db, plan, keys, !all_rows, weak_pre);
 	std::set<uint64_t> t1, all;
 	for (const auto& e: pp.entries) {
 		all.insert(e.key);
