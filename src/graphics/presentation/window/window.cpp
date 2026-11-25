@@ -1,4 +1,5 @@
 ﻿#include "graphics/presentation/window.h"
+#include "graphics/presentation/window/eventDrain.h"
 
 #include "common/assert.h"
 #include "common/flightRec.h"
@@ -1023,6 +1024,8 @@ struct RunState {
 	bool          close_sent     = false;
 };
 std::unique_ptr<RunState> g_run;
+std::atomic<uint64_t>     g_window_steps {0};  // window-loop steps run
+std::atomic<uint64_t>     g_window_events {0}; // SDL events handled by them
 constexpr uint64_t        kTitleIntervalMs = 1000;
 } // namespace
 
@@ -1139,9 +1142,20 @@ bool WindowContext::RunStep(int max_wait_ms) {
 		wait_ms = static_cast<int>(CompileProgress::kTitleIntervalMs);
 	}
 	wait_ms = std::max(0, std::min(wait_ms, max_wait_ms));
-	if (HostInputWaitEvent(&loop.event, wait_ms)) {
-		ProcessEvent(r.timer.GetTimeS());
-	}
+	// Every event already queued is handled in this step, not one per step (eventDrain.h).
+	g_window_steps.fetch_add(1, std::memory_order_relaxed);
+	DrainEvents([&](int timeout) { return HostInputWaitEvent(&loop.event, timeout); },
+	            [&] {
+		            g_window_events.fetch_add(1, std::memory_order_relaxed);
+		            ProcessEvent(r.timer.GetTimeS());
+	            },
+	            [] {
+		            return static_cast<uint64_t>(
+		                std::chrono::duration_cast<std::chrono::microseconds>(
+		                    std::chrono::steady_clock::now().time_since_epoch())
+		                    .count());
+	            },
+	            wait_ms);
 	return !loop.need_exit;
 }
 
@@ -1456,6 +1470,10 @@ void WindowRun() {
 
 	g_window->Run();
 	g_window->render_context->GetPipelineCache().Save();
+}
+
+uint64_t WindowStepCount() {
+	return g_window_steps.load(std::memory_order_relaxed);
 }
 
 void WindowRunBegin() {

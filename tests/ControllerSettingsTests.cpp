@@ -13,6 +13,7 @@
 #include <cmath>
 #include <string>
 
+#include "graphics/presentation/window/eventDrain.h"
 #include "hybrid/padMotion.h"
 
 namespace {
@@ -1005,6 +1006,98 @@ void TestSensorsSurviveOutputsAndReopen() {
 	}
 }
 
+// The exact rc11 / gyro2b case: a DualSense sends ~2000 sensor events/s, the stepped window loop runs
+// ~66 steps/s. One event per step (the old loop) leaves the queue growing without bound: the game
+// sees motion minutes old, in bursts, and a button waits behind thousands of sensor events. Draining
+// the queue per step keeps motion within one step and handles a button in the step it is queued.
+struct QueuedEvent {
+	bool     button;
+	uint64_t time_us; // when the pad produced it
+	float    value;
+};
+
+struct LoopResult {
+	size_t   backlog;
+	uint64_t lag_us; // age of the newest handled sensor event when its step ran
+	bool     button_handled_in_step;
+};
+
+LoopResult RunWindowLoop(int per_step_budget, bool with_button) {
+	Controller              controller(SDL_GAMEPAD_TYPE_PS5, true);
+	std::vector<QueuedEvent> queue;
+	size_t                  head = 0;
+	uint64_t                produced_us = 1000000, clock_us = 0, lag = 0;
+	bool                    button_pending = false, button_in_step = false;
+	// 5 s: every 15 ms step, 15 ms of pad events arrive (1000 Hz accel + gyro).
+	for (int step = 0; step < 333; step++) {
+		for (int i = 0; i < 15; i++) {
+			produced_us += 1000;
+			queue.push_back({false, produced_us, 1.0f});
+			queue.push_back({false, produced_us, 2.0f});
+		}
+		if (with_button && step == 300) {
+			queue.push_back({true, produced_us, 0.0f});
+			button_pending = true;
+		}
+		now += 15;
+		clock_us = 0;
+		int handled_in_step = 0;
+		(void)handled_in_step;
+		bool pressed_now = false;
+		QueuedEvent current {};
+		const auto next = [&](int) {
+			if (head >= queue.size()) {
+				return false;
+			}
+			current = queue[head++];
+			return true;
+		};
+		const auto handle = [&] {
+			clock_us += 1; // ~1 us per event
+			if (current.button) {
+				SetButton(1, PAD_BUTTON_CROSS, true);
+				pressed_now = true;
+			} else {
+				const float accel[3] = {0.0f, SDL_STANDARD_GRAVITY, current.value};
+				const float gyro[3]  = {current.value, 0.0f, 0.0f};
+				SetSensor(1, Sensor::Accel, accel, current.time_us);
+				SetSensor(1, Sensor::Gyro, gyro, current.time_us);
+				lag = produced_us - current.time_us;
+			}
+		};
+		Libs::Graphics::DrainEvents(next, handle, [&] { return clock_us; }, 8, per_step_budget);
+		if (button_pending && pressed_now) {
+			button_in_step = true;
+			button_pending = false;
+		}
+	}
+	return {queue.size() - head, lag, button_in_step};
+}
+
+void TestWindowLoopKeepsUpWithSensorEvents() {
+	// Old loop: one event per step.
+	const auto old_loop = RunWindowLoop(1, true);
+	Check(old_loop.backlog > 5000 && old_loop.lag_us > 3000000,
+	      "model: one event per step should fall far behind a 2000 events/s pad");
+	Check(!old_loop.button_handled_in_step, "model: a button should wait behind the sensor events");
+	// New loop: drain per step (the production budget).
+	const auto drained = RunWindowLoop(Libs::Graphics::kEventDrainBudget, true);
+	Check(drained.backlog < 64, "the drained loop left a backlog");
+	Check(drained.lag_us < 20000, "motion handled by the drained loop is stale");
+	Check(drained.button_handled_in_step, "a button behind sensor events was not handled in its step");
+	PadData data {};
+	MotionStatus status {};
+	Check(PadGetMotionStatus(1, &status) && status.live, "pad not live after the drained loop");
+	Check(PadReadState(1, &data) == 0 && (data.buttons & PAD_BUTTON_CROSS) != 0,
+	      "the button did not reach the pad state");
+	// The time budget stops a step that would run long.
+	int  handled = 0;
+	uint64_t clock = 0;
+	Libs::Graphics::DrainEvents([&](int) { return true; }, [&] { handled++; clock += 100; },
+	                            [&] { return clock; }, 8);
+	Check(handled > 15 && handled < 30, "the drain ignored its time budget");
+}
+
 void TestNoNeutralPublishWhileSensorsClaimed() {
 	{
 		Controller   controller(SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO, true);
@@ -1109,6 +1202,7 @@ int main() {
 	TestMotionPath();
 	TestSensorsSurviveOutputsAndReopen();
 	TestNoNeutralPublishWhileSensorsClaimed();
+	TestWindowLoopKeepsUpWithSensorEvents();
 	TestLockOrder();
 	Config::Shutdown();
 	return 0;

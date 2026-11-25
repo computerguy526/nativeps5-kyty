@@ -573,7 +573,12 @@ void Relay() {
 					                         motion_status.accel_events, motion_status.gyro_events,
 					                         motion_status.events_total,
 					                         motion_status.events_unrouted, motion_status.rearms,
-					                         motion_held)
+					                         motion_held,
+					                         static_cast<uint64_t>(std::max(
+					                             0, SDL_PeepEvents(nullptr, 0, SDL_PEEKEVENT,
+					                                               SDL_EVENT_GAMEPAD_SENSOR_UPDATE,
+					                                               SDL_EVENT_GAMEPAD_SENSOR_UPDATE))),
+					                         Libs::Graphics::WindowStepCount())
 					        .c_str());
 				}
 			}

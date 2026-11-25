@@ -14,6 +14,8 @@ void                     WindowRun();
 void                     WindowRunBegin();
 [[nodiscard]] bool       WindowRunStep(int max_wait_ms);
 void                     WindowRunEnd();
+// Window-loop steps run so far (diagnostics: a stepped loop handles events at most this often).
+[[nodiscard]] uint64_t   WindowStepCount();
 // mainhang: WindowRunEnd gave up on a stuck close-time pipeline cache save (KYTY_CLOSE_SAVE_TIMEOUT_MS).
 [[nodiscard]] bool       WindowCloseSaveAbandoned();
 void                     WindowShutdown();

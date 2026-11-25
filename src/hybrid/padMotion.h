@@ -181,17 +181,19 @@ inline RelayPlan PlanRelay(bool pad_has_sensors, bool live) {
 // now, and whether the relay is holding the samples back.
 inline std::string FormatStatusLine(bool pad_has_sensors, bool live, uint64_t accel_events,
                                     uint64_t gyro_events, uint64_t events_total,
-                                    uint64_t events_unrouted, uint64_t rearms, bool flagged) {
+                                    uint64_t events_unrouted, uint64_t rearms, bool flagged,
+                                    uint64_t queued = 0, uint64_t window_steps = 0) {
 	char line[256];
 	std::snprintf(line, sizeof(line),
 	              "[pad] motion status: sensors=%s live=%s motion=%s sdl_events accel=%llu "
-	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu",
+	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu sdl_queued=%llu window_steps=%llu",
 	              pad_has_sensors ? "yes" : "no", live ? "yes" : "NO",
 	              flagged ? "NEUTRAL-DEFAULT(no sensor data)" : "ok", static_cast<unsigned long long>(accel_events),
 	              static_cast<unsigned long long>(gyro_events),
 	              static_cast<unsigned long long>(events_total),
 	              static_cast<unsigned long long>(events_unrouted),
-	              static_cast<unsigned long long>(rearms));
+	              static_cast<unsigned long long>(rearms), static_cast<unsigned long long>(queued),
+	              static_cast<unsigned long long>(window_steps));
 	return line;
 }
 
