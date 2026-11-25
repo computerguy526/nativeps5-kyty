@@ -58,17 +58,45 @@ inline bool Log() {
     return on;
 }
 
-// 0 = off, 1 = qos, 2 = rt
+// 0 = off, 1 = qos, 2 = rt. Only "qos"/"1" and "rt" turn it on: "off", "false" or a typo used to enable qos (v1.4 review minor).
+inline int ParseMode(const char* master, const char* e) {
+    if (master && std::strcmp(master, "0") == 0) return 0;
+    if (!e) return 0;
+    if (std::strcmp(e, "rt") == 0) return 2;
+    if (std::strcmp(e, "qos") == 0 || std::strcmp(e, "1") == 0) return 1;
+    return 0;
+}
+
 inline int Mode() {
-    static const int mode = [] {
-        const char* master = std::getenv("NPS5_THREAD_QOS");
-        if (master && std::strcmp(master, "0") == 0) return 0;
-        const char* e = std::getenv("NPS5_QOS_GPU");
-        if (!e || !*e || std::strcmp(e, "0") == 0) return 0;
-        if (std::strcmp(e, "rt") == 0) return 2;
-        return 1;
-    }();
+    static const int mode = ParseMode(std::getenv("NPS5_THREAD_QOS"), std::getenv("NPS5_QOS_GPU"));
     return mode;
+}
+
+// The governor's arithmetic, pure so it can be tested off-device (tests/ThreadQosTests.cpp, --math). These numbers go into
+// thread_policy_set(THREAD_TIME_CONSTRAINT_POLICY).
+// Declared period: the measured frame time clamped to 8 ms (125 fps) .. 100 ms (10 fps).
+inline std::uint64_t PolicyPeriod(std::uint64_t dtime_ns, std::uint64_t dframes) {
+    std::uint64_t period = dframes ? dtime_ns / dframes : 100'000'000ull;
+    if (period < 8'000'000ull) period = 8'000'000ull;
+    if (period > 100'000'000ull) period = 100'000'000ull;
+    return period;
+}
+// Declared computation: the CPU time per frame plus 12% headroom, at least 1 ms and at most 90% of the period.
+inline std::uint64_t PolicyComputation(std::uint64_t cpu_delta_ns, std::uint64_t dframes, std::uint64_t period) {
+    std::uint64_t comp = dframes ? cpu_delta_ns / dframes : 0;
+    comp += comp / 8;
+    if (comp < 1'000'000ull) comp = 1'000'000ull;
+    if (comp > period * 9 / 10) comp = period * 9 / 10;
+    return comp;
+}
+// Hysteresis: a declaration within 25% of the current one is kept (and the first one is always made).
+inline bool PolicyKeep(std::uint64_t declared, std::uint64_t comp) {
+    const std::uint64_t delta = comp > declared ? comp - declared : declared - comp;
+    return declared != 0 && delta * 4 < declared;
+}
+// Mach absolute time units from nanoseconds for a given timebase (numer/denom: 1/1 on Intel, 125/3 on Apple silicon).
+inline std::uint32_t PolicyToAbs(std::uint64_t ns, std::uint32_t numer, std::uint32_t denom) {
+    return static_cast<std::uint32_t>(ns * denom / numer);
 }
 
 inline bool GroupOn(Group group) {
@@ -96,7 +124,7 @@ inline std::atomic<std::uint64_t>& Frames() { static std::atomic<std::uint64_t> 
 
 inline std::uint32_t ToAbs(std::uint64_t ns) {
     static const mach_timebase_info_data_t tb = [] { mach_timebase_info_data_t t; mach_timebase_info(&t); return t; }();
-    return static_cast<std::uint32_t>(ns * tb.denom / tb.numer);
+    return PolicyToAbs(ns, tb.numer, tb.denom);
 }
 
 inline bool Declare(Entry& entry, std::uint64_t period, std::uint64_t comp) {
@@ -165,9 +193,7 @@ inline void Governor() {
         frames0 = frames1;
         time0 = time1;
         if (dframes < 8) continue;  // loading or paused: no frame rate to declare
-        std::uint64_t period = dtime / dframes;
-        if (period < 8'000'000ull) period = 8'000'000ull;
-        if (period > 100'000'000ull) period = 100'000'000ull;
+        const std::uint64_t period = PolicyPeriod(dtime, dframes);
         std::lock_guard lock(Mutex());
         for (auto& entry : Entries()) {
             if (entry.dead) continue;
@@ -178,12 +204,8 @@ inline void Governor() {
             const std::uint64_t previous = entry.cpu0;
             entry.cpu0 = cpu;
             if (previous == 0) continue;
-            std::uint64_t comp = (cpu - previous) / dframes;
-            comp += comp / 8;  // 12% headroom
-            if (comp < 1'000'000ull) comp = 1'000'000ull;
-            if (comp > period * 9 / 10) comp = period * 9 / 10;
-            const std::uint64_t delta = comp > entry.comp ? comp - entry.comp : entry.comp - comp;
-            if (entry.comp != 0 && delta * 4 < entry.comp) continue;  // within 25%: keep what is declared
+            const std::uint64_t comp = PolicyComputation(cpu - previous, dframes, period);
+            if (PolicyKeep(entry.comp, comp)) continue;  // within 25%: keep what is declared
             Declare(entry, period, comp);
         }
     }
