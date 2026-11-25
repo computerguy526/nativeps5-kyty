@@ -40861,12 +40861,16 @@ TestCase VectorMinMaxMed3F16Ops() {
   AppendVMovLiteral(&code, 10, 0xaaaa5555u);
   AppendVMovLiteral(&code, 11, 0x12345678u);
   AppendVMovLiteral(&code, 12, 0x77772222u);
+  AppendVMovLiteral(&code, 6, 0x00008000u); // low=-0.0h
+  AppendVMovLiteral(&code, 7, 0x00000000u); // low=+0.0h
+  AppendVMovLiteral(&code, 13, 0x55551234u);
 
   AppendVop3(&code, 0x351, 10, Vgpr(0), Vgpr(1), Vgpr(2));
   AppendVop3(&code, 0x354, 11, Vgpr(0), Vgpr(1), Vgpr(2), 0, 0xf, false, 0,
              0x4);
   AppendVop3(&code, 0x357, 12, Vgpr(3), Vgpr(4), Vgpr(5));
-  for (u32 i = 0; i < 3; i++) {
+  AppendVop3(&code, 0x357, 13, Vgpr(6), Vgpr(7), Vgpr(6));
+  for (u32 i = 0; i < 4; i++) {
     AppendStoreVgpr(&code, 10 + i, i);
   }
   AppendEnd(&code);
@@ -40874,7 +40878,7 @@ TestCase VectorMinMaxMed3F16Ops() {
   return {"VectorMinMaxMed3F16Ops",
           code,
           {},
-          {0xaaaa3c00u, 0x48005678u, 0x77773c00u},
+          {0xaaaa3c00u, 0x48005678u, 0x77773c00u, 0x55558000u},
           {O::V_MOV_B32, O::V_MIN3_F16, O::V_MAX3_F16, O::V_MED3_F16,
            O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
 }
@@ -42181,6 +42185,68 @@ TestCase VectorMed3F32NanUsesMin3Path() {
           {},
           {0x40000000u, 0x40000000u, 0x40000000u},
           {O::V_MOV_B32, O::V_MED3_F32, O::BUFFER_STORE_DWORD, O::S_ENDPGM}};
+}
+
+// V_MED3_F32 on runtime inputs (a constant-literal case can fold): RDNA2 orders -0 below +0, any NaN
+// source gives MIN3 in source order, and with all three sources NaN the result is S0
+// (KytyPS5 3f8f9784, rows from RDNA2 hardware). Raw result bits are compared. The default lowering
+// runs here; CodegenTests::CheckFloatMinMax compares the fast_float_min_max one (EmitFastMedTri32)
+// against the same reference.
+TestCase VectorMed3F32RuntimeEdges() {
+  using O = ShaderOpcode;
+  constexpr u32 cases[][4] = {
+      {0x40000000u, 0x40400000u, 0x7fa00001u, 0x40000000u},
+      {0x40000000u, 0x40400000u, 0x7fc00000u, 0x40000000u},
+      {0x7fa00001u, 0x40000000u, 0x40400000u, 0x40000000u},
+      {0x40400000u, 0x7fc01234u, 0x40000000u, 0x40000000u},
+      {0x80000000u, 0x00000000u, 0x3f800000u, 0x00000000u},
+      {0x00000000u, 0x80000000u, 0xbf800000u, 0x80000000u},
+      {0x80000000u, 0x80000000u, 0x00000000u, 0x80000000u},
+      {0x00000000u, 0x00000000u, 0x80000000u, 0x00000000u},
+      {0x80000000u, 0x00000000u, 0x80000000u, 0x80000000u},
+      {0x00000000u, 0x80000000u, 0x80000000u, 0x80000000u},
+      {0xbf800000u, 0x80000000u, 0x00000000u, 0x80000000u},
+      {0xbf800000u, 0x00000000u, 0x80000000u, 0x80000000u},
+      {0x80000000u, 0xbf800000u, 0x00000000u, 0x80000000u},
+      {0x00000000u, 0xbf800000u, 0x80000000u, 0x80000000u},
+      {0x80000000u, 0x00000000u, 0xbf800000u, 0x80000000u},
+      {0x7fc01234u, 0x80000000u, 0x00000000u, 0x80000000u},
+      {0x3f800000u, 0x40400000u, 0x40000000u, 0x40000000u},
+      {0xc0400000u, 0xbf800000u, 0xc0000000u, 0xc0000000u},
+      {0xff800000u, 0x7f800000u, 0x3f800000u, 0x3f800000u},
+      {0x00000001u, 0x7f800000u, 0x7fc01234u, 0x00000001u},
+      {0x80000001u, 0x80000001u, 0x00000000u, 0x80000001u},
+      // all three NaN: S0 (the later NaN sources do not win)
+      {0x7fc01234u, 0x7fa00001u, 0xffc05678u, 0x7fc01234u},
+      {0xffc05678u, 0x7fc01234u, 0x7fa00001u, 0xffc05678u},
+      // two NaN: the numeric source
+      {0x7fa00001u, 0xffc05678u, 0x40000000u, 0x40000000u},
+      {0x7fa00001u, 0x40000000u, 0xffc05678u, 0x40000000u},
+      {0x40000000u, 0x7fa00001u, 0xffc05678u, 0x40000000u}};
+  TestCase test;
+  test.name = "VectorMed3F32RuntimeEdges";
+  test.has_compute_info = true;
+  test.compute_info.float_mode = 0xf0; // Preserve FP32 input/output denormals.
+  test.compute_info.threads_num[0] = test.compute_info.threads_num[1] =
+      test.compute_info.threads_num[2] = 1u;
+  for (const auto &values : cases)
+    test.initial.insert(test.initial.end(), values, values + 3);
+  test.expected = test.initial;
+  auto &code = test.code;
+  for (u32 index = 0; index < std::size(cases); ++index) {
+    for (u32 operand = 0; operand < 3; ++operand) {
+      AppendVMovU32(&code, 30, (index * 3u + operand) * 4u);
+      AppendBufferLoadDword(&code, operand, 30);
+    }
+    AppendVop3(&code, 0x157, 10, Vgpr(0), Vgpr(1), Vgpr(2));
+    AppendStoreVgpr(&code, 10, static_cast<u32>(test.expected.size()));
+    test.expected.push_back(cases[index][3]);
+  }
+  AppendEnd(&code);
+  test.initial.resize(test.expected.size());
+  test.opcodes = {O::V_MOV_B32, O::BUFFER_LOAD_DWORD, O::V_MED3_F32,
+                  O::BUFFER_STORE_DWORD, O::S_ENDPGM};
+  return test;
 }
 
 TestCase VectorFloatConversionOps() {
@@ -55462,6 +55528,7 @@ std::vector<TestCase> MakeCases() {
   AddCase(VectorFloatArithmeticOps);
   AddCase(VectorMinMaxF32NanAndSignedZeroEdges);
   AddCase(VectorMed3F32NanUsesMin3Path);
+  AddCase(VectorMed3F32RuntimeEdges);
   AddCase(VectorFloatConversionOps);
   AddCase(VectorFrexpF32Edges);
   AddCase(CvtF32ToIntSaturatesNaNAndOutOfRange);
@@ -62212,6 +62279,11 @@ int main(int argc, char **argv) {
   using namespace Libs::Graphics;
 
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+  // KytyPS5 3f8f9784 (all-NaN V_MED3_F32 gives S0) is opt-in in the emitter (KYTY_MED3_NAN_S0, default off, read
+  // once): the med3 cases and CodegenTests::RefMedTriF32 expect it, so the tests switch it on (an explicit value wins).
+  if (std::getenv("KYTY_MED3_NAN_S0") == nullptr) {
+    setenv("KYTY_MED3_NAN_S0", "1", 1);
+  }
   // Upstream 21a1346e2's compact colour exports, as the shipped preset sets them (code default off;
   // the PolygonModeRasterization export-routing cases are upstream's). An explicit value wins.
   if (std::getenv("KYTY_CB_SHADER_MASK_EXPORTS") == nullptr) {

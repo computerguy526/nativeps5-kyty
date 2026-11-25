@@ -475,7 +475,9 @@ u32 RefMinMaxF32(u32 lhs, u32 rhs, bool max_value) {
 u32 RefMedTriF32(u32 a, u32 b, u32 c) {
   const auto nan = [](u32 bits) { return (bits & 0x7fffffffu) > 0x7f800000u; };
   const auto min_ab = RefMinMaxF32(a, b, false);
-  const auto min3 = RefMinMaxF32(min_ab, c, false);
+  // The NaN path is MIN3 in source order (KytyPS5 3f8f9784): all three NaN gives S0. A NaN lhs
+  // yields rhs, so the operands run c, b, a.
+  const auto min3 = RefMinMaxF32(RefMinMaxF32(c, b, false), a, false);
   const auto max_ab = RefMinMaxF32(a, b, true);
   const auto high_min = RefMinMaxF32(max_ab, c, false);
   const auto median = RefMinMaxF32(min_ab, high_min, true);

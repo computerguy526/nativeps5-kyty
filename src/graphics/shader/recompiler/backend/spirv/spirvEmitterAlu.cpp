@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdlib>
 #include <optional>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
@@ -157,12 +158,27 @@ F32Operand EmitFastMinMax3F32(EmitterState& state, F32Operand a, F32Operand b, F
 	return EmitFastMinMaxF32(state, EmitFastMinMaxF32(state, a, b, max_value), c, max_value);
 }
 
-// V_MED3_F32 exactly as EmitFPMedTri32 defines it (any NaN operand gives min3, otherwise
+// KYTY_MED3_NAN_S0=1 (default off; KytyPS5 3f8f9784): with all three V_MED3_F32 sources NaN the result
+// is S0, as RDNA2 MIN3/MAX3 (the NaN path runs min(min(c, b), a): a NaN lhs yields rhs). Off keeps the
+// operand order a, b, c (all-NaN gives S2) and, with it, the SPIR-V of every shader with V_MED3_F32 and the
+// keys of the Metal overrides built from it (the port changed one shipped compute override's key: ASTRO +1.9 ms).
+bool Med3NanS0() {
+	static const bool on = [] {
+		const char* value = std::getenv("KYTY_MED3_NAN_S0");
+		return value != nullptr && value[0] == '1';
+	}();
+	return on;
+}
+
+// V_MED3_F32 exactly as EmitFPMedTri32 defines it (any NaN operand gives min3 in source order, otherwise
 // max(min(a,b), min(max(a,b),c))), from the exact min/max above. Constant non-NaN operands drop
 // out of the NaN test.
 uint32_t EmitFastMedTri32(EmitterState& state, F32Operand a, F32Operand b, F32Operand c) {
 	const auto min_ab   = EmitFastMinMaxF32(state, a, b, false);
-	const auto min3     = EmitFastMinMaxF32(state, min_ab, c, false);
+	// KYTY_MED3_NAN_S0: the NaN path is MIN3 in source order, all-NaN gives S0 (see Med3NanS0). The numeric
+	// result is the same for any operand order.
+	const auto min3     = Med3NanS0() ? EmitFastMinMaxF32(state, EmitFastMinMaxF32(state, c, b, false), a, false)
+	                                  : EmitFastMinMaxF32(state, min_ab, c, false);
 	const auto max_ab   = EmitFastMinMaxF32(state, a, b, true);
 	const auto high_min = EmitFastMinMaxF32(state, max_ab, c, false);
 	const auto median   = EmitFastMinMaxF32(state, min_ab, high_min, true);
@@ -241,7 +257,10 @@ uint32_t EmitFPMedTri32(ValueEmitContext& ctx, IR::Value arg0, IR::Value arg1, I
 	const auto b        = ctx.Def(arg1);
 	const auto c        = ctx.Def(arg2);
 	const auto min_ab   = EmitMinMaxF32Value(state, a, b, false);
-	const auto min3     = EmitMinMaxF32Value(state, min_ab, c, false);
+	// KYTY_MED3_NAN_S0: MIN3 in source order for the NaN path (RDNA2: all sources NaN gives S0, as MIN3
+	// and MAX3; see Med3NanS0). Numerically the same for any order.
+	const auto min3     = Med3NanS0() ? EmitMinMaxF32Value(state, EmitMinMaxF32Value(state, c, b, false), a, false)
+	                                  : EmitMinMaxF32Value(state, min_ab, c, false);
 	const auto max_ab   = EmitMinMaxF32Value(state, a, b, true);
 	const auto high_min = EmitMinMaxF32Value(state, max_ab, c, false);
 	const auto median   = EmitMinMaxF32Value(state, min_ab, high_min, true);
