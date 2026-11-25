@@ -4,6 +4,7 @@
 #endif
 #include "common/cpuPlacement.h"
 #include "common/hangWatchdog.h"
+#include "common/threadQos.h"
 #include "common/liveSwitch.h"
 #include "common/spinRelax.h"
 #include "common/threads.h"
@@ -222,6 +223,9 @@ static int PriorityLevelFromEnv(const char* name, int fallback) {
 }
 
 void RaiseCurrentThreadPriority() {
+#if defined(__APPLE__)
+	ThreadQos::Register(ThreadQos::Group::Commit, "kyty-cp");
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || defined(__APPLE__)
 	static const int level = PriorityLevelFromEnv("KYTY_CP_PRIORITY", 1);
 	RaiseCurrentThreadPriorityLevel(level);
@@ -229,6 +233,9 @@ void RaiseCurrentThreadPriority() {
 }
 
 void RaiseDrawPrepThreadPriority() {
+#if defined(__APPLE__)
+	ThreadQos::Register(ThreadQos::Group::Qworker, "kyty-drawprep");
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || defined(__APPLE__)
 	static const int level = PriorityLevelFromEnv("KYTY_DRAW_PREP_PRIORITY", 0);
 	RaiseCurrentThreadPriorityLevel(level);
@@ -241,6 +248,9 @@ int ServiceThreadPriorityLevel() {
 }
 
 void RaiseServiceThreadPriority() {
+#if defined(__APPLE__)
+	ThreadQos::Register(ThreadQos::Group::Present, "kyty-submit");
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || defined(__APPLE__)
 	RaiseCurrentThreadPriorityLevel(ServiceThreadPriorityLevel());
 #endif
