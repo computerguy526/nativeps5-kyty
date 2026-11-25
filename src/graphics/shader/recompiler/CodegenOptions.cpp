@@ -410,10 +410,12 @@ CodegenOptions FromEnvironment() {
 	if (const auto* path = std::getenv("KYTY_FAST_MATH_DENY"); path != nullptr) {
 		const auto* problem = FastMathDenyProblem(path, &options.fast_math_deny);
 		const auto* acc     = std::getenv("KYTY_GPU_ACCURACY");
-		const bool  not_high = acc != nullptr && (std::strcmp(acc, "normal") == 0 || std::strcmp(acc, "low") == 0);
+		const auto* fm       = std::getenv("KYTY_FAST_MATH");
+		const bool  not_high = (acc != nullptr && (std::strcmp(acc, "normal") == 0 || std::strcmp(acc, "low") == 0)) ||
+		                       (fm != nullptr && std::strtoul(fm, nullptr, 10) >= 1);
 		if (problem != nullptr && not_high) {
-			std::fprintf(stderr, "[fastmath] ERROR: %s [%s]: KYTY_GPU_ACCURACY=%s gives every shader fast math, Metal override keys will miss; deny=missing\n",
-			             problem, path, acc);
+			std::fprintf(stderr, "[fastmath] ERROR: %s [%s]: fast math (KYTY_GPU_ACCURACY=%s) applies to every shader, Metal override keys will miss; deny=missing\n",
+			             problem, path, acc != nullptr ? acc : "-");
 		}
 	}
 	if (const auto* path = std::getenv("KYTY_FAST_MATH_ALLOW");
