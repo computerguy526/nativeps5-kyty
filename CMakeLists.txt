@@ -837,6 +837,12 @@ add_executable(saros_nanite_raw_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(saros_nanite_raw_tests PRIVATE ${inc_headers})
 
+# v1.4 review M15: KYTY_SAROS_PROGRAM_CACHE gate and variant (sarosProgramCache.h), no GPU. Run it with off, default and cache.
+add_executable(saros_program_cache_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/SarosProgramCacheTests.cpp"
+)
+target_include_directories(saros_program_cache_tests PRIVATE ${inc_headers})
+
 # nps5 decalfix: KYTY_GBCOPY_REMAP pair parsing / derivation / remap (gbCopyRemap.h), no GPU.
 add_executable(gbcopy_remap_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/GbCopyRemapTests.cpp"

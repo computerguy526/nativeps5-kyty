@@ -91,6 +91,8 @@ public:
 		uint32_t                  wave_size       = 0;
 		uint32_t                  user_data_base  = 0;
 		bool                      plain_mip_stats_variant = false;
+		// sarosperf: SAROS hand-shader / Nanite-raw switch state (sarosProgramCache.h); 0 = absent from the key bytes.
+		uint64_t                  variant = 0;
 		std::span<const uint32_t> code;
 		std::span<const uint32_t> back_code;
 	};

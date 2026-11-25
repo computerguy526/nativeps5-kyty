@@ -138,6 +138,16 @@ void CheckSourceKeys() {
   differs("the plain LOD-stats variant", [](Inputs &in, Words &, Words &, Words &) {
     in.plain_mip_stats_variant = true;
   });
+  differs("the SAROS switch variant", [](Inputs &in, Words &, Words &, Words &) { in.variant = 0x1234; });
+  {
+    // variant 0 adds no bytes (every existing cache key is unchanged); a non-zero one adds exactly its 8 bytes
+    auto with = inputs;
+    with.variant = 0x1234;
+    ProgramDiskCache::SourceKey key;
+    ProgramDiskCache::BuildSourceKey(with, key);
+    Require(name, "variant adds 8 bytes only when non-zero", key.bytes.size() == base.bytes.size() + 8,
+            "variant 0 must leave the key bytes unchanged");
+  }
   differs("a code word", [](Inputs &, Words &, Words &c, Words &) { c[3] ^= 0x80000000u; });
   differs("the code length", [](Inputs &, Words &, Words &c, Words &) { c.push_back(0); });
   differs("a merged back half", [&](Inputs &, Words &, Words &, Words &b) { b = back_code; });

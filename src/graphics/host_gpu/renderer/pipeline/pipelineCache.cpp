@@ -135,6 +135,7 @@
 #include <vector>
 #include <xxhash.h>
 #include "graphics/shader/recompiler/sarosHandShaders.h"
+#include "graphics/shader/recompiler/sarosProgramCache.h"
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -4287,75 +4288,14 @@ struct PipelineCache::ProgramCache {
 
 	// Shader logging and the debug dumps describe a translation while it runs; they bypass the
 	// persistent cache.
-	// sarosperf: the SAROS hand-shader / Nanite-raw switches change a translation, so they used to
-	// bypass this cache. They are cacheable when the switch state is part of the key: SarosCacheVariant
-	// is 0 (key bytes unchanged) unless one of them applies to the program. KYTY_SAROS_PROGRAM_CACHE=1
-	// turns it on (default off = the old bypass; only reachable with the SAROS switches set).
-	static bool SarosCacheBypass() {
-		static const bool bypass = [] {
-			const auto* v = std::getenv("KYTY_SAROS_PROGRAM_CACHE");
-			return v == nullptr || std::strcmp(v, "1") != 0;
-		}();
-		return bypass;
-	}
-	// Bump kSarosVariantVersion when the hand-shader / nanite-raw translation changes without a
-	// codegen-fingerprint change (a clean build already gets a new cache header).
-	static uint64_t SarosCacheVariant(const ShaderRecompiler::CompileOptions& options) {
-		constexpr uint64_t kSarosVariantVersion = 1;
-		uint64_t           variant              = 0;
-		const auto         mix                  = [&variant](uint64_t v) {
-            variant = (variant ^ v) * 0x100000001b3ull + 0x9e3779b97f4a7c15ull;
-		};
-		if (ShaderRecompiler::SarosHandShader(options.shader_hash)) {
-			static const auto* keystride = std::getenv("KYTY_SAROS_KEYSTRIDE");
-			mix(1);
-			mix(kSarosVariantVersion);
-			mix(keystride != nullptr && std::strcmp(keystride, "0") == 0 ? 0 : 1);
-			// sarosperf2: only when on, so no existing key changes. MAP_PAD changes the layout too.
-			static const auto* map_pad = std::getenv("KYTY_SAROS_MAP_PAD");
-			if (false) mix(6); // HS_DYNIDX not ported on this base
-			else if (map_pad != nullptr && std::strcmp(map_pad, "1") == 0) mix(7);
-		}
-		if (ShaderRecompiler::SarosSampleLod0(options.shader_hash)) {
-			mix(4);
-			mix(kSarosVariantVersion);
-		}
-		if (ShaderRecompiler::SarosSampleDbg(options.shader_hash)) {
-			mix(5);
-			mix(kSarosVariantVersion);
-		}
-		if (ShaderRecompiler::SarosSampleFract(options.shader_hash)) {
-			mix(8);
-			mix(kSarosVariantVersion);
-		}
-		if (ShaderRecompiler::SarosNaniteRawPs(options.shader_hash)) {
-			mix(2);
-			mix(kSarosVariantVersion);
-		}
-		if (ShaderRecompiler::SarosNaniteRawMesh() && options.stage == ShaderType::Mesh) {
-			static const uint64_t masks = [] {
-				uint64_t m = 0;
-				for (uint32_t i = 0; i < 32; i++) {
-					m |= (ShaderRecompiler::SarosNaniteRawAnd(i) ? 1ull : 0ull) << i;
-					m |= (ShaderRecompiler::SarosNaniteRawVerts(i) ? 1ull : 0ull) << (32 + i);
-				}
-				return m;
-			}();
-			mix(3);
-			mix(kSarosVariantVersion);
-			mix(masks);
-		}
-		return variant;
-	}
-
-	// Shader logging and the debug dumps describe a translation while it runs; they bypass the
-	// persistent cache.
 	[[nodiscard]] bool DiskEnabled(const ShaderRecompiler::CompileOptions& options) const {
-		// sarosnanite: KYTY_SAROS_NANITE_RAW mesh programs and listed pixel shaders bypass the stored
-		// verdict and are not stored.
+		// sarosperf / sarosnanite: a program the SAROS hand-shader or Nanite-raw switches change bypasses the
+		// persistent cache (stored verdict not used, nothing stored) unless KYTY_SAROS_PROGRAM_CACHE=1, which
+		// keeps it with the switch state in the key (SarosCacheVariant, sarosProgramCache.h). v1.4 review M15:
+		// the v14 base hard-coded the bypass and never called these.
 		return disk != nullptr && !options.dump_ir && !Config::GraphicsDebugDumpEnabled() &&
-		       !ShaderRecompiler::SarosNaniteRawPs(options.shader_hash) &&
-		       !(ShaderRecompiler::SarosNaniteRawMesh() && options.stage == ShaderType::Mesh);
+		       !(ShaderRecompiler::SarosCacheBypass() &&
+		         ShaderRecompiler::SarosCacheVariant(options.shader_hash, options.stage == ShaderType::Mesh) != 0);
 	}
 
 #if defined(_MSC_VER) && defined(_WIN64) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL == 0
@@ -4398,6 +4338,7 @@ struct PipelineCache::ProgramCache {
 		     .wave_size               = options.wave_size,
 		     .user_data_base          = options.user_data_base,
 		     .plain_mip_stats_variant = options.plain_mip_stats_variant,
+		     .variant                 = ShaderRecompiler::SarosCacheVariant(options.shader_hash, options.stage == ShaderType::Mesh),
 		     .code                    = code_words,
 		     .back_code               = back_code_words},
 		    disk_key);
