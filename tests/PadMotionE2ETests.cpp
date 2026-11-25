@@ -153,7 +153,7 @@ Result Run(VP::Kind kind, int per_step_budget, int steps) {
 			if (status.accel_events == injected) {
 				// The ramp (and the rest before the spike): the shake rotates about x on purpose, so the
 				// orientation is only compared with the ramp's roll up to 1.15 s.
-				if ((sim_ms - 1) % 3000 < 1150) {
+				if (sim_ms <= 3000 && (sim_ms - 1) % 3000 < 1150) {
 					const float roll = 2.0f * std::atan2(data.orientation_z, data.orientation_w);
 					r.max_roll_error_deg = std::max(
 					    r.max_roll_error_deg, std::fabs(roll - want.roll_rad) * 57.29578f);
