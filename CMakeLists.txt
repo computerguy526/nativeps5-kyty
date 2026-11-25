@@ -782,6 +782,11 @@ add_executable(bg_queue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/BgQueueTests.c
 target_include_directories(bg_queue_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(level_schedule_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelScheduleTests.cpp")
 target_include_directories(level_schedule_tests PRIVATE "${KYTY_SOURCE_DIR}")
+# v1.4 review M4/M5: the tier-1 hold state machine of the journal replay (tierGate.h), threaded fake Replay.
+add_executable(tier_gate_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/TierGateTests.cpp")
+target_include_directories(tier_gate_tests PRIVATE "${KYTY_SOURCE_DIR}")
+find_package(Threads)
+target_link_libraries(tier_gate_tests PRIVATE Threads::Threads)
 
 # nps5: per-page per-frame served-read-fault counter (header only).
 add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")

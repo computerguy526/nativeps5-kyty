@@ -77,6 +77,7 @@
 #include "graphics/host_gpu/renderer/pipeline/bgQueue.h"
 #include "graphics/host_gpu/renderer/pipeline/levelDb.h"
 #include "graphics/host_gpu/renderer/pipeline/levelSchedule.h"
+#include "graphics/host_gpu/renderer/pipeline/tierGate.h"
 #include "graphics/host_gpu/renderer/pipeline/levelTier.h"
 #include "kernel/fileSystem.h"
 #include "kernel/memory.h"
@@ -8028,7 +8029,7 @@ struct PipelineCache::JournalReplay {
 		std::vector<BgQueue::Job> jobs = std::move(schedule.jobs);
 		const auto                pp_unattributed = schedule.unattributed;
 		first_level = static_cast<uint32_t>(order.size());
-		tier1_items = first_level;
+		gate.tier1_items = first_level;
 		for (const auto& job: jobs) order.push_back(job.index);
 		bg_workers = BgQueue::WorkersFromText(std::getenv("KYTY_SHADER_BG_WORKERS"), 2, 16);
 		bg_queue.Reset(std::move(jobs), bg_workers, static_cast<unsigned>(EnvU64("KYTY_SHADER_BG_PROMOTE_BOOST", 1)));
@@ -8085,8 +8086,7 @@ struct PipelineCache::JournalReplay {
 	// empty or the replay stops. Workers beyond the budget sleep.
 	void BgLoop() {
 		// Tier 1 first: the hold ends with its last record (the main loop releases it).
-		while (!stop.load(std::memory_order_acquire) && scene_done.load(std::memory_order_acquire) < tier1_items)
-			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		gate.WaitTier1(stop, [] { std::this_thread::sleep_for(std::chrono::milliseconds(5)); });
 		uint64_t zero = 0;
 		if (bg_start_ns.compare_exchange_strong(zero, CompileClockNs())) {
 			// The gate also limits the compute prewarm that goes on behind the game: the budget plus the promotion boost.
@@ -8167,6 +8167,7 @@ struct PipelineCache::JournalReplay {
 				g_launch_hold_prewarm.store(true, std::memory_order_release);
 		}
 		first_level = static_cast<uint32_t>(order.size());
+		gate.tier1_items = first_level;
 		if (hold_scene) {
 			PipelineCacheLog("Launch phase (scene): '{}': {} of {} pipelines hold the game ({} of "
 			                 "the scene, the "
@@ -8264,13 +8265,29 @@ struct PipelineCache::JournalReplay {
 				BgLoop();
 				break;
 			}
+			// KYTY_SHADER_PREPARE=scene|tier: the hold ends with the last tier-1 record SETTLED, built or set aside (a set-aside one
+			// is retried behind the game; counting only the built ones kept the hold and the background part waiting up to 900 s).
+			const auto settle_tier1 = [&](bool was_deferred) {
+				if ((hold_scene || hold_tier) && index < first_level && gate.Settle(was_deferred)) {
+					PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are settled after "
+					                 "{:.1f} s ({} of them set aside for a retry behind the game); {} more go "
+					                 "on in the background",
+					                 first_level, Level(),
+					                 static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
+					                 gate.deferred.load(), order.size() - first_level);
+					LaunchHoldRelease(true);
+				}
+			};
 			const bool can_defer = early && precompiler != nullptr && !precompiler->GetProgress().finished;
 			if (!Replay(items[order[index]], can_defer)) {
 				if (early_rounds) {
 					// KYTY_PIPELINE_JOURNAL_EARLY=2: set aside at once (a large journal waited 2 s per
 					// record), retried in rounds below while the shader replay publishes.
-					std::scoped_lock lock(deferred_mutex);
-					deferred.push_back(order[index]);
+					{
+						std::scoped_lock lock(deferred_mutex);
+						deferred.push_back(order[index]);
+					}
+					settle_tier1(true);
 					continue;
 				}
 				// The replay publishes in about the order the pipelines were first needed: wait up to
@@ -8286,24 +8303,15 @@ struct PipelineCache::JournalReplay {
 					}
 				}
 				if (!replayed) {
-					std::scoped_lock lock(deferred_mutex);
-					deferred.push_back(order[index]);
+					{
+						std::scoped_lock lock(deferred_mutex);
+						deferred.push_back(order[index]);
+					}
+					settle_tier1(true);
 					continue;
 				}
 			}
-			// KYTY_SHADER_PREPARE=scene: the hold ends with the last record of the scene being
-			// loaded; the rest of the replay goes on behind the game on these same utility-QoS
-			// workers.
-			if ((hold_scene || hold_tier) && index < first_level &&
-			    scene_done.fetch_add(1, std::memory_order_acq_rel) + 1 == first_level) {
-				PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are built after "
-				                 "{:.1f} s; {} more go "
-				                 "on in the background",
-				                 first_level, Level(),
-				                 static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
-				                 order.size() - first_level);
-				LaunchHoldRelease(true);
-			}
+			settle_tier1(false);
 			done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::UnitAddDone(1);
@@ -8674,7 +8682,7 @@ struct PipelineCache::JournalReplay {
 	// KYTY_SHADER_PREPARE=scene: hold the game only for the records of the scene it starts in (the
 	// first first_level entries of the order). No such record (scene not known): the whole replay.
 	bool                     hold_scene = false;
-	std::atomic<uint64_t>    scene_done {0};
+	TierGate                 gate; // tier-1 settle counter (tierGate.h): built or set aside
 	// KYTY_SHADER_PREPARE=tier (levelprep): tier 1 (boot, menus, hub, the earliest levels and, per save slot, its
 	// level and the next ones) holds the game; tier 2 builds behind it on KYTY_SHADER_BG_WORKERS workers, paused
 	// during loads and frame spikes, a scene entered by the player first (bgQueue.h, levelTier.h).
@@ -8691,7 +8699,6 @@ struct PipelineCache::JournalReplay {
 	std::string                  bg_scene;      // the scene whose keys were last promoted
 	bool                         bg_was_paused = false;
 	uint64_t                     bg_pause_since = 0;
-	uint32_t                     tier1_items = 0;
 	std::vector<std::string> always = SceneAlways();
 	// Last-scene memory (NoteScene) and the prepare's delta (KYTY_PIPELINE_DELTA_OUT /
 	// _REPLAY_KEYS).
