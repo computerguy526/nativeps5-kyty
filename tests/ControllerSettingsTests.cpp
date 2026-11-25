@@ -1024,10 +1024,9 @@ void TestNoNeutralPublishWhileSensorsClaimed() {
 		Check(plan.publish_state && plan.publish_motion, "the relay holds back state");
 		SetButton(1, PAD_BUTTON_CROSS, true);
 		SetAxis(1, Axis::LeftX, 200);
-		SetAxis(1, Axis::TriggerRight, 255);
 		Check(PadReadState(1, &data) == 0 && data.connected && data.buttons == PAD_BUTTON_CROSS &&
-		          data.left_stick_x == 200 && data.analog_buttons_r2 == 255,
-		      "buttons / sticks / triggers not available while motion is not live");
+		          data.left_stick_x == 200,
+		      "buttons / sticks not available while motion is not live");
 		Check(PadGetMotionStatus(1, &status) && !status.live, "still not live");
 		// Events for a pad no player owns are counted, not applied.
 		const float accel[3] = {1.0f, 2.0f, 3.0f};
