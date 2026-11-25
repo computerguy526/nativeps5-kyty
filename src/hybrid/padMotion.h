@@ -214,4 +214,16 @@ inline bool Wanted(const char* env, bool pad_has_sensors) {
 	return pad_has_sensors;
 }
 
+// v1.4: a host library without the pad-motion export (an older libnps5_gpu picked up through the binary's LC_RPATH when
+// DYLD_LIBRARY_PATH named a directory that did not exist) silently dropped every gyro sample. Returns the one-time ERROR text when the
+// motion relay is wanted (the pad has sensors, not switched off) but the host cannot receive it; empty when all is well.
+inline std::string HostMotionProblem(const char* env, bool pad_has_sensors, bool host_has_publish, const char* dyld_path) {
+	if (!Wanted(env, pad_has_sensors) || host_has_publish) {
+		return {};
+	}
+	return std::string("ERROR: the pad has motion sensors but the host cannot receive motion (no Nps5KytyHostPublishPadMotion): "
+	                   "the host library in use is not this release's; DYLD_LIBRARY_PATH=") +
+	       (dyld_path != nullptr && dyld_path[0] != '\0' ? dyld_path : "(unset)");
+}
+
 } // namespace Hybrid::PadMotion

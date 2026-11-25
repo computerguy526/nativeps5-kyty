@@ -300,7 +300,20 @@ void TestPadFocusPolicy() {
 	Expect(hint != nullptr && hint[0] == '0', "SDL's hint reads 0 after KYTY_PAD_BACKGROUND_INPUT=0");
 }
 
+static void TestHostMotionProblem() {
+	using namespace Hybrid::PadMotion;
+	// the pad has sensors but the host library lacks the export (the v1.4 rpath-fallback host): a loud one-time ERROR with the path
+	const auto bad = HostMotionProblem(nullptr, true, false, "/old/build-arm64/unpatched");
+	Expect(bad.find("ERROR") == 0 && bad.find("cannot receive motion") != std::string::npos && bad.find("/old/build-arm64/unpatched") != std::string::npos,
+	       "sensors + host without publish_pad_motion -> ERROR naming the library path");
+	Expect(HostMotionProblem(nullptr, true, true, "/x").empty(), "host with the export: no error");
+	Expect(HostMotionProblem(nullptr, false, false, "/x").empty(), "pad without sensors: no error");
+	Expect(HostMotionProblem("0", true, false, "/x").empty(), "ASTROHYBRID_PAD_MOTION=0: not wanted, no error");
+	Expect(HostMotionProblem("1", false, false, nullptr).find("(unset)") != std::string::npos, "forced on, no host export, no DYLD path: names (unset)");
+}
+
 int main(int argc, char** argv) {
+	TestHostMotionProblem();
 	TestNeutralNotPublished();
 	TestPadFocusPolicy();
 	TestTypeNames();

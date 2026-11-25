@@ -459,6 +459,12 @@ void Relay() {
 	float prev_q[4]  = {0.0f, 0.0f, 0.0f, 1.0f};
 	auto  prev_time  = std::chrono::steady_clock::now();
 	bool  prev_valid = false;
+	bool motion_problem_logged = false;
+	if (const auto problem = PM::HostMotionProblem(motion_env, has_sensors, g_host.publish_pad_motion != nullptr, std::getenv("DYLD_LIBRARY_PATH"));
+	    !problem.empty()) {
+		Log(0, "%s", problem.c_str());
+		motion_problem_logged = true;
+	}
 	Log(0, "input relay: motion sensors %s (pad type %s, %s%s, %.0f Hz)",
 	    motion ? "-> host" : "not relayed", PM::TypeName(pad_type),
 	    has_sensors ? "has gyro+accel" : "no sensors",
@@ -507,6 +513,13 @@ void Relay() {
 			Controller::KeepHostPadSensors(); // re-arms sensors that stopped delivering events
 			const bool want =
 			    PM::Wanted(motion_env, now_has) && g_host.publish_pad_motion != nullptr;
+			if (!motion_problem_logged) {
+				if (const auto problem = PM::HostMotionProblem(motion_env, now_has, g_host.publish_pad_motion != nullptr, std::getenv("DYLD_LIBRARY_PATH"));
+				    !problem.empty()) {
+					Log(0, "%s", problem.c_str());
+					motion_problem_logged = true;
+				}
+			}
 			if (want != motion) {
 				motion = want;
 				Log(0, "input relay: motion sensors %s (pad type %s)",
