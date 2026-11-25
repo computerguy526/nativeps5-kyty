@@ -3661,6 +3661,12 @@ if(APPLE)
 	target_compile_definitions(ovguard_spirv_tests PRIVATE KYTY_GPU_DYLIB=1)
 	target_link_libraries(ovguard_spirv_tests PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
 	target_include_directories(ovguard_spirv_tests PRIVATE ${inc_headers})
+	# keyfit: kyty_spv_dump = the SPIR-V of one permutation of a program cache under the process env (tools/spirv-dump/kytySpvDump.cpp).
+	# Same sources as the dylib plus a main, like the arm64 unit-test executables, so KYTY_* codegen words act exactly as in the title.
+	add_executable(kyty_spv_dump EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/tools/spirv-dump/kytySpvDump.cpp" "${KYTY_SOURCE_DIR}/hybrid/kytyGpuBridge.cpp" ${kyty_gpu_src})
+	target_compile_definitions(kyty_spv_dump PRIVATE KYTY_GPU_DYLIB=1)
+	target_link_libraries(kyty_spv_dump PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
+	target_include_directories(kyty_spv_dump PRIVATE ${inc_headers})
 	# KYTY_GPU_IPO=ON (default off): ThinLTO of the kyty_gpu dylib (the emulator-only KYTY_EMULATOR_IPO
 	# never reached it). With KYTY_PGO_GENERATE the dylib dumps its profile from a thread started at
 	# load (kytyGpuBridge.cpp, KYTY_PGO_FILE / KYTY_PGO_DUMP_SECONDS).

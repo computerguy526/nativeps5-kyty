@@ -1,4 +1,8 @@
-// kyty_msl_dump: prints the MSL the direct backend (recompiler/backend/msl) emits for one shader.
+// kyty_spv_dump (keyfit): the SPIR-V the SPIR-V back end emits for one permutation of a program cache under THIS process's env
+//   (KYTY_* codegen words are read from the environment exactly as the title does), so a key-moving word can be applied offline.
+//   kyty_spv_dump --programs <programs.bin> --perm N --out F.spv      one permutation
+//   kyty_spv_dump --programs <programs.bin> --all DIR [--stage cs|all]  every permutation -> DIR/<perm>.spv (rc per perm in DIR/index.tsv)
+// Older header of the tool this file started as (kyty_msl_dump, same loader):
 //   kyty_msl_dump --programs <programs.bin> (--index N | --hash HEX) [--list] [--lanes 1|2] [--no-comments] [--loop-cap N (default 262144, 0 = off)] [--out F.metal] [--manifest F.json (T2 binding manifest)]
 //   kyty_msl_dump --bin <code.bin> [--stage cs] [--wave 64] [--threads X,Y,Z] [--ud N]
 // programs.bin is Kyty's persistent program cache (source records carry the guest code). The
@@ -271,6 +275,8 @@ int Translate(const Src& s, const char* out_path, bool comments, uint32_t lanes,
 int main(int argc, char** argv) {
 	const char *programs = nullptr, *bin = nullptr, *out = nullptr, *manifest = nullptr;
 	long index = -1, perm_sel = -1, link_perm = -1;
+	const char* all_dir = nullptr;
+	bool all_cs_only = true;
 	uint64_t hash = 0;
 	bool have_hash = false, list = false, comments = true;
 	uint32_t lanes = 0, wave = 64, ud = 16;
@@ -284,6 +290,8 @@ int main(int argc, char** argv) {
 		else if (a == "--hash") { hash = std::strtoull(next(), nullptr, 16); have_hash = true; }
 		else if (a == "--list") list = true;
 		else if (a == "--perm") perm_sel = std::atol(next());
+		else if (a == "--all") all_dir = next();
+		else if (a == "--stage-all") all_cs_only = false;
 		else if (a == "--link-ps") link_perm = std::atol(next());
 		else if (a == "--lanes") lanes = static_cast<uint32_t>(std::atoi(next()));
 		else if (a == "--no-comments") comments = false;
@@ -300,6 +308,28 @@ int main(int argc, char** argv) {
 	std::vector<Src> srcs;
 	std::vector<Perm> perms;
 	const Perm* use_perm = nullptr;
+	if (programs && all_dir) {
+		srcs = LoadPrograms(programs, &perms);
+		std::string idx = std::string(all_dir) + "/index.tsv";
+		std::FILE* fi = std::fopen(idx.c_str(), "w");
+		if (!fi) { std::fprintf(stderr, "cannot write %s\n", idx.c_str()); return 2; }
+		for (const auto& pm: perms) {
+			const Src* sp = nullptr;
+			for (const auto& x: srcs) if (x.digest == pm.digest) { sp = &x; break; }
+			if (!sp) continue;
+			if (all_cs_only && sp->stage != static_cast<uint32_t>(ShaderType::Compute)) continue;
+			char out_path[1024];
+			std::snprintf(out_path, sizeof(out_path), "%s/%d.spv", all_dir, pm.perm);
+			std::fflush(stdout);
+			const pid_t pid = fork();
+			if (pid == 0) { const int rc = Translate(*sp, out_path, false, 0, nullptr, &pm, nullptr); std::fflush(stdout); _exit(rc); }
+			int st = 0;
+			waitpid(pid, &st, 0);
+			std::fprintf(fi, "%d\t%016" PRIx64 "\t%u\t%d\n", pm.perm, sp->hash, sp->stage, WIFEXITED(st) ? WEXITSTATUS(st) : 99);
+		}
+		std::fclose(fi);
+		return 0;
+	}
 	if (programs) {
 		srcs = LoadPrograms(programs, &perms);
 		if (list) {
