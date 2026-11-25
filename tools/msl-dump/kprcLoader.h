@@ -19,6 +19,7 @@ struct Src {
   uint32_t stage = 0, wave = 64, user_data_count = 0, user_data_base = 0;
   uint64_t hash = 0;
   uint64_t variant = 0;      // SarosCacheVariant (0 = key without the variant word)
+  uint8_t plain = 0;         // plain_mip_stats_variant byte of the key
   bool has_variant = false;
   std::vector<uint32_t> statics, code;
   std::vector<uint32_t> back_code; // meshpath: merged GS back half (key tail)
@@ -69,7 +70,7 @@ inline bool TryKey(const uint8_t *key, size_t kl, uint32_t code_size, bool varia
   if (!r.words(ns, s.statics)) return false;
   s.wave = r.get<uint32_t>();
   s.user_data_base = r.get<uint32_t>();
-  r.get<uint8_t>();
+  s.plain = r.get<uint8_t>();
   s.has_variant = variant;
   s.variant = 0;
   if (variant) s.variant = r.get<uint64_t>();

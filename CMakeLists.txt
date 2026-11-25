@@ -1179,6 +1179,13 @@ add_executable(kyty_pipeline_list EXCLUDE_FROM_ALL
 target_link_libraries(kyty_pipeline_list xxhash libzstd_static nlohmann_json::nlohmann_json ZArchive::zarchive)
 target_include_directories(kyty_pipeline_list PRIVATE ${inc_headers})
 
+# export --programs (tools/pipeline-list/programsSource.h): program cache -> list sources; synthetic caches, no game.
+add_executable(pipeline_list_programs_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineListProgramsTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/shaderPrecompile.cpp"
+)
+target_link_libraries(pipeline_list_programs_tests Vulkan::Headers xxhash libzstd_static)
+target_include_directories(pipeline_list_programs_tests PRIVATE ${inc_headers} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list" "${CMAKE_CURRENT_SOURCE_DIR}/tools/msl-dump")
+
 # The game files of the two tools above: a game folder or its .zar (tools/pipeline-list/gameFiles.h).
 add_executable(pipeline_list_game_files_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineListGameFilesTests.cpp")
 target_link_libraries(pipeline_list_game_files_tests nlohmann_json::nlohmann_json ZArchive::zarchive)
@@ -2041,6 +2048,7 @@ if(BUILD_TESTING)
 	add_test(NAME pipeline_fast_first COMMAND $<TARGET_FILE:pipeline_fast_first_tests>)
 	set_tests_properties(pipeline_fast_first PROPERTIES TIMEOUT 60)
 	add_test(NAME pipeline_list COMMAND $<TARGET_FILE:pipeline_list_tests>)
+	add_test(NAME pipeline_list_programs COMMAND $<TARGET_FILE:pipeline_list_programs_tests>)
 	set_tests_properties(pipeline_list PROPERTIES TIMEOUT 60)
 	add_test(NAME pipeline_list_game_files COMMAND $<TARGET_FILE:pipeline_list_game_files_tests>)
 	set_tests_properties(pipeline_list_game_files PROPERTIES TIMEOUT 60)
@@ -3310,6 +3318,7 @@ if(BUILD_TESTING)
 		pipeline_fast_first_tests
 		pipeline_snapshot_tests
 		pipeline_list_tests
+		pipeline_list_programs_tests
 		pipeline_list_game_files_tests
 		vram_budget_tests
 		device_compat_tests

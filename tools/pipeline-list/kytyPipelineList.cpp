@@ -18,6 +18,9 @@
 //       be kept. The base list is resolved against the game and its usable part joins the export; a
 //       list of the int21 release is upgraded as the emulator upgrades it and gives its shaders and
 //       permutations only. With --scan its data files and their folders are read first.
+//       --programs <programs.bin> (repeatable): the persistent program cache as one more source (programsSource.h): sources and permutations
+//       that reached it without a journal record (compute prewarm / precompile) join the list; pass `--shaders none --pipelines none` for a
+//       programs-only export.
 //   merge --out <list> <list>...        Union of lists of the same title, version and input layout.
 //   info <list>                         Header, counts, levels, section sizes.
 //   check <list> --game <app0 dir or .zar> [--exe <executable>]
@@ -43,6 +46,7 @@
 #include "common/stringUtils.h"
 #include "exportBase.h"
 #include "gameFiles.h"
+#include "programsSource.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineListInt21.h"
 #include "graphics/shader/shader.h"
@@ -80,7 +84,7 @@ namespace {
 struct Arguments {
 	std::string                                      command;
 	std::string                                      out, game, exe, list, title, app_ver, producer = "kyty_pipeline_list";
-	std::vector<std::string>                         shaders, pipelines, inputs, data;
+	std::vector<std::string>                         shaders, pipelines, inputs, data, programs;
 	bool                                             scan = false;
 	bool                                             allow_partial = false; // merge/upgrade: keep going when a specialization reads as no known layout
 	std::string                                      base;
@@ -392,8 +396,50 @@ int Export(const Arguments& args) {
 	PipelineList::Builder builder(info);
 	BaseList              base;
 	if (!args.base.empty()) LoadBase(args, *game, info, image, base);
+	// --programs: the program cache(s) as one more source (programsSource.h); graphics sources take their input info from a journal source of the same identity.
+	std::vector<ShaderJournal::Source> program_sources;
+	std::vector<ShaderJournal::Entry>  program_entries;
+	for (const auto& path: args.programs) {
+		std::map<PipelineListTool::ShaderIdentityKey, std::vector<uint8_t>> info_of;
+		for (const auto& [name, journal]: loaded_shaders) {
+			(void)name;
+			for (const auto& source: journal->Sources()) {
+				if (source.kind != ShaderJournal::Kind::Compute && !source.input_info.empty()) {
+					info_of.try_emplace(PipelineListTool::IdentityKeyOf(source), source.input_info);
+				}
+			}
+		}
+		const auto lookup = [&](const ShaderJournal::Source& source) -> std::vector<uint8_t> {
+			const auto it = info_of.find(PipelineListTool::IdentityKeyOf(source));
+			if (it == info_of.end()) return {};
+			const auto want = source.kind == ShaderJournal::Kind::Pixel ? info.input_info_sizes[1] : info.input_info_sizes[0];
+			return it->second.size() == want ? it->second : std::vector<uint8_t> {};
+		};
+		std::vector<uint8_t> programs_image;
+		if (!ReadFile(U8(path), programs_image)) {
+			std::fprintf(stderr, "cannot read %s\n", path.c_str());
+			return 2;
+		}
+		std::string error;
+		const auto  stats = PipelineListTool::LoadPrograms(programs_image, lookup, program_sources, program_entries, &error);
+		std::printf("programs %s: %llu sources, %llu permutations; %llu sources without an input info (left out), %llu variant sources, "
+		            "%llu unreadable specializations, %llu orphan permutations%s%s\n",
+		            path.c_str(), static_cast<unsigned long long>(stats.sources), static_cast<unsigned long long>(stats.permutations),
+		            static_cast<unsigned long long>(stats.sources_no_info), static_cast<unsigned long long>(stats.sources_with_variant),
+		            static_cast<unsigned long long>(stats.permutations_unreadable), static_cast<unsigned long long>(stats.permutations_orphan),
+		            error.empty() ? "" : "; damaged: ", error.c_str());
+	}
 	std::vector<PipelineList::CodeQuery> queries;
 	std::map<std::pair<uint64_t, uint64_t>, size_t> query_of;
+	for (const auto& source: program_sources) {
+		for (const auto* code: {&source.code, &source.back_code}) {
+			if (code->empty()) continue;
+			const std::span bytes(reinterpret_cast<const uint8_t*>(code->data()), code->size() * 4);
+			const auto      query = PipelineList::QueryFor(bytes);
+			if (base.where.contains({query.hash.low, query.hash.high})) continue;
+			if (query_of.try_emplace({query.hash.low, query.hash.high}, queries.size()).second) queries.push_back(query);
+		}
+	}
 	for (const auto& [path, journal]: loaded_shaders) {
 		(void)path;
 		for (const auto& source: journal->Sources()) {
@@ -572,6 +618,22 @@ int Export(const Arguments& args) {
 		stats.sources -= std::min<uint64_t>(stats.sources, base.sources.size());
 		stats.sources_duplicate -= std::min<uint64_t>(stats.sources_duplicate, base.sources.size());
 		stats.entries -= std::min<uint64_t>(stats.entries, base.entries.size());
+	}
+	if (!program_sources.empty()) {
+		const std::vector<PipelineJournal::Record> no_pipelines;
+		if (!base.used) {
+			builder.AddJournals(program_sources, program_entries, no_pipelines, locate, stats);
+		} else {
+			auto       sources = base.sources;
+			auto       entries = base.entries;
+			const auto first   = static_cast<uint32_t>(sources.size());
+			sources.insert(sources.end(), program_sources.begin(), program_sources.end());
+			for (const auto& entry: program_entries) entries.push_back({entry.source + first, entry.push_data_cursor, entry.specialization});
+			builder.AddJournals(sources, entries, no_pipelines, locate, stats);
+			stats.sources -= std::min<uint64_t>(stats.sources, base.sources.size());
+			stats.sources_duplicate -= std::min<uint64_t>(stats.sources_duplicate, base.sources.size());
+			stats.entries -= std::min<uint64_t>(stats.entries, base.entries.size());
+		}
 	}
 	PrintExport(stats);
 	// A module without a permutation identity (an expanded call program, which is not journaled) cannot be
@@ -1007,6 +1069,8 @@ int main(int argc, char** argv) {
 			args.shaders.push_back(value());
 		} else if (arg == "--pipelines") {
 			args.pipelines.push_back(value());
+		} else if (arg == "--programs") {
+			args.programs.push_back(value());
 		} else if (arg == "--data") {
 			args.data.push_back(value());
 		} else if (arg == "--base") {
