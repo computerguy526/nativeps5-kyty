@@ -1620,7 +1620,9 @@ void TestOrderedCompareReadsOperandsFirst() {
       if (ops[i] == ValueOpcode::FPIsNan32) nan.push_back(i);
       if (ops[i] == ValueOpcode::LogicalOr) ors++;
     }
-    const std::string tag = half ? "v_cmp_u_f16" : "v_cmp_u_f32";
+    std::string names;
+    for (const auto op : ops) names += std::string(SR::IR::ValueOpcodeName(op)) + " ";
+    const std::string tag = (half ? "v_cmp_u_f16" : "v_cmp_u_f32") + std::string(" [") + names + "]";
     Check(nan.size() == 2, tag + ": two F32 NaN tests (" + std::to_string(nan.size()) + ")");
     Check(nan.size() == 2 && nan[1] == nan[0] + 1,
           tag + ": both operands are read before the NaN tests (FPIsNan32 adjacent)");
