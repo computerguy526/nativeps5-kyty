@@ -822,7 +822,8 @@ target_include_directories(wave64_warps_acl_tests PRIVATE "${KYTY_SOURCE_DIR}")
 # ovguard: KYTY_FAST_MATH_DENY must load (loud start-up ERROR otherwise) and deny-listed shaders never get fast math (CodegenOptions only, no GPU).
 add_executable(fast_math_deny_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FastMathDenyTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp")
-target_include_directories(fast_math_deny_tests PRIVATE "${KYTY_SOURCE_DIR}")
+target_link_libraries(fast_math_deny_tests common fmt::fmt)
+target_include_directories(fast_math_deny_tests PRIVATE "${KYTY_SOURCE_DIR}" ${inc_headers})
 if(LINUX)
 	target_link_libraries(hosted_guard_tests Threads::Threads)
 	target_link_libraries(hosted_ranges_tests Threads::Threads)
