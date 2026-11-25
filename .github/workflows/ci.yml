@@ -71,10 +71,12 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/ut"
-          for t in CpLeadBound PredicationDrain DccKnownFill FaultClass; do
+          for t in CpLeadBound PredicationDrain FaultClass ReplaySkipStats; do
             clang++ -std=c++20 -O2 -Isrc "tests/${t}Tests.cpp" -o "$RUNNER_TEMP/ut/$t"
             "$RUNNER_TEMP/ut/$t"
           done
+          clang++ -std=c++20 -O1 -Isrc tests/SarosProgramCacheTests.cpp -o "$RUNNER_TEMP/ut/SarosProgramCache"
+          for m in off default cache; do "$RUNNER_TEMP/ut/SarosProgramCache" "$m"; done
           clang++ -std=c++17 -O1 -Isrc/graphics/presentation tests/AutoCapTests.cpp -o "$RUNNER_TEMP/ut/AutoCap"
           "$RUNNER_TEMP/ut/AutoCap"
 
