@@ -43,3 +43,6 @@ KYTY_CP_PASS_STATS           # diagnostic (with KYTY_CP_GAP_STATS=1)
 KYTY_GDS_EOP_STATS           # diagnostic counters (SAROS saroscp)
 KYTY_UNMAP_STATS             # diagnostic counters (SAROS saroscp)
 KYTY_HTILE_PREFIX_REBIND       # v14parity pick 6506ef9f6 (HTile prefix rebind); default off until ASTRO + SAROS regression
+KYTY_COMPUTE_IMAGE_COPY      # rtimage (v1.3.1 port): a proven guest compute surface copy becomes a native image copy (1|verify-kernel|verify; default off)
+KYTY_RTIMAGE_PROBE           # rtimage diagnostic: which shader binds a formatted/written buffer over which image (default off)
+KYTY_MED3_NAN_S0            # KytyPS5 3f8f9784: all-NaN V_MED3_F32 gives S0 (changes the SPIR-V of V_MED3 shaders, so default off; v1.4 cg)
