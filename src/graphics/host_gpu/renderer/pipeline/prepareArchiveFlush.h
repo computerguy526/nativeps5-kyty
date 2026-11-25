@@ -69,6 +69,13 @@ inline PrepareFlushOutcome PrepareArchiveWait(bool archive_dir_set, bool sync_ga
 	return out;
 }
 
+// Window-close exit (v1.4 rc12 finding: a window close ends the process without KosmicKrisp's exit flush, so every pipeline compiled in
+// the session was lost: "segments written 0", the next start compiled them all again). SaveForClose calls the exported flush once.
+// Returns the pipelines written, -2 when the driver has no export, otherwise the driver's negative code (-1 lock timeout, -3 no archive).
+inline int64_t CloseArchiveFlush(ArchiveFlushFn flush, uint32_t wait_ms) {
+	return flush == nullptr ? -2 : flush(wait_ms);
+}
+
 } // namespace Libs::Graphics
 
 #endif

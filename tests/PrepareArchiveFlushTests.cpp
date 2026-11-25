@@ -71,5 +71,10 @@ int main() {
 	          ClampFlushWaitMs(0xFFFFFFFFull) == 0xFFFFFFFFu, "wait ms clamps to [1, UINT32_MAX]");
 
 	std::puts("prepare_archive_flush_tests: all passed");
+	{
+		g_flush_calls = 0;
+		Check(CloseArchiveFlush(nullptr, 5) == -2, "close flush: no export = -2");
+		Check((g_flush_result = 41, CloseArchiveFlush(FakeFlush, 777)) == 41 && g_flush_calls == 1 && g_flush_wait == 777, "close flush: one call with the wait, returns the count");
+	}
 	return 0;
 }

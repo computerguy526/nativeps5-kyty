@@ -10515,6 +10515,14 @@ void PipelineCache::SaveForClose() {
 	// warm cache no new journal record would have written the scene this session ended in).
 	if (m_journal_replay != nullptr) m_journal_replay->NoteScene();
 	if (m_saver != nullptr) m_saver->RequestCloseSave();
+	// KK's pipeline archive: the window-close exit skips the driver's own exit flush (rc12 gate: 2,734 compiled pipelines lost,
+	// 0 segments on disk). The export writes the pending segment and returns; the cap bounds the close.
+	const char* via = "not looked up";
+	const auto  t0  = std::chrono::steady_clock::now();
+	const auto  r   = CloseArchiveFlush(FindArchiveFlush(&via), ClampFlushWaitMs(EnvU64("KYTY_CLOSE_FLUSH_WAIT_MS", 10000)));
+	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+	PipelineCacheLog("Close: KosmicKrisp archive flush {} in {} ms ({})",
+	                 r >= 0 ? "wrote " + std::to_string(r) + " pipelines" : "not done, code " + std::to_string(r), ms, via);
 }
 
 void PipelineCache::Save() {
