@@ -278,6 +278,7 @@ void TestSpecializationUpgrade() {
 	// M11: such a blob reads as no layout of this build after the upgrade attempt: the tool counts it and refuses unless --allow-partial.
 	CHECK(!ReadsAsSpecialization(group, false, &at, &images) && !ReadsAsSpecialization(group, true, &at, &images) && !ReadsAsSpecializationV13(group, &at, &images));
 	CHECK(ReadsAsSpecialization(v13now, false, &at, &images));
+	CHECK(PartialExitCode(0, false) == 0 && PartialExitCode(3, false) == 2 && PartialExitCode(3, true) == 0); // the tool's rc 2 path
 }
 
 // export --base --scan: the base list's data files first, then their folders' other files, then the rest.

@@ -36,6 +36,15 @@ int main() {
 	CHECK(Decide(Stamp {v14, false}, v14, false, false) == Action::Resume);          // cache file missing but stamp preparing
 	CHECK(Decide(std::nullopt, v14, true, true) == Action::Warm);                    // escape env
 	CHECK(Decide(Stamp {v13, true}, v14, true, true) == Action::Warm);
+	// round 2: "prepared" over a missing or rejected cache is not Warm
+	CHECK(Decide(Stamp {v14, true}, v14, false, false, false) == Action::Resume);     // cache file gone
+	CHECK(Decide(Stamp {v14, true}, v14, true, false, false) == Action::Resume);      // file there but rejected (driver/hash)
+	CHECK(Decide(Stamp {v14, true}, v14, true, false, true) == Action::Warm);
+	// B2: the decision needs a usable list, a driver cache and a stamp path; list off / missing / empty touches nothing
+	CHECK(CanDecide(4892, true, true));
+	CHECK(!CanDecide(0, true, true));                                                 // list 0, missing, mismatched, nothing usable
+	CHECK(!CanDecide(4892, false, true));                                             // driver cache disabled
+	CHECK(!CanDecide(4892, true, false));                                             // KYTY_CACHE_UPGRADE=0 / no title: no stamp path
 	CHECK(NeedsFullReplay(Action::Upgrade) && NeedsFullReplay(Action::Resume) && NeedsFullReplay(Action::Fresh) && !NeedsFullReplay(Action::Warm));
 
 	// Format / Parse round trip and torn input

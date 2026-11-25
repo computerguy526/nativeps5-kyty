@@ -109,6 +109,9 @@ inline bool UpgradeV13Specialization(std::vector<uint8_t>& bytes) {
 	return true;
 }
 
+// The tool's exit code for specializations that read as no known layout after the upgrade: 2 (refused) unless --allow-partial.
+inline int PartialExitCode(uint64_t unreadable, bool allow_partial) { return unreadable != 0 && !allow_partial ? 2 : 0; }
+
 inline bool UpgradeInt21Specialization(std::vector<uint8_t>& bytes) {
 	size_t   images_at = 0;
 	uint32_t images    = 0;

@@ -665,7 +665,7 @@ int Merge(const Arguments& args) {
 			if (up.unreadable != 0) {
 				std::fprintf(stderr, "%s: %llu specializations read as no known layout; the emulator drops those permutations and their pipelines%s\n",
 				             input.c_str(), static_cast<unsigned long long>(up.unreadable), args.allow_partial ? " (--allow-partial)" : ": refused (rc 2)");
-				if (!args.allow_partial) return 2;
+				if (const int rc = PipelineListTool::PartialExitCode(up.unreadable, args.allow_partial); rc != 0) return rc;
 			}
 		}
 		if (builder == nullptr) {
@@ -733,7 +733,7 @@ int Upgrade(const Arguments& args) {
 		if (up.unreadable != 0) {
 			std::fprintf(stderr, "%llu specializations read as no known layout; the emulator drops those permutations and their pipelines%s\n",
 			             static_cast<unsigned long long>(up.unreadable), args.allow_partial ? " (--allow-partial)" : ": refused (rc 2)");
-			if (!args.allow_partial) return 2;
+			if (const int rc = PipelineListTool::PartialExitCode(up.unreadable, args.allow_partial); rc != 0) return rc;
 		}
 		std::printf("int21 layout upgraded as the emulator upgrades it: %llu vertex input infos, %llu specializations; %zu pipelines kept\n",
 		            static_cast<unsigned long long>(up.infos), static_cast<unsigned long long>(up.specializations), file.pipelines.size());

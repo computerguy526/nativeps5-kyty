@@ -7804,6 +7804,27 @@ struct PipelineCache::ComputePrewarm {
 	PipelineCompileQueue         queue;    // last: joined before the rest goes
 };
 
+// nps5_kk_archive_flush (KK patch 0041): the Vulkan loader opens the KosmicKrisp ICD RTLD_LOCAL, so the symbol is looked up in the driver
+// image too (v1.4 review M3, ResolveDriverSymbol). Used by the prepare end and by the cache-upgrade completion save.
+static ArchiveFlushFn FindArchiveFlush(const char** via) {
+	return reinterpret_cast<ArchiveFlushFn>(ResolveDriverSymbol(
+		                               "nps5_kk_archive_flush", [](const char* n) { return dlsym(RTLD_DEFAULT, n); },
+		                               [](const char* n) -> void* {
+#if defined(__APPLE__)
+			                               // The loader opens the KosmicKrisp ICD RTLD_LOCAL (shaders.cpp KkTag, metalfx.cpp): walk the images.
+			                               for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+				                               const char* image = _dyld_get_image_name(i);
+				                               if (image == nullptr || std::strstr(image, "kosmickrisp") == nullptr) continue;
+				                               if (void* handle = dlopen(image, RTLD_NOLOAD | RTLD_LAZY); handle != nullptr) {
+					                               if (void* sym = dlsym(handle, n); sym != nullptr) return sym;
+				                               }
+			                               }
+#endif
+			                               return nullptr;
+		                               },
+		                               via));
+}
+
 // KYTY_PIPELINE_LIST (default off): a KYPLST1 pipeline list (pipelineList.h) made from recorded
 // runs, for players who never ran the game: =1 reads PipelineLists/<title>_<version>.kyplst, else
 // PipelineLists/<title>.kyplst (next to the emulator, the working directory), any other value is
@@ -8407,17 +8428,24 @@ struct PipelineCache::JournalReplay {
 			// by the cache limit are counted and noted in the stamp; repeating the replay would not change them, so they do not keep
 			// the cache "preparing" for ever (a full launch hold at every start and a set-aside copy that is never removed).
 			if (CacheUpgrade::ReplayComplete(stop.load(), skipped_full.load())) {
-				cache.m_cache_note = fmt::format("failed={};beyond_limit={}", failed.load(), skipped_full.load());
+				if (cache.m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm)) cache.m_cache_note = fmt::format("failed={};beyond_limit={}", failed.load(), skipped_full.load());
 				cache.m_cache_replay_complete.store(true, std::memory_order_release);
 				if (failed.load() != 0 || skipped_full.load() != 0)
 					PipelineCacheLog("Cache upgrade: WARNING the preparation is complete with {} failed and {} beyond the cache limit; "
 					                 "those compile in play", failed.load(), skipped_full.load());
-				if (!cache.m_list || !cache.m_list->prepare) {
+				// Only a start that has a stamp pending saves here (an upgrade, a resume or a first start). A Warm start leaves the
+				// cache to the saver: its identical-payload skip and the file cap apply, nothing is rewritten mid-session.
+				if (cache.m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm) && (!cache.m_list || !cache.m_list->prepare)) {
 					// KK's archive (nps5_kk_archive_flush, patch 0041) is written too when the driver has it.
-					if (auto* flush = reinterpret_cast<ArchiveFlushFn>(dlsym(RTLD_DEFAULT, "nps5_kk_archive_flush")); flush != nullptr) (void)flush(20000);
-					if (cache.m_driver_cache != nullptr && cache.WriteDriverCache(false) != 0) cache.FinishCacheStamp();
+					const char* via = "not looked up";
+					if (auto* flush = FindArchiveFlush(&via); flush != nullptr) (void)flush(20000);
+					if (cache.m_driver_cache != nullptr && cache.WriteDriverCache(false) != 0) {
+						cache.FinishCacheStamp();
+					} else {
+						PipelineCacheLog("Cache upgrade: the driver cache could not be saved; the cache stays 'preparing' and the next start resumes");
+					}
 				}
-			} else if (cache.m_cache_action != static_cast<int>(CacheUpgrade::Action::Warm)) {
+			} else if (cache.m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm)) {
 				PipelineCacheLog("Cache upgrade: the replay was stopped before the whole list was attempted; the cache stays "
 				                 "'preparing' and the next start resumes");
 			}
@@ -9002,7 +9030,7 @@ void PipelineCache::InitializePipelineJournal() {
 	// v14prep: a cache that is not prepared for this stack (an upgrade, a resume, a first start with a list) always runs the
 	// full launch phase, whatever the launcher asked for (KYTY_CACHE_UPGRADE=0 leaves the choice to the launcher).
 	const bool replay_all = EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0 ||
-	                        (m_cache_action != static_cast<int>(CacheUpgrade::Action::Warm) && list);
+	                        (m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm) && list);
 	const bool force      = EnvU64("KYTY_PIPELINE_JOURNAL_FORCE", 0) != 0 || replay_all;
 	const bool prepare    = m_list != nullptr && m_list->prepare;
 	if (EnvU64("KYTY_PIPELINE_JOURNAL_REPLAY", 1) == 0 || replay.items.empty() ||
@@ -9402,7 +9430,15 @@ void PipelineCache::RunListPrepare() {
 	size_t     size     = 0;
 	if (m_driver_cache != nullptr) (void)m_graphics.device.getPipelineCacheData(m_driver_cache, &size, nullptr);
 	Save();
-	FinishCacheStamp();
+	{
+		std::error_code size_error;
+		const auto      saved = m_driver_cache_path.empty() ? 0 : std::filesystem::file_size(m_driver_cache_path, size_error);
+		if (m_cache_replay_complete.load(std::memory_order_acquire) && !size_error && saved > 0) {
+			FinishCacheStamp();
+		} else if (m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm)) {
+			PipelineCacheLog("Cache upgrade: the driver cache is not on disk after the prepare ({}); the cache stays 'preparing'", size_error ? size_error.message() : std::string("empty"));
+		}
+	}
 	const auto& t = g_compile_totals;
 	PipelineCacheLog("Prepare shaders: done in {:.1f} s (shaders {:.1f} s, pipelines and saving {:.1f} s): {} "
 	                 "permutations replayed, {} graphics pipelines built, {} compute pipelines prewarmed; driver "
@@ -9434,23 +9470,7 @@ void PipelineCache::RunListPrepare() {
 		// fixed sleep; without the gate or the symbol, or when it fails, the sleep below is the same as before.
 		const bool sync = EnvU64("KYTY_PREPARE_FLUSH_SYNC", 0) != 0;
 		const char* flush_via = "not looked up";
-		auto*       flush = sync ? reinterpret_cast<ArchiveFlushFn>(ResolveDriverSymbol(
-		                               "nps5_kk_archive_flush", [](const char* n) { return dlsym(RTLD_DEFAULT, n); },
-		                               [](const char* n) -> void* {
-#if defined(__APPLE__)
-			                               // The loader opens the KosmicKrisp ICD RTLD_LOCAL (shaders.cpp KkTag, metalfx.cpp): walk the images.
-			                               for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-				                               const char* image = _dyld_get_image_name(i);
-				                               if (image == nullptr || std::strstr(image, "kosmickrisp") == nullptr) continue;
-				                               if (void* handle = dlopen(image, RTLD_NOLOAD | RTLD_LAZY); handle != nullptr) {
-					                               if (void* sym = dlsym(handle, n); sym != nullptr) return sym;
-				                               }
-			                               }
-#endif
-			                               return nullptr;
-		                               },
-		                               &flush_via))
-		                         : nullptr;
+		auto*       flush = sync ? FindArchiveFlush(&flush_via) : nullptr;
 		if (sync) PipelineCacheLog("Prepare shaders: nps5_kk_archive_flush {} ({})", flush != nullptr ? "found" : "NOT found", flush_via);
 		if (has_dir && !(sync && flush != nullptr)) {
 			PipelineCacheLog(
@@ -9835,14 +9855,17 @@ PipelineCache::~PipelineCache() {
 	}
 }
 
-void PipelineCache::WriteCacheStamp(bool prepared) {
-	if (m_cache_stamp_path.empty()) return;
+bool PipelineCache::WriteCacheStamp(bool prepared) {
+	if (m_cache_stamp_path.empty()) return false;
 	CacheUpgrade::Stamp stamp;
 	stamp.identity = m_cache_identity;
 	stamp.prepared = prepared;
 	if (prepared) stamp.note = m_cache_note;
-	if (!CacheUpgrade::Write(m_cache_stamp_path, stamp))
+	if (!CacheUpgrade::Write(m_cache_stamp_path, stamp)) {
 		PipelineCacheLog("Cache upgrade: could not write {}", Common::PathToString(m_cache_stamp_path));
+		return false;
+	}
+	return true;
 }
 
 // The replay built the whole list (nothing cut by the cache limit, not stopped) and the driver cache is on disk (the caller saved
@@ -9850,7 +9873,8 @@ void PipelineCache::WriteCacheStamp(bool prepared) {
 void PipelineCache::FinishCacheStamp() {
 	if (m_cache_stamp_path.empty() || !m_cache_replay_complete.load(std::memory_order_acquire)) return;
 	if (m_cache_action == static_cast<int>(CacheUpgrade::Action::Warm)) return;
-	WriteCacheStamp(true);
+	// The stamp first, the set-aside copy only after it is on disk: a failed write leaves the aside and the "preparing" stamp (resume).
+	if (!WriteCacheStamp(true)) return;
 	const auto removed = EnvU64("KYTY_CACHE_UPGRADE_KEEP_OLD", 0) != 0 ? 0 : CacheUpgrade::RemoveAside(m_driver_cache_path);
 	PipelineCacheLog("Cache upgrade: the cache is prepared for this stack ({}){}", m_cache_identity,
 	                 removed != 0 ? fmt::format("; the set-aside old driver cache ({} bytes) is removed", removed) : "");
@@ -9874,15 +9898,16 @@ bool PipelineCache::RestartDriverCacheEmpty() {
 // After InitializePipelineList: with a usable list the cache is checked against its stamp (cacheUpgrade.h). Without one (list off,
 // missing, mismatched, nothing in it) nothing is read, set aside or stamped: the cache stays as it is and no replay is forced.
 void PipelineCache::DecideCacheUpgrade() {
+	const bool usable = CacheUpgrade::CanDecide(m_list != nullptr ? m_list->pipelines.size() : 0, m_driver_cache != nullptr,
+	                                           !m_cache_stamp_path.empty());
 	if (m_cache_stamp_path.empty()) return;
-	const bool usable = m_list != nullptr && !m_list->pipelines.empty() && m_driver_cache != nullptr;
 	if (!usable) {
 		PipelineCacheLog("Cache upgrade: no usable pipeline list or driver cache: the cache is left as it is");
 		m_cache_stamp_path.clear();
 		return;
 	}
 	const auto disk   = CacheUpgrade::Read(m_cache_stamp_path);
-	const auto action = CacheUpgrade::Decide(disk, m_cache_identity, m_cache_had_file, false);
+	const auto action = CacheUpgrade::Decide(disk, m_cache_identity, m_cache_had_file, false, m_driver_cache_loaded);
 	m_cache_action    = static_cast<int>(action);
 	PipelineCacheLog("Cache upgrade: stamp {} ({}), this stack {}: {}", Common::PathToString(m_cache_stamp_path),
 	                 disk ? (disk->prepared ? "prepared for " + disk->identity : "preparing for " + disk->identity) : std::string("none"),

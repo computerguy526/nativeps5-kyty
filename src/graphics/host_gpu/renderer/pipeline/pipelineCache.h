@@ -532,7 +532,7 @@ private:
 	bool                          m_driver_cache_loaded = false;
 	// nps5 v14prep (cacheUpgrade.h): what this start does about the cache's codegen stamp. Warm when no pipeline list is
 	// active, KYTY_CACHE_UPGRADE=0 or the stamp matches; otherwise the launch phase replays the whole list.
-	int                           m_cache_action = 1; // CacheUpgrade::Action, Warm
+	std::atomic<int>              m_cache_action {1}; // CacheUpgrade::Action, Warm (read by the replay's last worker)
 	std::filesystem::path         m_cache_stamp_path;
 	std::string                   m_cache_identity;
 	std::atomic<bool>             m_cache_replay_complete {false};
@@ -541,7 +541,7 @@ private:
 	std::mutex                    m_driver_cache_write_mutex;
 	void                          DecideCacheUpgrade();
 	bool                          RestartDriverCacheEmpty();
-	void                          WriteCacheStamp(bool prepared);
+	bool                          WriteCacheStamp(bool prepared);
 	void                          FinishCacheStamp(); // the preparation completed: stamp "prepared", drop the set-aside cache
 	// Keys of pipelines the driver cache holds (KYTY_PIPELINE_KNOWN, written with the driver cache
 	// file; in memory only when just KYTY_PIPELINE_JOURNAL or KYTY_PIPELINE_LIST is on); null when all

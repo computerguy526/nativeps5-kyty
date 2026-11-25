@@ -92,11 +92,21 @@ inline std::optional<Stamp> Parse(std::string_view text) {
 	return s;
 }
 
-inline Action Decide(const std::optional<Stamp>& disk, std::string_view current, bool cache_has_data, bool disabled) {
+// `cache_loaded`: the driver cache file was read and accepted. A "prepared" stamp over a cache that is missing or was rejected
+// (another driver, a damaged file) is not Warm: the preparation is done again (Resume keeps what is there).
+inline Action Decide(const std::optional<Stamp>& disk, std::string_view current, bool cache_has_data, bool disabled,
+                     bool cache_loaded = true) {
 	if (disabled) return Action::Warm;
 	if (!disk) return cache_has_data ? Action::Upgrade : Action::Fresh;
 	if (disk->identity != current) return Action::Upgrade;
-	return disk->prepared ? Action::Warm : Action::Resume;
+	if (!disk->prepared) return Action::Resume;
+	return cache_has_data && cache_loaded ? Action::Warm : Action::Resume;
+}
+
+// The upgrade decision needs a pipeline list with pipelines that resolved against the game (m_list->pipelines holds only those) and a
+// driver cache to work on. Without them nothing is read, set aside or stamped.
+inline bool CanDecide(uint64_t usable_list_pipelines, bool driver_cache_present, bool stamp_path_known) {
+	return stamp_path_known && usable_list_pipelines != 0 && driver_cache_present;
 }
 
 // Whether the stamp's start has to run the full replay: everything but Warm.
