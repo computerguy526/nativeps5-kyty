@@ -808,10 +808,10 @@ uint16_t Builder::AddLevel(const std::string& level) {
 	return index;
 }
 
-void Builder::AddPipeline(Pipeline pipeline, ExportStats& stats) {
+void Builder::AddPipeline(Pipeline pipeline, ExportStats& stats, bool normalize) {
 	// The same pipeline recorded on two devices differs only in values the device decides: stored in
 	// the canonical form (pipelineList.h) it is one entry. Words that are not a snapshot stay as they are.
-	(void)NormalizePipelineDeviceState(pipeline);
+	if (normalize) (void)NormalizePipelineDeviceState(pipeline);
 	std::sort(pipeline.levels.begin(), pipeline.levels.end());
 	pipeline.levels.erase(std::unique(pipeline.levels.begin(), pipeline.levels.end()), pipeline.levels.end());
 	const auto digest = PipelineDigest(pipeline);
@@ -950,7 +950,7 @@ CodeFile Builder::AddFile(const std::string& path) {
 	return static_cast<CodeFile>(m_file.files.size());
 }
 
-void Builder::AddList(const File& other, ExportStats& stats) {
+void Builder::AddList(const File& other, ExportStats& stats, bool normalize_pipelines) {
 	std::vector<uint32_t> shader_of(other.shaders.size());
 	for (size_t i = 0; i < other.shaders.size(); i++) {
 		bool added  = false;
@@ -979,7 +979,7 @@ void Builder::AddList(const File& other, ExportStats& stats) {
 		for (auto& stage: pipeline.stages) stage.permutation = permutation_of[stage.permutation];
 		pipeline.levels.clear();
 		for (const auto level: source.levels) pipeline.levels.push_back(AddLevel(other.levels[level]));
-		AddPipeline(std::move(pipeline), stats);
+		AddPipeline(std::move(pipeline), stats, normalize_pipelines);
 	}
 }
 

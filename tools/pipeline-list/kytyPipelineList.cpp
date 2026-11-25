@@ -610,6 +610,32 @@ bool Load(const std::string& path, PipelineList::File& file) {
 	return true;
 }
 
+// A list of the int21 layout (golden-v11 and every list shipped up to v1.3.1: input infos 10168) upgraded to this build's layout the
+// way the emulator upgrades it when it loads the list (pipelineCache.cpp, "Pipeline list: int21 layout: ..."): the vertex input infos
+// get the added fields at their defaults, the image specializations are written in this build's record. Pipelines stay as they are
+// (they name permutations by index). False when the list has another layout, or tessellation shaders that cannot be filled in.
+struct Int21UpgradeStats {
+	uint64_t infos = 0, specializations = 0, skipped = 0;
+};
+bool IsInt21List(const PipelineList::File& file) {
+	return file.info.input_info_sizes[0] == Int21VertexLayout().from_size &&
+	       file.info.input_info_sizes[1] == sizeof(Libs::Graphics::ShaderPixelInputInfo) &&
+	       file.info.input_info_sizes[2] == sizeof(Libs::Graphics::ShaderComputeInputInfo);
+}
+bool UpgradeInt21List(PipelineList::File& file, Int21UpgradeStats& stats) {
+	if (!IsInt21List(file)) return false;
+	const auto                 now = static_cast<uint32_t>(Libs::Graphics::ShaderStoredInputInfoSize<Libs::Graphics::ShaderVertexInputInfo>());
+	PipelineList::UpgradeStats upgrade;
+	PipelineList::UpgradeVertexInputInfos(file, Int21VertexLayout(), now, upgrade);
+	stats.infos   = upgrade.upgraded;
+	stats.skipped = upgrade.skipped;
+	if (upgrade.skipped != 0) return false; // the layout field stays old: a mixed list is not written
+	for (auto& permutation: file.permutations) {
+		stats.specializations += PipelineListTool::UpgradeInt21Specialization(permutation.specialization) ? 1 : 0;
+	}
+	return file.info.input_info_sizes[0] == now;
+}
+
 int Merge(const Arguments& args) {
 	if (args.out.empty() || args.inputs.empty()) {
 		std::fprintf(stderr, "merge needs --out and input lists\n");
@@ -621,8 +647,20 @@ int Merge(const Arguments& args) {
 	for (const auto& input: args.inputs) {
 		PipelineList::File file;
 		if (!Load(input, file)) return 2;
+		if (IsInt21List(file)) {
+			Int21UpgradeStats up;
+			if (!UpgradeInt21List(file, up)) {
+				std::fprintf(stderr, "%s: int21 layout, %llu tessellation shaders cannot be upgraded; not merged\n", input.c_str(),
+				             static_cast<unsigned long long>(up.skipped));
+				return 2;
+			}
+			std::printf("%s: int21 layout upgraded: %llu vertex input infos, %llu specializations\n", input.c_str(),
+			            static_cast<unsigned long long>(up.infos), static_cast<unsigned long long>(up.specializations));
+		}
+		const bool recorded_raw = file.info.state_format == 0; // no stamp: the records' words stay as recorded (no twin collapse)
 		if (builder == nullptr) {
 			info              = file.info;
+			info.state_format = PipelineList::StateFormat; // the merged list is stamped: format 0 replays as format 1 anyway
 			info.producer     = args.producer;
 			info.created_unix = NowUnix();
 			builder           = std::make_unique<PipelineList::Builder>(info);
@@ -632,7 +670,7 @@ int Merge(const Arguments& args) {
 			std::fprintf(stderr, "%s is for another title, version, input layout or pipeline state format\n", input.c_str());
 			return 2;
 		}
-		builder->AddList(file, stats);
+		builder->AddList(file, stats, !recorded_raw);
 	}
 	PrintExport(stats);
 	return Write(builder->Finish(), args.out);
@@ -673,6 +711,17 @@ int Upgrade(const Arguments& args) {
 	                                   static_cast<uint32_t>(sizeof(Libs::Graphics::ShaderComputeInputInfo))};
 	if (file.info.input_info_sizes == now) {
 		std::printf("%s already has this build's input layout\n", args.inputs[0].c_str());
+		return Write(file, args.out);
+	}
+	if (IsInt21List(file)) {
+		Int21UpgradeStats up;
+		if (!UpgradeInt21List(file, up)) {
+			std::fprintf(stderr, "%s: %llu tessellation vertex shaders cannot be upgraded (their clamp levels come from guest registers)\n",
+			             args.inputs[0].c_str(), static_cast<unsigned long long>(up.skipped));
+			return 2;
+		}
+		std::printf("int21 layout upgraded as the emulator upgrades it: %llu vertex input infos, %llu specializations; %zu pipelines kept\n",
+		            static_cast<unsigned long long>(up.infos), static_cast<unsigned long long>(up.specializations), file.pipelines.size());
 		return Write(file, args.out);
 	}
 	if (file.info.input_info_sizes[0] != now[0] - 16 || file.info.input_info_sizes[1] != now[1] ||
