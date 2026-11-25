@@ -12,7 +12,9 @@ inline void HostInputTrace(const char* event, int a, int b, int c = 0) {
 		return path && *path ? std::fopen(path, "a") : nullptr;
 	}();
 	if (!output) { return; }
-	static std::mutex mutex;
+	// archfix E1: never destroyed (threads outlive exit()'s static destructors: 'mutex lock failed'
+	// -> terminate)
+	static std::mutex& mutex = *new std::mutex;
 	std::lock_guard lock(mutex);
 	const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
 	    std::chrono::steady_clock::now().time_since_epoch()).count();

@@ -26,12 +26,14 @@ std::atomic<bool> g_enabled {[] {
 namespace {
 
 std::mutex& RegistryMutex() {
-	static std::mutex mutex;
+	// archfix E1: never destroyed (threads outlive exit()'s static destructors: 'mutex lock failed'
+	// -> terminate)
+	static std::mutex& mutex = *new std::mutex;
 	return mutex;
 }
 
 std::vector<Counters*>& Registry() {
-	static std::vector<Counters*> registry;
+	static std::vector<Counters*>& registry = *new std::vector<Counters*>;
 	return registry;
 }
 

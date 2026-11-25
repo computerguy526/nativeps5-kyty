@@ -357,7 +357,11 @@ struct Shared {
 	    0}; // effective cap (milli-fps), 0 = none; written by the present thread
 };
 inline Shared& State() {
-	static Shared s;
+	// Never destroyed (same as Nps5Frame::LastLoadSignNs, 4130d371c): the crash handler and the
+	// close path end in exit(), whose static destructors run on that thread while the main thread
+	// still steps the window (AutoCap::Publish) -> 'mutex lock failed: Invalid argument' ->
+	// std::terminate. A leaked object has no destructor to run.
+	static Shared& s = *new Shared;
 	return s;
 }
 inline void Publish(const Screen& s) {

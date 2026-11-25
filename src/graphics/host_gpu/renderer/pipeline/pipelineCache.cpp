@@ -66,6 +66,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderPrecompile.h"
 #include "graphics/host_gpu/renderer/pipeline/stagePrepWorker.h"
 #include "graphics/host_gpu/renderer/pipeline/tierGate.h"
+#include "graphics/host_gpu/renderer/pipeline/upgradeCompletion.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/CallSplitPlan.h"
@@ -8553,8 +8554,13 @@ struct PipelineCache::JournalReplay {
 		}
 		if (running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
 			CompileProgress::ClearPipelineReplay();
-			LaunchHoldRelease(
-			    false); // "all": the compute prewarm part still holds until it is done
+			// nps5 archfix: KYTY_UPGRADE_FLUSH_HELD=1 (default): the launch hold stays until the
+			// completion save below is written (no frame is drawn during KK's archive serialize:
+			// Metal crashes when a compile, e.g. the first MetalFX scaler, starts inside it).
+			const bool upgrade_flush_held = EnvU64("KYTY_UPGRADE_FLUSH_HELD", 1) != 0;
+			if (!upgrade_flush_held)
+				LaunchHoldRelease(
+				    false); // "all": the compute prewarm part still holds until it is done
 			WriteDelta();
 			size_t cache_bytes = 0;
 			if (cache.m_driver_cache != nullptr) {
@@ -8574,7 +8580,10 @@ struct PipelineCache::JournalReplay {
 			// stamp; repeating the replay would not change them, so they do not keep the cache
 			// "preparing" for ever (a full launch hold at every start and a set-aside copy that is
 			// never removed).
-			if (CacheUpgrade::ReplayComplete(stop.load(), skipped_full.load())) {
+			const bool replay_complete =
+			    CacheUpgrade::ReplayComplete(stop.load(), skipped_full.load());
+			bool saves = false;
+			if (replay_complete) {
 				if (cache.m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm))
 					cache.m_cache_note = fmt::format("failed={};beyond_limit={}", failed.load(),
 					                                 skipped_full.load());
@@ -8587,25 +8596,34 @@ struct PipelineCache::JournalReplay {
 				// Only a start that has a stamp pending saves here (an upgrade, a resume or a first
 				// start). A Warm start leaves the cache to the saver: its identical-payload skip
 				// and the file cap apply, nothing is rewritten mid-session.
-				if (cache.m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm) &&
-				    (!cache.m_list || !cache.m_list->prepare)) {
-					// KK's archive (nps5_kk_archive_flush, patch 0041) is written too when the
-					// driver has it.
-					const char* via = "not looked up";
-					if (auto* flush = FindArchiveFlush(&via); flush != nullptr) (void)flush(20000);
-					if (cache.m_driver_cache != nullptr && cache.WriteDriverCache(false) != 0) {
-						cache.FinishCacheStamp();
-					} else {
-						PipelineCacheLog("Cache upgrade: the driver cache could not be saved; the "
-						                 "cache stays 'preparing' and the next start resumes");
-					}
-				}
+				saves =
+				    cache.m_cache_action.load() != static_cast<int>(CacheUpgrade::Action::Warm) &&
+				    (!cache.m_list || !cache.m_list->prepare);
 			} else if (cache.m_cache_action.load() !=
 			           static_cast<int>(CacheUpgrade::Action::Warm)) {
 				PipelineCacheLog("Cache upgrade: the replay was stopped before the whole list was "
 				                 "attempted; the cache stays "
 				                 "'preparing' and the next start resumes");
 			}
+			CompleteUpgradeReplay(
+			    upgrade_flush_held, saves,
+			    [&] {
+				    // KK's archive (nps5_kk_archive_flush, patch 0041) is written too when the
+				    // driver has it.
+				    const char* via = "not looked up";
+				    if (auto* flush = FindArchiveFlush(&via); flush != nullptr) (void)flush(20000);
+			    },
+			    [&] {
+				    if (cache.m_driver_cache != nullptr && cache.WriteDriverCache(false) != 0) {
+					    cache.FinishCacheStamp();
+				    } else {
+					    PipelineCacheLog("Cache upgrade: the driver cache could not be saved; the "
+					                     "cache stays 'preparing' and the next start resumes");
+				    }
+			    },
+			    [&] {
+				    LaunchHoldRelease(false);
+			    });     // "all": the compute prewarm part still holds until it is done
 			items = {}; // the last worker: nothing reads the records any more
 		}
 	}

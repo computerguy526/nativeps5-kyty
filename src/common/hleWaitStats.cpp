@@ -34,11 +34,13 @@ struct PerThread {
 };
 
 std::mutex& Mutex() {
-	static std::mutex mutex;
+	// archfix E1: never destroyed (threads outlive exit()'s static destructors: 'mutex lock failed'
+	// -> terminate)
+	static std::mutex& mutex = *new std::mutex;
 	return mutex;
 }
 std::vector<PerThread*>& Threads() {
-	static std::vector<PerThread*> threads;
+	static std::vector<PerThread*>& threads = *new std::vector<PerThread*>;
 	return threads;
 }
 

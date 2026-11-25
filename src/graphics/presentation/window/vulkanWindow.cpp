@@ -2136,8 +2136,11 @@ static bool VulkanValidationLogOnly() {
 
 static void RecordVulkanValidationMessage(const char*                                   severity,
                                           const vk::DebugUtilsMessengerCallbackDataEXT* data) {
-	static std::mutex                                mutex;
-	static std::unordered_map<std::string, uint64_t> counts;
+	// archfix E1: never destroyed (threads outlive exit()'s static destructors: 'mutex lock failed'
+	// -> terminate)
+	static std::mutex&                                mutex = *new std::mutex;
+	static std::unordered_map<std::string, uint64_t>& counts =
+	    *new std::unordered_map<std::string, uint64_t>;
 	static std::FILE*                                file = [] {
 		const char* path = std::getenv("KYTY_VULKAN_VALIDATION_LOG");
 		return std::fopen(path != nullptr && path[0] != 0 ? path : "_kyty_vulkan_validation.log",

@@ -882,6 +882,14 @@ target_include_directories(replay_skip_stats_tests PRIVATE ${inc_headers})
 add_executable(prepare_archive_flush_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PrepareArchiveFlushTests.cpp")
 target_include_directories(prepare_archive_flush_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5 archfix T4: end-of-replay order (flush, save, release the launch hold), header only, no GPU.
+add_executable(upgrade_completion_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/UpgradeCompletionTests.cpp")
+target_include_directories(upgrade_completion_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
+# nps5 archfix T5: AutoCap shared state survives exit() (static destructors) while the window loop keeps publishing, no GPU.
+add_executable(autocap_exit_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/AutoCapExitTests.cpp")
+target_include_directories(autocap_exit_tests PRIVATE "${KYTY_SOURCE_DIR}/graphics/presentation")
+
 # nps5 kshaders: KosmicKrisp fallbacks (64-bit buffer atomic forms, min-LOD view range), no GPU.
 add_executable(kk_lowering_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/KkLoweringTests.cpp"
