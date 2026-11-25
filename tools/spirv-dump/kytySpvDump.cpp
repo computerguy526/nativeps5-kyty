@@ -248,7 +248,7 @@ int Translate(const Src& s, const char* out_path, bool comments, uint32_t lanes,
 	}
 	if (perm && !perm->spec.empty()) {
 		SR::IR::ResourceSpecialization ds;
-		if (SR::IR::DecodeSpecialization(perm->spec, ds)) spec = ds;
+		if (SR::IR::DecodeSpecializationCompat(perm->spec, ds)) spec = ds;
 		else std::fprintf(stderr, "warning: spec decode failed for perm %d\n", perm->perm);
 	}
 	(void)lanes; (void)comments;

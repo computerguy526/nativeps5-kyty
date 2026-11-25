@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 		info->stage = {};
 		ShaderSanitizeStoredInputInfo(*info);
 		IR::ResourceSpecialization specialization;
-		if (!IR::DecodeSpecialization(first[index]->specialization, specialization)) continue;
+		if (!IR::DecodeSpecializationCompat(first[index]->specialization, specialization)) continue;
 		ShaderRecompiler::CompileOptions options;
 		options.stage            = ShaderType::Pixel;
 		options.shader_hash      = source.hash;
@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
 		info->param_alias_mask = 0;
 		if (info->logical_stage != ShaderType::Vertex) continue;
 		IR::ResourceSpecialization specialization;
-		if (!IR::DecodeSpecialization(first[index]->specialization, specialization)) continue;
+		if (!IR::DecodeSpecializationCompat(first[index]->specialization, specialization)) continue;
 		ShaderRecompiler::CompileOptions options;
 		options.stage             = ShaderType::Vertex;
 		options.shader_hash       = source.hash;

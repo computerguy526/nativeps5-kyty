@@ -10498,7 +10498,7 @@ void PipelineCache::InitializeShaderPrecompile() {
 			if (entry.source >= sources.size()) continue;
 			const auto& source = sources[entry.source];
 			ShaderRecompiler::IR::ResourceSpecialization specialization;
-			if (!ShaderRecompiler::IR::DecodeSpecialization(entry.specialization, specialization)) continue;
+			if (!ShaderRecompiler::IR::DecodeSpecializationCompat(entry.specialization, specialization)) continue;
 			ShaderRecompiler::IR::SeedNullBufferShare(source.hash, source.stage, source.user_data_base,
 			                                          source.user_data_count, specialization);
 			seeded++;
