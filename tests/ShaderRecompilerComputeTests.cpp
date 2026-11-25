@@ -62282,7 +62282,7 @@ int main(int argc, char **argv) {
   // KytyPS5 3f8f9784 (all-NaN V_MED3_F32 gives S0) is opt-in in the emitter (KYTY_MED3_NAN_S0, default off, read
   // once): the med3 cases and CodegenTests::RefMedTriF32 expect it, so the tests switch it on (an explicit value wins).
   if (std::getenv("KYTY_MED3_NAN_S0") == nullptr) {
-    setenv("KYTY_MED3_NAN_S0", "1", 1);
+    SetEnvironment("KYTY_MED3_NAN_S0", "1");
   }
   // Upstream 21a1346e2's compact colour exports, as the shipped preset sets them (code default off;
   // the PolygonModeRasterization export-routing cases are upstream's). An explicit value wins.

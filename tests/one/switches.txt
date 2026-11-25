@@ -23,9 +23,7 @@ KYTY_KK_TAG                  # SAROS memtrk diagnostics
 KYTY_SAROS_NANITE_RAW        # SAROS Nanite raster PS raw vertex params (default off; =hex list)
 KYTY_SAROS_NANITE_RAW_AND    # location mask for the NANITE_RAW AND param
 KYTY_SAROS_NANITE_RAW_VERTS  # location mask for the NANITE_RAW vertex params
-KYTY_SAROS_KEYSTRIDE         # SAROS hand shaders only; =0 restores old heap key probing
 KYTY_SAROS_PROGRAM_CACHE     # SAROS hand/nanite-raw programs use the persistent program cache with the switch state in the key (=1; default off = bypass)
-KYTY_SAROS_MAP_PAD           # SAROS hand shaders: key-table regions padded to the search tier so the baked mapping offsets stop churning permutations (=1; default off)
 KYTY_SAROS_SAMPLE_LOD0       # sarosmip experiment: IMAGE_SAMPLE_D of the listed shader hashes (or all) uses explicit LOD 0 (default off)
 KYTY_SPEC_DIFF_LOG           # diagnostic: how a new specialization differs from the closest existing one (=1; default off)
 # Sons of Sparta / Unity
@@ -46,3 +44,5 @@ KYTY_HTILE_PREFIX_REBIND       # v14parity pick 6506ef9f6 (HTile prefix rebind);
 KYTY_COMPUTE_IMAGE_COPY      # rtimage (v1.3.1 port): a proven guest compute surface copy becomes a native image copy (1|verify-kernel|verify; default off)
 KYTY_RTIMAGE_PROBE           # rtimage diagnostic: which shader binds a formatted/written buffer over which image (default off)
 KYTY_MED3_NAN_S0            # KytyPS5 3f8f9784: all-NaN V_MED3_F32 gives S0 (changes the SPIR-V of V_MED3 shaders, so default off; v1.4 cg)
+KYTY_SHADER_PREPARE_PROGRESSION # v14lvl: progression tiers of the tier-mode preparation (opt-in, default off)
+KYTY_SHADER_PREPARE_WEAK_PRESCENE # v14lvl: weak pre_scene placement in tier mode (opt-in, default off)
