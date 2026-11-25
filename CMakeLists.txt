@@ -819,6 +819,10 @@ target_include_directories(kyty_one_tests PRIVATE "${KYTY_SOURCE_DIR}" "${KYTY_T
 add_executable(wave64_warps_acl_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/Wave64WarpsAclTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp")
 target_include_directories(wave64_warps_acl_tests PRIVATE "${KYTY_SOURCE_DIR}")
+# ovguard: KYTY_FAST_MATH_DENY must load (loud start-up ERROR otherwise) and deny-listed shaders never get fast math (CodegenOptions only, no GPU).
+add_executable(fast_math_deny_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FastMathDenyTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp")
+target_include_directories(fast_math_deny_tests PRIVATE "${KYTY_SOURCE_DIR}")
 if(LINUX)
 	target_link_libraries(hosted_guard_tests Threads::Threads)
 	target_link_libraries(hosted_ranges_tests Threads::Threads)
@@ -3556,6 +3560,12 @@ if(APPLE)
 	target_include_directories(kyty_gpu PRIVATE ${inc_headers})
 	set_target_properties(kyty_gpu PROPERTIES PREFIX "" OUTPUT_NAME "kyty_gpu" SUFFIX ".dylib")
 	target_link_options(kyty_gpu PRIVATE -Wl,-undefined,error)
+	# ovguard: key-stability unit test of the SPIR-V back end (deny-listed shader: SPIR-V identical at low and high KYTY_GPU_ACCURACY).
+	# The compute-test harness needs the x86 emulator; this target is the same sources as the dylib plus a main, so it builds and runs on arm64.
+	add_executable(ovguard_spirv_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/OvguardSpirvTests.cpp" "${KYTY_SOURCE_DIR}/hybrid/kytyGpuBridge.cpp" ${kyty_gpu_src})
+	target_compile_definitions(ovguard_spirv_tests PRIVATE KYTY_GPU_DYLIB=1)
+	target_link_libraries(ovguard_spirv_tests PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
+	target_include_directories(ovguard_spirv_tests PRIVATE ${inc_headers})
 	# KYTY_GPU_IPO=ON (default off): ThinLTO of the kyty_gpu dylib (the emulator-only KYTY_EMULATOR_IPO
 	# never reached it). With KYTY_PGO_GENERATE the dylib dumps its profile from a thread started at
 	# load (kytyGpuBridge.cpp, KYTY_PGO_FILE / KYTY_PGO_DUMP_SECONDS).
