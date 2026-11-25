@@ -62,6 +62,27 @@ std::vector<uint64_t> ReadHashFile(const char* path, bool* ok) {
 
 } // namespace
 
+const char* FastMathDenyProblem(const char* value, std::vector<uint64_t>* hashes) {
+	if (value == nullptr) {
+		return nullptr;
+	}
+	if (value[0] == '\0') {
+		return "KYTY_FAST_MATH_DENY is set but empty (no deny list)";
+	}
+	bool ok = false;
+	auto list = ReadHashFile(value, &ok);
+	if (!ok) {
+		return "KYTY_FAST_MATH_DENY names a file that cannot be read (no deny list)";
+	}
+	if (list.empty()) {
+		return "KYTY_FAST_MATH_DENY file holds no guest hash (no deny list)";
+	}
+	if (hashes != nullptr) {
+		*hashes = std::move(list);
+	}
+	return nullptr;
+}
+
 // LodStatsCounter::PlainVariant()'s reading of the same variable: unset, empty or anything but
 // "0" and "verify" is on.
 bool LodStatsPlainVariantOn(const char* value) {
@@ -383,9 +404,17 @@ CodegenOptions FromEnvironment() {
 		options.fast_math_vs = value >= 3;
 	}
 	options.fast_math_vs = EnvFlag("KYTY_FAST_MATH_VS", options.fast_math_vs);
-	if (const auto* path = std::getenv("KYTY_FAST_MATH_DENY"); path != nullptr && path[0] != '\0') {
-		bool ok                = false;
-		options.fast_math_deny = ReadHashFile(path, &ok);
+	// ovguard: a deny list that does not load leaves EVERY shader on fast math under KYTY_GPU_ACCURACY != high, so the Metal override keys
+	// move and every override silently misses (a box ran whole gate series with a laptop path here). Loud, once, at start-up; nps5 run
+	// refuses such a composition unless KYTY_FAST_MATH_DENY_OPTIONAL=1.
+	if (const auto* path = std::getenv("KYTY_FAST_MATH_DENY"); path != nullptr) {
+		const auto* problem = FastMathDenyProblem(path, &options.fast_math_deny);
+		const auto* acc     = std::getenv("KYTY_GPU_ACCURACY");
+		const bool  not_high = acc != nullptr && (std::strcmp(acc, "normal") == 0 || std::strcmp(acc, "low") == 0);
+		if (problem != nullptr && not_high) {
+			std::fprintf(stderr, "[fastmath] ERROR: %s [%s]: KYTY_GPU_ACCURACY=%s gives every shader fast math, Metal override keys will miss; deny=missing\n",
+			             problem, path, acc);
+		}
 	}
 	if (const auto* path = std::getenv("KYTY_FAST_MATH_ALLOW");
 	    path != nullptr && path[0] != '\0') {

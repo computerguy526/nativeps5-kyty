@@ -2399,7 +2399,8 @@ private:
   ShaderRecompiler::TranslateResult m_second;
 };
 
-CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64) {
+CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64,
+                           uint64_t shader_hash = 0) {
   auto user_data =
       MakeNativeUserData(test.has_user_data ? &test.user_data : nullptr);
   const auto uses_image =
@@ -2419,6 +2420,7 @@ CompiledShader CompileCase(const TestCase &test, u32 host_subgroup_size = 64) {
   ShaderRecompiler::CompileOptions options;
   options.stage = ShaderType::Compute;
   options.dump_ir = true;
+  options.shader_hash = shader_hash;
   auto compute_info = test.compute_info;
   compute_info.host_subgroup_size = host_subgroup_size;
   if (!compute_info.lds_storage) {
@@ -50460,6 +50462,55 @@ TestCase Wave64CrossHalfLaneAndLds() {
   return test;
 }
 
+// ovguard: the Metal override keys are KosmicKrisp's hash of the MSL of the SPIR-V Kyty emits. KYTY_GPU_ACCURACY=low gives every
+// shader NOT in the fast-math deny list fast math, which changes its SPIR-V (and so its key). A deny-listed shader must therefore
+// emit byte-identical SPIR-V at low and high accuracy; an unlisted one must differ (negative control: the guard can fail).
+TestCase VectorFloatArithmeticOps();
+void CheckFastMathDenyKeyStability() {
+  const auto test = VectorFloatArithmeticOps();
+  constexpr uint64_t listed = 0x1122334455667788ull, other = 0x99aabbccddeeff00ull;
+  const auto saved = ShaderRecompiler::GetCodegenOptions();
+  const auto spirv = [&](uint8_t accuracy, uint64_t hash) {
+    auto options = saved;
+    options.relaxed_float = false;
+    options.fast_math = 0;
+    options.fast_math_stages = 3;
+    options.gpu_accuracy = accuracy; // 0 high, 1 normal, 2 low
+    options.fast_math_allow_set = false;
+    options.fast_math_deny = {listed};
+    ShaderRecompiler::SetCodegenOptions(options);
+    return CompileCase(test, 64, hash).spirv;
+  };
+  const auto high_listed = spirv(0, listed), high_other = spirv(0, other);
+  Require(test.name, "high accuracy ignores the list", high_listed == high_other, "high-accuracy SPIR-V depends on the shader hash");
+  Require(test.name, "low accuracy, listed shader: SPIR-V == high", spirv(2, listed) == high_listed,
+          "a deny-listed shader changed its SPIR-V under KYTY_GPU_ACCURACY=low (its override key would move)");
+  Require(test.name, "low accuracy, unlisted shader: SPIR-V differs (negative control)", spirv(2, other) != high_other,
+          "an unlisted shader kept its SPIR-V under low accuracy: the key-stability guard cannot detect anything");
+  ShaderRecompiler::SetCodegenOptions(saved);
+  std::printf("[host]    %-32s ok\n", "FastMathDenyKeyStability");
+}
+
+// ovguard: a KYTY_FAST_MATH_DENY that does not load must be reported (the start-up ERROR line / deny=missing), never ignored.
+void CheckFastMathDenyProblem() {
+  const auto path = (std::filesystem::temp_directory_path() / "ovguard_deny_test.txt").string();
+  const auto write = [&](const char *text) {
+    std::ofstream out(path, std::ios::trunc);
+    out << text;
+  };
+  std::vector<uint64_t> hashes;
+  Require("ovguard", "unset is fine", ShaderRecompiler::FastMathDenyProblem(nullptr) == nullptr, "unset reported as a problem");
+  Require("ovguard", "empty value", ShaderRecompiler::FastMathDenyProblem("") != nullptr, "empty value not reported");
+  Require("ovguard", "missing file", ShaderRecompiler::FastMathDenyProblem("/no/such/ovguard/deny.txt") != nullptr, "missing file not reported");
+  write("# comment only\n\n");
+  Require("ovguard", "no hash", ShaderRecompiler::FastMathDenyProblem(path.c_str()) != nullptr, "a file without a hash not reported");
+  write("# list\n0123456789abcdef\nfedcba9876543210 # tail\n");
+  Require("ovguard", "good list", ShaderRecompiler::FastMathDenyProblem(path.c_str(), &hashes) == nullptr && hashes.size() == 2,
+          "a valid list reported or not loaded");
+  std::filesystem::remove(path);
+  std::printf("[host]    %-32s ok\n", "FastMathDenyProblem");
+}
+
 void CheckWave64WholeWaveResults() {
   const auto test = Wave64CrossHalfLaneAndLds();
   const auto native = CompileCase(test, 64);
@@ -63322,6 +63373,12 @@ int main(int argc, char **argv) {
     RunCase(&vulkan, ImageStoreSingleMipBounds<2>());
     return 0;
   }
+  if (argc == 2 && std::strcmp(argv[1], "--ovguard-only") == 0) {
+    EnsureConfigInitialized();
+    CheckFastMathDenyKeyStability();
+    CheckFastMathDenyProblem();
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "--wave64-only") == 0) {
     CheckWave64WholeWaveResults();
     VulkanHarness vulkan;
@@ -64559,6 +64616,8 @@ int main(int argc, char **argv) {
   CheckIndirectImageKeySwitch(vulkan);
   CheckIndirectImageTableRead1D();
   CheckWave64WholeWaveResults();
+  CheckFastMathDenyKeyStability();
+  CheckFastMathDenyProblem();
   CheckPs5GameExampleImageClearRuntimeShape();
   vulkan.CheckSchedulerTimeline();
   vulkan.CheckSchedulerReadyOperations();

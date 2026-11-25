@@ -1113,6 +1113,9 @@ inline constexpr uint32_t LoopGuardHashGdsFromEnd = RtNodeStatsGdsFromEnd + RtNo
 // KYTY_FAST_MATH_DENY / KYTY_FAST_MATH_ALLOW: may this guest shader use fast math? (true when no
 // list is set)
 [[nodiscard]] bool FastMathShaderAllowed(uint64_t shader_hash, const char* stage = "?");
+// nullptr when KYTY_FAST_MATH_DENY's value (null = unset) loads (and fills *hashes), else why it does not: empty value, unreadable file,
+// a file without a hash. Start-up logs "[fastmath] ERROR ... deny=missing" for it under KYTY_GPU_ACCURACY != high.
+[[nodiscard]] const char* FastMathDenyProblem(const char* value, std::vector<uint64_t>* hashes = nullptr);
 // KYTY_WAVE64_WARPS (+ _DENY / _ALLOW lists): may this wave64 compute program run as a split wave?
 [[nodiscard]] bool Wave64WarpsShaderAllowed(uint64_t shader_hash);
 // KYTY_GPU_ACCURACY=normal covers this stage ("fs"/"cs") of a shader with this hash (lists apply).
