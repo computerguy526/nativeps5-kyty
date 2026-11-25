@@ -1127,6 +1127,10 @@ target_include_directories(pipeline_compile_queue_tests PRIVATE ${inc_headers})
 add_executable(rt_session_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/RtSessionTests.cpp")
 target_include_directories(rt_session_tests PRIVATE ${inc_headers})
 
+# ThreadQos (NPS5_QOS_GPU governor, default off): mode parsing, one process per case (common/threadQos.h).
+add_executable(thread_qos_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ThreadQosTests.cpp")
+target_include_directories(thread_qos_tests PRIVATE ${inc_headers})
+
 # Shader precompile (KYTY_SHADER_PRECOMPILE): the journal file and the replay driver.
 add_executable(shader_precompile_tests EXCLUDE_FROM_ALL
 	"${KYTY_TESTS_DIR}/ShaderPrecompileTests.cpp"
@@ -1825,7 +1829,7 @@ target_include_directories(gpu_blit_shader_tests PRIVATE ${inc_headers})
 # These tests use exceptions.
 if(NOT KYTY_CLANG_CL)
 	foreach(kyty_exception_test scalar_provenance_tests lane_local_tests resource_tracking_tests shader_precompile_tests
-			virtual_memory_allocation_tests)
+			virtual_memory_allocation_tests shader_recompiler_compute_tests)
 		target_compile_options(${kyty_exception_test} PRIVATE -fexceptions)
 	endforeach()
 endif()
@@ -2010,6 +2014,16 @@ if(BUILD_TESTING)
 	add_test(NAME spirv_cache_salt COMMAND $<TARGET_FILE:spirv_cache_salt_tests>)
 	add_test(NAME pipeline_compile_queue COMMAND $<TARGET_FILE:pipeline_compile_queue_tests>)
 	add_test(NAME rt_session COMMAND $<TARGET_FILE:rt_session_tests>)
+	add_test(NAME thread_qos_math COMMAND $<TARGET_FILE:thread_qos_tests> --math)
+	add_test(NAME thread_qos_off COMMAND $<TARGET_FILE:thread_qos_tests> 0)
+	add_test(NAME thread_qos_qos COMMAND $<TARGET_FILE:thread_qos_tests> 1)
+	add_test(NAME thread_qos_rt COMMAND $<TARGET_FILE:thread_qos_tests> 2)
+	add_test(NAME thread_qos_killed COMMAND $<TARGET_FILE:thread_qos_tests> 0)
+	add_test(NAME thread_qos_group_off COMMAND $<TARGET_FILE:thread_qos_tests> 2 PRESENT)
+	set_tests_properties(thread_qos_qos PROPERTIES ENVIRONMENT "NPS5_QOS_GPU=qos")
+	set_tests_properties(thread_qos_rt PROPERTIES ENVIRONMENT "NPS5_QOS_GPU=rt")
+	set_tests_properties(thread_qos_killed PROPERTIES ENVIRONMENT "NPS5_QOS_GPU=rt;NPS5_THREAD_QOS=0")
+	set_tests_properties(thread_qos_group_off PROPERTIES ENVIRONMENT "NPS5_QOS_GPU=rt;NPS5_QOS_GPU_PRESENT=0")
 	add_test(NAME shader_code_snapshot COMMAND $<TARGET_FILE:shader_code_snapshot_tests>)
 	add_test(NAME shader_precompile COMMAND $<TARGET_FILE:shader_precompile_tests>)
 	set_tests_properties(shader_precompile PROPERTIES TIMEOUT 60)
@@ -3539,6 +3553,14 @@ if(APPLE)
 	target_include_directories(kyty_gpu PRIVATE ${inc_headers})
 	set_target_properties(kyty_gpu PROPERTIES PREFIX "" OUTPUT_NAME "kyty_gpu" SUFFIX ".dylib")
 	target_link_options(kyty_gpu PRIVATE -Wl,-undefined,error)
+	# KYTY_GPU_IPO=ON (default off): ThinLTO of the kyty_gpu dylib (the emulator-only KYTY_EMULATOR_IPO
+	# never reached it). With KYTY_PGO_GENERATE the dylib dumps its profile from a thread started at
+	# load (kytyGpuBridge.cpp, KYTY_PGO_FILE / KYTY_PGO_DUMP_SECONDS).
+	option(KYTY_GPU_IPO "ThinLTO for kyty_gpu.dylib (clang)" OFF)
+	if(KYTY_GPU_IPO)
+		target_compile_options(kyty_gpu PRIVATE -flto=thin)
+		target_link_options(kyty_gpu PRIVATE -flto=thin)
+	endif()
 endif()
 
 install(TARGETS kyty_emulator DESTINATION .)

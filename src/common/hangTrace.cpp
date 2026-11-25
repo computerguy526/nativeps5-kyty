@@ -1,5 +1,6 @@
 #include "common/hangTrace.h"
 #include "common/staticOnce.h"
+#include "common/threadQos.h"
 #if defined(__APPLE__)
 #include <pthread.h>
 #endif
@@ -1898,6 +1899,9 @@ void RecordDoneWait(uint64_t wait_ns) {
 }
 
 void RecordFlip() {
+#if defined(__APPLE__)
+	ThreadQos::NoteFrame(); // NPS5_QOS_GPU=rt governor frame counter (default off)
+#endif
 	HangWatchdog::NoteFlip();
 	CompileWatch::NoteFlip();
 	KytyEvents::NoteFlip();

@@ -54,6 +54,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -1625,3 +1626,36 @@ extern "C" KYTY_GPU_EXPORT uint64_t KytyGpuQueuePadAudio(uint32_t freq, int is_s
 	                                                 channels, is_float != 0, kUnityVolume,
 	                                                 gain * setting_scale, nullptr);
 }
+
+#if defined(KYTY_PGO_GENERATE) && !defined(_WIN32)
+// Instrumented dylib (CMake KYTY_PGO_GENERATE): the host stops the process by signal, so the profile
+// runtime's exit-time write never runs. With KYTY_PGO_FILE=<file.profraw> a thread started at load
+// writes the counters every KYTY_PGO_DUMP_SECONDS (default 20) to <file>.tmp and renames it over
+// <file>. "%p" in the name becomes the process id.
+extern "C" void __llvm_profile_set_filename(const char*);
+extern "C" int  __llvm_profile_write_file(void);
+
+__attribute__((constructor)) static void KytyGpuStartPgoDumps() {
+	const char* file = std::getenv("KYTY_PGO_FILE");
+	if (file == nullptr || *file == '\0') {
+		return;
+	}
+	const char* seconds_text = std::getenv("KYTY_PGO_DUMP_SECONDS");
+	const int   seconds      = (seconds_text != nullptr && std::atoi(seconds_text) > 0) ? std::atoi(seconds_text) : 20;
+	static std::string target = file;
+	if (const auto at = target.find("%p"); at != std::string::npos) {
+		target.replace(at, 2, std::to_string(::getpid()));
+	}
+	static const std::string temp = target + ".tmp";
+	std::thread([seconds]() {
+		for (;;) {
+			std::this_thread::sleep_for(std::chrono::seconds(seconds));
+			__llvm_profile_set_filename(temp.c_str());
+			if (__llvm_profile_write_file() == 0) {
+				std::error_code error;
+				std::filesystem::rename(temp, target, error);
+			}
+		}
+	}).detach();
+}
+#endif
