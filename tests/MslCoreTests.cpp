@@ -1598,6 +1598,8 @@ void TestOrderedCompareReadsOperandsFirst() {
     info.threads_num[1] = 1;
     info.threads_num[2] = 1;
     info.host_subgroup_size = 32;
+    info.thread_ids_num = 1;   // v0 = local thread id x (otherwise v0 is a constant and the compare folds away)
+    info.lds_storage = true;
     SR::CompileOptions options;
     options.stage = ShaderType::Compute;
     options.wave_size = 64;
