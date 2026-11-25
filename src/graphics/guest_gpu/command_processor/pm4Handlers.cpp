@@ -1391,7 +1391,11 @@ KYTY_CP_OP_PARSER(CpOpDispatchIndirect) {
 	}
 
 	const auto base_addr = cp.GetDispatchIndirectArgsBaseAddress();
-	EXIT_NOT_IMPLEMENTED(base_addr == 0);
+	if (base_addr == 0) {
+		// No SET_BASE seen (rc65 class): skip the dispatch, counted and logged, instead of an exit.
+		cp.NoteIndirectDispatchSkipped(buffer[0]);
+		return 2;
+	}
 	cp.DispatchIndirect(base_addr + buffer[0], buffer[1]);
 
 	return 2;

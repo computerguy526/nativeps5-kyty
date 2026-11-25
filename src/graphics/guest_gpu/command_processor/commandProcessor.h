@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/command_processor/cpOps.h"
+#include "graphics/guest_gpu/command_processor/indirectBase.h"
 #include "graphics/guest_gpu/command_processor/submitDefer.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pssr.h"
@@ -186,6 +187,7 @@ public:
 	[[nodiscard]] uint64_t GetDispatchIndirectArgsBaseAddress() const {
 		return m_dispatch_indirect_args_base_addr;
 	}
+	void NoteIndirectDispatchSkipped(uint32_t data_offset);
 	void SetNumInstances(uint32_t num_instances);
 	void DrawIndex(DrawIndexArgs args);
 	void DrawIndexOffset(uint32_t index_offset, uint32_t index_count);
@@ -424,8 +426,10 @@ private:
 	CpSeq::Result ExecCondExec(const CpSeq::CondExecOp& op);
 	CpSeq::Result ExecBranch(const CpSeq::BranchOp& op);
 	// The front's state of an indirect draw packet.
-	[[nodiscard]] CpSeq::DrawIndirectOp IndirectDrawOp(uint32_t data_offset,
-	                                                   uint32_t draw_initiator, bool indexed);
+	// False: the draw is skipped (no args base / unsupported initiator; counted and logged, never
+	// an exit).
+	[[nodiscard]] bool IndirectDrawOp(uint32_t data_offset, uint32_t draw_initiator, bool indexed,
+	                                  CpSeq::DrawIndirectOp& op);
 	// Reference front: one step of the parse of `execution` (KYTY_CP_SEQ_VERIFY). Returns whether
 	// the step left it suspended.
 	[[nodiscard]] bool ReferenceStep(Pm4Execution& execution);
@@ -515,6 +519,7 @@ private:
 	uint64_t         m_index_base_addr                  = 0;
 	uint64_t         m_draw_indirect_args_base_addr     = 0;
 	uint64_t         m_dispatch_indirect_args_base_addr = 0;
+	IndirectBase::State m_indirect;
 	// Front view of the persistent instance count (KYTY_CP_SEQ inline/reference): the last
 	// SET_NUM_INSTANCES value while no indirect draw followed it (known), which draws without
 	// their own count use. After an indirect draw the count is back state (m_num_instances,

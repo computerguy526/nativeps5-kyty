@@ -747,6 +747,10 @@ target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(cp_lead_bound_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CpLeadBoundTests.cpp")
 target_include_directories(cp_lead_bound_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# indirectfix: SET_BASE persistence + skip-not-exit verdicts (command_processor/indirectBase.h, header only), no GPU.
+add_executable(indirect_base_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/IndirectBaseTests.cpp")
+target_include_directories(indirect_base_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # onereg: KYTY_PREDICATION_NO_DRAIN decision (command_processor/predicationDrain.h, header only), no GPU.
 add_executable(predication_drain_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PredicationDrainTests.cpp")
 target_include_directories(predication_drain_tests PRIVATE "${KYTY_SOURCE_DIR}")
