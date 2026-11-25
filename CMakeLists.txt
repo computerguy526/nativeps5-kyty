@@ -783,6 +783,10 @@ target_include_directories(bg_queue_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(level_schedule_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/LevelScheduleTests.cpp")
 target_include_directories(level_schedule_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5 v14prep: shader-cache upgrade decision + stamp files (header only).
+add_executable(cache_upgrade_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CacheUpgradeTests.cpp")
+target_include_directories(cache_upgrade_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # nps5: per-page per-frame served-read-fault counter (header only).
 add_executable(read_fault_frame_burst_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ReadFaultFrameBurstTests.cpp")
 target_include_directories(read_fault_frame_burst_tests PRIVATE "${KYTY_SOURCE_DIR}")

@@ -64,6 +64,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/shader/recompiler/CallSplitPlan.h"
+#include "graphics/host_gpu/renderer/pipeline/cacheUpgrade.h"
 #include "graphics/shader/recompiler/CodegenFingerprint.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderCalls.h"
@@ -226,13 +227,13 @@ void LinkPixelParameters(bool link, ShaderVertexInputInfo& vertex, const ShaderP
 }
 
 // Entries from older revisions accumulate in the driver cache; start over beyond this size.
-// KYTY_DRIVER_CACHE_MAX_MB (default 512, at most 3584: vkGetPipelineCacheData sizes past 4 GiB
+// KYTY_DRIVER_CACHE_MAX_MB (default 1024 since v14prep, at most 3584: vkGetPipelineCacheData sizes past 4 GiB
 // are refused) raises it per title. GT7's pipelines are huge (usa-ratt/KytyPS5-GT7 rounds 65 and
 // 92 measured 0.8 to 3.75 GB): at 512 MB the cache was discarded at every start, so each session
 // compiled everything again.
 uint64_t DriverCacheFileCap() {
 	static const uint64_t cap = [] {
-		uint64_t mb = 512;
+		uint64_t mb = 1024; // v14prep: was 512; a complete Astro Bot cache is ~450 MB and an upgrade must not sit on the cliff
 		if (const char* value = std::getenv("KYTY_DRIVER_CACHE_MAX_MB");
 		    value != nullptr && value[0] != '\0') {
 			mb = std::clamp<uint64_t>(std::strtoull(value, nullptr, 10), 64u, 3584u);
@@ -8401,6 +8402,19 @@ struct PipelineCache::JournalReplay {
 			                 static_cast<double>(g_compile_totals.journal_ns.load()) / 1e6, retargets.load(),
 			                 built_list.load(), skipped_known.load(), missing.load(), failed.load(),
 			                 skipped_full.load(), first_level, Level(), cache_bytes);
+			// v14prep: the whole list was built: the preparation is complete (a prepare run saves first, see RunListPrepare;
+			// a play start saves the driver cache now, then stamps).
+			if (CacheUpgrade::ReplayComplete(stop.load(), skipped_full.load()) && failed.load() == 0) {
+				cache.m_cache_replay_complete.store(true, std::memory_order_release);
+				if (!cache.m_list || !cache.m_list->prepare) {
+					// KK's archive (nps5_kk_archive_flush, patch 0041) is written too when the driver has it.
+					if (auto* flush = reinterpret_cast<ArchiveFlushFn>(dlsym(RTLD_DEFAULT, "nps5_kk_archive_flush")); flush != nullptr) (void)flush(20000);
+					if (cache.m_driver_cache != nullptr && cache.WriteDriverCache(false) != 0) cache.FinishCacheStamp();
+				}
+			} else if (cache.m_cache_action != static_cast<int>(CacheUpgrade::Action::Warm)) {
+				PipelineCacheLog("Cache upgrade: the replay did not build the whole list ({} beyond the limit, {} failed{}); the cache stays "
+				                 "'preparing' and the next start resumes", skipped_full.load(), failed.load(), stop.load() ? ", stopped" : "");
+			}
 			items = {}; // the last worker: nothing reads the records any more
 		}
 	}
@@ -8965,7 +8979,7 @@ void PipelineCache::InitializePipelineJournal() {
 		}
 		replay.list_level_names = std::move(m_list->levels);
 		m_list->pipelines       = {};
-		const auto limit_mb     = EnvU64("KYTY_PIPELINE_LIST_CACHE_LIMIT_MB", 448);
+		const auto limit_mb     = EnvU64("KYTY_PIPELINE_LIST_CACHE_LIMIT_MB", CacheUpgrade::DefaultReplayLimitMb(DriverCacheFileCap() >> 20u));
 		replay.cache_limit_bytes = static_cast<size_t>(limit_mb) * 1024 * 1024;
 		PipelineCacheLog("Pipeline list: {} pipelines queued for the replay (driver cache limit {} MB)", usable,
 		                 limit_mb);
@@ -8979,7 +8993,10 @@ void PipelineCache::InitializePipelineJournal() {
 	// re-keyed since (an OS update, a library that moved from source to a prebuilt metallib, an
 	// archive segment that was never written) compiles here instead of at its first draw. A key
 	// built once in this replay is not built again.
-	const bool replay_all = EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0;
+	// v14prep: a cache that is not prepared for this stack (an upgrade, a resume, a first start with a list) always runs the
+	// full launch phase, whatever the launcher asked for (KYTY_CACHE_UPGRADE=0 leaves the choice to the launcher).
+	const bool replay_all = EnvU64("KYTY_PIPELINE_REPLAY_ALL", 0) != 0 ||
+	                        (m_cache_action != static_cast<int>(CacheUpgrade::Action::Warm) && list);
 	const bool force      = EnvU64("KYTY_PIPELINE_JOURNAL_FORCE", 0) != 0 || replay_all;
 	const bool prepare    = m_list != nullptr && m_list->prepare;
 	if (EnvU64("KYTY_PIPELINE_JOURNAL_REPLAY", 1) == 0 || replay.items.empty() ||
@@ -9379,6 +9396,7 @@ void PipelineCache::RunListPrepare() {
 	size_t     size     = 0;
 	if (m_driver_cache != nullptr) (void)m_graphics.device.getPipelineCacheData(m_driver_cache, &size, nullptr);
 	Save();
+	FinishCacheStamp();
 	const auto& t = g_compile_totals;
 	PipelineCacheLog("Prepare shaders: done in {:.1f} s (shaders {:.1f} s, pipelines and saving {:.1f} s): {} "
 	                 "permutations replayed, {} graphics pipelines built, {} compute pipelines prewarmed; driver "
@@ -9792,6 +9810,27 @@ PipelineCache::~PipelineCache() {
 	}
 }
 
+void PipelineCache::WriteCacheStamp(bool prepared) {
+	if (m_cache_stamp_path.empty()) return;
+	CacheUpgrade::Stamp stamp;
+	stamp.identity = m_cache_identity;
+	stamp.prepared = prepared;
+	if (!CacheUpgrade::Write(m_cache_stamp_path, stamp))
+		PipelineCacheLog("Cache upgrade: could not write {}", Common::PathToString(m_cache_stamp_path));
+}
+
+// The replay built the whole list (nothing cut by the cache limit, not stopped) and the driver cache is on disk (the caller saved
+// it): the cache is prepared for this stack.
+void PipelineCache::FinishCacheStamp() {
+	if (m_cache_stamp_path.empty() || !m_cache_replay_complete.load(std::memory_order_acquire)) return;
+	if (m_cache_action == static_cast<int>(CacheUpgrade::Action::Warm)) return;
+	WriteCacheStamp(true);
+	const auto removed = EnvU64("KYTY_CACHE_UPGRADE_KEEP_OLD", 0) != 0 ? 0 : CacheUpgrade::RemoveAside(m_driver_cache_path);
+	PipelineCacheLog("Cache upgrade: the cache is prepared for this stack ({}){}", m_cache_identity,
+	                 removed != 0 ? fmt::format("; the set-aside old driver cache ({} bytes) is removed", removed) : "");
+	m_cache_action = static_cast<int>(CacheUpgrade::Action::Warm);
+}
+
 void PipelineCache::InitializeDriverCache() {
 	const auto title_id = PipelineCacheFileStem();
 	if (title_id.empty()) {
@@ -9812,7 +9851,7 @@ void PipelineCache::InitializeDriverCache() {
 		                       ".pipelines.known");
 	}
 	auto path               = Common::PathToString(m_driver_cache_path);
-	const bool cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
+	bool       cache_exists = Common::File::IsFileExisting(m_driver_cache_path);
 	if (cache_exists) {
 		PipelineCacheLog("Vulkan pipeline cache: loading {}", path);
 	} else {
@@ -9820,6 +9859,36 @@ void PipelineCache::InitializeDriverCache() {
 	}
 	const auto           signature = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties());
 	std::vector<uint8_t> initial_data;
+	// nps5 v14prep: is this cache prepared for this stack? Only with a pipeline list (something to prepare from).
+	if (const auto* list_env = std::getenv("KYTY_PIPELINE_LIST");
+	    list_env != nullptr && *list_env != '\0' && EnvU64("KYTY_CACHE_UPGRADE", 1) != 0) {
+		const auto fingerprint = ShaderRecompiler::CodegenFingerprint();
+		m_cache_identity       = "v1;codegen=" + std::string(ShaderRecompiler::CodegenVersion().substr(0, 16)) +
+		                   ";fp=" + CacheUpgrade::Hash16(std::string_view(reinterpret_cast<const char*>(fingerprint.data()), fingerprint.size())) +
+		                   ";drv=" + CacheUpgrade::Hash16(signature);
+		m_cache_stamp_path = m_driver_cache_path;
+		m_cache_stamp_path.replace_extension(".cacheprep");
+		const auto disk   = CacheUpgrade::Read(m_cache_stamp_path);
+		const auto action = CacheUpgrade::Decide(disk, m_cache_identity, cache_exists, false);
+		m_cache_action    = static_cast<int>(action);
+		PipelineCacheLog("Cache upgrade: stamp {} ({}), this stack {}: {}", Common::PathToString(m_cache_stamp_path),
+		                 disk ? (disk->prepared ? "prepared for " + disk->identity : "preparing for " + disk->identity) : std::string("none"),
+		                 m_cache_identity, CacheUpgrade::ActionName(action));
+		if (action == CacheUpgrade::Action::Upgrade) {
+			// The old entries are keyed on other shader code: they only take room (replay limit, file cap). One generation is
+			// set aside and removed once the new cache is prepared; the KK archive and metallibs are separate and stay.
+			const bool moved = CacheUpgrade::SetAside(m_driver_cache_path);
+			PipelineCacheLog("Cache upgrade: {} the old driver cache {}; the whole pipeline list is built again behind the loading card",
+			                 moved ? "set aside" : "no file to set aside:", Common::PathToString(CacheUpgrade::AsidePath(m_driver_cache_path)));
+			std::error_code ec;
+			std::filesystem::remove(std::filesystem::path(m_driver_cache_path).replace_extension(".pipelines.known"), ec);
+			cache_exists = false;
+		}
+		if (action == CacheUpgrade::Action::Fresh || action == CacheUpgrade::Action::Upgrade ||
+		    action == CacheUpgrade::Action::Resume) {
+			WriteCacheStamp(false);
+		}
+	}
 	if (cache_exists) {
 		ReadDriverCacheFile(m_driver_cache_path, signature, initial_data, true);
 	}
