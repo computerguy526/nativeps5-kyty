@@ -28,6 +28,7 @@
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "hybrid/footprintGovernor.h"
 #include "hybrid/kytyGpuApi.h"
 #include "kytyGitVersion.h"
 #include "hybrid/mainLoopGate.h"
@@ -1153,8 +1154,24 @@ void StartSelfMemoryLimit() {
 	if (limit <= 0) {
 		return;
 	}
-	std::thread([limit] {
-		uint64_t peak = 0;
+	// KYTY_FOOTPRINT_GOVERNOR=1 (default off): see hybrid/footprintGovernor.h. Never changes the limit.
+	const auto gov_config = Hybrid::FootprintConfigFromEnv(
+	    std::getenv("KYTY_FOOTPRINT_GOVERNOR"), std::getenv("KYTY_FOOTPRINT_SOFT_PCT"),
+	    std::getenv("KYTY_FOOTPRINT_HOLD_MS"), std::getenv("KYTY_FOOTPRINT_FACTOR_PCT"),
+	    static_cast<uint64_t>(limit));
+	if (gov_config.enabled) {
+		Hybrid::FootprintGovernor probe(gov_config);
+		std::fprintf(stderr,
+		             "[footprint-gov] on: soft mark %llu MiB (%u%% of %ld), leave below %llu MiB for %u ms, "
+		             "budget factor %u%%\n",
+		             static_cast<unsigned long long>(probe.SoftMib()), gov_config.soft_pct, limit,
+		             static_cast<unsigned long long>(probe.LeaveMib()), gov_config.hold_ms,
+		             gov_config.factor_permille / 10);
+	}
+	std::thread([limit, gov_config] {
+		uint64_t                 peak = 0;
+		Hybrid::FootprintGovernor governor(gov_config);
+		Hybrid::LogGate           log_gate(1000);
 		for (;;) {
 			task_vm_info_data_t    info {};
 			mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
@@ -1162,6 +1179,29 @@ void StartSelfMemoryLimit() {
 			              &count) == KERN_SUCCESS) {
 				const uint64_t mib = info.phys_footprint >> 20u;
 				peak               = std::max(peak, mib);
+				if (governor.Usable()) {
+					const auto now_ms = static_cast<uint64_t>(
+					    std::chrono::duration_cast<std::chrono::milliseconds>(
+					        std::chrono::steady_clock::now().time_since_epoch())
+					        .count());
+					const auto transition = governor.Step(mib, now_ms);
+					if (transition != Hybrid::FootprintGovernor::Transition::None) {
+						const bool on = transition == Hybrid::FootprintGovernor::Transition::Activated;
+						Hybrid::g_footprint_budget_permille.store(governor.FactorPermille(),
+						                                          std::memory_order_relaxed);
+						if (on) {
+							Hybrid::g_footprint_pool_flush.store(true, std::memory_order_relaxed);
+						}
+						if (log_gate.Allow(now_ms)) {
+							std::fprintf(stderr,
+							             "[footprint-gov] %s: footprint %llu MiB (soft %llu, limit %ld), "
+							             "budget factor %u%%\n",
+							             on ? "ACTIVE" : "released", static_cast<unsigned long long>(mib),
+							             static_cast<unsigned long long>(governor.SoftMib()), limit,
+							             governor.FactorPermille() / 10);
+						}
+					}
+				}
 				if (mib > static_cast<uint64_t>(limit)) {
 					std::fprintf(stderr,
 					             "[RED] self memory limit: kyty: footprint %llu MiB > %ld MiB, "

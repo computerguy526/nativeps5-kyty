@@ -1298,6 +1298,10 @@ target_include_directories(shader_code_snapshot_tests PRIVATE ${inc_headers})
 add_executable(vram_budget_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/VramBudgetTests.cpp")
 target_include_directories(vram_budget_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# nps5 memgov: KYTY_FOOTPRINT_GOVERNOR state machine (hybrid/footprintGovernor.h), header only.
+add_executable(footprint_governor_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/FootprintGovernorTests.cpp")
+target_include_directories(footprint_governor_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # Device-capability choices for AMD, Intel and older NVIDIA GPUs (graphics/host_gpu/deviceCompat.h).
 add_executable(device_compat_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/DeviceCompatTests.cpp")
 target_link_libraries(device_compat_tests Vulkan::Headers)
@@ -2109,6 +2113,7 @@ if(BUILD_TESTING)
 		ENVIRONMENT "KYTY_PIPELINE_PREFETCH=1;KYTY_DRAW_RUN=exit;KYTY_PIPELINE_COLD_SALT=128"
 		TIMEOUT 180)
 	add_test(NAME vram_budget COMMAND $<TARGET_FILE:vram_budget_tests>)
+	add_test(NAME footprint_governor COMMAND $<TARGET_FILE:footprint_governor_tests>)
 	add_test(NAME device_compat COMMAND $<TARGET_FILE:device_compat_tests>)
 	add_test(NAME common COMMAND $<TARGET_FILE:common_tests>)
 	# Upstream's gtest targets (not registered upstream; built by name here).
@@ -3328,6 +3333,7 @@ if(BUILD_TESTING)
 		pipeline_list_programs_tests
 		pipeline_list_game_files_tests
 		vram_budget_tests
+		footprint_governor_tests
 		device_compat_tests
 		shader_precompile_tests
 		common_tests

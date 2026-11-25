@@ -22,6 +22,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/vramBudget.h"
 #include "graphics/host_gpu/vramStats.h"
+#include "hybrid/footprintGovernor.h"
 
 #include <algorithm>
 #include <array>
@@ -752,6 +753,10 @@ uint64_t GraphicContext::ReleaseRetainedMemory() {
 }
 
 void GraphicContext::TrimRetiredImages() {
+	// nps5 footprint governor: one flush of the retained native images when it activates.
+	if (Hybrid::g_footprint_pool_flush.exchange(false, std::memory_order_relaxed)) {
+		ClearRetiredImages();
+	}
 	const auto idle = RetiredImageIdleLimit();
 	if (idle.count() == 0 || allocator == nullptr) {
 		return;
@@ -950,6 +955,10 @@ uint32_t GraphicContext::GetHeapUsage(std::span<HeapUsage, VK_MAX_MEMORY_HEAPS> 
 }
 
 uint64_t GraphicContext::GetTotalMemoryBudget() const {
+	return Hybrid::FootprintScaledBudget(GetTotalMemoryBudgetUnscaled());
+}
+
+uint64_t GraphicContext::GetTotalMemoryBudgetUnscaled() const {
 	if (allocator == nullptr) {
 		return 0;
 	}

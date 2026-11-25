@@ -318,7 +318,9 @@ struct GraphicContext {
 	void               LogMemoryBudget() const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
+	// The planning budget, scaled down while the nps5 footprint governor is active (KYTY_FOOTPRINT_GOVERNOR).
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
+	[[nodiscard]] uint64_t GetTotalMemoryBudgetUnscaled() const;
 
 	struct HeapUsage {
 		uint64_t usage        = 0; // Whole process, as reported by VK_EXT_memory_budget.
