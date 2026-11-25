@@ -57,6 +57,19 @@ int main() {
 	o = PrepareArchiveWait(true, true, FakeFlush, 1000, 5.0, sleep);
 	Check(!o.synced && sleeps == 2 && o.note.find("segment archive") != std::string::npos, "no segment archive: falls back");
 
+	// M3: the ICD is opened RTLD_LOCAL, so the global lookup misses and the loaded image's handle finds the export
+	static int fake_export;
+	const auto miss = [](const char*) -> void* { return nullptr; };
+	const auto hit  = [](const char*) -> void* { return &fake_export; };
+	const char* via = nullptr;
+	Check(ResolveDriverSymbol("nps5_kk_archive_flush", miss, hit, &via) == &fake_export && std::string(via) == "driver image handle",
+	      "image-handle lookup finds the export the global lookup misses");
+	Check(ResolveDriverSymbol("x", hit, miss, &via) == &fake_export && std::string(via) == "global namespace", "global hit wins");
+	Check(ResolveDriverSymbol("x", miss, miss, &via) == nullptr && std::string(via) == "not found", "both miss: null");
+	Check(ResolveDriverSymbol("x", nullptr, hit) == &fake_export && ResolveDriverSymbol("x", nullptr, nullptr) == nullptr, "null lookups are safe");
+	Check(ClampFlushWaitMs(0) == 1 && ClampFlushWaitMs(60000) == 60000 && ClampFlushWaitMs(0x100000000ull) == 0xFFFFFFFFu &&
+	          ClampFlushWaitMs(0xFFFFFFFFull) == 0xFFFFFFFFu, "wait ms clamps to [1, UINT32_MAX]");
+
 	std::puts("prepare_archive_flush_tests: all passed");
 	return 0;
 }

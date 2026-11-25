@@ -93,6 +93,7 @@
 #include <unistd.h>
 #endif
 #ifdef __APPLE__
+#include <mach-o/dyld.h>
 #include <pthread/qos.h>
 #include <sys/resource.h>
 #include <sys/types.h>
@@ -9350,7 +9351,25 @@ void PipelineCache::RunListPrepare() {
 		// nps5 prepfast S1 (KYTY_PREPARE_FLUSH_SYNC=1): the driver's nps5_kk_archive_flush writes the archive and returns, no
 		// fixed sleep; without the gate or the symbol, or when it fails, the sleep below is the same as before.
 		const bool sync = EnvU64("KYTY_PREPARE_FLUSH_SYNC", 0) != 0;
-		auto*      flush = sync ? reinterpret_cast<ArchiveFlushFn>(dlsym(RTLD_DEFAULT, "nps5_kk_archive_flush")) : nullptr;
+		const char* flush_via = "not looked up";
+		auto*       flush = sync ? reinterpret_cast<ArchiveFlushFn>(ResolveDriverSymbol(
+		                               "nps5_kk_archive_flush", [](const char* n) { return dlsym(RTLD_DEFAULT, n); },
+		                               [](const char* n) -> void* {
+#if defined(__APPLE__)
+			                               // The loader opens the KosmicKrisp ICD RTLD_LOCAL (shaders.cpp KkTag, metalfx.cpp): walk the images.
+			                               for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+				                               const char* image = _dyld_get_image_name(i);
+				                               if (image == nullptr || std::strstr(image, "kosmickrisp") == nullptr) continue;
+				                               if (void* handle = dlopen(image, RTLD_NOLOAD | RTLD_LAZY); handle != nullptr) {
+					                               if (void* sym = dlsym(handle, n); sym != nullptr) return sym;
+				                               }
+			                               }
+#endif
+			                               return nullptr;
+		                               },
+		                               &flush_via))
+		                         : nullptr;
+		if (sync) PipelineCacheLog("Prepare shaders: nps5_kk_archive_flush {} ({})", flush != nullptr ? "found" : "NOT found", flush_via);
 		if (has_dir && !(sync && flush != nullptr)) {
 			PipelineCacheLog(
 			    "Prepare shaders: waiting {:.0f} s for the driver's pipeline archive to be written",
@@ -9359,7 +9378,7 @@ void PipelineCache::RunListPrepare() {
 		std::fflush(nullptr);
 		const auto flush_begin = CompileClockNs();
 		const auto outcome = PrepareArchiveWait(
-		    has_dir, sync, flush, static_cast<uint32_t>(EnvU64("KYTY_PREPARE_FLUSH_WAIT_MS", 60000)), period,
+		    has_dir, sync, flush, ClampFlushWaitMs(EnvU64("KYTY_PREPARE_FLUSH_WAIT_MS", 60000)), period,
 		    [](double seconds) { std::this_thread::sleep_for(std::chrono::duration<double>(seconds)); });
 		if (outcome.synced) {
 			PipelineCacheLog("Prepare shaders: archive flushed on demand ({} pipelines, {:.2f} s), no fixed wait",
