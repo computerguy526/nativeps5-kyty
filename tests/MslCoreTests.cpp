@@ -1583,6 +1583,51 @@ void TestKkLayoutText() {
   Check(Msl::KkLayoutText(empty) == push, "kk-layout: no descriptors = push line only");
 }
 
+// reprofix: V_CMP_U/O_F32/F16 read BOTH operands before either NaN test (the order of every release before v1.4).
+// The IR numbering, so the MSL text, so the sha256 of every verified Metal override row, depends on it: b1f154a21
+// read src1 after isnan(src0) and 263 of 553 verified rows stopped reproducing. Synthetic program (no game code):
+//   v_lshlrev_b32 v1, 2, v0 / v_cmp_u_f{32,16} vcc, v0, v1 / v_cndmask_b32 v2, 0, v1, vcc / ds_write_b32 v1, v2 / s_endpgm
+// The two FPIsNan32 must be adjacent (operand reads and bit casts first). F16 keeps upstream's widening: still two
+// F32 NaN tests, combined by one LogicalOr.
+void TestOrderedCompareReadsOperandsFirst() {
+  for (const bool half : {false, true}) {
+    const std::vector<uint32_t> code = {0x34020082u, half ? 0x7dd00300u : 0x7c100300u, 0x02040280u,
+                                        0xd8340000u, 0x00000201u, 0xbf810000u};
+    ShaderComputeInputInfo info;
+    info.threads_num[0] = 64;
+    info.threads_num[1] = 1;
+    info.threads_num[2] = 1;
+    info.host_subgroup_size = 32;
+    SR::CompileOptions options;
+    options.stage = ShaderType::Compute;
+    options.wave_size = 64;
+    options.dump_ir = false;
+    options.emit_msl = true;
+    options.emit_spirv = false;
+    std::vector<uint32_t> ud(16, 0);
+    options.user_data = ud;
+    options.input_info.compute = &info;
+    auto translated = SR::TranslateProgram(code, options);
+    std::vector<ValueOpcode> ops;
+    for (auto *block : translated.program.blocks) {
+      for (const auto &inst : block->Instructions()) {
+        ops.push_back(inst.GetOpcode());
+      }
+    }
+    std::vector<size_t> nan;
+    size_t ors = 0;
+    for (size_t i = 0; i < ops.size(); i++) {
+      if (ops[i] == ValueOpcode::FPIsNan32) nan.push_back(i);
+      if (ops[i] == ValueOpcode::LogicalOr) ors++;
+    }
+    const std::string tag = half ? "v_cmp_u_f16" : "v_cmp_u_f32";
+    Check(nan.size() == 2, tag + ": two F32 NaN tests (" + std::to_string(nan.size()) + ")");
+    Check(nan.size() == 2 && nan[1] == nan[0] + 1,
+          tag + ": both operands are read before the NaN tests (FPIsNan32 adjacent)");
+    Check(ors >= 1, tag + ": unordered = isnan(a) || isnan(b)");
+  }
+}
+
 int main() {
   TestBuilder();
   TestAluGolden();
@@ -1611,6 +1656,7 @@ int main() {
   TestUnknownOpNamed();
   TestVsLiveAdce();
   TestKkLayoutText();
+  TestOrderedCompareReadsOperandsFirst();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

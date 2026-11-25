@@ -76,13 +76,16 @@ void Translator::EmitFloatOrderedCompare(const Decoder::Instruction& inst, bool 
 	// V_CMP_U_F16 (b1f154a21): F16 operands are widened to F32 for the NaN test.
 	const auto is_nan_op =
 	    type == IR::Type::F64 ? IR::ValueOpcode::FPIsNan64 : IR::ValueOpcode::FPIsNan32;
-	const auto is_nan = [&](const Decoder::Operand& operand) {
-		const auto value =
-		    type == IR::Type::F16 ? IR::Value(ReadF16AsF32(operand)) : ReadOperand(operand, type);
-		return IR::U1(ir.Emit(is_nan_op, {value}));
+	// reprofix: BOTH operands are read before either NaN test, the emission order of every earlier release. The IR value
+	// numbering (so the MSL text, so the sha256 of every verified Metal override row) depends on it: reading src1 after
+	// isnan(src0) moved a BitCast past an IsNan and broke reproduction of 263 of 553 verified rows.
+	const auto read = [&](const Decoder::Operand& operand) {
+		return type == IR::Type::F16 ? IR::Value(ReadF16AsF32(operand)) : ReadOperand(operand, type);
 	};
-	const auto lhs       = is_nan(inst.src0);
-	const auto unordered = ir.LogicalOr(lhs, is_nan(inst.src1));
+	const auto lhs       = read(inst.src0);
+	const auto rhs       = read(inst.src1);
+	const auto lhs_nan   = IR::U1(ir.Emit(is_nan_op, {lhs}));
+	const auto unordered = ir.LogicalOr(lhs_nan, IR::U1(ir.Emit(is_nan_op, {rhs})));
 	EmitCompareResult(inst, ordered ? ir.LogicalNot(unordered) : unordered, false, cmpx);
 }
 
