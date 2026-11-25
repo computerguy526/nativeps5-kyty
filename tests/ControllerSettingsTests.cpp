@@ -1020,6 +1020,8 @@ struct LoopResult {
 	size_t   backlog;
 	uint64_t lag_us; // age of the newest handled sensor event when its step ran
 	bool     button_handled_in_step;
+	bool     live;
+	bool     button_in_state;
 };
 
 LoopResult RunWindowLoop(int per_step_budget, bool with_button) {
@@ -1071,7 +1073,11 @@ LoopResult RunWindowLoop(int per_step_budget, bool with_button) {
 			button_pending = false;
 		}
 	}
-	return {queue.size() - head, lag, button_in_step};
+	MotionStatus status {};
+	PadData      data {};
+	const bool   live = PadGetMotionStatus(1, &status) && status.live;
+	const bool   cross = PadReadState(1, &data) == 0 && (data.buttons & PAD_BUTTON_CROSS) != 0;
+	return {queue.size() - head, lag, button_in_step, live, cross};
 }
 
 void TestWindowLoopKeepsUpWithSensorEvents() {
@@ -1085,11 +1091,8 @@ void TestWindowLoopKeepsUpWithSensorEvents() {
 	Check(drained.backlog < 64, "the drained loop left a backlog");
 	Check(drained.lag_us < 20000, "motion handled by the drained loop is stale");
 	Check(drained.button_handled_in_step, "a button behind sensor events was not handled in its step");
-	PadData data {};
-	MotionStatus status {};
-	Check(PadGetMotionStatus(1, &status) && status.live, "pad not live after the drained loop");
-	Check(PadReadState(1, &data) == 0 && (data.buttons & PAD_BUTTON_CROSS) != 0,
-	      "the button did not reach the pad state");
+	Check(drained.live, "pad not live after the drained loop");
+	Check(drained.button_in_state, "the button did not reach the pad state");
 	// The time budget stops a step that would run long.
 	int  handled = 0;
 	uint64_t clock = 0;
