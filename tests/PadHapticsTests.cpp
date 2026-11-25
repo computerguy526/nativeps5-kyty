@@ -289,6 +289,19 @@ bool SendGamepadEffect(SDL_Gamepad* pad, const void* data, int size) {
 #define SDL_SendGamepadEffect         Fake::SendGamepadEffect
 #define SDL_GetGamepads               Fake::GetGamepads
 #define SDL_GetGamepadConnectionState Fake::GetGamepadConnectionState
+// The rumble fallback shapes the audio envelope with NPS5_RUMBLE_SCALE / FLOOR / GAMMA / DECAY (defaults 0.5 / 0.08 / 1.6 / 0.80 since
+// the 1.0.3 'gentler HD-haptics' change). These tests assert the unshaped (identity) mapping, so they pin it: the production code reads the
+// variables when its static RumbleShape is constructed, so this initializer must run before the include below (same translation unit,
+// definition order), and a developer's or a CI shell's NPS5_RUMBLE_* values (the test-run rule sets NPS5_RUMBLE_SCALE=0) must not leak in.
+namespace {
+const int kPinRumbleShape = [] {
+	setenv("NPS5_RUMBLE_SCALE", "1", 1);
+	setenv("NPS5_RUMBLE_FLOOR", "0", 1);
+	setenv("NPS5_RUMBLE_GAMMA", "1", 1);
+	setenv("NPS5_RUMBLE_DECAY", "0", 1);
+	return 0;
+}();
+} // namespace
 #include "libs/dualSenseBluetooth.cpp"
 #include "libs/dualSenseHaptics.cpp"
 #include "libs/audio.cpp"
@@ -511,11 +524,12 @@ void TestSpeaker() {
 	Check(Haptics::SetVibration(1, 100, 50), "set rumble failed");
 	const std::array<float, 4> stereo {0.5f, -0.25f, 1.0f, 0.0f};
 	Queue(speaker, stereo.data());
-	ExpectPcm({0.5f, -0.25f, 0, 0, 1.0f, 0, 0, 0});
+	// The speaker is one mono driver: both source channels are mixed (the mean when both are non-zero, else the sum), then sent to both outputs.
+	ExpectPcm({0.125f, 0.125f, 0, 0, 1.0f, 1.0f, 0, 0});
 	Check(rumble.large == 100 * 0x101, "speaker audio stopped the rumble");
 	const auto routed = effects[1];
-	Check(routed.size() == 38 && routed[0] == 0xa0 && routed[1] == 0x80 && routed[5] == 0x64 &&
-	          routed[7] == 0x30 && routed[37] == 0x02,
+	Check(routed.size() == 38 && routed[0] == 0xa0 && routed[1] == 0x82 && routed[5] == 0x64 &&
+	          routed[7] == 0x30 && routed[9] == 0x10 && routed[37] == 0x02,
 	      "speaker not routed like the Linux driver");
 	Check(Haptics::Queue(speaker.get(), 1, stereo.data(), 2, 2, true, unity.data()) ==
 	          2 * 1000000 / 48000,
