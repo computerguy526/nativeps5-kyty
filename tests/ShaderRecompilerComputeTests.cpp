@@ -28,6 +28,7 @@
 #include "graphics/host_gpu/memoryTracker.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/htilePrefixRebind.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/cache/uploadDma.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -13635,7 +13636,9 @@ public:
           "sampling");
       DestroyBuffer(&layered_raw_d16_readback);
 
-      // RE2 converts a prefix of a 32-layer HTile depth array to R32F storage.
+      // RE2 converts a prefix of a 32-layer HTile depth array to R32F storage. Upstream's case needs the (default-off, v1.4 review M6)
+      // KYTY_HTILE_PREFIX_REBIND gate: forced on for this case only, the rest of the suite runs the shipped default.
+      HtilePrefixRebindOverride().store(1, std::memory_order_relaxed);
       constexpr uint32_t htile_layers = 32;
       constexpr uint64_t htile_slice_size = 0x10000;
       auto htile_depth = MakeLinearDesc(
@@ -13728,6 +13731,7 @@ public:
                   ReadCachedTexel(name, context, prefix_id, {}, {1, 1, 1}, htile_layers - 1) ==
                       std::vector<u32>{std::bit_cast<u32>(0.25f)},
               "rebinding a depth prefix discarded the remaining storage layers");
+      HtilePrefixRebindOverride().store(-1, std::memory_order_relaxed);
 
       auto layered_stencil_desc = MakeLinearDesc(
           base + 0x27d4000, 6 * 4 * sizeof(float),
@@ -62166,10 +62170,6 @@ int main(int argc, char **argv) {
   // the PolygonModeRasterization export-routing cases are upstream's). An explicit value wins.
   if (std::getenv("KYTY_CB_SHADER_MASK_EXPORTS") == nullptr) {
     SetEnvironment("KYTY_CB_SHADER_MASK_EXPORTS", "1");
-  }
-  // Upstream 6dcdcd44's HTile depth-prefix rebind case needs its (default-off here, v1.4 review M6) gate.
-  if (std::getenv("KYTY_HTILE_PREFIX_REBIND") == nullptr) {
-    SetEnvironment("KYTY_HTILE_PREFIX_REBIND", "1");
   }
   if ((argc == 3 || argc == 4) && std::strcmp(argv[1], "--gi-decode-inventory") == 0) {
     EnsureConfigInitialized();

@@ -8265,19 +8265,6 @@ struct PipelineCache::JournalReplay {
 				BgLoop();
 				break;
 			}
-			// KYTY_SHADER_PREPARE=scene|tier: the hold ends with the last tier-1 record SETTLED, built or set aside (a set-aside one
-			// is retried behind the game; counting only the built ones kept the hold and the background part waiting up to 900 s).
-			const auto settle_tier1 = [&](bool was_deferred) {
-				if ((hold_scene || hold_tier) && index < first_level && gate.Settle(was_deferred)) {
-					PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are settled after "
-					                 "{:.1f} s ({} of them set aside for a retry behind the game); {} more go "
-					                 "on in the background",
-					                 first_level, Level(),
-					                 static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
-					                 gate.deferred.load(), order.size() - first_level);
-					LaunchHoldRelease(true);
-				}
-			};
 			const bool can_defer = early && precompiler != nullptr && !precompiler->GetProgress().finished;
 			if (!Replay(items[order[index]], can_defer)) {
 				if (early_rounds) {
@@ -8286,8 +8273,9 @@ struct PipelineCache::JournalReplay {
 					{
 						std::scoped_lock lock(deferred_mutex);
 						deferred.push_back(order[index]);
+						if (index < first_level) tier1_deferred.insert(order[index]);
 					}
-					settle_tier1(true);
+					if (index < first_level) gate.Defer();
 					continue;
 				}
 				// The replay publishes in about the order the pipelines were first needed: wait up to
@@ -8306,12 +8294,13 @@ struct PipelineCache::JournalReplay {
 					{
 						std::scoped_lock lock(deferred_mutex);
 						deferred.push_back(order[index]);
+						if (index < first_level) tier1_deferred.insert(order[index]);
 					}
-					settle_tier1(true);
+					if (index < first_level) gate.Defer();
 					continue;
 				}
 			}
-			settle_tier1(false);
+			if (index < first_level) SettleTier1();
 			done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::Get().pipeline_done.fetch_add(1, std::memory_order_relaxed);
 			CompileProgress::UnitAddDone(1);
@@ -8329,6 +8318,7 @@ struct PipelineCache::JournalReplay {
 					deferred.pop_back();
 				}
 				(void)Replay(items[item], false);
+				SettleDeferredTier1(item, true); // the shader replay is done: this was the last chance to build it
 				done.fetch_add(1, std::memory_order_relaxed);
 				MaybeReport();
 			}
@@ -8355,6 +8345,27 @@ struct PipelineCache::JournalReplay {
 		}
 	}
 
+	// KYTY_SHADER_PREPARE=scene|tier: one tier-1 record is settled (built); the last one releases the launch hold.
+	void SettleTier1() {
+		if (!(hold_scene || hold_tier) || !gate.Settle()) return;
+		PipelineCacheLog("Launch phase (scene): the {} pipelines of '{}' are settled after "
+		                 "{:.1f} s ({} of them were set aside and built later); {} more go "
+		                 "on in the background",
+		                 first_level, Level(), static_cast<double>(CompileClockNs() - begin_ns) / 1e9,
+		                 gate.deferred.load(), order.size() - first_level);
+		LaunchHoldRelease(true);
+	}
+	// A set-aside tier-1 record settles only when it is really built (a retry that succeeded) or in the final pass after the shader
+	// replay finished (v1.4 round-2 R2-M2: settling at the set-aside made the hold a no-op under JOURNAL_EARLY=2).
+	void SettleDeferredTier1(uint32_t item, bool final_pass) {
+		bool tier1 = false;
+		{
+			std::scoped_lock lock(deferred_mutex);
+			if (final_pass || !tier1_deferred.empty()) tier1 = tier1_deferred.erase(item) != 0;
+		}
+		if (tier1) SettleTier1();
+	}
+
 	// KYTY_PIPELINE_JOURNAL_EARLY=2: while the shader replay runs, the set-aside records are tried
 	// again about every second once it has published more; those still missing stay set aside for
 	// the final pass after the replay. Each worker takes the whole list in turn.
@@ -8379,6 +8390,7 @@ struct PipelineCache::JournalReplay {
 					still.push_back(item);
 					continue;
 				}
+				SettleDeferredTier1(item, false);
 				done.fetch_add(1, std::memory_order_relaxed);
 				MaybeReport();
 			}
@@ -8727,6 +8739,7 @@ struct PipelineCache::JournalReplay {
 	const bool            early_rounds = EnvU64("KYTY_PIPELINE_JOURNAL_EARLY", 0) >= 2;
 	std::mutex            deferred_mutex;
 	std::vector<uint32_t> deferred; // indices into items: modules not published at the first try
+	std::unordered_set<uint32_t> tier1_deferred; // the tier-1 ones among them (under deferred_mutex): not settled until built or the final pass
 	std::atomic<uint64_t> created {0}, unpredicted {0}, logged_misses {0}, already_created {0};
 	std::mutex                   game_keys_mutex; // KYTY_PIPELINE_ADOPT: content keys the game created
 	std::unordered_set<uint64_t> game_keys;
@@ -9357,6 +9370,8 @@ void PipelineCache::RunListPrepare() {
 		}
 		// nps5 prepfast S1 (KYTY_PREPARE_FLUSH_SYNC=1): the driver's nps5_kk_archive_flush writes the archive and returns, no
 		// fixed sleep; without the gate or the symbol, or when it fails, the sleep below is the same as before.
+		// KNOWN ISSUE (KK patch 0041, needs a KK rebuild): kk_flush_segment_n returns 0 ("synced") on a failed or empty write, so with
+		// SYNC=1 the fallback sleep is skipped after a failed write. Default stays off until the KK side returns the error.
 		const bool sync = EnvU64("KYTY_PREPARE_FLUSH_SYNC", 0) != 0;
 		const char* flush_via = "not looked up";
 		auto*       flush = sync ? reinterpret_cast<ArchiveFlushFn>(ResolveDriverSymbol(

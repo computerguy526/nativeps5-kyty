@@ -7,18 +7,26 @@
 // evidence. So it is behind KYTY_HTILE_PREFIX_REBIND=1 (default OFF = the v1.3.1 checks).
 // NEEDS an ASTRO + SAROS regression before it can be default-on (and ideally the address/layer-boundary check kept).
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
 namespace Libs::Graphics {
 
+// Test hook: -1 = follow the switch, 0/1 = forced (a scoped case in the compute GPU suite; the default-off path keeps its coverage).
+inline std::atomic<int>& HtilePrefixRebindOverride() {
+	static std::atomic<int> value {-1};
+	return value;
+}
+
 inline bool HtilePrefixRebindEnabled() {
 	static const bool on = [] {
 		const char* v = std::getenv("KYTY_HTILE_PREFIX_REBIND");
 		return v != nullptr && std::strcmp(v, "1") == 0;
 	}();
-	return on;
+	const int forced = HtilePrefixRebindOverride().load(std::memory_order_relaxed);
+	return forced < 0 ? on : forced != 0;
 }
 
 // The terms of retain_cached_layout the pick changed. Off: bytes_per_block equal, same base address, cached layers != 0 and a request

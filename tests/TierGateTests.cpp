@@ -2,6 +2,7 @@
 #include "graphics/host_gpu/renderer/pipeline/tierGate.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <functional>
 #include <mutex>
@@ -48,11 +49,28 @@ struct Sim {
 			if (!ok) {
 				std::scoped_lock lock(m);
 				deferred.push_back(index);
+				gate.Defer(); // set aside: counted, NOT settled
 			} else {
 				built++;
+				if (gate.Settle()) releases++;
 			}
-			if (gate.Settle(!ok)) releases++;
 		}
+	}
+	// RetryDeferredRounds: one round while the shader replay runs; a record settles only if its retry builds it.
+	void RetryRound(const std::function<bool(size_t)>& retry) {
+		std::vector<size_t> round, still;
+		{ std::scoped_lock lock(m); round.swap(deferred); }
+		for (auto i: round) {
+			if (retry(i)) { built++; if (gate.Settle()) releases++; } else still.push_back(i);
+		}
+		std::scoped_lock lock(m);
+		deferred.insert(deferred.end(), still.begin(), still.end());
+	}
+	// The final pass after the shader replay: every remaining record is tried once and settles whatever the outcome.
+	void FinalPass() {
+		std::vector<size_t> rest;
+		{ std::scoped_lock lock(m); rest.swap(deferred); }
+		for (auto i: rest) { built++; if (gate.Settle()) releases++; }
 	}
 	void Run(size_t tier1, size_t tier2, unsigned workers) {
 		first_level = tier1;
@@ -71,17 +89,39 @@ int main() {
 		CHECK(s.releases == 1 && s.bg_started == 30 && s.bg_started_before_tier1 == 0 && s.built == 50 && s.deferred.empty());
 		CHECK(s.gate.Tier1Settled() && s.gate.deferred == 0);
 	}
-	{ // M4: some tier-1 records are set aside (modules not published): the hold still releases and the background part still starts
+	{ // some tier-1 records are set aside (modules not published): they do NOT settle; the hold waits for their retry
 		Sim s; s.replay = [](size_t i) { return i % 3 != 0; };
-		s.Run(21, 10, 3);
-		CHECK(s.releases == 1);
-		CHECK(s.bg_started == 10 && s.bg_started_before_tier1 == 0);
-		CHECK(s.deferred.size() == 7 && s.gate.deferred == 7 && s.built == 14 + 10);
+		s.Run(21, 0, 1);
+		CHECK(s.releases == 0 && !s.gate.Tier1Settled() && s.deferred.size() == 7 && s.gate.deferred == 7);
+		s.RetryRound([](size_t) { return true; });
+		CHECK(s.releases == 1 && s.gate.Tier1Settled() && s.deferred.empty());
 	}
-	{ // M4 worst case: every tier-1 record deferred (EARLY=2 with the shader replay still running): no spin, release once
+	{ // R2-M2: JOURNAL_EARLY=2, every tier-1 record deferred at once: the hold does NOT release until the retries or the precompile end
 		Sim s; s.replay = [](size_t) { return false; };
-		s.Run(8, 5, 2);
-		CHECK(s.releases == 1 && s.bg_started == 5 && s.deferred.size() == 8);
+		s.Run(8, 0, 2);
+		CHECK(s.releases == 0 && !s.gate.Tier1Settled() && s.deferred.size() == 8 && s.gate.deferred == 8);
+		s.RetryRound([](size_t) { return false; }); // the shader replay published nothing useful yet: still held
+		CHECK(s.releases == 0 && s.deferred.size() == 8);
+		s.RetryRound([](size_t i) { return i < 4; }); // half now buildable
+		CHECK(s.releases == 0 && s.deferred.size() == 4 && !s.gate.Tier1Settled());
+		s.FinalPass(); // precompile finished: the rest is tried once, then released exactly once
+		CHECK(s.releases == 1 && s.gate.Tier1Settled() && s.deferred.empty());
+	}
+	{ // final pass alone releases once (the precompile ended before any retry round ran)
+		Sim s; s.replay = [](size_t) { return false; };
+		s.Run(5, 0, 3);
+		CHECK(s.releases == 0);
+		s.FinalPass();
+		CHECK(s.releases == 1);
+	}
+	{ // the background part (tier 2) waits for the deferred tier-1 record, and starts once its retry built it
+		Sim s; s.replay = [](size_t i) { return i != 0; };
+		std::thread run([&] { s.Run(4, 6, 2); });
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		CHECK(s.bg_started == 0 && s.releases == 0);
+		s.RetryRound([](size_t) { return true; });
+		run.join();
+		CHECK(s.releases == 1 && s.bg_started == 6 && s.bg_started_before_tier1 == 0);
 	}
 	{ // tier 1 empty (first_level == 0): nothing to settle, the background part starts at once, no release from the workers
 		Sim s; s.replay = [](size_t) { return true; };
@@ -95,12 +135,11 @@ int main() {
 		TierGate g2; g2.Reset(2);
 		std::atomic<bool> go {false};
 		int n = 0;
-		CHECK(g2.WaitTier1(go, [&] { if (++n == 2) { g2.Settle(false); g2.Settle(true); } }) && n == 2);
-		CHECK(g2.deferred == 1);
+		CHECK(g2.WaitTier1(go, [&] { if (++n == 2) { g2.Settle(); g2.Settle(); } }) && n == 2);
 	}
 	{ // Settle reports the last one exactly once, even past the count (a late duplicate never re-releases)
 		TierGate g; g.Reset(3);
-		CHECK(!g.Settle(false) && !g.Settle(true) && g.Settle(false) && !g.Settle(false));
+		CHECK(!g.Settle() && !g.Settle() && g.Settle() && !g.Settle());
 	}
 	{ // BgPoll scene entry: a new scene in the database promotes once; unknown scenes are remembered without promoting; same scene is idle
 		CHECK(!SceneEntered("", "", -1).remember);

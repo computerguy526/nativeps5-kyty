@@ -29,12 +29,14 @@ int main(int argc, char** argv) {
 		CHECK(SarosProgramMayUseDiskCache(kHand, false) && SarosProgramMayUseDiskCache(kPlain, true));
 	} else {
 		setenv("KYTY_SAROS_HANDSHADERS", "1", 1);
+		setenv("KYTY_SAROS_SAMPLE_LOD0", "1", 1);
+		setenv("KYTY_SAROS_SAMPLE_DBG", "1", 1);
 		setenv("KYTY_SAROS_NANITE_RAW", "1", 1);
 		if (std::strcmp(mode, "cache") == 0) setenv("KYTY_SAROS_PROGRAM_CACHE", "1", 1);
 		// the switches change the translation: non-zero variant for the listed hand shader, the raw PS and every mesh program
 		const auto hand = SarosCacheVariant(kHand, false), raw = SarosCacheVariant(kRaw, false), mesh = SarosCacheVariant(kPlain, true);
-		CHECK(hand != 0 && raw != 0 && mesh != 0);
-		CHECK(hand != raw && raw != mesh && hand != mesh);
+		CHECK(hand == 0); // v14: HANDSHADERS (and LOD0/DBG) change no codegen: the hand shader program stays cacheable
+		CHECK(raw != 0 && mesh != 0 && raw != mesh);
 		CHECK(SarosCacheVariant(kPlain, false) == 0); // an unlisted pixel/compute program keeps key bytes unchanged
 		CHECK(hand == SarosCacheVariant(kHand, false));  // deterministic
 		if (std::strcmp(mode, "cache") == 0) {
@@ -42,7 +44,7 @@ int main(int argc, char** argv) {
 			CHECK(SarosProgramMayUseDiskCache(kHand, false) && SarosProgramMayUseDiskCache(kRaw, false) && SarosProgramMayUseDiskCache(kPlain, true));
 		} else {
 			CHECK(SarosCacheBypass());
-			CHECK(!SarosProgramMayUseDiskCache(kHand, false) && !SarosProgramMayUseDiskCache(kRaw, false) && !SarosProgramMayUseDiskCache(kPlain, true));
+			CHECK(SarosProgramMayUseDiskCache(kHand, false) && !SarosProgramMayUseDiskCache(kRaw, false) && !SarosProgramMayUseDiskCache(kPlain, true));
 			CHECK(SarosProgramMayUseDiskCache(kPlain, false)); // a program no switch touches still uses the cache
 		}
 	}

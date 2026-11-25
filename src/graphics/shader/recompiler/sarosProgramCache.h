@@ -1,6 +1,6 @@
 #pragma once
 
-// sarosperf (restored on v14, v1.4 review M15): the SAROS hand-shader / Nanite-raw switches change a translation, so such
+// sarosperf (restored on v14, v1.4 review M15): the SAROS Nanite-raw / sample-fract switches change a translation, so such
 // a program used to bypass the persistent program cache. With KYTY_SAROS_PROGRAM_CACHE=1 it is cacheable when the switch
 // state is part of the key: SarosCacheVariant is 0 (key bytes unchanged) unless one of the switches applies to the
 // program. Default off = the bypass (only reachable with the SAROS switches set). Header only, no GPU; the switches are
@@ -29,23 +29,8 @@ inline uint64_t SarosCacheVariant(uint64_t shader_hash, bool is_mesh_stage) {
 	constexpr uint64_t kSarosVariantVersion = 1;
 	uint64_t           variant              = 0;
 	const auto         mix                  = [&variant](uint64_t v) { variant = (variant ^ v) * 0x100000001b3ull + 0x9e3779b97f4a7c15ull; };
-	if (SarosHandShader(shader_hash)) {
-		static const auto* keystride = std::getenv("KYTY_SAROS_KEYSTRIDE");
-		mix(1);
-		mix(kSarosVariantVersion);
-		mix(keystride != nullptr && std::strcmp(keystride, "0") == 0 ? 0 : 1);
-		// sarosperf2: only when on, so no existing key changes. MAP_PAD changes the layout too.
-		static const auto* map_pad = std::getenv("KYTY_SAROS_MAP_PAD");
-		if (map_pad != nullptr && std::strcmp(map_pad, "1") == 0) mix(7);
-	}
-	if (SarosSampleLod0(shader_hash)) {
-		mix(4);
-		mix(kSarosVariantVersion);
-	}
-	if (SarosSampleDbg(shader_hash)) {
-		mix(5);
-		mix(kSarosVariantVersion);
-	}
+	// KYTY_SAROS_HANDSHADERS / SAMPLE_LOD0 / SAMPLE_DBG / KEYSTRIDE / MAP_PAD have no codegen effect on v14 (HANDSHADERS only logs,
+	// ResourceMaterialization.cpp): they are not part of the variant, so those programs stay cacheable (v14rev2 v14fix #1).
 	if (SarosSampleFract(shader_hash)) {
 		mix(8);
 		mix(kSarosVariantVersion);
