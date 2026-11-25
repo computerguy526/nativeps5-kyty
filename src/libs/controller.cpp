@@ -189,6 +189,7 @@ private:
 	uint64_t                m_sensor_last_ms  = 0;
 	uint64_t                m_sensor_armed_ms = 0;
 	uint64_t                m_sensor_rearms   = 0;
+	uint64_t                m_sensor_rearm_ms = 0;
 	uint64_t         m_gyro_time       = 0;
 	bool             m_gyro_emulation  = false;
 	uint64_t         m_emulated_time   = 0;
@@ -1190,6 +1191,7 @@ void GameController::SetDevices(int active_id) {
 	m_sensor_events = {};
 	m_sensor_last_ms  = 0;
 	m_sensor_armed_ms = SDL_GetTicks();
+	m_sensor_rearms   = 0;
 	m_gyro_time     = 0;
 	m_gyro_emulation = false;
 	m_emulated_time  = 0;
@@ -1473,10 +1475,11 @@ void GameController::KeepSensors() {
 		return;
 	}
 	Common::LockGuard lock(m_mutex);
-	if (now - m_sensor_armed_ms < SENSOR_REARM_MS) {
+	if (m_sensor_rearms != 0 && now - m_sensor_rearm_ms < SENSOR_REARM_MS) {
 		return;
 	}
 	m_sensor_armed_ms = now;
+	m_sensor_rearm_ms = now;
 	m_sensor_rearms++;
 	std::fprintf(stderr,
 	             "[astrohybrid 0] pad %d: no sensor events for %llu ms (accel %llu, gyro %llu "
