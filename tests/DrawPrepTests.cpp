@@ -2535,6 +2535,31 @@ void TestGapLedgerExclusive() {
 	Check(ledger.Depth() == 0, "gap ledger: balanced");
 }
 
+// nps5 saroscp (parity port): the unmap/predication/GDS GPU waits have their own categories, and
+// a wait of each kind inside a commit lands in the per-pass nested totals (kPassNestedCats).
+void TestGapLedgerWaitSplit() {
+	using CpGaps::Cat;
+	Check(Cat::GpuWaitUnmap != Cat::GpuWaitOther && Cat::GpuWaitPredication != Cat::GpuWaitGds &&
+	          static_cast<size_t>(Cat::GpuWaitGds) < CpGaps::CatCount,
+	      "gap wait split: distinct categories");
+	CpGaps::Ledger ledger;
+	ledger.Enter(Cat::Commit, 0);
+	ledger.Enter(Cat::Protect, 2);
+	ledger.Exit(6); // 4
+	ledger.Enter(Cat::GpuWaitDrain, 10);
+	ledger.Exit(15); // 5
+	ledger.Exit(20);
+	uint64_t nested[CpGaps::kPassNestedCats.size()] = {};
+	for (size_t i = 0; i < CpGaps::kPassNestedCats.size(); i++) {
+		nested[i] = ledger.InCommit(CpGaps::kPassNestedCats[i]);
+	}
+	Check(nested[0] == 4 && nested[1] == 5 && nested[2] == 0, "gap wait split: per-pass nested totals");
+	ledger.Enter(Cat::GpuWaitPredication, 30);
+	ledger.Exit(37);
+	Check(ledger.Ticks(Cat::GpuWaitPredication) == 7 && ledger.InCommit(Cat::GpuWaitPredication) == 0,
+	      "gap wait split: predication wait outside a commit");
+}
+
 void TestGapLedgerPhasesAndNested() {
 	using CpGaps::Cat;
 	CpGaps::Ledger ledger;
@@ -2669,6 +2694,7 @@ int main(int argc, char** argv) {
 	TestAdaptivePoolStress(3, 2'000, 2);
 	TestGapLedgerExclusive();
 	TestGapLedgerPhasesAndNested();
+	TestGapLedgerWaitSplit();
 	TestGapLedgerFlushAndOverflow();
 	if (g_failures != 0) {
 		std::fprintf(stderr, "DrawPrepTests: %d failure(s)\n", g_failures);

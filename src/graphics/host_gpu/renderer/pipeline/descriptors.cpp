@@ -41,6 +41,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
+#include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
 #include "graphics/host_gpu/renderer/drawPrep/imgSide.h"
 #include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
@@ -5738,6 +5739,8 @@ void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings
 
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
+	auto*      pass       = CpGaps::CurrentDrawPassSample();
+	const auto pass_start = pass != nullptr ? CpGaps::Tsc() : 0;
 	prepared.write_preparation_tick = BufferCache::ShaderWriteRetickEnabled()
 	                                      ? m_context.GetCommandScheduler().CurrentTick()
 	                                      : UINT64_MAX;
@@ -6012,6 +6015,9 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		BufferLookupStats::NoteStage(SyncEpoch::Current());
 	}
 	CommitStats::StepMark(CommitStats::Step::RbTables);
+	if (pass != nullptr) [[unlikely]] {
+		pass->rebind_ticks += CpGaps::Tsc() - pass_start;
+	}
 }
 
 // KYTY_SPARSE_HOLES=1 (TextureCache::ResetUnmappedDepth): after a stage's views are acquired (and
@@ -7256,6 +7262,8 @@ void RenderExecutor::EncodeCommit(Sink& sink, DrawEncode::Shadow& shadow, Comman
 		CommitStats::AddItems(CommitStats::Item::DescWrites, scratch.writes.size());
 	}
 	CommitStats::StepMark(CommitStats::Step::CbPushConst);
+	auto*      pass = point == vk::PipelineBindPoint::eGraphics ? CpGaps::CurrentDrawPassSample() : nullptr;
+	const auto descriptor_start = pass != nullptr ? CpGaps::Tsc() : 0;
 	if (!scratch.writes.empty()) {
 		EXIT_IF(pipeline.descriptor_set_layout == nullptr);
 		if (DescriptorOffsetAuditEnabled()) [[unlikely]] {
@@ -7279,6 +7287,9 @@ void RenderExecutor::EncodeCommit(Sink& sink, DrawEncode::Shadow& shadow, Comman
 	if (pipeline.uses_bindless) [[unlikely]] {
 		// (Created by CommitBindingsSideEffects.)
 		DrawEncode::EmitBindlessSet(sink, point, pipeline.pipeline_layout, m_context.GetBindlessTable().Set());
+	}
+	if (pass != nullptr) [[unlikely]] {
+		pass->descriptor_ticks += CpGaps::Tsc() - descriptor_start;
 	}
 	CommitStats::StepMark(CommitStats::Step::CbDescriptors);
 }

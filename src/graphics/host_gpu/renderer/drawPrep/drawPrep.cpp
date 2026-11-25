@@ -2656,7 +2656,7 @@ void Engine::ExecuteIndirect(uint64_t position, const std::function<void()>& dra
 	executor.m_run_parts           = commit && slot.run_parts_valid ? &slot.run_parts : nullptr;
 	executor.m_in_engine_commit    = commit;
 	{
-		const CpGaps::Scope gap(CpGaps::Cat::Commit);
+		const CpGaps::DrawCommitScope gap;
 		CommitStats::BeginDraw();
 		draw();
 		CommitStats::EndDraw();
@@ -2984,7 +2984,7 @@ void PrintDrawPrepSummary() {
 
 void Engine::Commit(Slot& slot) {
 	Profiler::ScopedFrameWait commit_time(Profiler::FrameWait::DrawPrepCommit);
-	const CpGaps::Scope       gap(CpGaps::Cat::Commit);
+	const CpGaps::DrawCommitScope gap;
 	if (!CommitStats::IndirectOnly()) {
 		CommitStats::BeginDraw();
 	}

@@ -201,10 +201,17 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	}
 	// KYTY_CP_GAP_STATS (GPU thread only): readback drains, occlusion publication, the rest.
 	const auto      reason = Profiler::CurrentGpuWaitReason();
-	const CpGaps::Scope gap(reason == Profiler::FrameWait::GpuWaitDrain ? CpGaps::Cat::GpuWaitDrain
-	                        : reason == Profiler::FrameWait::GpuWaitOcclusion
-	                            ? CpGaps::Cat::GpuWaitOcclusion
-	                            : CpGaps::Cat::GpuWaitOther);
+	const auto gap_cat = [reason] {
+		switch (reason) {
+			case Profiler::FrameWait::GpuWaitDrain: return CpGaps::Cat::GpuWaitDrain;
+			case Profiler::FrameWait::GpuWaitOcclusion: return CpGaps::Cat::GpuWaitOcclusion;
+			case Profiler::FrameWait::GpuWaitUnmap: return CpGaps::Cat::GpuWaitUnmap;
+			case Profiler::FrameWait::GpuWaitPredication: return CpGaps::Cat::GpuWaitPredication;
+			case Profiler::FrameWait::GpuWaitGds: return CpGaps::Cat::GpuWaitGds;
+			default: return CpGaps::Cat::GpuWaitOther;
+		}
+	}();
+	const CpGaps::Scope gap(gap_cat);
 	// KYTY_WAIT_ATTRIB: the command processor's GPU waits by call site, reason and readback.
 	FaultCost::AttribScope attrib(FaultCost::AttribKind::GpuWait, false);
 	attrib.SetReason(static_cast<uint8_t>(reason));

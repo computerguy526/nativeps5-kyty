@@ -38,6 +38,7 @@
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/host_gpu/renderer/drawPrep/bindingPlan.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
+#include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
 #include "graphics/host_gpu/renderer/drawPrep/imgSide.h"
@@ -8373,10 +8374,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (inline_b) {
 		KYTY_PROFILER_DETAIL_BLOCK("Draw::CommitBindings");
 		const CommitStats::SubScope push_scope(CommitStats::Sub::Push);
+		auto*      pass       = CpGaps::CurrentDrawPassSample();
+		const auto pass_start = pass != nullptr ? CpGaps::Tsc() : 0;
 		if (offload_tried) {
 			CommitBindingsEncode(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages, keep_commit_images);
 		} else {
 			CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages, keep_commit_images);
+		}
+		if (pass != nullptr) [[unlikely]] {
+			pass->binding_ticks += CpGaps::Tsc() - pass_start;
+			pass->key = {rendering.width, rendering.height, rendering.num_color_attachments,
+			             state.color_count != 0 ? static_cast<uint32_t>(state.color_info[0].desc.info.pixel_format) : 0,
+			             rendering.depth_stencil_attachment.image_view != nullptr
+			                 ? static_cast<uint32_t>(state.depth_info.desc.info.pixel_format) : 0};
 		}
 	} else if (split_on) {
 		// KYTY_EMIT_SPLIT: the commit's cache and barrier work here; its encode is the resolved draw's.

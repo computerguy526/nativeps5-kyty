@@ -82,6 +82,10 @@ enum class Cat : uint8_t {
 	GpuWaitDrain,
 	GpuWaitOcclusion,
 	GpuWaitOther,
+	// nps5 saroscp: waits tagged by their caller (Profiler::FrameWait), split out of gpuwait.other.
+	GpuWaitUnmap,
+	GpuWaitPredication,
+	GpuWaitGds,
 	RecorderWait,
 	SubmitWait,
 	TextureUpload,
@@ -275,6 +279,52 @@ enum class Event : uint8_t {
 constexpr size_t EventCount = static_cast<size_t>(Event::Count);
 
 // The GPU thread's ledger (null on every other thread, and while the diagnostic is off).
+// KYTY_CP_PASS_STATS=1 (with KYTY_CP_GAP_STATS=1): draw commits by the final draw's attachment signature.
+struct DrawPassKey {
+	uint32_t width        = 0;
+	uint32_t height       = 0;
+	uint32_t colors       = 0;
+	uint32_t color_format = 0;
+	uint32_t depth_format = 0;
+
+	bool operator==(const DrawPassKey&) const = default;
+};
+
+struct DrawPassSample {
+	DrawPassKey key;
+	uint64_t    binding_ticks         = 0;
+	uint64_t    descriptor_ticks      = 0;
+	uint64_t    rebind_ticks          = 0;
+	uint64_t    shader_table_bindings = 0;
+	uint64_t    shader_table_bytes    = 0;
+	int64_t     shader_table_reduction = 0;
+	int64_t     shader_byte_reduction  = 0;
+	// nps5 saroscp: ledger time nested in this commit (protect, drains, side copies, uploads, faults).
+	uint64_t nested_protect = 0;
+	uint64_t nested_drain   = 0;
+	uint64_t nested_side    = 0;
+	uint64_t nested_upload  = 0;
+	uint64_t nested_fault   = 0;
+};
+
+struct DrawPassTotals {
+	DrawPassKey key;
+	uint64_t    draws                 = 0;
+	uint64_t    ticks                 = 0;
+	uint64_t    binding_ticks         = 0;
+	uint64_t    descriptor_ticks      = 0;
+	uint64_t    rebind_ticks          = 0;
+	uint64_t    shader_table_bindings = 0;
+	uint64_t    shader_table_bytes    = 0;
+	int64_t     shader_table_reduction = 0;
+	int64_t     shader_byte_reduction  = 0;
+	uint64_t    nested_protect = 0;
+	uint64_t    nested_drain   = 0;
+	uint64_t    nested_side    = 0;
+	uint64_t    nested_upload  = 0;
+	uint64_t    nested_fault   = 0;
+};
+
 struct ThreadState {
 	Ledger                           ledger;
 	double                           ticks_per_ns = 1.0;
@@ -285,6 +335,9 @@ struct ThreadState {
 	std::array<uint64_t, CatCount> cpu_cycles {};
 	std::array<uint64_t, CatCount> cpu_wall {};
 	std::array<uint32_t, CatCount> cpu_depth {};
+	DrawPassSample*                draw_pass_sample = nullptr;
+	// Last entry is the overflow bucket.
+	std::array<DrawPassTotals, 33> draw_pass_totals {};
 };
 inline constinit thread_local ThreadState* t_state = nullptr;
 
@@ -349,6 +402,33 @@ private:
 	uint64_t     m_cycles   = 0;
 	uint64_t     m_tsc      = 0;
 };
+
+// nps5 saroscp: the in-commit ledger totals the per-pass nested split reads (protect, drain,
+// gpuwait.other (side-copy waits included), upload, fault), in this order.
+inline constexpr std::array<Cat, 5> kPassNestedCats = {Cat::Protect, Cat::GpuWaitDrain, Cat::GpuWaitOther,
+                                                       Cat::TextureUpload, Cat::Fault};
+
+// KYTY_CP_PASS_STATS=1 with KYTY_CP_GAP_STATS=1 records the same inclusive commit
+// boundary by the final draw's attachment signature. Non-draw commits remain unclassified.
+class DrawCommitScope {
+public:
+	DrawCommitScope() noexcept;
+	~DrawCommitScope();
+	DrawCommitScope(const DrawCommitScope&)            = delete;
+	DrawCommitScope& operator=(const DrawCommitScope&) = delete;
+
+private:
+	Scope                   m_gap {Cat::Commit};
+	ThreadState*            m_state    = nullptr;
+	DrawPassSample*         m_previous = nullptr;
+	DrawPassSample          m_sample;
+	uint64_t                m_start = 0;
+	std::array<uint64_t, 5> m_nested_start {};
+};
+
+[[nodiscard]] inline DrawPassSample* CurrentDrawPassSample() noexcept {
+	return t_state != nullptr ? t_state->draw_pass_sample : nullptr;
+}
 
 // The innermost scope continues as `cat` (dispatch phases).
 inline void Phase(Cat cat) noexcept {

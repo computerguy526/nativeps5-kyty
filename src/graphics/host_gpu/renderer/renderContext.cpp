@@ -174,6 +174,9 @@ RenderContext::RenderContext(GraphicContext& graphics)
 				case CpGaps::Cat::GpuWaitDrain:
 				case CpGaps::Cat::GpuWaitOcclusion:
 				case CpGaps::Cat::GpuWaitOther:
+				case CpGaps::Cat::GpuWaitUnmap:
+				case CpGaps::Cat::GpuWaitPredication:
+				case CpGaps::Cat::GpuWaitGds:
 				case CpGaps::Cat::RecorderWait:
 				case CpGaps::Cat::SubmitWait:
 				case CpGaps::Cat::TextureUpload:
