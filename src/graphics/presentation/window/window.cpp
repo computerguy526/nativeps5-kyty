@@ -1,5 +1,6 @@
 ﻿#include "graphics/presentation/window.h"
 #include "graphics/presentation/window/eventDrain.h"
+#include "graphics/presentation/window/gamepadSensorDispatch.h"
 
 #include "common/assert.h"
 #include "common/flightRec.h"
@@ -827,16 +828,7 @@ void WindowContext::ProcessEvent(double time_s) {
 			break;
 
 		case SDL_EVENT_GAMEPAD_SENSOR_UPDATE: {
-			const auto& sensor = event->gsensor;
-			if (sensor.sensor == SDL_SENSOR_ACCEL || sensor.sensor == SDL_SENSOR_GYRO) {
-				Controller::SetSensor(sensor.which,
-				                      sensor.sensor == SDL_SENSOR_ACCEL ? Controller::Sensor::Accel
-				                                                        : Controller::Sensor::Gyro,
-				                      sensor.data,
-				                      sensor.sensor_timestamp != 0
-				                          ? sensor.sensor_timestamp / 1000
-				                          : sensor.timestamp / 1000);
-			}
+			DispatchGamepadSensor(event->gsensor);
 			break;
 		}
 

@@ -32,6 +32,7 @@
 #include "kytyGitVersion.h"
 #include "hybrid/mainLoopGate.h"
 #include "hybrid/padMotion.h"
+#include "hybrid/virtualPad.h"
 #include "hybrid/pendingMemory.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
@@ -396,6 +397,19 @@ void Relay() {
 	// ASTROHYBRID_PAD_MOTION_REC=<file>: record the samples (trace format of hybrid/padMotion.h)
 	// for replay tests.
 	namespace PM     = Hybrid::PadMotion;
+	// ASTROHYBRID_PAD_VIRTUAL=ps5|switch (default off; rehearsal / regression runs without a pad): a
+	// virtual DualSense / Switch Pro (SDL virtual joystick) plays a tilt ramp and a shake at 1000 Hz
+	// through SDL's real event path. work/release/v140/rc/check-motion-live.sh then asserts the
+	// "[pad] motion status" line says live=yes (ASTROHYBRID_PAD_MOTION_LOG=1).
+	static Hybrid::VirtualPad::Player virtual_pad;
+	if (Hybrid::VirtualPad::Kind kind; Hybrid::VirtualPad::ParseEnv(std::getenv("ASTROHYBRID_PAD_VIRTUAL"), &kind)) {
+		if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
+			(void)SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+		}
+		Log(0, "input relay: ASTROHYBRID_PAD_VIRTUAL: virtual %s %s",
+		    kind == Hybrid::VirtualPad::Kind::PS5 ? "DualSense" : "Switch Pro",
+		    virtual_pad.Start(kind) ? "attached" : "FAILED to attach");
+	}
 	auto pad_sensors = [](int* type, float* rate_hz) {
 		bool has = false;
 		// The id first: GetActiveControllerId takes the controller's mutex, and no Kyty pad mutex

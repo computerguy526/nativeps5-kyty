@@ -1463,6 +1463,11 @@ add_executable(controller_settings_tests EXCLUDE_FROM_ALL
 target_link_libraries(controller_settings_tests common fmt::fmt SDL3::SDL3-static)
 target_include_directories(controller_settings_tests PRIVATE ${inc_headers})
 
+# End to end gyro regression: SDL virtual DualSense / Switch Pro -> real event drain -> production controller.cpp.
+add_executable(pad_motion_e2e_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PadMotionE2ETests.cpp")
+target_link_libraries(pad_motion_e2e_tests common fmt::fmt SDL3::SDL3-static)
+target_include_directories(pad_motion_e2e_tests PRIVATE ${inc_headers})
+
 add_executable(host_input_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/HostInputTests.cpp")
 target_link_libraries(host_input_tests common fmt::fmt SDL3::SDL3-static)
 target_include_directories(host_input_tests PRIVATE ${inc_headers})
