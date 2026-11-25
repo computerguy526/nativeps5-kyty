@@ -24,6 +24,8 @@ namespace Libs::Graphics::ShaderRecompiler {
 //   cache page constants the emitter bakes in, and the raw value of every KYTY_* environment
 //   variable named in a string literal of the build-time source set (CodegenSwitches(): collected
 //   by the same script, so a switch added to the recompiler joins the fingerprint on its own).
+// The value of a KYTY_* switch as the fingerprint records it (path-valued list switches: empty, their content is hashed separately).
+[[nodiscard]] std::string_view FingerprintSwitchValue(std::string_view name, std::string_view value);
 [[nodiscard]] std::string_view CodegenVersion();
 [[nodiscard]] std::span<const char* const> CodegenSwitches();
 [[nodiscard]] std::vector<uint8_t> CodegenFingerprint();

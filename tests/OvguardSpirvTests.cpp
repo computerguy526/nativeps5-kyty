@@ -2,6 +2,7 @@
 // fast-math deny list fast math, which changes its SPIR-V and so its key. A deny-listed shader must emit byte-identical SPIR-V at low and
 // high accuracy; an unlisted one must differ (negative control: the guard can fail). A trivial synthetic compute program is enough: the
 // float-controls execution mode that fast math drops is declared for every compute program. Builds and runs on arm64 macOS (no emulator).
+#include "graphics/shader/recompiler/CodegenFingerprint.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
@@ -59,6 +60,16 @@ int main() {
 	Expect(high_listed == high_other, "high accuracy: SPIR-V does not depend on the hash");
 	Expect(Spirv(2, listed, {listed}) == high_listed, "low accuracy, deny-listed shader: SPIR-V == high (its override key is stable)");
 	Expect(Spirv(2, other, {listed}) != high_other, "low accuracy, unlisted shader: SPIR-V differs (negative control)");
+	// the deny/allow list PATH is not part of the fingerprint (moving the install must not invalidate programs.bin); other switch values are
+	Expect(SR::FingerprintSwitchValue("KYTY_FAST_MATH_DENY", "/a/deny.txt").empty() && SR::FingerprintSwitchValue("KYTY_FAST_MATH_ALLOW", "/b").empty(), "list paths are not fingerprinted");
+	Expect(SR::FingerprintSwitchValue("KYTY_GPU_ACCURACY", "low") == "low", "other switch values are");
+	{
+		setenv("KYTY_FAST_MATH_DENY", "/a/deny.txt", 1);
+		const auto fa = SR::CodegenFingerprint();
+		setenv("KYTY_FAST_MATH_DENY", "/elsewhere/deny.txt", 1);
+		Expect(SR::CodegenFingerprint() == fa, "fingerprint equal for two install paths of the deny list");
+		unsetenv("KYTY_FAST_MATH_DENY");
+	}
 	SR::SetCodegenOptions(saved);
 	if (g_failures == 0) {
 		std::printf("OvguardSpirvTests: ok\n");

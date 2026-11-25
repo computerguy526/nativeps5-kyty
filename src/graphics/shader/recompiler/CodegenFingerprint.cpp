@@ -51,6 +51,12 @@ private:
 
 } // namespace
 
+std::string_view FingerprintSwitchValue(std::string_view name, std::string_view value) {
+	// Path-valued switches: the list's CONTENT is in the fingerprint (fast_math_acl); where the file lives is not codegen.
+	if (name == "KYTY_FAST_MATH_DENY" || name == "KYTY_FAST_MATH_ALLOW") return {};
+	return value;
+}
+
 std::string_view CodegenVersion() {
 	return KYTY_CODEGEN_VERSION;
 }
@@ -587,7 +593,7 @@ std::vector<uint8_t> CodegenFingerprint() {
 		b.Text(kSwitches[i]);
 		const auto* value = std::getenv(kSwitches[i]);
 		b.U8(value != nullptr ? 1u : 0u);
-		b.Text(value != nullptr ? std::string_view(value) : std::string_view());
+		b.Text(value != nullptr ? FingerprintSwitchValue(kSwitches[i], value) : std::string_view());
 	}
 	return out;
 }
