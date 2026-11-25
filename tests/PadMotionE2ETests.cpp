@@ -67,7 +67,7 @@ struct Result {
 	int      worst_lag_samples = 0; // injected - applied accel samples at a step end
 	float    max_roll_error_deg = 0.0f;
 	float    max_accel_error_g  = 0.0f;
-	float    peak_az_g = 0.0f, peak_gx = 0.0f;
+	float    peak_az_g = 0.0f, peak_gx = 0.0f, peak_orientation_x = 0.0f;
 	bool     button_in_step = false, button_released = false;
 	uint64_t unrouted = 0;
 };
@@ -149,9 +149,13 @@ Result Run(VP::Kind kind, int per_step_budget, int steps) {
 			// What the pad sent last (sim_ms - 1) vs what the game reads now.
 			const VP::Pose want = VP::PoseAt(sim_ms - 1);
 			if (status.accel_events == injected) {
-				const float roll = 2.0f * std::atan2(data.orientation_z, data.orientation_w);
-				r.max_roll_error_deg = std::max(
-				    r.max_roll_error_deg, std::fabs(roll - want.roll_rad) * 57.29578f);
+				// The ramp (and the rest before the spike): the shake rotates about x on purpose, so the
+				// orientation is only compared with the ramp's roll up to 1.15 s.
+				if ((sim_ms - 1) % 3000 < 1150) {
+					const float roll = 2.0f * std::atan2(data.orientation_z, data.orientation_w);
+					r.max_roll_error_deg = std::max(
+					    r.max_roll_error_deg, std::fabs(roll - want.roll_rad) * 57.29578f);
+				}
 				for (int i = 0; i < 3; i++) {
 					const float g = (i == 0 ? data.acceleration_x : i == 1 ? data.acceleration_y : data.acceleration_z);
 					r.max_accel_error_g = std::max(r.max_accel_error_g, std::fabs(g - want.accel[i] / VP::kG));
@@ -159,6 +163,7 @@ Result Run(VP::Kind kind, int per_step_budget, int steps) {
 			}
 			r.peak_az_g = std::max(r.peak_az_g, data.acceleration_z);
 			r.peak_gx   = std::max(r.peak_gx, data.angular_velocity_x);
+			r.peak_orientation_x = std::max(r.peak_orientation_x, std::fabs(data.orientation_x));
 			if (button_sent && step == connect_step + kButtonOn && (data.buttons & PAD_BUTTON_CROSS) != 0) {
 				r.button_in_step = true;
 			}
@@ -190,7 +195,8 @@ void TestKind(VP::Kind kind, const char* name) {
 	      r.live_after_steps);
 	Check(r.max_backlog < 64, "sensor event backlog grows", r.max_backlog);
 	Check(r.worst_lag_samples == 0, "the game's pad lags the pad by samples", r.worst_lag_samples);
-	Check(r.max_roll_error_deg < 4.0f, "orientation does not track the ramp");
+	Check(r.max_roll_error_deg < 4.0f, "orientation does not track the ramp", static_cast<int>(r.max_roll_error_deg * 10));
+	Check(r.peak_orientation_x > 0.1f, "the shake did not move the orientation");
 	Check(r.max_accel_error_g < 0.02f, "accel does not track the ramp");
 	Check(r.peak_az_g > 2.5f && r.peak_gx > 9.0f, "the shake spike is not visible");
 	Check(r.button_in_step, "a button was not handled in its own step despite the sensor flood");
