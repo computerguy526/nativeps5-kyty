@@ -16,6 +16,14 @@
 #include <thread>
 #include <vector>
 
+// Host stand-in for the guest-memory reader SrtWalker.cpp links against (kernel/memory.h is not part of
+// this test binary; the link failed without it at the v1.3/v1.4 base): guest addresses are host pointers.
+namespace Libs::LibKernel::Memory {
+const void* GuestReadPtr(uint64_t vaddr, uint64_t /*size*/) noexcept {
+	return reinterpret_cast<const void*>(static_cast<uintptr_t>(vaddr));
+}
+} // namespace Libs::LibKernel::Memory
+
 namespace {
 
 void Check(bool value, const char *text) {
