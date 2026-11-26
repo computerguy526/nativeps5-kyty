@@ -2569,7 +2569,7 @@ void TestGapLedgerSideWaitInCommit() {
 	ledger.Enter(Cat::Commit, 0);
 	ledger.Enter(Cat::GpuWaitOther, 10); // the record read: 12 ms of a 20 ms commit
 	ledger.Exit(22);
-	ledger.Exit(20 + 12 - 12 + 10); // commit ends at 30
+	ledger.Exit(30); // the commit ends at 30
 	Check(ledger.Ticks(Cat::GpuWaitOther) == 12 && ledger.InCommit(Cat::GpuWaitOther) == 12,
 	      "gap side wait: booked as in-commit gpuwait.other");
 	Check(ledger.Ticks(Cat::Commit) == 30 - 12 && ledger.InCommit(Cat::Commit) == 0,
