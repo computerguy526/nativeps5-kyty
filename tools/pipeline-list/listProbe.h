@@ -171,7 +171,7 @@ struct Running {
 [[nodiscard]] inline std::map<uint64_t, std::string> Refused(const std::vector<Unit>& units, const std::vector<Outcome>& outcomes) {
 	std::map<uint64_t, std::string> out;
 	for (size_t i = 0; i < units.size() && i < outcomes.size(); i++) {
-		if (outcomes[i].verdict == Verdict::Ok || out.contains(units[i].hash)) continue;
+		if (outcomes[i].verdict == Verdict::Ok || out.count(units[i].hash) != 0) continue;
 		const char* kind = outcomes[i].verdict == Verdict::Refused ? "refused" : outcomes[i].verdict == Verdict::Crashed ? "crashed" : "timeout";
 		out.emplace(units[i].hash, std::string(kind) + ": " + outcomes[i].reason);
 	}
@@ -181,7 +181,9 @@ struct Running {
 // A hash file `drop` reads: one `0x<hash>` TAB reason row per program, sorted by hash.
 [[nodiscard]] inline std::string FormatRows(const std::map<uint64_t, std::string>& rows) {
 	std::string out;
-	for (const auto& [hash, reason]: rows) {
+	for (const auto& kv: rows) {
+		const uint64_t hash = kv.first;
+		const std::string& reason = kv.second;
 		char h[32];
 		std::snprintf(h, sizeof(h), "0x%016llx", static_cast<unsigned long long>(hash));
 		out += std::string(h) + "\t" + CleanReason(reason) + "\n";
