@@ -108,7 +108,12 @@ public:
 			m_stopping = true;
 		}
 		m_wake.notify_all();
-		for (auto& thread: m_threads) if (thread.joinable()) thread.join();
+		// One joiner at a time: two threads joining the same std::thread (a destructor against a
+		// Drain, say) make the second join throw EINVAL. The second caller waits for the first.
+		std::lock_guard join_lock(m_join_mutex);
+		for (auto& thread: m_threads) {
+			if (thread.joinable() && thread.get_id() != std::this_thread::get_id()) thread.join();
+		}
 		m_threads.clear();
 	}
 
@@ -186,6 +191,7 @@ private:
 	Ordering                 m_ordering;
 	uint64_t                 m_stalled_until = 0;
 	bool m_stopping = false;
+	std::mutex               m_join_mutex;
 	std::vector<std::thread> m_threads;
 };
 

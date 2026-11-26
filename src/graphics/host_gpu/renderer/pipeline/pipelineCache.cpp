@@ -8421,10 +8421,7 @@ struct PipelineCache::JournalReplay {
 		stop.store(true, std::memory_order_release);
 		LaunchHoldRelease();
 		if (cache.m_shader_precompiler != nullptr) cache.m_shader_precompiler->Stop();
-		for (auto& thread: threads) {
-			if (thread.joinable()) thread.join();
-		}
-		threads.clear();
+		JoinWorkers();
 		if (logged_exit.exchange(true)) return;
 		PipelineCacheLog("Pipeline journal: {} recorded this run; replay built {} ({} from the pipeline list; {:.1f} ms), "
 		                 "skipped {} known to the driver cache, {} with modules not published, {} failed, {} beyond "
@@ -8463,12 +8460,18 @@ struct PipelineCache::JournalReplay {
 
 	// Blocks until the replay workers are done (KYTY_PIPELINE_JOURNAL_WAIT=1: tests, measurements;
 	// KYTY_PIPELINE_LIST_PREPARE).
-	void Wait() {
+	void Wait() { JoinWorkers(); }
+
+	// Joins and forgets the workers, one joiner at a time: Wait (the prepare run) and Stop (a save,
+	// the destructor) may meet, and two joins of one std::thread throw EINVAL.
+	void JoinWorkers() {
+		std::lock_guard join_lock(join_mutex);
 		for (auto& thread: threads) {
-			if (thread.joinable()) thread.join();
+			if (thread.joinable() && thread.get_id() != std::this_thread::get_id()) thread.join();
 		}
 		threads.clear();
 	}
+	std::mutex join_mutex;
 
 	void Worker() {
 		// Always below the game, the presents, the UI and audio (macOS: utility QoS); a prepare and

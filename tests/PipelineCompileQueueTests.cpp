@@ -6,6 +6,8 @@
 #include <deque>
 #include <future>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 
 int main() {
 	using Libs::Graphics::PipelineCompileQueue;
@@ -104,6 +106,27 @@ int main() {
 			ordered.NoteStall();
 		}
 		if (ran != 32) return 36;
+	}
+	// Stop from several threads at once (a destructor against a Drain, a save against a prepare Wait): every caller returns,
+	// none of them throws from a second join of the same std::thread, and the workers are done when any Stop returns.
+	for (int round = 0; round < 50; ++round) {
+		std::atomic<int> done {0};
+		PipelineCompileQueue many(4, 64);
+		for (int i = 0; i < 16; ++i) many.Submit([&] { ++done; });
+		std::atomic<int> threw {0}, returned {0};
+		std::vector<std::thread> callers;
+		for (int c = 0; c < 4; ++c) {
+			callers.emplace_back([&] {
+				try {
+					many.Stop();
+					++returned;
+				} catch (...) {
+					++threw;
+				}
+			});
+		}
+		for (auto& t: callers) t.join();
+		if (threw != 0 || returned != 4) return 40;
 	}
 	std::puts("Pipeline compiler: parallelism, bounded admission, urgent work, drain, shutdown, error publication and "
 	          "ordering passed");
