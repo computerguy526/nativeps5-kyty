@@ -1,6 +1,8 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_SHADERPRECOMPILE_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_SHADERPRECOMPILE_H_
 
+#include "graphics/host_gpu/renderer/pipeline/refusedPrograms.h"
+
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -309,6 +311,10 @@ public:
 		uint64_t progress_ns      = 5'000'000'000ull;
 		// The lines also give the workers' CPU time (summed per entry from thread times; Windows).
 		bool measure_cpu = false;
+		// Programs an earlier start died on (refusedPrograms.h): their entries are not translated, they are counted and the first
+		// ones are logged by hash. While an entry is translated the worker names its program to the fatal hook, so a fatal error
+		// records it for the next start. nullptr: off.
+		RefusedPrograms* refused = nullptr;
 	};
 
 	struct Progress {
@@ -319,6 +325,7 @@ public:
 		uint64_t skipped  = 0;
 		uint64_t failed   = 0;
 		uint64_t reloaded = 0;
+		uint64_t refused  = 0; // entries of programs in the refused record (counted in skipped as well)
 		uint64_t cpu_ns   = 0; // measure_cpu
 		bool     finished = false;
 	};
@@ -355,6 +362,8 @@ private:
 	std::atomic<uint64_t> m_done {0}, m_compiled {0}, m_present {0}, m_skipped {0}, m_failed {0},
 	    m_reloaded {0};
 	std::atomic<uint64_t> m_cpu_ns {0};
+	std::atomic<uint64_t> m_refused {0};
+	std::atomic<uint32_t> m_refused_logged {0};
 	std::atomic<uint32_t> m_workers_running {0};
 
 	mutable std::mutex      m_mutex; // progress reporting

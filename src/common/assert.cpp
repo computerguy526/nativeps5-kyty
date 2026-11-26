@@ -1,5 +1,6 @@
 #include "common/assert.h"
 
+#include "common/fatalHook.h"
 #include "common/hangWatchdog.h"
 #include "common/subsystems.h"
 #include "kytyGitVersion.h"
@@ -59,6 +60,7 @@ static std::string FatalStack() {
 // (the former Log::WriteFatal), then the process ends with status 321 (the former EXIT_HALT).
 [[noreturn]] static void DbgReport(const char* title, std::string_view text, const char* file,
                                    int line, bool with_stack) {
+	Common::RunFatalHook(text);
 	HangWatchdog::NoteFatal(text, file, line);
 	Log::WriteToConsoleAndLog(BuildFatalReport(title, text, file, line) +
 	                          (with_stack ? FatalStack() : std::string {}));

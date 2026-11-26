@@ -868,6 +868,7 @@ ShaderPrecompiler::Progress ShaderPrecompiler::GetProgress() const {
 	p.failed   = m_failed.load(std::memory_order_relaxed);
 	p.reloaded = m_reloaded.load(std::memory_order_relaxed);
 	p.cpu_ns   = m_cpu_ns.load(std::memory_order_relaxed);
+	p.refused  = m_refused.load(std::memory_order_relaxed);
 	std::scoped_lock lock(m_mutex);
 	p.finished = m_finished;
 	return p;
@@ -918,6 +919,9 @@ std::string ShaderPrecompiler::Counts() const {
 		              static_cast<double>(m_cpu_ns.load(std::memory_order_relaxed)) / 1.0e9);
 		result += text;
 	}
+	if (const auto refused = m_refused.load(std::memory_order_relaxed); refused != 0) {
+		result += ", " + std::to_string(refused) + " of refused programs";
+	}
 	return result;
 }
 
@@ -939,6 +943,20 @@ void ShaderPrecompiler::Worker(uint32_t index) {
 		const auto& entry = entries[m_order.empty() ? next : m_order[next]];
 		Outcome     outcome   = Outcome::Failed;
 		const auto  cpu_begin = m_settings.measure_cpu ? CurrentThreadCpuNs() : 0;
+		const auto  hash      = sources[entry.source].hash;
+		if (m_settings.refused != nullptr && m_settings.refused->Contains(hash)) {
+			// A program an earlier start died on: counted, the first ones named by hash, never translated again.
+			m_refused.fetch_add(1, std::memory_order_relaxed);
+			if (m_settings.log && m_refused_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+				char text[200];
+				std::snprintf(text, sizeof(text), "Shader precompile: program 0x%016llx skipped (refused earlier: %s)",
+				              static_cast<unsigned long long>(hash), m_settings.refused->Reason(hash).c_str());
+				m_settings.log(text);
+			}
+			NoteDone(Outcome::Skipped);
+			continue;
+		}
+		if (m_settings.refused != nullptr) RefusedPrograms::Begin(hash);
 #if defined(__cpp_exceptions) || defined(_CPPUNWIND)
 		try {
 			outcome = m_compile(sources[entry.source], entry);
@@ -949,6 +967,7 @@ void ShaderPrecompiler::Worker(uint32_t index) {
 		// Builds without exceptions (the Linux build): a failing compile reports Failed itself.
 		outcome = m_compile(sources[entry.source], entry);
 #endif
+		if (m_settings.refused != nullptr) RefusedPrograms::End();
 		if (m_settings.measure_cpu) {
 			m_cpu_ns.fetch_add(CurrentThreadCpuNs() - cpu_begin, std::memory_order_relaxed);
 		}
