@@ -71,7 +71,7 @@ jobs:
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/ut"
-          for t in CpLeadBound PredicationDrain FaultClass ReplaySkipStats; do
+          for t in CpLeadBound PredicationDrain FaultClass ReplaySkipStats MeshIndirectStats; do
             clang++ -std=c++20 -O2 -Isrc "tests/${t}Tests.cpp" -o "$RUNNER_TEMP/ut/$t"
             "$RUNNER_TEMP/ut/$t"
           done
