@@ -77,41 +77,55 @@ std::vector<Src> LoadPrograms(const char* path, std::vector<Perm>* perms = nullp
 		std::memcpy(&size, &d[off + 8], 8);
 		if (magic != 0x4352504bu) break;
 		const size_t p = off + 24, end = p + size;
-		if (kind == 1) {
+		if (size > d.size() || end > d.size()) break; // a truncated or damaged record ends the scan
+		if (kind == 1 && size >= 20) {
 			size_t   q = p + 16;
 			uint32_t kl;
 			std::memcpy(&kl, &d[q], 4);
 			q += 4;
 			const uint8_t* key = &d[q];
+			// Every read below stays inside the key (kl bytes, itself inside the record): a record of another layout is skipped, not misread.
+			const size_t   klen = kl;
+			bool           ok = q + klen <= end && klen >= 32;
 			Src            s;
-			s.digest.assign(reinterpret_cast<const char*>(&d[p]), 16);
-			uint32_t       lay, ns, nc;
-			std::memcpy(&lay, key, 4);
-			std::memcpy(&s.stage, key + 4, 4);
-			std::memcpy(&s.hash, key + 8, 8);
-			std::memcpy(&s.user_data_count, key + 16, 4);
-			size_t k = 24;
-			std::memcpy(&ns, key + k, 4);
-			s.statics.resize(ns);
-			std::memcpy(s.statics.data(), key + k + 4, 4ull * ns);
-			k += 4 + 4ull * ns;
-			std::memcpy(&s.wave, key + k, 4);
-			std::memcpy(&s.user_data_base, key + k + 4, 4);
-			k += 8 + 1;
-			std::memcpy(&nc, key + k, 4);
-			k += 4;
-			s.code.resize(nc);
-			std::memcpy(s.code.data(), key + k, 4ull * nc);
-			out.push_back(std::move(s));
+			[[maybe_unused]] uint32_t lay = 0;
+			uint32_t       ns = 0, nc = 0;
+			size_t         k = 24;
+			if (ok) {
+				s.digest.assign(reinterpret_cast<const char*>(&d[p]), 16);
+				std::memcpy(&lay, key, 4);
+				std::memcpy(&s.stage, key + 4, 4);
+				std::memcpy(&s.hash, key + 8, 8);
+				std::memcpy(&s.user_data_count, key + 16, 4);
+				std::memcpy(&ns, key + k, 4);
+				ok = 4ull * ns <= klen && k + 4 + 4ull * ns + 17 <= klen;
+			}
+			if (ok) {
+				s.statics.resize(ns);
+				std::memcpy(s.statics.data(), key + k + 4, 4ull * ns);
+				k += 4 + 4ull * ns;
+				std::memcpy(&s.wave, key + k, 4);
+				std::memcpy(&s.user_data_base, key + k + 4, 4);
+				k += 8 + 1;
+				std::memcpy(&nc, key + k, 4);
+				k += 4;
+				ok = 4ull * nc <= klen && k + 4ull * nc <= klen;
+			}
+			if (ok) {
+				s.code.resize(nc);
+				std::memcpy(s.code.data(), key + k, 4ull * nc);
+				out.push_back(std::move(s));
+			}
 		}
 		if (kind != 1) {
-			if (perms) {
+			if (perms && size >= 16) {
 				Perm pm;
 				pm.perm = perm_idx;
 				pm.digest.assign(reinterpret_cast<const char*>(&d[p]), 16);
-				uint32_t sl;
-				std::memcpy(&sl, &d[p + 20], 4);
-				pm.spec.assign(&d[p + 24], &d[p + 24] + sl);
+				uint32_t sl = 0;
+				if (size >= 24) std::memcpy(&sl, &d[p + 20], 4);
+				if (size < 24 || p + 24ull + sl > end) sl = 0; // a specialization that does not fit its record reads as empty
+				pm.spec.assign(d.data() + p + 24, d.data() + p + 24 + sl);
 				perms->push_back(std::move(pm));
 			}
 			perm_idx++;
