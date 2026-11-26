@@ -17,7 +17,9 @@
 // graphics/shader/shader.h: the bytes "1234" and version 0x18, then the header's fields), the ISA,
 // padding and a footer. The marker is the header's first 8 bytes; the code sits `*(u32*)(marker -
 // 0x14)` bytes after the marker (the offset the library tooling records ahead of the header) and is
-// `shader_size` bytes long (the header's field, marker + 0x44). The code is hashed as the guest
+// `*(u32*)(marker - 0x0c)` bytes long (validated against real groups). The header's own shader_size
+// (marker + 0x44) is only a cross-check: when it differs, the -0x0c value is used and the shader is
+// counted in Stats::size_mismatch. The code is hashed as the guest
 // hashes what it passes to AgcCreateShader (XXH3-128 over the bytes, XXH3-64 of the first min(64,
 // size) bytes) and so is the key of a KYPLST `<runtime>` shader.
 //
@@ -29,7 +31,8 @@ namespace Libs::Graphics::Ue5Group {
 inline constexpr uint8_t Marker[8] = {'1', '2', '3', '4', 0x18, 0, 0, 0};
 inline constexpr size_t  CodeOffsetBack =
     0x14; // the u32 code offset sits this far before the marker
-inline constexpr size_t   ShaderSizeAt = 0x44; // the header's shader_size, from the marker
+inline constexpr size_t SizeBack = 0x0c; // the u32 code size sits this far before the marker
+inline constexpr size_t ShaderSizeAt = 0x44; // the header's shader_size, from the marker (cross-check)
 inline constexpr uint32_t UnknownStage = 0xFFFFFFFFu;
 
 struct Shader {
@@ -44,7 +47,8 @@ struct Stats {
 	uint32_t markers       = 0;     // headers found
 	uint32_t shaders       = 0;     // yielded
 	uint32_t out_of_bounds = 0;     // a code outside the group (dropped)
-	uint32_t bad_size      = 0;     // shader_size 0 or not a multiple of 4 (dropped)
+	uint32_t bad_size      = 0;     // size 0 or not a multiple of 4 (dropped)
+	uint32_t size_mismatch = 0;     // the header's shader_size differs from the size used (kept)
 	bool     matched       = false; // markers == the library's shader count: stages known
 };
 
@@ -74,9 +78,13 @@ inline T Get(std::span<const uint8_t> bytes, size_t at) {
 		at = static_cast<size_t>(hit - group.data());
 		if (at >= skip_until && std::memcmp(hit, Marker, sizeof(Marker)) == 0) {
 			markers.push_back(at);
-			if (at >= CodeOffsetBack && at + ShaderSizeAt + 4 <= group.size()) {
+			if (at >= CodeOffsetBack && at + sizeof(Marker) <= group.size()) {
 				const uint64_t start = at + Detail::Get<uint32_t>(group, at - CodeOffsetBack);
-				const uint32_t size  = Detail::Get<uint32_t>(group, at + ShaderSizeAt);
+				const uint32_t size  = Detail::Get<uint32_t>(group, at - SizeBack);
+				if (at + ShaderSizeAt + 4 <= group.size() &&
+				    Detail::Get<uint32_t>(group, at + ShaderSizeAt) != size) {
+					local.size_mismatch++;
+				}
 				if (size == 0 || size % 4u != 0) {
 					local.bad_size++;
 				} else if (start + size > group.size()) {

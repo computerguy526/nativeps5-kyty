@@ -1198,10 +1198,14 @@ File Retarget(const File& file, const Resolved& resolved, RetargetStats& stats) 
 	File out;
 	out.info   = file.info;
 	out.levels = file.levels;
+	out.files  = file.files; // the shaders keep their file numbers
 	std::vector<uint32_t> shader_map(file.shaders.size(), UINT32_MAX);
 	for (size_t i = 0; i < file.shaders.size(); i++) {
 		stats.shaders++;
-		if (!resolved.usable[i]) {
+		// A `<runtime>` shader still pending (no store) is named by hashes alone, which do not depend on the game
+		// version: it is carried over unchanged.
+		const bool pending = i < resolved.pending.size() && resolved.pending[i];
+		if (!resolved.usable[i] && !pending) {
 			stats.missing++;
 			continue;
 		}

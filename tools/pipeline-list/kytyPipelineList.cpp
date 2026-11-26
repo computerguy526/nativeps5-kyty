@@ -23,7 +23,9 @@
 //       programs-only export.
 //       --runtime-code (UE5 titles): a journaled code found nowhere in --exe/--data/--scan is kept as a `<runtime>` shader, named by
 //       its size and hashes alone (its code comes from the player's own game at run time, pipelineCodeStore.h); prints
-//       "N kept as runtime code". Without it such a code is dropped, as before.
+//       "N kept as runtime code". Without it such a code is dropped, as before. --base keeps the base list's runtime
+//       shaders (--code-store <KYCODE1 file> resolves them, so the recorded pipelines using them can be listed too).
+//       A merged stage with one half in the game files and one runtime half is dropped and counted.
 //   merge --out <list> <list>...        Union of lists of the same title, version and input layout.
 //   info <list>                         Header, counts, levels, section sizes.
 //   check <list> --game <app0 dir or .zar> [--exe <executable>] [--code-store <KYCODE1 file>] [--require-runtime <percent>]
@@ -267,7 +269,7 @@ struct BaseList {
 };
 
 void LoadBase(const Arguments& args, GameFiles& game, const PipelineList::Info& info, const std::vector<uint8_t>& image,
-              BaseList& base) {
+              BaseList& base, PipelineCodeStore* code_store) {
 	const auto unused = [&](const char* why) { std::printf("base list %s: not used, %s\n", args.base.c_str(), why); };
 	PipelineList::File file;
 	if (!Load(args.base, file)) return unused("it cannot be read");
@@ -294,7 +296,7 @@ void LoadBase(const Arguments& args, GameFiles& game, const PipelineList::Info& 
 	const bool other_state      = !PipelineList::StateFormatReplayable(file.info.state_format);
 	if (int21 || other_state) file.pipelines.clear();
 	PipelineList::ResolveStats  resolve;
-	auto                        resolved = ResolveWith(game, file, image, info.input_info_sizes, resolve);
+	auto resolved = ResolveWith(game, file, image, info.input_info_sizes, resolve, code_store != nullptr ? code_store->ReadFn() : PipelineList::ReadHashFn {});
 	PipelineList::RetargetStats retarget;
 	base.kept       = PipelineList::Retarget(file, resolved, retarget);
 	base.kept.files = file.files; // Retarget keeps every shader's file number
@@ -316,7 +318,8 @@ void LoadBase(const Arguments& args, GameFiles& game, const PipelineList::Info& 
 	for (const auto& entry: resolved.entries) {
 		base.entries.push_back({source_of[entry.source], entry.push_data_cursor, entry.specialization});
 	}
-	base.used = !base.sources.empty();
+	// A base list of `<runtime>` shaders only (no store to resolve them) still joins the export through `kept`.
+	base.used = !base.sources.empty() || !base.kept.shaders.empty();
 	std::printf("base list %s: %s %s by %s: %zu of %zu shaders found in this game, %zu permutations, %zu of %zu pipelines kept\n",
 	            args.base.c_str(), file.info.title_id.c_str(), file.info.app_version.c_str(), file.info.producer.c_str(),
 	            base.kept.shaders.size(), listed_shaders, base.kept.permutations.size(), base.kept.pipelines.size(), listed_pipelines);
@@ -408,7 +411,12 @@ int Export(const Arguments& args) {
 	}
 	PipelineList::Builder builder(info);
 	BaseList              base;
-	if (!args.base.empty()) LoadBase(args, *game, info, image, base);
+	PipelineCodeStore code_store;
+	if (!args.code_store.empty() && !code_store.OpenReadOnly(U8(args.code_store))) {
+		std::fprintf(stderr, "cannot read the code store %s\n", args.code_store.c_str());
+		return 2;
+	}
+	if (!args.base.empty()) LoadBase(args, *game, info, image, base, args.code_store.empty() ? nullptr : &code_store);
 	// --programs: the program cache(s) as one more source (programsSource.h); graphics sources take their input info from a journal source of the same identity.
 	std::vector<ShaderJournal::Source> program_sources;
 	std::vector<ShaderJournal::Entry>  program_entries;
@@ -651,7 +659,18 @@ int Export(const Arguments& args) {
 		}
 	}
 	PrintExport(stats);
-	if (args.runtime_code) std::printf("%zu kept as runtime code\n", runtime_kept.size());
+	if (args.runtime_code) {
+		std::printf("%zu kept as runtime code\n", runtime_kept.size());
+		uint64_t mixed = PipelineListTool::CountMixedMergedStages(program_sources, runtime_kept);
+		for (const auto& [path, journal]: loaded_shaders) {
+			(void)path;
+			mixed += PipelineListTool::CountMixedMergedStages(journal->Sources(), runtime_kept);
+		}
+		if (mixed != 0) {
+			std::printf("%llu merged stages dropped: one half in the game files, the other runtime code\n",
+			            static_cast<unsigned long long>(mixed));
+		}
+	}
 	// A module without a permutation identity (an expanded call program, which is not journaled) cannot be
 	// named in a list: its pipelines are among those not kept.
 	size_t unidentified = 0;
@@ -971,7 +990,7 @@ int Retarget(const Arguments& args) {
 	uint64_t    total[3]    = {}, kept[3] = {};
 	for (size_t i = 0; i < file.shaders.size(); i++) {
 		total[static_cast<size_t>(file.shaders[i].kind)]++;
-		kept[static_cast<size_t>(file.shaders[i].kind)] += resolved.usable[i] ? 1 : 0;
+		kept[static_cast<size_t>(file.shaders[i].kind)] += resolved.usable[i] || resolved.pending[i] ? 1 : 0;
 	}
 	for (size_t k = 0; k < 3; k++) {
 		std::printf("  %s shaders: %llu of %llu found\n", names[k], ull(kept[k]), ull(total[k]));
@@ -982,7 +1001,8 @@ int Retarget(const Arguments& args) {
 	std::vector<size_t> level_total(file.levels.size()), level_kept(file.levels.size());
 	for (const auto& pipeline: file.pipelines) {
 		const bool keep = std::all_of(pipeline.stages.begin(), pipeline.stages.end(), [&](const PipelineList::Stage& stage) {
-			return resolved.permutation_entry[stage.permutation] != UINT32_MAX;
+			return resolved.permutation_entry[stage.permutation] != UINT32_MAX ||
+			       resolved.pending[file.permutations[stage.permutation].shader];
 		});
 		for (const auto level: pipeline.levels) {
 			level_total[level]++;

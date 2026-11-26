@@ -710,13 +710,70 @@ void TestStoreWithResolve() {
 	CHECK(!reader.ContainsAll(listed));
 }
 
+// retarget carries `<runtime>` shaders over unchanged, pending ones included; a game-file shader that is gone is dropped.
+void TestRetargetRuntime() {
+	// One executable shader (gone in the other game version) and the runtime list's shaders.
+	auto list = MakeRuntimeList();
+	PipelineList::Shader exe;
+	exe.file = PipelineList::CodeFile::Executable;
+	exe.offset = 64;
+	exe.code_size = 8;
+	exe.input_info.assign(InputSizes[0], 0);
+	exe.kind = ShaderJournal::Kind::Vertex;
+	list.file.shaders.push_back(exe);
+	list.file.permutations.push_back({3, 0, {}});
+	MemoryStore store;
+	Fill(store, list);
+	for (const bool with_store: {false, true}) {
+		int                        reads = 0;
+		PipelineList::ResolveStats stats;
+		const auto resolved = PipelineList::Resolve(list.file, InputSizes, FailingRead(reads), {}, stats, with_store ? store.Fn() : PipelineList::ReadHashFn {});
+		PipelineList::RetargetStats rs;
+		const auto                  out = PipelineList::Retarget(list.file, resolved, rs);
+		CHECK(out.shaders.size() == 3 && out.permutations.size() == 3 && rs.missing == 1 && rs.same_offset == 3 && rs.moved == 0);
+		for (const auto& shader: out.shaders) CHECK(shader.file == PipelineList::RuntimeFileOf(list.file) && shader.offset == 0);
+		CHECK(out.shaders[0].code_hash_low == list.file.shaders[0].code_hash_low && out.shaders[2].back_code_size == 96);
+		CHECK(PipelineList::RuntimeFileOf(out) == PipelineList::RuntimeFileOf(list.file));
+		// export --base: the retargeted base joins a new export, runtime shaders included, and the same codes seen again
+		// by a journal are the same shaders (no duplicates).
+		if (!with_store) {
+			PipelineList::Builder               builder(TestInfo());
+			PipelineList::ExportStats           stats2;
+			builder.AddList(out, stats2);
+			std::set<PipelineListTool::HashKey> kept;
+			builder.AddJournals(list.sources, list.entries, {},
+			                    PipelineListTool::KeepRuntimeCode([](std::span<const uint32_t>) { return std::nullopt; }, builder, kept),
+			                    stats2);
+			const auto joined = builder.Finish();
+			CHECK(joined.shaders.size() == 3 && joined.permutations.size() == 3 && joined.files == out.files);
+		}
+		PipelineList::File decoded; // the retargeted list is a valid list
+		CHECK(PipelineList::Decode(PipelineList::Encode(out), decoded) && decoded.shaders.size() == 3);
+	}
+}
+
+// A merged stage with one runtime half and one half in the game files is counted (it is dropped by the export).
+void TestMixedMergedCount() {
+	auto merged = SourceOf(Code(700, 64), ShaderJournal::Kind::Vertex, 5, InputSizes[0]);
+	merged.back_code = Code(701, 32);
+	const auto plain = SourceOf(Code(702, 64), ShaderJournal::Kind::Vertex, 5, InputSizes[0]);
+	const auto h = PipelineList::CodeHash(Bytes(merged.back_code));
+	std::set<PipelineListTool::HashKey> kept {{h.low, h.high}}; // only the back half is runtime
+	CHECK(PipelineListTool::CountMixedMergedStages({merged, plain}, kept) == 1);
+	const auto f = PipelineList::CodeHash(Bytes(merged.code));
+	kept.insert({f.low, f.high}); // both runtime: not mixed
+	CHECK(PipelineListTool::CountMixedMergedStages({merged, plain}, kept) == 0);
+	CHECK(PipelineListTool::CountMixedMergedStages({merged}, {}) == 0);
+}
+
 // ---- the group split ------------------------------------------------------------------------------------------
 
 struct GroupShader {
 	std::vector<uint8_t> code;
-	uint32_t             declared_size = 0xFFFFFFFFu; // 0xFFFFFFFF: code.size()
+	uint32_t             declared_size = 0xFFFFFFFFu; // the size at marker-0x0c; 0xFFFFFFFF: code.size()
 	int64_t              code_offset_delta = 0;       // added to the true offset (out of bounds tests)
 	bool                 header = true;               // false: the shader has no marker
+	uint32_t             header_size   = 0xFFFFFFFFu; // the header's shader_size (marker+0x44); 0xFFFFFFFF: code.size()
 };
 
 // One shader: preamble (with the code offset 0x14 before the marker), the header, padding, the ISA, a footer.
@@ -733,7 +790,8 @@ void AppendShader(std::vector<uint8_t>& group, const GroupShader& shader, std::m
 	const uint8_t marker_bytes[8] = {'1', '2', '3', '4', 0x18, 0, 0, 0};
 	std::memcpy(group.data() + marker, marker_bytes, 8);
 	put32(marker - 0x14, static_cast<uint32_t>(static_cast<int64_t>(header_to_code) + shader.code_offset_delta));
-	put32(marker + 0x44, shader.declared_size == 0xFFFFFFFFu ? static_cast<uint32_t>(shader.code.size()) : shader.declared_size);
+	put32(marker - 0x0c, shader.declared_size == 0xFFFFFFFFu ? static_cast<uint32_t>(shader.code.size()) : shader.declared_size);
+	put32(marker + 0x44, shader.header_size == 0xFFFFFFFFu ? static_cast<uint32_t>(shader.code.size()) : shader.header_size);
 	std::memcpy(group.data() + marker + header_to_code, shader.code.data(), shader.code.size());
 	const char footer[] = "sl00barefoot";
 	std::memcpy(group.data() + marker + header_to_code + shader.code.size(), footer, sizeof(footer) - 1);
@@ -772,6 +830,16 @@ void TestGroupSplit() {
 	// The hash is the key a KYPLST shader uses: a 40-byte code (under the 64-byte prefix) keys the same way.
 	CHECK(shaders.size() == 3 && shaders[1].prefix == XXH3_64bits(c1.data(), c1.size()));
 
+	// Both size fields set the same: no mismatch. They differ: the marker-0x0c size wins and the shader is counted.
+	CHECK(stats.size_mismatch == 0);
+	{
+		std::vector<uint8_t> g;
+		AppendShader(g, {c0, 0xFFFFFFFFu, 0, true, 0xFFFFFFFFu}, random);
+		AppendShader(g, {c1, 0xFFFFFFFFu, 0, true, 128}, random);
+		Ue5Group::Stats s;
+		const auto      r = Ue5Group::Split(g, {}, &s);
+		CHECK(r.size() == 2 && s.size_mismatch == 1 && r[1].size == c1.size() && r[1].hash == PipelineList::CodeHash(c1));
+	}
 	// No frequencies: the shaders are split, the stage is unknown.
 	{
 		Ue5Group::Stats s;
@@ -934,6 +1002,8 @@ int main() {
 	TestStoreCapAndReadOnly();
 	TestStoreThreads();
 	TestStoreWithResolve();
+	TestRetargetRuntime();
+	TestMixedMergedCount();
 	TestGroupSplit();
 	TestToolRuntimeExport();
 	if (g_failed != 0) {

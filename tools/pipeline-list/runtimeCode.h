@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <set>
 #include <string>
+#include <vector>
 #include <utility>
 
 namespace PipelineListTool {
@@ -65,6 +66,22 @@ KeepRuntimeCode(Libs::Graphics::PipelineList::Builder::LocateFn inner, Libs::Gra
 	}
 	if (runtime_total != nullptr) *runtime_total = total;
 	return uncovered;
+}
+
+// Merged stages (a front and a back half) of which exactly one half was kept as `<runtime>` code, so the halves sit in
+// different files and the export drops the shader. v1.4.2 drops them; they are counted so the export can say so.
+[[nodiscard]] inline uint64_t CountMixedMergedStages(const std::vector<Libs::Graphics::ShaderJournal::Source>& sources,
+                                                     const std::set<HashKey>&                                  runtime_kept) {
+	using namespace Libs::Graphics;
+	uint64_t mixed = 0;
+	for (const auto& source: sources) {
+		if (source.code.empty() || source.back_code.empty()) continue;
+		const auto front = PipelineList::CodeHash({reinterpret_cast<const uint8_t*>(source.code.data()), source.code.size() * 4});
+		const auto back =
+		    PipelineList::CodeHash({reinterpret_cast<const uint8_t*>(source.back_code.data()), source.back_code.size() * 4});
+		mixed += runtime_kept.contains({front.low, front.high}) != runtime_kept.contains({back.low, back.high}) ? 1 : 0;
+	}
+	return mixed;
 }
 
 } // namespace PipelineListTool
