@@ -767,6 +767,12 @@ target_include_directories(nanite_shade_stats_tests PRIVATE "${KYTY_SOURCE_DIR}"
 add_executable(mesh_indirect_stats_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MeshIndirectStatsTests.cpp")
 target_include_directories(mesh_indirect_stats_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# c2acct: KYTY_NATIVE_INDIRECT_MESH values vs CodegenOptions::mesh_indirect_params (codegen fingerprint), no GPU.
+add_executable(mesh_indirect_env_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MeshIndirectEnvTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/CodegenOptions.cpp")
+target_link_libraries(mesh_indirect_env_tests common fmt::fmt)
+target_include_directories(mesh_indirect_env_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # mfxlayer: FSR 3.1 constant-block detector of the UE upscaler-slot MetalFX adapter (header only), no GPU.
 add_executable(metalfx_ue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MetalFxUeTests.cpp")
 target_include_directories(metalfx_ue_tests PRIVATE "${KYTY_SOURCE_DIR}")
