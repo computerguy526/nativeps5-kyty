@@ -232,16 +232,14 @@ constexpr MimgSampleInfo MIMG_GATHER_OPCODE_LIST[] = {
     {0xd5u, "image_gather4_b_o_a",
      ImageSampleFlagBias | ImageSampleFlagOffset | ImageSampleFlagAdjust},
     {0xd6u, "image_gather4_b_cl_o_a",
-     ImageSampleFlagBias | ImageSampleFlagLodClamp | ImageSampleFlagOffset |
-         ImageSampleFlagAdjust},
+     ImageSampleFlagBias | ImageSampleFlagLodClamp | ImageSampleFlagOffset | ImageSampleFlagAdjust},
     {0xd8u, "image_gather4_c_o_a",
      ImageSampleFlagCompare | ImageSampleFlagOffset | ImageSampleFlagAdjust},
     {0xd9u, "image_gather4_c_cl_o_a",
      ImageSampleFlagCompare | ImageSampleFlagLodClamp | ImageSampleFlagOffset |
          ImageSampleFlagAdjust},
     {0xddu, "image_gather4_c_b_o_a",
-     ImageSampleFlagCompare | ImageSampleFlagBias | ImageSampleFlagOffset |
-         ImageSampleFlagAdjust},
+     ImageSampleFlagCompare | ImageSampleFlagBias | ImageSampleFlagOffset | ImageSampleFlagAdjust},
     {0xdeu, "image_gather4_c_b_cl_o_a",
      ImageSampleFlagCompare | ImageSampleFlagBias | ImageSampleFlagLodClamp |
          ImageSampleFlagOffset | ImageSampleFlagAdjust},
@@ -454,13 +452,13 @@ void DecodeMimg(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 		}
 		// An instance node writes the transformed ray back over the origin and direction registers,
 		// a non-instance result may land in them; the two must not partly overlap.
-		const uint32_t origin    = nsa_dwords != 0u ? inst.image_nsa_addr[3] : vaddr + 4u;
-		const uint32_t direction = nsa_dwords != 0u ? inst.image_nsa_addr[6] : vaddr + 7u;
-		bool overlapping = origin < direction + 3u && direction < origin + 3u;
+		const uint32_t origin      = nsa_dwords != 0u ? inst.image_nsa_addr[3] : vaddr + 4u;
+		const uint32_t direction   = nsa_dwords != 0u ? inst.image_nsa_addr[6] : vaddr + 7u;
+		bool           overlapping = origin < direction + 3u && direction < origin + 3u;
 		for (const uint32_t output: {2u, 3u, 6u, 7u}) {
 			const uint32_t reg = vdata + output;
-			overlapping |= (reg >= origin && reg < origin + 3u) ||
-			               (reg >= direction && reg < direction + 3u);
+			overlapping |=
+			    (reg >= origin && reg < origin + 3u) || (reg >= direction && reg < direction + 3u);
 		}
 		if (overlapping) {
 			SetUnsupported(inst, Family::MIMG, opcode,

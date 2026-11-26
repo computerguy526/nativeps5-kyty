@@ -1,21 +1,20 @@
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 
-#include "common/logging/log.h"
-
 #include "common/hangTrace.h"
+#include "common/logging/log.h"
 
 #include <algorithm>
 #include <atomic>
 #include <cinttypes>
-#include <mutex>
-#include <unordered_map>
-#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -44,7 +43,9 @@ static uint64_t ThreadCpuNs() noexcept {
 #if defined(_WIN32)
 	FILETIME c {}, e {}, k {}, u {};
 	if (!GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) return 0;
-	const auto t = [](const FILETIME& f) { return (static_cast<uint64_t>(f.dwHighDateTime) << 32u) | f.dwLowDateTime; };
+	const auto t = [](const FILETIME& f) {
+		return (static_cast<uint64_t>(f.dwHighDateTime) << 32u) | f.dwLowDateTime;
+	};
 	return (t(k) + t(u)) * 100u;
 #else
 	return 0;
@@ -111,16 +112,50 @@ DrawCommitScope::~DrawCommitScope() {
 }
 
 const char* CatName(Cat cat) noexcept {
-	static constexpr const char* names[] = {
-	    "commit",      "headself",    "headwait.barrier", "headwait.start", "headwait.shallow",
-	    "headwait.deep", "drawop",     "disp.program", "prog.prepare",
-	    "prog.key",    "prog.materialize", "prog.permutation", "disp.pipeline",
-	    "disp.bind",   "disp.bda",    "disp.rebind", "disp.emit", "disp.other",   "eop",
-	    "eventwrite",  "writedata",   "dma",       "wait",       "flip",         "otherop",
-	    "resolver",    "starved",     "service",   "slice",      "flush",        "gc",
-	    "gpuwait.drain", "gpuwait.occlusion", "gpuwait.other", "gpuwait.unmap",
-	    "gpuwait.predication", "gpuwait.gds", "recorder", "submitwait",
-	    "texupload",   "protect",     "fault",     "idle",       "blocked"};
+	static constexpr const char* names[] = {"commit",
+	                                        "headself",
+	                                        "headwait.barrier",
+	                                        "headwait.start",
+	                                        "headwait.shallow",
+	                                        "headwait.deep",
+	                                        "drawop",
+	                                        "disp.program",
+	                                        "prog.prepare",
+	                                        "prog.key",
+	                                        "prog.materialize",
+	                                        "prog.permutation",
+	                                        "disp.pipeline",
+	                                        "disp.bind",
+	                                        "disp.bda",
+	                                        "disp.rebind",
+	                                        "disp.emit",
+	                                        "disp.other",
+	                                        "eop",
+	                                        "eventwrite",
+	                                        "writedata",
+	                                        "dma",
+	                                        "wait",
+	                                        "flip",
+	                                        "otherop",
+	                                        "resolver",
+	                                        "starved",
+	                                        "service",
+	                                        "slice",
+	                                        "flush",
+	                                        "gc",
+	                                        "gpuwait.drain",
+	                                        "gpuwait.occlusion",
+	                                        "gpuwait.other",
+	                                        "gpuwait.unmap",
+	                                        "gpuwait.predication",
+	                                        "gpuwait.gds",
+	                                        "recorder",
+	                                        "submitwait",
+	                                        "texupload",
+	                                        "protect",
+	                                        "fault",
+	                                        "idle",
+	                                        "blocked"};
 	static_assert(sizeof(names) / sizeof(names[0]) == CatCount, "one name per category");
 	const auto index = static_cast<size_t>(cat);
 	return index < CatCount ? names[index] : "?";
@@ -141,8 +176,8 @@ struct Report {
 };
 
 std::array<std::atomic<uint64_t>, StopCount> g_stops {};
-std::mutex                                  g_stop_regions_mutex;
-std::unordered_map<uint64_t, uint64_t>      g_stop_regions; // 2 MiB region -> register reads
+std::mutex                                   g_stop_regions_mutex;
+std::unordered_map<uint64_t, uint64_t>       g_stop_regions; // 2 MiB region -> register reads
 
 Report& GetReport() {
 	static Report report; // GPU thread only
@@ -223,16 +258,16 @@ void Print(ThreadState& state, Report& report, uint64_t now_ns, uint64_t now_tsc
 		line += text;
 	}
 	state.events = {};
-	static constexpr const char* stop_names[] = {"wait-self", "wait-other", "flip-wait", "predication",
-	                                             "cond-exec", "branch",     "reg-read",  "cmd-bytes",
-	                                             "pending-write", "reg-read-fine-clean",
-	                                             "by-buffer-dirty", "by-tracker-gpu", "by-image-gpu",
-	                                             "by-publication"};
+	static constexpr const char* stop_names[] = {
+	    "wait-self",       "wait-other",     "flip-wait",    "predication",   "cond-exec",
+	    "branch",          "reg-read",       "cmd-bytes",    "pending-write", "reg-read-fine-clean",
+	    "by-buffer-dirty", "by-tracker-gpu", "by-image-gpu", "by-publication"};
 	static_assert(sizeof(stop_names) / sizeof(stop_names[0]) == StopCount, "one name per stop");
 	line += " | stops/f:";
 	for (size_t i = 0; i < StopCount; i++) {
 		std::snprintf(text, sizeof(text), " %s %.1f", stop_names[i],
-		              static_cast<double>(g_stops[i].exchange(0, std::memory_order_relaxed)) / frames);
+		              static_cast<double>(g_stops[i].exchange(0, std::memory_order_relaxed)) /
+		                  frames);
 		line += text;
 	}
 	{
@@ -259,13 +294,15 @@ void Print(ThreadState& state, Report& report, uint64_t now_ns, uint64_t now_tsc
 		static uint64_t last_cpu_ns = 0;
 		const auto      cpu_ns      = ThreadCpuNs();
 		std::snprintf(text, sizeof(text), " | cp-cpu %.2f ms/f, cpu/wall incl:",
-		              last_cpu_ns != 0 ? static_cast<double>(cpu_ns - last_cpu_ns) * 1e-6 / frames : 0.0);
+		              last_cpu_ns != 0 ? static_cast<double>(cpu_ns - last_cpu_ns) * 1e-6 / frames
+		                               : 0.0);
 		line += text;
 		last_cpu_ns = cpu_ns;
 		for (size_t i = 0; i < CatCount; i++) {
 			if (state.cpu_wall[i] == 0) continue;
 			std::snprintf(text, sizeof(text), " %s %.2f/%.2f", CatName(static_cast<Cat>(i)),
-			              static_cast<double>(state.cpu_cycles[i]) * ms_tick, static_cast<double>(state.cpu_wall[i]) * ms_tick);
+			              static_cast<double>(state.cpu_cycles[i]) * ms_tick,
+			              static_cast<double>(state.cpu_wall[i]) * ms_tick);
 			line += text;
 		}
 		state.cpu_cycles = {};
@@ -279,29 +316,30 @@ void Print(ThreadState& state, Report& report, uint64_t now_ns, uint64_t now_tsc
 			continue;
 		}
 		const auto& key = pass.key;
-		std::printf("CpPass: %s %ux%u c%u color0=%u depth=%u draws/frame=%.1f "
-		            "commit_ms/frame=%.3f bindings_ms/frame=%.3f descriptors_ms/frame=%.3f "
-		            "rebind_ms/frame=%.3f shader_tables/frame=%.1f shader_bytes/frame=%.0f "
-		            "potential_tables_saved/frame=%.1f potential_bytes_saved/frame=%.0f "
-		            "nested_protect_ms/frame=%.3f nested_drain_ms/frame=%.3f nested_side_ms/frame=%.3f "
-		            "nested_upload_ms/frame=%.3f nested_fault_ms/frame=%.3f\n",
-		            i + 1 == state.draw_pass_totals.size() ? "overflow"
-		            : key.width == 0                      ? "unclassified"
-		                                                  : "attachments",
-		            key.width, key.height, key.colors, key.color_format, key.depth_format,
-		            static_cast<double>(pass.draws) / frames, static_cast<double>(pass.ticks) * ms_tick,
-		            static_cast<double>(pass.binding_ticks) * ms_tick,
-		            static_cast<double>(pass.descriptor_ticks) * ms_tick,
-		            static_cast<double>(pass.rebind_ticks) * ms_tick,
-		            static_cast<double>(pass.shader_table_bindings) / frames,
-		            static_cast<double>(pass.shader_table_bytes) / frames,
-		            static_cast<double>(pass.shader_table_reduction) / frames,
-		            static_cast<double>(pass.shader_byte_reduction) / frames,
-		            static_cast<double>(pass.nested_protect) * ms_tick,
-		            static_cast<double>(pass.nested_drain) * ms_tick,
-		            static_cast<double>(pass.nested_side) * ms_tick,
-		            static_cast<double>(pass.nested_upload) * ms_tick,
-		            static_cast<double>(pass.nested_fault) * ms_tick);
+		std::printf(
+		    "CpPass: %s %ux%u c%u color0=%u depth=%u draws/frame=%.1f "
+		    "commit_ms/frame=%.3f bindings_ms/frame=%.3f descriptors_ms/frame=%.3f "
+		    "rebind_ms/frame=%.3f shader_tables/frame=%.1f shader_bytes/frame=%.0f "
+		    "potential_tables_saved/frame=%.1f potential_bytes_saved/frame=%.0f "
+		    "nested_protect_ms/frame=%.3f nested_drain_ms/frame=%.3f nested_side_ms/frame=%.3f "
+		    "nested_upload_ms/frame=%.3f nested_fault_ms/frame=%.3f\n",
+		    i + 1 == state.draw_pass_totals.size() ? "overflow"
+		    : key.width == 0                       ? "unclassified"
+		                                           : "attachments",
+		    key.width, key.height, key.colors, key.color_format, key.depth_format,
+		    static_cast<double>(pass.draws) / frames, static_cast<double>(pass.ticks) * ms_tick,
+		    static_cast<double>(pass.binding_ticks) * ms_tick,
+		    static_cast<double>(pass.descriptor_ticks) * ms_tick,
+		    static_cast<double>(pass.rebind_ticks) * ms_tick,
+		    static_cast<double>(pass.shader_table_bindings) / frames,
+		    static_cast<double>(pass.shader_table_bytes) / frames,
+		    static_cast<double>(pass.shader_table_reduction) / frames,
+		    static_cast<double>(pass.shader_byte_reduction) / frames,
+		    static_cast<double>(pass.nested_protect) * ms_tick,
+		    static_cast<double>(pass.nested_drain) * ms_tick,
+		    static_cast<double>(pass.nested_side) * ms_tick,
+		    static_cast<double>(pass.nested_upload) * ms_tick,
+		    static_cast<double>(pass.nested_fault) * ms_tick);
 		pass = {};
 	}
 	std::fflush(stdout);
@@ -345,10 +383,11 @@ void NoteStopSlow(Stop stop, uint64_t address) noexcept {
 	}
 }
 
-// KYTY_CP_GAP_SLOW_MS=N (diagnostic, default 0 = off; needs KYTY_CP_GAP_STATS=1): a command-processor
-// frame (guest frame boundary to the next) of N ms or more prints one line, "CpGaps slow frame", with
-// its start on the frame-times clock (KYTY_FRAME_TIMES_LOG's t_us, HangTrace::NowNs) and the
-// categories that took its time (exclusive ms, largest first; the nested ones also inside commits).
+// KYTY_CP_GAP_SLOW_MS=N (diagnostic, default 0 = off; needs KYTY_CP_GAP_STATS=1): a
+// command-processor frame (guest frame boundary to the next) of N ms or more prints one line,
+// "CpGaps slow frame", with its start on the frame-times clock (KYTY_FRAME_TIMES_LOG's t_us,
+// HangTrace::NowNs) and the categories that took its time (exclusive ms, largest first; the nested
+// ones also inside commits).
 static void NoteSlowFrame(ThreadState& state, uint64_t now_ns) {
 	static const uint64_t slow_ns = [] {
 		const auto* value = std::getenv("KYTY_CP_GAP_SLOW_MS");
@@ -362,12 +401,13 @@ static void NoteSlowFrame(ThreadState& state, uint64_t now_ns) {
 	static std::array<uint64_t, CatCount> last_in_commit {};
 	auto&                                 ledger = state.ledger;
 	if (now_ns == 0) {
-		// Print reset the totals: the next frame's deltas start from zero (its earlier part is lost).
+		// Print reset the totals: the next frame's deltas start from zero (its earlier part is
+		// lost).
 		last_ticks     = {};
 		last_in_commit = {};
 		return;
 	}
-	const auto                            frame_ns = last_ns != 0 ? now_ns - last_ns : 0;
+	const auto frame_ns = last_ns != 0 ? now_ns - last_ns : 0;
 	if (frame_ns >= slow_ns) {
 		ledger.Flush(Tsc());
 		std::array<std::pair<uint64_t, Cat>, CatCount> order {};
@@ -375,12 +415,14 @@ static void NoteSlowFrame(ThreadState& state, uint64_t now_ns) {
 			const auto cat = static_cast<Cat>(i);
 			order[i]       = {ledger.Ticks(cat) - std::min(ledger.Ticks(cat), last_ticks[i]), cat};
 		}
-		std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+		std::sort(order.begin(), order.end(),
+		          [](const auto& a, const auto& b) { return a.first > b.first; });
 		const double ms_tick = 1e-6 / state.ticks_per_ns;
 		std::string  line;
 		char         text[160];
 		std::snprintf(text, sizeof(text), "CpGaps slow frame t=%.3f s: %.1f ms |",
-		              static_cast<double>(HangTrace::NowNs() - frame_ns) * 1e-9, static_cast<double>(frame_ns) * 1e-6);
+		              static_cast<double>(HangTrace::NowNs() - frame_ns) * 1e-9,
+		              static_cast<double>(frame_ns) * 1e-6);
 		line += text;
 		for (size_t i = 0; i < 8 && order[i].first != 0; i++) {
 			std::snprintf(text, sizeof(text), " %s %.1f", CatName(order[i].second),
@@ -389,7 +431,8 @@ static void NoteSlowFrame(ThreadState& state, uint64_t now_ns) {
 		}
 		line += " | in commit:";
 		for (size_t i = 0; i < CatCount; i++) {
-			const auto delta = ledger.InCommit(static_cast<Cat>(i)) - std::min(ledger.InCommit(static_cast<Cat>(i)), last_in_commit[i]);
+			const auto delta = ledger.InCommit(static_cast<Cat>(i)) -
+			                   std::min(ledger.InCommit(static_cast<Cat>(i)), last_in_commit[i]);
 			if (static_cast<double>(delta) * ms_tick >= 1.0) {
 				std::snprintf(text, sizeof(text), " %s %.1f", CatName(static_cast<Cat>(i)),
 				              static_cast<double>(delta) * ms_tick);

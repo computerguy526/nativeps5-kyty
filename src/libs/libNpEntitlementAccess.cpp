@@ -469,7 +469,8 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfo(
 		if (printed.size() < 256 && printed.insert(label).second) {
 			LOGF("NpEntitlementAccessGetAddcontEntitlementInfo: service_label=%u label='%s'%s\n",
 			     service_label, label.c_str(),
-			     Loader::AddContentFind(entitlement_label->data, sizeof(entitlement_label->data)) != nullptr
+			     Loader::AddContentFind(entitlement_label->data, sizeof(entitlement_label->data)) !=
+			             nullptr
 			         ? " (installed)"
 			         : " (not installed)");
 		}
@@ -489,7 +490,8 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfo(
 		return 0;
 	}
 
-	// Only add-on content installed in the title's add-on folder is entitled (AddContentFind above).
+	// Only add-on content installed in the title's add-on folder is entitled (AddContentFind
+	// above).
 	return NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
 

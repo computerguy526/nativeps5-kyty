@@ -1,6 +1,6 @@
 #include "common/hangWatchdog.h"
-#include "common/staticOnce.h"
 #include "common/logging/log.h"
+#include "common/staticOnce.h"
 #include "graphics/host_gpu/aftermath.h"
 #include "graphics/host_gpu/gpuBreadcrumbs.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -135,15 +135,15 @@ struct AddressBindings {
 		bool     bind   = false;
 		char     name[120] {};
 	};
-	static constexpr size_t RingSize = 1u << 17u;
-	std::mutex                                 mutex;
+	static constexpr size_t                        RingSize = 1u << 17u;
+	std::mutex                                     mutex;
 	std::map<std::pair<uint64_t, uint64_t>, Event> live; // by base address, handle
-	std::vector<Event>                         ring = std::vector<Event>(RingSize);
-	uint64_t                                   count = 0;
-	std::unordered_map<uint64_t, std::string>  names;
-	std::shared_mutex                          names_mutex;
-	VkDebugUtilsMessengerEXT                   messenger = VK_NULL_HANDLE;
-	std::chrono::steady_clock::time_point      start = std::chrono::steady_clock::now();
+	std::vector<Event>                             ring  = std::vector<Event>(RingSize);
+	uint64_t                                       count = 0;
+	std::unordered_map<uint64_t, std::string>      names;
+	std::shared_mutex                              names_mutex;
+	VkDebugUtilsMessengerEXT                       messenger = VK_NULL_HANDLE;
+	std::chrono::steady_clock::time_point          start     = std::chrono::steady_clock::now();
 };
 AddressBindings& GetAddressBindings() {
 	static auto* bindings = new AddressBindings;
@@ -160,11 +160,13 @@ uint64_t AddressBindingNs() {
 VKAPI_ATTR VkBool32 VKAPI_CALL AddressBindingCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT /*severity*/, VkDebugUtilsMessageTypeFlagsEXT type,
     const VkDebugUtilsMessengerCallbackDataEXT* data, void* /*user*/) {
-	if ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) == 0 || data == nullptr) {
+	if ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT) == 0 ||
+	    data == nullptr) {
 		return VK_FALSE;
 	}
 	const VkDeviceAddressBindingCallbackDataEXT* binding = nullptr;
-	for (auto* next = static_cast<const VkBaseInStructure*>(data->pNext); next != nullptr; next = next->pNext) {
+	for (auto* next = static_cast<const VkBaseInStructure*>(data->pNext); next != nullptr;
+	     next       = next->pNext) {
 		if (next->sType == VK_STRUCTURE_TYPE_DEVICE_ADDRESS_BINDING_CALLBACK_DATA_EXT) {
 			binding = reinterpret_cast<const VkDeviceAddressBindingCallbackDataEXT*>(next);
 			break;
@@ -204,7 +206,8 @@ VKAPI_ATTR VkBool32 VKAPI_CALL AddressBindingCallback(
 	return VK_FALSE;
 }
 
-void PrintBinding(const char* what, const AddressBindings::Event& event, uint64_t address, uint64_t now) {
+void PrintBinding(const char* what, const AddressBindings::Event& event, uint64_t address,
+                  uint64_t now) {
 	std::string name = event.name;
 	if (name.empty()) {
 		auto&            bindings = GetAddressBindings();
@@ -214,13 +217,14 @@ void PrintBinding(const char* what, const AddressBindings::Event& event, uint64_
 		}
 	}
 	const auto end = event.base + event.size;
-	const auto rel = address >= end ? static_cast<int64_t>(address - end) : -static_cast<int64_t>(end - address);
-	std::printf("  binding %s: %s [0x%010" PRIx64 ", 0x%010" PRIx64 ") size 0x%" PRIx64
-	            " type %u handle 0x%016" PRIx64 "%s, %.3f s before the fault, fault-end %+" PRId64
-	            " %s\n",
-	            what, event.bind ? "bind" : "UNBIND", event.base, end, event.size, event.type,
-	            event.handle, (event.flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT) != 0 ? " internal" : "",
-	            static_cast<double>(now - std::min(now, event.ns)) / 1e9, rel, name.c_str());
+	const auto rel =
+	    address >= end ? static_cast<int64_t>(address - end) : -static_cast<int64_t>(end - address);
+	std::printf(
+	    "  binding %s: %s [0x%010" PRIx64 ", 0x%010" PRIx64 ") size 0x%" PRIx64
+	    " type %u handle 0x%016" PRIx64 "%s, %.3f s before the fault, fault-end %+" PRId64 " %s\n",
+	    what, event.bind ? "bind" : "UNBIND", event.base, end, event.size, event.type, event.handle,
+	    (event.flags & VK_DEVICE_ADDRESS_BINDING_INTERNAL_OBJECT_BIT_EXT) != 0 ? " internal" : "",
+	    static_cast<double>(now - std::min(now, event.ns)) / 1e9, rel, name.c_str());
 	LOGF("  binding %s: %s [0x%010" PRIx64 ", 0x%010" PRIx64 ") type %u handle 0x%016" PRIx64
 	     " %.3f s before, %s\n",
 	     what, event.bind ? "bind" : "UNBIND", event.base, end, event.type, event.handle,
@@ -268,8 +272,9 @@ void AddressBindingReportCreateMessenger(vk::Instance instance) {
 	                       VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
 	info.messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
 	info.pfnUserCallback = AddressBindingCallback;
-	auto& bindings = GetAddressBindings();
-	if (create(static_cast<VkInstance>(instance), &info, nullptr, &bindings.messenger) != VK_SUCCESS) {
+	auto& bindings       = GetAddressBindings();
+	if (create(static_cast<VkInstance>(instance), &info, nullptr, &bindings.messenger) !=
+	    VK_SUCCESS) {
 		std::printf("KYTY_ADDRESS_BINDING_REPORT: messenger creation failed; off\n");
 		return;
 	}
@@ -281,19 +286,20 @@ void AddressBindingReportDump(uint64_t address) {
 	if (!AddressBindingReportActive()) {
 		return;
 	}
-	auto&      bindings = GetAddressBindings();
-	const auto now      = AddressBindingNs();
+	auto&                 bindings = GetAddressBindings();
+	const auto            now      = AddressBindingNs();
 	const std::lock_guard lock(bindings.mutex);
-	std::printf("--- Address bindings near 0x%010" PRIx64 " (%" PRIu64 " events, %zu live) ---\n", address,
-	            bindings.count, bindings.live.size());
+	std::printf("--- Address bindings near 0x%010" PRIx64 " (%" PRIu64 " events, %zu live) ---\n",
+	            address, bindings.count, bindings.live.size());
 	// Live ranges covering the address or ending within 64 MiB below it, and the next one above.
-	constexpr uint64_t Near = 64ull << 20u;
+	constexpr uint64_t Near  = 64ull << 20u;
 	auto               above = bindings.live.upper_bound({address, UINT64_MAX});
 	if (above != bindings.live.end()) {
 		PrintBinding("live-above", above->second, address, now);
 	}
 	int shown = 0;
-	for (auto it = std::make_reverse_iterator(above); it != bindings.live.rend() && shown < 8; ++it) {
+	for (auto it = std::make_reverse_iterator(above); it != bindings.live.rend() && shown < 8;
+	     ++it) {
 		const auto& event = it->second;
 		if (event.base + Near * 8 < address) {
 			break;
@@ -301,11 +307,12 @@ void AddressBindingReportDump(uint64_t address) {
 		if (event.base + event.size + Near < address) {
 			continue;
 		}
-		PrintBinding(address < event.base + event.size ? "live-COVERS" : "live-below", event, address, now);
+		PrintBinding(address < event.base + event.size ? "live-COVERS" : "live-below", event,
+		             address, now);
 		++shown;
 	}
-	// Objects placed inside a reported block (images: "block_off=0x.. alloc=0x.." in the name) whose
-	// own range ends within 1 MiB of the address or covers it, live or unbound.
+	// Objects placed inside a reported block (images: "block_off=0x.. alloc=0x.." in the name)
+	// whose own range ends within 1 MiB of the address or covers it, live or unbound.
 	const auto placed = [&](const AddressBindings::Event& event, const char* what) {
 		if (address < event.base || address > event.base + event.size + Near) {
 			return false;
@@ -313,7 +320,8 @@ void AddressBindingReportDump(uint64_t address) {
 		std::string name = event.name;
 		if (name.empty()) {
 			std::shared_lock names_lock(bindings.names_mutex);
-			if (const auto found = bindings.names.find(event.handle); found != bindings.names.end()) {
+			if (const auto found = bindings.names.find(event.handle);
+			    found != bindings.names.end()) {
 				name = found->second;
 			}
 		}
@@ -326,10 +334,13 @@ void AddressBindingReportDump(uint64_t address) {
 		const auto bytes  = std::strtoull(name.c_str() + alloc_at + 8, nullptr, 16);
 		const auto begin  = event.base + offset;
 		const auto end    = begin + bytes;
-		if ((address >= begin && address < end) || (address >= end && address - end < (1ull << 20u)) ||
+		if ((address >= begin && address < end) ||
+		    (address >= end && address - end < (1ull << 20u)) ||
 		    (end > address && end - address < (1ull << 20u))) {
-			std::printf("  placed %s: [0x%010" PRIx64 ", 0x%010" PRIx64 ") fault-end %+" PRId64 " %s %.3f s ago: %s\n",
-			            what, begin, end, static_cast<int64_t>(address - end), event.bind ? "bind" : "UNBIND",
+			std::printf("  placed %s: [0x%010" PRIx64 ", 0x%010" PRIx64 ") fault-end %+" PRId64
+			            " %s %.3f s ago: %s\n",
+			            what, begin, end, static_cast<int64_t>(address - end),
+			            event.bind ? "bind" : "UNBIND",
 			            static_cast<double>(now - std::min(now, event.ns)) / 1e9, name.c_str());
 			return true;
 		}
@@ -342,15 +353,18 @@ void AddressBindingReportDump(uint64_t address) {
 		}
 	}
 	// Ring events (newest first) whose range covers the address or ends within 64 MiB below it.
-	const auto first = bindings.count > AddressBindings::RingSize ? bindings.count - AddressBindings::RingSize : 0;
-	shown            = 0;
+	const auto first =
+	    bindings.count > AddressBindings::RingSize ? bindings.count - AddressBindings::RingSize : 0;
+	shown = 0;
 	for (auto index = bindings.count; index > first; --index) {
 		const auto& event = bindings.ring[(index - 1) % AddressBindings::RingSize];
 		if (placed_shown < 32 && !event.bind && placed(event, "ring")) {
 			++placed_shown;
 		}
-		if (shown < 12 && event.base <= address + Near && address <= event.base + event.size + Near) {
-			PrintBinding(address >= event.base && address < event.base + event.size ? "ring-COVERS" : "ring-near",
+		if (shown < 12 && event.base <= address + Near &&
+		    address <= event.base + event.size + Near) {
+			PrintBinding(address >= event.base && address < event.base + event.size ? "ring-COVERS"
+			                                                                        : "ring-near",
 			             event, address, now);
 			++shown;
 		}

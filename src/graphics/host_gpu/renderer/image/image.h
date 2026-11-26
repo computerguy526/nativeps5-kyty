@@ -386,8 +386,8 @@ public:
 		return m_cpu_dirty;
 	}
 
-	// KYTY_GUEST_HASH_IMAGES_KB (TextureCache::RefreshByContent): the guest bytes are still what the
-	// last upload took; a maybe-dirty mark (a write next to the image) is dropped.
+	// KYTY_GUEST_HASH_IMAGES_KB (TextureCache::RefreshByContent): the guest bytes are still what
+	// the last upload took; a maybe-dirty mark (a write next to the image) is dropped.
 	void ClearMaybeCpuDirty() {
 		m_maybe_cpu_dirty  = false;
 		m_maybe_hash_valid = false;
@@ -532,15 +532,16 @@ public:
 	// KYTY_IMAGE_PARTIAL_GPU_WRITE (TextureCache::InvalidateMemoryFromGPU, UploadGpuWrittenRanges).
 	// While `active`, the image is buffer-modified only by GPU buffer writes over `ranges`, its
 	// native contents elsewhere equal what a whole rebuild would produce there, and the next
-	// refresh rebuilds only the subresources / block rows over those ranges. `serial` is the content
-	// serial at the first write (a native write since makes the refresh whole).
+	// refresh rebuilds only the subresources / block rows over those ranges. `serial` is the
+	// content serial at the first write (a native write since makes the refresh whole).
 	struct GpuWriteTrack {
 		KeptRanges::List ranges;
 		uint64_t         serial = 0;
 		bool             active = false;
 	};
 	GpuWriteTrack gpu_write;
-	// Starts the record of a GPU buffer write (after MarkBufferModified, which ends any previous one).
+	// Starts the record of a GPU buffer write (after MarkBufferModified, which ends any previous
+	// one).
 	void BeginGpuWriteTrack(uint64_t serial) {
 		gpu_write.ranges.clear();
 		gpu_write.serial = serial;
@@ -623,12 +624,12 @@ public:
 	uint64_t         track_addr_end = 0;
 	ImageId          depth_id {};
 	// KYTY_SPARSE_HOLES (TextureCache::ResetUnmappedDepth): the content serial it last checked.
-	uint64_t         sparse_checked_serial = UINT64_MAX;
+	uint64_t sparse_checked_serial = UINT64_MAX;
 	// KYTY_GUEST_HASH_IMAGES_KB (TextureCache::ChecksGuestContent): the hash of the guest bytes its
 	// last upload took, and the guest submission (SyncEpoch) they were last compared in.
-	uint64_t         content_hash             = 0;
-	uint64_t         content_check_submission = 0;
-	bool             content_hash_valid       = false;
+	uint64_t content_hash             = 0;
+	uint64_t content_check_submission = 0;
+	bool     content_hash_valid       = false;
 	// Stencil associations that refer to this depth image (upstream f4692a450).
 	std::vector<ImageId> stencil_ids;
 	// The current stencil plane's mapping into the depth image, also retained by its association.
@@ -680,8 +681,8 @@ public:
 	// Referenced by a bindless table slot (Senaxx): the collector keeps it, and dropping it tells
 	// the table (TextureCache::on_bindless_unregister) to repoint the slot. bindless_self_id is the
 	// image's own id, set when it is pinned (NoteBindlessStateChange).
-	bool             bindless_pinned  = false;
-	Common::SlotId   bindless_self_id {};
+	bool           bindless_pinned = false;
+	Common::SlotId bindless_self_id {};
 	// Replaces the tracked state without recording a barrier. Only for callers that proved no
 	// access pair of the old and new scopes can conflict (see KYTY_DEPTH_FEEDBACK_KEEP).
 	void AdoptState(vk::PipelineStageFlags2 stage, vk::AccessFlags2 access,
@@ -738,7 +739,7 @@ struct BindlessStateChanges {
 	std::vector<ImageId> ids;
 };
 inline BindlessStateChanges g_bindless_state_changes;
-inline void NoteBindlessStateChange(const Image& image) noexcept {
+inline void                 NoteBindlessStateChange(const Image& image) noexcept {
 	if (image.bindless_pinned) {
 		g_bindless_state_generation.fetch_add(1, std::memory_order_relaxed);
 		std::scoped_lock lock {g_bindless_state_changes.mutex};

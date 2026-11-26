@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -11,6 +10,7 @@
 #include "graphics/host_gpu/renderer/pipeline/aaMaskCoverage.h"
 #include "graphics/host_gpu/renderer/pipeline/bindlessTable.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
+#include "graphics/host_gpu/renderer/pipeline/kkTag.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineFeedback.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineLayoutCache.h"
@@ -27,15 +27,15 @@
 #include "graphics/shader/rectListShader.h"
 #include "graphics/shader/shader.h"
 
-#include <unordered_map>
 #include <mutex>
+#include <unordered_map>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
-#include <dlfcn.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <dlfcn.h>
 #include <limits>
 #include <span>
 #include <vector>
@@ -204,7 +204,8 @@ static void AddLayoutBindings(std::vector<vk::DescriptorSetLayoutBinding>& descr
 }
 
 static bool UsesBindless(const ShaderRecompiler::IR::CompiledShaderInfo& program) {
-	return std::ranges::any_of(program.info.images, &ShaderRecompiler::IR::ImageResource::bindless) ||
+	return std::ranges::any_of(program.info.images,
+	                           &ShaderRecompiler::IR::ImageResource::bindless) ||
 	       std::ranges::any_of(program.info.samplers,
 	                           &ShaderRecompiler::IR::SamplerResource::bindless);
 }
@@ -221,9 +222,9 @@ static void AssignPipelineLayout(GraphicContext& graphics, PipelineCache::Pipeli
 		bindless_set = BindlessSetLayout(graphics);
 		EXIT_IF(bindless_set == nullptr);
 	}
-	const auto layouts = AcquirePipelineLayout(graphics, bindings, push_stages,
-	                                           ShaderRecompiler::IR::NativePushConstantSize,
-	                                           bindless_set);
+	const auto layouts =
+	    AcquirePipelineLayout(graphics, bindings, push_stages,
+	                          ShaderRecompiler::IR::NativePushConstantSize, bindless_set);
 	pipeline.descriptor_set_layout = layouts.set_layout;
 	pipeline.pipeline_layout       = layouts.pipeline_layout;
 	pipeline.uses_push_descriptors = layouts.uses_push_descriptors;
@@ -239,8 +240,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const PipelineCache::GraphicsPrograms& programs,
                             const PipelineStaticParameters&        static_params,
                             vk::PipelineCache                      driver_cache,
-                            const GraphicsPipelineCreateHook*      create_hook,
-                            vk::Result*                            result_out) {
+                            const GraphicsPipelineCreateHook* create_hook, vk::Result* result_out) {
 	CompileProgress::LiveScope title_live; // window-title "compiling shader (live)"
 	const auto& vs_input_info  = vertex_info.front();
 	const auto& vertex_program = programs.vertex[0];
@@ -321,8 +321,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	const uint32_t                   layer_limit_value = rendering.layer_limit;
 	const vk::SpecializationMapEntry layer_limit_entry {ShaderRecompiler::IR::LayerLimitSpecId, 0,
 	                                                    sizeof(uint32_t)};
-	const vk::SpecializationInfo layer_limit_spec {1, &layer_limit_entry, sizeof(uint32_t),
-	                                               &layer_limit_value};
+	const vk::SpecializationInfo     layer_limit_spec {1, &layer_limit_entry, sizeof(uint32_t),
+	                                                   &layer_limit_value};
 	for (uint32_t i = 0; i < vertex_info.size(); i++) {
 		shader_stages[shader_stage_count++] = {.stage =
 		                                           NativeShaderStage(vertex_info[i].logical_stage),
@@ -365,24 +365,23 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		// KYTY_AA_MASK_COVERAGE: the copy that applies the key's AA masks (of the per-pixel copy
 		// above when the draw runs that one).
 		if (static_params.aa_mask[0] != 0xffffffffu || static_params.aa_mask[1] != 0xffffffffu) {
-			if (const auto masked = AaMaskCoverage::Lookup(pixel_program.id, pixel_rate, static_params.aa_mask[0],
-			                                               static_params.aa_mask[1]);
+			if (const auto masked =
+			        AaMaskCoverage::Lookup(pixel_program.id, pixel_rate, static_params.aa_mask[0],
+			                               static_params.aa_mask[1]);
 			    masked != nullptr) {
 				module = masked;
 			}
 		}
-		shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
-		                                       .module = module,
-		                                       .pName  = "main"};
+		shader_stages[shader_stage_count++] = {
+		    .stage = vk::ShaderStageFlagBits::eFragment, .module = module, .pName = "main"};
 	} else if (static_params.aa_mask[0] != 0xffffffffu || static_params.aa_mask[1] != 0xffffffffu) {
-		// KYTY_AA_MASK_COVERAGE: a draw without a pixel shader whose AA masks leave samples out (the
-		// stencil marks of a ghost car): a fragment shader that only writes its coverage.
-		if (const auto masked =
-		        AaMaskCoverage::Lookup(0, false, static_params.aa_mask[0], static_params.aa_mask[1]);
+		// KYTY_AA_MASK_COVERAGE: a draw without a pixel shader whose AA masks leave samples out
+		// (the stencil marks of a ghost car): a fragment shader that only writes its coverage.
+		if (const auto masked = AaMaskCoverage::Lookup(0, false, static_params.aa_mask[0],
+		                                               static_params.aa_mask[1]);
 		    masked != nullptr && shader_stage_count < std::size(shader_stages)) {
-			shader_stages[shader_stage_count++] = {.stage  = vk::ShaderStageFlagBits::eFragment,
-			                                       .module = masked,
-			                                       .pName  = "main"};
+			shader_stages[shader_stage_count++] = {
+			    .stage = vk::ShaderStageFlagBits::eFragment, .module = masked, .pName = "main"};
 		}
 	}
 	// One guest wave per host subgroup where the device lets the stage require it (mesh and
@@ -392,8 +391,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	for (uint32_t index = 0; index < shader_stage_count; index++) {
 		auto&      stage   = shader_stages[index];
 		const bool is_mesh = stage.stage == vk::ShaderStageFlagBits::eMeshEXT;
-		if (!is_mesh && (stage.stage != vk::ShaderStageFlagBits::eFragment || ps_input_info == nullptr ||
-		                 !ps_input_info->stage)) {
+		if (!is_mesh && (stage.stage != vk::ShaderStageFlagBits::eFragment ||
+		                 ps_input_info == nullptr || !ps_input_info->stage)) {
 			continue;
 		}
 		const auto wave_size = is_mesh ? vs_input_info.mesh.wave_size
@@ -586,7 +585,7 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 
 	std::vector<vk::DescriptorSetLayoutBinding> descriptor_bindings;
 	vk::ShaderStageFlags graphics_stages = vk::ShaderStageFlagBits::eFragment;
-	pipeline.uses_bindless               = false;
+	pipeline.uses_bindless                                      = false;
 	for (const auto& stage: vertex_info) {
 		const auto native_stage = NativeShaderStage(stage.logical_stage);
 		AddLayoutBindings(descriptor_bindings, *stage.stage.program, native_stage);
@@ -661,11 +660,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 	// sample takes its own raster sample's coverage (TRUNCATE) where the device lists it: with
 	// MERGE a pixel whose raster samples two triangles of one blended mesh share blends twice.
 	std::array<vk::SampleCountFlagBits, RENDER_COLOR_ATTACHMENTS_MAX> color_attachment_samples {};
-	vk::AttachmentSampleCountInfoAMD               attachment_sample_count {};
-	vk::PipelineCoverageReductionStateCreateInfoNV coverage_reduction {};
+	vk::AttachmentSampleCountInfoAMD                                  attachment_sample_count {};
+	vk::PipelineCoverageReductionStateCreateInfoNV                    coverage_reduction {};
 	if (rendering.color_samples != 0) {
-		EXIT_IF(graphics.mixed_attachment_samples ==
-		        GraphicContext::MixedAttachmentSamples::None);
+		EXIT_IF(graphics.mixed_attachment_samples == GraphicContext::MixedAttachmentSamples::None);
 		for (uint32_t i = 0; i < rendering.color_count; i++) {
 			color_attachment_samples[i] = vulkan_sample_count(rendering.color_samples);
 		}
@@ -748,8 +746,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		}
 		result = (*create_hook)(pipeline_info, layout_signature, &pipeline.pipeline);
 	} else {
-		result = PipelineFeedback::CreateGraphics(graphics.device, driver_cache, pipeline_info, &pipeline.pipeline,
-		                                          PipelineFeedback::Path::Sync);
+		result = PipelineFeedback::CreateGraphics(graphics.device, driver_cache, pipeline_info,
+		                                          &pipeline.pipeline, PipelineFeedback::Path::Sync);
 	}
 	Profiler::AddFrameWait(Profiler::FrameWait::GraphicsPipelineDriver, 1,
 	                       static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -778,7 +776,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 				graphics.device.destroyPipeline(pipeline.pipeline, nullptr);
 				pipeline.pipeline = nullptr;
 			}
-			ReleasePipelineLayout(graphics, pipeline.pipeline_layout, pipeline.descriptor_set_layout);
+			ReleasePipelineLayout(graphics, pipeline.pipeline_layout,
+			                      pipeline.descriptor_set_layout);
 			pipeline.pipeline_layout       = nullptr;
 			pipeline.descriptor_set_layout = nullptr;
 			destroy_tess_modules();
@@ -881,7 +880,8 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
 		                                                &pipeline.pipeline);
 	}
 	if (stats && result == vk::Result::eSuccess && pipeline.pipeline != nullptr) {
-		PipelineStats::Print(graphics.device, pipeline.pipeline, PipelineStats::Describe(&info.stage, 1), info.flags);
+		PipelineStats::Print(graphics.device, pipeline.pipeline,
+		                     PipelineStats::Describe(&info.stage, 1), info.flags);
 	}
 	if (result_out != nullptr) {
 		// The caller can live without this pipeline (an optional ray-tracing kernel): report the
@@ -930,7 +930,8 @@ KkTagFn KkTagFunction() {
 			}
 		}
 #endif
-		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n", sym != nullptr ? "found" : "NOT found");
+		std::fprintf(stderr, "[memtrk] KYTY_KK_TAG: nps5_kk_tag %s\n",
+		             sym != nullptr ? "found" : "NOT found");
 		return reinterpret_cast<KkTagFn>(sym);
 	}();
 	return fn;
@@ -944,7 +945,8 @@ void KkTagRegisterModule(vk::ShaderModule module, uint64_t program_hash) {
 		return;
 	}
 	std::scoped_lock lock(g_kk_tag_mutex);
-	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] = program_hash;
+	g_kk_tag_modules[reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module))] =
+	    program_hash;
 }
 
 KkTagScope::KkTagScope(vk::ShaderModule module) {
@@ -955,7 +957,8 @@ KkTagScope::KkTagScope(vk::ShaderModule module) {
 	uint64_t hash = 0;
 	{
 		std::scoped_lock lock(g_kk_tag_mutex);
-		const auto it = g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
+		const auto       it =
+		    g_kk_tag_modules.find(reinterpret_cast<uint64_t>(static_cast<VkShaderModule>(module)));
 		if (it != g_kk_tag_modules.end()) {
 			hash = it->second;
 		}

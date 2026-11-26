@@ -177,8 +177,8 @@ bool IsGuardedAccess(ValueOpcode op) {
 	}
 	const auto image = ImageOpcodeInfoOf(op).access;
 	return op == ValueOpcode::ImageRead || op == ValueOpcode::ImageReadStorage ||
-	       image == ImageAccess::Write ||
-	       image == ImageAccess::Atomic || op == ValueOpcode::SetAttribute;
+	       image == ImageAccess::Write || image == ImageAccess::Atomic ||
+	       op == ValueOpcode::SetAttribute;
 }
 
 const Inst* ConditionInstruction(Value value) {

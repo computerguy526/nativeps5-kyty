@@ -11,10 +11,10 @@
 #endif
 
 // wholecp measurement branch. KYTY_HLE_WAIT_STATS=1 (default off): time (TSC ticks) and calls per
-// guest thread inside the HLE entry points where a guest thread can wait (yield, sleeps, semaphores,
-// event flags, event queues by returned event, condition variables, mutex / rwlock acquisition,
-// sceAgcSuspendPoint, AGC submits, video-out flip submits). With KYTY_LIVE_FILE, every live line is
-// followed by one "HleWait" line per thread with a non-zero total (cumulative):
+// guest thread inside the HLE entry points where a guest thread can wait (yield, sleeps,
+// semaphores, event flags, event queues by returned event, condition variables, mutex / rwlock
+// acquisition, sceAgcSuspendPoint, AGC submits, video-out flip submits). With KYTY_LIVE_FILE, every
+// live line is followed by one "HleWait" line per thread with a non-zero total (cumulative):
 //   HleWait seq 3 tsc T tid 1234: yield 1200/5000 usleep 0/0 ... (ticks/calls per entry point)
 // The scope covers the whole HLE call (blocking and the call's own CPU time).
 // Off: one load of a const bool per call.
@@ -45,7 +45,7 @@ enum Id : uint32_t {
 };
 
 [[nodiscard]] bool Enabled() noexcept;
-void Add(Id id, uint64_t ticks) noexcept;
+void               Add(Id id, uint64_t ticks) noexcept;
 
 [[nodiscard]] inline uint64_t Tsc() noexcept {
 #if defined(_M_X64) || defined(__x86_64__)

@@ -327,8 +327,8 @@ void DecodeSopp(uint32_t pc, std::span<const uint32_t> code, uint32_t word_index
 	const uint32_t simm   = word & 0xffffu;
 
 	if (opcode == CallStateSoppOpcode) {
-		// The emulator's call-split marker (CallSplit.h): sub-operation in simm[15:12], payload words
-		// in simm[11:0], the payload right after the word.
+		// The emulator's call-split marker (CallSplit.h): sub-operation in simm[15:12], payload
+		// words in simm[11:0], the payload right after the word.
 		inst.pc               = pc;
 		inst.family           = Family::SOPP;
 		inst.opcode_id        = opcode;

@@ -18,8 +18,8 @@ namespace {
 // <id> operands, which a word-by-word scan cannot: the variable's id is small, and so are storage
 // classes, extended instruction numbers and memory operands.
 struct SampleIdScan {
-	uint32_t sample_id   = 0;
-	bool     per_sample  = false; // another per-sample input (SamplePosition, a member decoration)
+	uint32_t sample_id  = 0;
+	bool     per_sample = false; // another per-sample input (SamplePosition, a member decoration)
 	bool     sample_decorated = false; // an input decorated Sample (interpolated per sample)
 	bool     unsupported = false; // a form the rewrite does not handle (decoration groups, ...)
 	bool     other_use   = false; // the variable named other than by a load, decoration, name or
@@ -149,9 +149,10 @@ std::vector<uint32_t> WithoutSampleInterpolation(std::span<const uint32_t> spirv
 			return {};
 		}
 		const auto opcode = static_cast<spv::Op>(spirv[offset] & spv::OpCodeMask);
-		const bool drop =
-		    (opcode == spv::OpDecorate && count == 3 && spirv[offset + 2] == spv::DecorationSample) ||
-		    (opcode == spv::OpCapability && count == 2 && spirv[offset + 1] == spv::CapabilitySampleRateShading);
+		const bool drop   = (opcode == spv::OpDecorate && count == 3 &&
+		                     spirv[offset + 2] == spv::DecorationSample) ||
+		                    (opcode == spv::OpCapability && count == 2 &&
+		                     spirv[offset + 1] == spv::CapabilitySampleRateShading);
 		if (!drop) {
 			out.insert(out.end(), spirv.begin() + static_cast<ptrdiff_t>(offset),
 			           spirv.begin() + static_cast<ptrdiff_t>(offset + count));
@@ -321,8 +322,8 @@ namespace PixelRate {
 
 namespace {
 
-std::mutex                             g_mutex;
-std::unordered_map<uint64_t, Lookup>   g_programs;
+std::mutex                           g_mutex;
+std::unordered_map<uint64_t, Lookup> g_programs;
 
 } // namespace
 
@@ -512,31 +513,62 @@ std::vector<uint32_t> SpirvNormalizedExplicitLod(std::span<const uint32_t> spirv
 		if (image_type == result_types.end()) return {};
 		const auto info = images.find(image_type->second);
 		if (info == images.end() || info->second.ms || info->second.dim > spv::Dim3D) return {};
-		const uint32_t spatial    = info->second.dim == spv::Dim1D   ? 1u
-		                            : info->second.dim == spv::Dim2D ? 2u
-		                                                             : 3u;
-		const uint32_t components = spatial + (info->second.arrayed ? 1u : 0u);
-		const auto coordinate_type = result_types.find(w[4]);
+		const uint32_t spatial         = info->second.dim == spv::Dim1D   ? 1u
+		                                 : info->second.dim == spv::Dim2D ? 2u
+		                                                                  : 3u;
+		const uint32_t components      = spatial + (info->second.arrayed ? 1u : 0u);
+		const auto     coordinate_type = result_types.find(w[4]);
 		if (coordinate_type == result_types.end() ||
 		    coordinate_type->second != vector(float_type, components)) {
 			return {};
 		}
-		const uint32_t lod  = w[6];
-		auto&          code = inserted[offset];
+		const uint32_t lod      = w[6];
+		auto&          code     = inserted[offset];
 		const uint32_t lod_half = bound++, lod_floor = bound++, lod_int = bound++, levels = bound++,
 		               last = bound++, level = bound++, size = bound++, size_float = bound++;
-		const auto size_type = vector(int_type, components);
-		const auto float_vec = vector(float_type, components);
-		code.insert(code.end(),
-		            {op(spv::OpFAdd, 5), float_type, lod_half, lod, half,
-		             op(spv::OpExtInst, 6), float_type, lod_floor, glsl, 8u /* Floor */, lod_half,
-		             op(spv::OpConvertFToS, 4), int_type, lod_int, lod_floor,
-		             op(spv::OpImageQueryLevels, 4), int_type, levels, image,
-		             op(spv::OpISub, 5), int_type, last, levels, one,
-		             op(spv::OpExtInst, 8), int_type, level, glsl, 45u /* SClamp */, lod_int, zero,
-		             last,
-		             op(spv::OpImageQuerySizeLod, 5), size_type, size, image, level,
-		             op(spv::OpConvertSToF, 4), float_vec, size_float, size});
+		const auto     size_type = vector(int_type, components);
+		const auto     float_vec = vector(float_type, components);
+		code.insert(code.end(), {op(spv::OpFAdd, 5),
+		                         float_type,
+		                         lod_half,
+		                         lod,
+		                         half,
+		                         op(spv::OpExtInst, 6),
+		                         float_type,
+		                         lod_floor,
+		                         glsl,
+		                         8u /* Floor */,
+		                         lod_half,
+		                         op(spv::OpConvertFToS, 4),
+		                         int_type,
+		                         lod_int,
+		                         lod_floor,
+		                         op(spv::OpImageQueryLevels, 4),
+		                         int_type,
+		                         levels,
+		                         image,
+		                         op(spv::OpISub, 5),
+		                         int_type,
+		                         last,
+		                         levels,
+		                         one,
+		                         op(spv::OpExtInst, 8),
+		                         int_type,
+		                         level,
+		                         glsl,
+		                         45u /* SClamp */,
+		                         lod_int,
+		                         zero,
+		                         last,
+		                         op(spv::OpImageQuerySizeLod, 5),
+		                         size_type,
+		                         size,
+		                         image,
+		                         level,
+		                         op(spv::OpConvertSToF, 4),
+		                         float_vec,
+		                         size_float,
+		                         size});
 		uint32_t normalized = 0;
 		if (components == 1) {
 			normalized = bound++;

@@ -1,7 +1,7 @@
 #include "graphics/host_gpu/renderer/drawPrep/repeatTrace.h"
-#include "common/staticOnce.h"
 
 #include "common/hangTrace.h"
+#include "common/staticOnce.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/regionDefinitions.h"
@@ -420,7 +420,8 @@ uint64_t HashUserSgpr(const HW::Shader& shaders) {
 	PutUserSgpr(w, vs.hs_user_sgpr);
 	PutUserSgpr(w, vs.gs_user_sgpr);
 	w.U32(static_cast<uint32_t>(vs.start_instance_user_sgpr));
-	w.U32(static_cast<uint32_t>(vs.base_vertex_user_sgpr) ^ (vs.indirect_vertex_base ? 0x80000000u : 0u));
+	w.U32(static_cast<uint32_t>(vs.base_vertex_user_sgpr) ^
+	      (vs.indirect_vertex_base ? 0x80000000u : 0u));
 	PutUserSgpr(w, shaders.GetPs().ps_user_sgpr);
 	return w.Hash();
 }
@@ -479,7 +480,8 @@ const Settings& GetSettings() {
 		s.payload_limit  = EnvU64("KYTY_CP_REPEAT_PAYLOAD_LIMIT", 16384);
 		return s;
 	};
-	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(settings_init())>> settings_once;
+	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(settings_init())>>
+	                settings_once;
 	const Settings& settings = settings_once.Get(settings_init);
 	return settings;
 }

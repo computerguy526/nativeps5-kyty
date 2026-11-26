@@ -32,8 +32,6 @@
 #include "loader/demonsSoulsTitle.h"
 #include "loader/systemContent.h"
 
-#include <pthread.h>
-#include <chrono>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -50,6 +48,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <pthread.h>
 #include <shared_mutex>
 #include <thread>
 #include <unordered_map>
@@ -128,8 +127,8 @@ static uint64_t                      g_guest_memory_size           = DEFAULT_GUE
 static uint64_t                      g_flexible_memory_size        = DEFAULT_FLEXIBLE_MEMORY_SIZE;
 static bool                          g_flexible_memory_size_frozen = false;
 // Page table entries per side (KernelGetPageTableStats).
-static uint64_t g_cpu_page_table_entries = PAGE_TABLE_POOL_ENTRIES;
-static uint64_t g_gpu_page_table_entries = PAGE_TABLE_POOL_ENTRIES;
+static uint64_t                       g_cpu_page_table_entries      = PAGE_TABLE_POOL_ENTRIES;
+static uint64_t                       g_gpu_page_table_entries      = PAGE_TABLE_POOL_ENTRIES;
 static Graphics::RenderContext*       g_gpu_resources               = nullptr;
 #if defined(KYTY_VIRTUAL_MEMORY_ALLOCATION_TESTS)
 static void (*g_test_gpu_range)(bool, uint64_t, size_t) = nullptr;
@@ -203,11 +202,12 @@ static void ResyncGpuRangeProtection(uint64_t vaddr, uint64_t size) {
 		return;
 	}
 	// How often the host protection of GPU memory was replaced (a writable guest mprotect, a remap)
-	// before this resync re-protected the tracker's pages: a CPU write in between is not seen by the
-	// tracker (Senaxx/KytyPS5 c453d3fd5 closes that window for mprotect with one protect of
+	// before this resync re-protected the tracker's pages: a CPU write in between is not seen by
+	// the tracker (Senaxx/KytyPS5 c453d3fd5 closes that window for mprotect with one protect of
 	// min(guest, tracker) mode). Counted on the console to size the window.
 	static std::atomic<uint64_t> resyncs {0};
-	if (const auto n = resyncs.fetch_add(1, std::memory_order_relaxed) + 1; n <= 4 || (n & (n - 1)) == 0) {
+	if (const auto n = resyncs.fetch_add(1, std::memory_order_relaxed) + 1;
+	    n <= 4 || (n & (n - 1)) == 0) {
 		std::printf("TrackerResync: host protection of GPU memory 0x%016" PRIx64 " +0x%" PRIx64
 		            " replaced and resynced (%" PRIu64 " so far)\n",
 		            vaddr, size, n);
@@ -424,11 +424,11 @@ struct ClampRangeMemoTotals {
 
 thread_local ClampRangeMemoTotals t_clamp_totals;
 
-// KYTY_CLAMP_RANGE_BITMAP=1 (default off; adapted from TheCruZ/KytyPS5-GTA 1f331bb7): ClampRangeSize
-// answers from a lock-free bitmap of committed 4 KiB pages below 1 TiB, kept under the ranges'
-// lock by every coverage change. Streaming changes the mappings many times per frame, which
-// retires KYTY_CLAMP_RANGE_MEMO's per-thread runs, and the misses take the ranges' lock (GTA V:
-// 15-35 ms per frame on the GPU threads). Tests force it with TestSetClampRangeBitmap.
+// KYTY_CLAMP_RANGE_BITMAP=1 (default off; adapted from TheCruZ/KytyPS5-GTA 1f331bb7):
+// ClampRangeSize answers from a lock-free bitmap of committed 4 KiB pages below 1 TiB, kept under
+// the ranges' lock by every coverage change. Streaming changes the mappings many times per frame,
+// which retires KYTY_CLAMP_RANGE_MEMO's per-thread runs, and the misses take the ranges' lock (GTA
+// V: 15-35 ms per frame on the GPU threads). Tests force it with TestSetClampRangeBitmap.
 std::atomic<int> g_clamp_range_bitmap {-1};
 
 bool ClampRangeBitmapEnabled() {
@@ -481,7 +481,8 @@ public:
 			while (page < leaf_end) {
 				const auto bit   = page % 64u;
 				const auto count = std::min<uint64_t>(64u - bit, leaf_end - page);
-				const auto mask  = (count == 64u ? ~uint64_t {0} : ((uint64_t {1} << count) - 1u)) << bit;
+				const auto mask  = (count == 64u ? ~uint64_t {0} : ((uint64_t {1} << count) - 1u))
+				                   << bit;
 				auto&      word  = words[(page % LeafPages) / 64u];
 				if (committed) {
 					word.fetch_or(mask, std::memory_order_release);
@@ -506,11 +507,15 @@ public:
 			const auto* words = m_leaves[page / LeafPages].load(std::memory_order_acquire);
 			const auto  bit   = page % 64u;
 			const auto  count = std::min<uint64_t>(64u - bit, end - page);
-			const auto  word  = words == nullptr ? 0 : words[(page % LeafPages) / 64u].load(std::memory_order_acquire);
+			const auto word = words == nullptr
+			                      ? 0
+			                      : words[(page % LeafPages) / 64u].load(std::memory_order_acquire);
 			// The first page of the run that is not committed.
-			const auto missing = ~(word >> bit) & (count == 64u ? ~uint64_t {0} : ((uint64_t {1} << count) - 1u));
+			const auto missing =
+			    ~(word >> bit) & (count == 64u ? ~uint64_t {0} : ((uint64_t {1} << count) - 1u));
 			if (missing != 0) {
-				const auto run_end = (page + static_cast<uint64_t>(std::countr_zero(missing))) << PageBits;
+				const auto run_end = (page + static_cast<uint64_t>(std::countr_zero(missing)))
+				                     << PageBits;
 				return run_end <= address ? 0 : std::min(size, run_end - address);
 			}
 			page += count;
@@ -535,7 +540,7 @@ private:
 	}
 
 	std::array<std::atomic<std::atomic<uint64_t>*>, LeafCount> m_leaves {};
-	std::atomic_bool                                            m_imprecise {false};
+	std::atomic_bool                                           m_imprecise {false};
 };
 
 } // namespace
@@ -654,11 +659,12 @@ public:
 			// from usa-ratt/KytyPS5-GT7 bab2ca8f7).
 			const Range* candidate = nullptr;
 			auto         next      = std::upper_bound(
-                m_ranges.begin(), m_ranges.end(), current,
-                [](uint64_t value, const Range& range) { return value < range.start; });
+			    m_ranges.begin(), m_ranges.end(), current,
+			    [](uint64_t value, const Range& range) { return value < range.start; });
 			if (next != m_ranges.begin()) {
 				const auto& r = *std::prev(next);
-				if (r.type == expected_type && current >= r.start && current < End(r.start, r.size)) {
+				if (r.type == expected_type && current >= r.start &&
+				    current < End(r.start, r.size)) {
 					candidate = &r;
 				}
 			}
@@ -792,7 +798,8 @@ public:
 		Common::CruzStats::Add(Common::CruzStats::Counter::ClampCalls);
 		if (ClampRangeBitmapEnabled()) {
 			const auto generation = ClampGenerationUnlocked(std::memory_order_acquire);
-			if (const auto run = m_committed.CommittedRun(virtual_addr, size); run != CommittedPageMap::Unknown) {
+			if (const auto run = m_committed.CommittedRun(virtual_addr, size);
+			    run != CommittedPageMap::Unknown) {
 				Profiler::CountFrameEvent(Profiler::FrameEvent::ClampRangeBitmapHits);
 				Common::CruzStats::Add(Common::CruzStats::Counter::ClampBitmapHits);
 				t_clamp_totals.hits++;
@@ -843,8 +850,8 @@ public:
 		const auto        end = start + size;
 		Common::LockGuard lock(m_mutex);
 		auto              next = std::upper_bound(
-            m_ranges.begin(), m_ranges.end(), start,
-            [](uint64_t value, const Range& candidate) { return value < candidate.start; });
+		    m_ranges.begin(), m_ranges.end(), start,
+		    [](uint64_t value, const Range& candidate) { return value < candidate.start; });
 		if (next != m_ranges.begin()) {
 			--next;
 		}
@@ -926,15 +933,16 @@ private:
 		                                        : m_generation.load(order);
 	}
 
-	// KYTY_CLAMP_RANGE_BITMAP: the committed-page bits of [start, start + size) as m_ranges has them
-	// now; callers hold m_mutex. Committed pages are set before uncommitted ones are cleared.
+	// KYTY_CLAMP_RANGE_BITMAP: the committed-page bits of [start, start + size) as m_ranges has
+	// them now; callers hold m_mutex. Committed pages are set before uncommitted ones are cleared.
 	void RefreshCommittedUnlocked(uint64_t start, uint64_t size) {
 		if (!ClampRangeBitmapEnabled() || start == 0 || size == 0 || size > UINT64_MAX - start) {
 			return;
 		}
 		const auto end   = start + size;
-		auto       first = std::upper_bound(m_ranges.begin(), m_ranges.end(), start,
-		                                    [](uint64_t value, const Range& range) { return value < range.start; });
+		auto       first = std::upper_bound(
+		    m_ranges.begin(), m_ranges.end(), start,
+		    [](uint64_t value, const Range& range) { return value < range.start; });
 		if (first != m_ranges.begin()) {
 			--first;
 		}
@@ -1368,7 +1376,7 @@ private:
 	std::vector<AllocatedBlock>        m_mappings;
 	Common::Mutex                      m_mutex;
 	// Direct allocations given room past the direct memory (DirectMemoryOverflowSize).
-	uint64_t                           m_overflow_allocations = 0;
+	uint64_t m_overflow_allocations = 0;
 };
 
 class FlexibleMemory {
@@ -1486,8 +1494,8 @@ static void                               MemoryPoolSubtractCommitted(uint64_t l
 // records (TryReadBackingDirect, KYTY_MAP_REGION_EPOCH: the map generation and region epochs) and
 // the tracker's ProtectTransient (KYTY_PROTECT_LOCK_SHARED). Their generations still move at the
 // innermost lock, (3) or (4), before each change, with (1) and (2) already held, so a cached answer
-// is valid exactly as before, and their locked fallbacks wait only for (3) or (4), never for a whole
-// operation. This replaces upstream's lock-free page table (1b59ee62b) and page-walk clamp
+// is valid exactly as before, and their locked fallbacks wait only for (3) or (4), never for a
+// whole operation. This replaces upstream's lock-free page table (1b59ee62b) and page-walk clamp
 // (3bd22044d), which duplicate those paths.
 // Unlike upstream, (2) is held for the whole operation, graphics calls and callbacks included:
 // no graphics path takes (1) or (2), and our operations are not split into a validation part and
@@ -1568,8 +1576,8 @@ public:
 			LockCounted([] { return g_memory_state_mutex.try_lock_shared(); },
 			            [] { g_memory_state_mutex.lock_shared(); }, wait_ns);
 			auto& counters = GThreadStats::Local();
-			NoteLockStats(counters.mem_read_acq, counters.mem_read_contended, counters.mem_read_wait_ns,
-			              wait_ns);
+			NoteLockStats(counters.mem_read_acq, counters.mem_read_contended,
+			              counters.mem_read_wait_ns, wait_ns);
 			return;
 		}
 		g_memory_state_mutex.lock_shared();
@@ -1823,10 +1831,10 @@ static uint64_t FindGuestFreeRange(uint64_t search_addr, uint64_t size, uint64_t
 // nps5 memtrk: KYTY_GUEST_WRITE_JOURNAL=1 (diagnostic, default off). Every backing write Kyty makes
 // into guest memory (buffer/image write-backs and readbacks, CP-read publications, label/EOP and
 // DMA/copy-data packets that write through the backing) is recorded in a ring of the last 65536
-// {address, size, time, caller return address, thread}. kyty_guest_write_journal_lookup() (exported,
-// no allocation, tolerates a torn ring) reports the newest entries overlapping a range, for the
-// SAROS heap-corruption crash handler (saros2). Writes through the guest view or by the GPU in place
-// (zero-copy) are not seen.
+// {address, size, time, caller return address, thread}. kyty_guest_write_journal_lookup()
+// (exported, no allocation, tolerates a torn ring) reports the newest entries overlapping a range,
+// for the SAROS heap-corruption crash handler (saros2). Writes through the guest view or by the GPU
+// in place (zero-copy) are not seen.
 namespace WriteJournal {
 struct Entry {
 	std::atomic<uint64_t> seq {0}; // 0 = empty; written last
@@ -1836,10 +1844,10 @@ struct Entry {
 	uint64_t              ra   = 0;
 	uint64_t              tid  = 0;
 };
-constexpr uint32_t    kEntries = 65536;
-static Entry          g_ring[kEntries];
+constexpr uint32_t           kEntries = 65536;
+static Entry                 g_ring[kEntries];
 static std::atomic<uint64_t> g_next {1};
-static bool Enabled() {
+static bool                  Enabled() {
 	static const bool on = [] {
 		const char* v = std::getenv("KYTY_GUEST_WRITE_JOURNAL");
 		return v != nullptr && std::strcmp(v, "1") == 0;
@@ -1855,10 +1863,10 @@ static void Record(uint64_t addr, uint64_t size, uint64_t ra) {
 	const auto seq = g_next.fetch_add(1, std::memory_order_relaxed);
 	auto&      e   = g_ring[seq % kEntries];
 	e.seq.store(0, std::memory_order_relaxed);
-	e.addr = addr;
-	e.size = size;
-	e.ns   = NowNs();
-	e.ra   = ra;
+	e.addr       = addr;
+	e.size       = size;
+	e.ns         = NowNs();
+	e.ra         = ra;
 	uint64_t tid = 0;
 	pthread_threadid_np(nullptr, &tid);
 	e.tid = tid;
@@ -1966,7 +1974,8 @@ static bool IsGpuRangeCleanForBackingRead(uint64_t vaddr, uint64_t size) {
 // marks its pages before its change becomes observable.
 static bool NeverGpuTouched(uint64_t vaddr, uint64_t size) {
 	return Graphics::GpuTouched::Enabled() && size != 0 && vaddr <= UINT64_MAX - size &&
-	       !Graphics::GpuTouched::AnyTouched(Graphics::DrawPrep::UntouchedFine(), vaddr, vaddr + size);
+	       !Graphics::GpuTouched::AnyTouched(Graphics::DrawPrep::UntouchedFine(), vaddr,
+	                                         vaddr + size);
 }
 
 static std::atomic<uint64_t> g_untouched_verdict_checks {0};
@@ -2038,11 +2047,10 @@ static bool GpuCleanGate(uint64_t vaddr, uint64_t size) {
 // KYTY_DRAW_PREP_PRIVATE_READS=1 (default off): a clean read (draw-prep worker reads, their commit-
 // time certificate checks, the command processor's clean reads) of bytes in private mappings, which
 // have no backing (the program image: GT7 keeps its shaders and their AGC metadata in it), copies
-// them in place instead of failing. Only ranges the GPU has not mapped (GpuResources::IsMapped): the GPU
-// never writes them, so they are never protected against reads, and the serial path reads them in
-// place anyway.
-// Without it every GT7 stage preparation fails ("backing", ~1/3 of draws at the title, ~45% in
-// races) and runs serially on the command processor.
+// them in place instead of failing. Only ranges the GPU has not mapped (GpuResources::IsMapped):
+// the GPU never writes them, so they are never protected against reads, and the serial path reads
+// them in place anyway. Without it every GT7 stage preparation fails ("backing", ~1/3 of draws at
+// the title, ~45% in races) and runs serially on the command processor.
 static bool PrivateReadsEnabled() {
 	static const bool enabled = [] {
 		const auto* value = std::getenv("KYTY_DRAW_PREP_PRIVATE_READS");
@@ -2060,8 +2068,9 @@ static bool HostReadable(uint64_t vaddr, uint64_t size) {
 		MEMORY_BASIC_INFORMATION info {};
 		if (VirtualQuery(reinterpret_cast<const void*>(at), &info, sizeof(info)) != sizeof(info) ||
 		    info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0 ||
-		    (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
-		                     PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) == 0) {
+		    (info.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ |
+		                     PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) ==
+		        0) {
 			return false;
 		}
 		at = reinterpret_cast<uint64_t>(info.BaseAddress) + info.RegionSize;
@@ -2083,21 +2092,24 @@ static bool TryReadPrivate(uint64_t vaddr, void* data, uint64_t size) {
 	// processor's callers passed the exact gate before).
 	if (g_gpu_resources != nullptr && g_gpu_resources->IsMapped(vaddr, size)) {
 		auto& buffers = GetGpuResources().GetBufferCache();
-		if (buffers.IsRegionGpuModifiedRelaxed(vaddr, size) || buffers.HasPendingBackingPublication(vaddr, size)) {
+		if (buffers.IsRegionGpuModifiedRelaxed(vaddr, size) ||
+		    buffers.HasPendingBackingPublication(vaddr, size)) {
 			return false;
 		}
 	}
-	// KYTY_DRAW_PREP_PRIVATE_READS=2 also checks each page's host protection first (VirtualQuery: slow under
-	// the address-space lock the fault handlers' protection changes take).
+	// KYTY_DRAW_PREP_PRIVATE_READS=2 also checks each page's host protection first (VirtualQuery:
+	// slow under the address-space lock the fault handlers' protection changes take).
 	static const bool check = [] {
 		const auto* value = std::getenv("KYTY_DRAW_PREP_PRIVATE_READS");
 		return value != nullptr && value[0] == '2';
 	}();
-	return (!check || HostReadable(vaddr, size)) && g_guest_address_space->TryReadPrivateInPlace(vaddr, data, size);
+	return (!check || HostReadable(vaddr, size)) &&
+	       g_guest_address_space->TryReadPrivateInPlace(vaddr, data, size);
 }
 
 static bool TryReadGpuCleanBackingExact(uint64_t vaddr, void* data, uint64_t size) {
-	return GpuCleanGate(vaddr, size) && (TryReadBacking(vaddr, data, size) || TryReadPrivate(vaddr, data, size));
+	return GpuCleanGate(vaddr, size) &&
+	       (TryReadBacking(vaddr, data, size) || TryReadPrivate(vaddr, data, size));
 }
 
 bool BackingInPlaceEnabled() {
@@ -2283,17 +2295,17 @@ static Graphics::DrawPrep::ReadFailure DrawPrepGate(const Graphics::DrawPrep::Re
 // and calling host code, printed every 10 s by the thread that crosses the period.
 namespace {
 struct BackingFailEntry {
-	uint64_t    count      = 0;
-	uint64_t    min_size   = UINT64_MAX;
-	uint64_t    max_size   = 0;
-	uint64_t    sample     = 0;
-	uint64_t    range_start = 0;
-	uint64_t    range_size = 0;
-	uint64_t    dmem       = 0;
-	int         prot       = 0;
-	const char* type       = "none";
-	const char* purpose    = "";
-	uint64_t    caller     = 0;
+	uint64_t    count        = 0;
+	uint64_t    min_size     = UINT64_MAX;
+	uint64_t    max_size     = 0;
+	uint64_t    sample       = 0;
+	uint64_t    range_start  = 0;
+	uint64_t    range_size   = 0;
+	uint64_t    dmem         = 0;
+	int         prot         = 0;
+	const char* type         = "none";
+	const char* purpose      = "";
+	uint64_t    caller       = 0;
 	bool        backing_head = false; // the first byte has a backing translation
 	char        name[40] {};
 };
@@ -2313,20 +2325,20 @@ static bool BackingFailLogEnabled() {
 
 static void NoteBackingFailure(uint64_t vaddr, uint64_t size, uint64_t caller) {
 	VirtualRanges::Range range {};
-	const bool known = g_virtual_ranges != nullptr && g_virtual_ranges->Query(vaddr, 0, &range);
-	const char* purpose = Graphics::DrawPrep::ReadPurpose();
+	const bool     known = g_virtual_ranges != nullptr && g_virtual_ranges->Query(vaddr, 0, &range);
+	const char*    purpose = Graphics::DrawPrep::ReadPurpose();
 	const uint64_t key = (known ? range.start : (vaddr >> 20u)) ^ (caller * 0x9e3779b97f4a7c15ull) ^
 	                     reinterpret_cast<uint64_t>(purpose);
-	const bool backing_head =
+	const bool     backing_head =
 	    g_guest_address_space != nullptr && g_guest_address_space->BackingContains(vaddr, 1);
-	const auto now = static_cast<uint64_t>(
-	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
-	        .count());
+	const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                                           std::chrono::steady_clock::now().time_since_epoch())
+	                                           .count());
 	std::vector<BackingFailEntry> report;
 	uint64_t                      total = 0;
 	{
 		std::lock_guard lock(g_backing_fail_mutex);
-		auto& entry = g_backing_fails[key];
+		auto&           entry = g_backing_fails[key];
 		if (entry.count == 0) {
 			entry.sample       = vaddr;
 			entry.caller       = caller;
@@ -2369,7 +2381,8 @@ static void NoteBackingFailure(uint64_t vaddr, uint64_t size, uint64_t caller) {
 		return uint64_t {0};
 #endif
 	}();
-	std::printf("DrawPrepBacking 10s: %" PRIu64 " worker reads without a backing translation, %zu groups\n",
+	std::printf("DrawPrepBacking 10s: %" PRIu64
+	            " worker reads without a backing translation, %zu groups\n",
 	            total, report.size());
 	for (size_t i = 0; i < report.size() && i < 24; i++) {
 		const auto& e = report[i];
@@ -2400,12 +2413,12 @@ static void NoteDrawPrepBackingDiag(uint64_t vaddr, uint64_t size, uint64_t call
 		bool     first_byte = false;
 		bool     gpu = false, priv = false;
 	};
-	static std::mutex                               mutex;
-	static std::unordered_map<uint64_t, Site>       sites;
-	static uint64_t                                 last_ns = 0;
-	uint8_t    byte  = 0;
-	const bool first = TryReadBacking(vaddr, &byte, 1);
-	const auto now   = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+	static std::mutex                         mutex;
+	static std::unordered_map<uint64_t, Site> sites;
+	static uint64_t                           last_ns = 0;
+	uint8_t                                   byte    = 0;
+	const bool                                first   = TryReadBacking(vaddr, &byte, 1);
+	const auto now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
 	                                           std::chrono::steady_clock::now().time_since_epoch())
 	                                           .count());
 	std::scoped_lock lock(mutex);
@@ -2416,7 +2429,8 @@ static void NoteDrawPrepBackingDiag(uint64_t vaddr, uint64_t size, uint64_t call
 	site.first_byte = first;
 	site.gpu        = g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size);
 	uint8_t probe   = 0;
-	site.priv       = g_guest_address_space != nullptr && g_guest_address_space->TryReadPrivateInPlace(vaddr, &probe, 1);
+	site.priv       = g_guest_address_space != nullptr &&
+	                  g_guest_address_space->TryReadPrivateInPlace(vaddr, &probe, 1);
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	site.caller = caller - reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
 #else
@@ -2430,14 +2444,17 @@ static void NoteDrawPrepBackingDiag(uint64_t vaddr, uint64_t size, uint64_t call
 	}
 	last_ns = now;
 	std::vector<std::pair<uint64_t, Site>> top(sites.begin(), sites.end());
-	std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+	std::sort(top.begin(), top.end(),
+	          [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
 	std::string text;
 	for (size_t i = 0; i < top.size() && i < 8; i++) {
 		const auto& s = top[i].second;
-		char line[160];
-		std::snprintf(line, sizeof(line), " | %" PRIu64 " x 0x%" PRIx64 "+%" PRIu64 " caller +0x%" PRIx64 "%s%s%s",
-		              s.count, s.vaddr, s.size, s.caller, s.first_byte ? " (first byte backed)" : "",
-		              s.gpu ? " gpu-range" : "", s.priv ? " private" : " not-private");
+		char        line[160];
+		std::snprintf(line, sizeof(line),
+		              " | %" PRIu64 " x 0x%" PRIx64 "+%" PRIu64 " caller +0x%" PRIx64 "%s%s%s",
+		              s.count, s.vaddr, s.size, s.caller,
+		              s.first_byte ? " (first byte backed)" : "", s.gpu ? " gpu-range" : "",
+		              s.priv ? " private" : " not-private");
 		text += line;
 	}
 	std::printf("DrawPrep backing misses 10s:%s\n", text.c_str());
@@ -2445,8 +2462,9 @@ static void NoteDrawPrepBackingDiag(uint64_t vaddr, uint64_t size, uint64_t call
 }
 
 // A backing read that failed after the gate (exact reads fail as Unclean, as before).
-static Graphics::DrawPrep::ReadFailure DrawPrepBackingFailure(
-    const Graphics::DrawPrep::Recorder& recorder, uint64_t vaddr, uint64_t size, uint64_t caller) {
+static Graphics::DrawPrep::ReadFailure
+DrawPrepBackingFailure(const Graphics::DrawPrep::Recorder& recorder, uint64_t vaddr, uint64_t size,
+                       uint64_t caller) {
 	using Graphics::DrawPrep::ReadFailure;
 	if (!recorder.exact) {
 		if (BackingFailLogEnabled()) [[unlikely]] {
@@ -2695,7 +2713,9 @@ bool CodeDigestCacheable(uint64_t vaddr, uint64_t size, uint64_t& tag_begin, uin
 }
 
 bool HashBackingUnrecorded(uint64_t vaddr, uint64_t size, uint64_t& digest) {
-	auto hash = [&](const uint8_t* bytes) { digest = XXH3_64bits(bytes, static_cast<size_t>(size)); };
+	auto hash = [&](const uint8_t* bytes) {
+		digest = XXH3_64bits(bytes, static_cast<size_t>(size));
+	};
 	return TryInspectBacking(vaddr, size, hash, nullptr);
 }
 
@@ -2727,7 +2747,8 @@ std::string DescribeAddressForCrash(uint64_t vaddr) {
 		VirtualRanges::Range range {};
 		if (g_virtual_ranges->Query(vaddr, 0, &range)) {
 			std::snprintf(line, sizeof(line),
-			              "guest range: 0x%016" PRIx64 "+0x%" PRIx64 " type=%s prot=0x%x dmem=0x%" PRIx64 "\n",
+			              "guest range: 0x%016" PRIx64 "+0x%" PRIx64
+			              " type=%s prot=0x%x dmem=0x%" PRIx64 "\n",
 			              range.start, range.size, magic_enum::enum_name(range.type).data(),
 			              static_cast<unsigned>(range.protection), range.offset);
 		} else {
@@ -2735,15 +2756,18 @@ std::string DescribeAddressForCrash(uint64_t vaddr) {
 		}
 		out += line;
 	}
-	std::snprintf(line, sizeof(line), "gpu mapped: %s, backing: %s, queued AMM map covers it: %s\n",
-	              IsGpuMapped(vaddr, 1) ? "yes" : "no",
-	              g_guest_address_space != nullptr && g_guest_address_space->BackingContains(vaddr, 1) ? "yes" : "no",
-	              PendingAmmMapCovers(vaddr) ? "yes" : "no");
+	std::snprintf(
+	    line, sizeof(line), "gpu mapped: %s, backing: %s, queued AMM map covers it: %s\n",
+	    IsGpuMapped(vaddr, 1) ? "yes" : "no",
+	    g_guest_address_space != nullptr && g_guest_address_space->BackingContains(vaddr, 1) ? "yes"
+	                                                                                         : "no",
+	    PendingAmmMapCovers(vaddr) ? "yes" : "no");
 	out += line;
 	return out;
 }
 
-bool DescribeVirtualRange(uint64_t vaddr, uint64_t* start, uint64_t* size, char* name, uint64_t name_size) {
+bool DescribeVirtualRange(uint64_t vaddr, uint64_t* start, uint64_t* size, char* name,
+                          uint64_t name_size) {
 	VirtualRanges::Range range {};
 	if (g_virtual_ranges == nullptr || !g_virtual_ranges->Query(vaddr, 0, &range)) {
 		return false;
@@ -2751,7 +2775,8 @@ bool DescribeVirtualRange(uint64_t vaddr, uint64_t* start, uint64_t* size, char*
 	*start = range.start;
 	*size  = range.size;
 	if (name != nullptr && name_size != 0) {
-		std::snprintf(name, static_cast<size_t>(name_size), "%.*s", static_cast<int>(sizeof(range.name)), range.name);
+		std::snprintf(name, static_cast<size_t>(name_size), "%.*s",
+		              static_cast<int>(sizeof(range.name)), range.name);
 	}
 	return true;
 }
@@ -2850,17 +2875,20 @@ bool TryReadGpuBackingOverStaleImages(uint64_t vaddr, void* data, uint64_t size)
 	auto& resources = GetGpuResources();
 	auto& buffers   = resources.GetBufferCache();
 	auto& textures  = resources.GetTextureCache();
-	if (buffers.HasGpuDirtyBytes(vaddr, size) || buffers.HasPendingBackingPublication(vaddr, size) ||
-	    !textures.IsRegionGpuModified(vaddr, size) || textures.IsRegionGpuOwnedForRead(vaddr, size)) {
+	if (buffers.HasGpuDirtyBytes(vaddr, size) ||
+	    buffers.HasPendingBackingPublication(vaddr, size) ||
+	    !textures.IsRegionGpuModified(vaddr, size) ||
+	    textures.IsRegionGpuOwnedForRead(vaddr, size)) {
 		return false;
 	}
 	if (!TryReadBacking(vaddr, data, size)) {
 		return false;
 	}
 	static std::atomic<uint64_t> reads {0};
-	const auto n = reads.fetch_add(1, std::memory_order_relaxed) + 1;
+	const auto                   n = reads.fetch_add(1, std::memory_order_relaxed) + 1;
 	if ((n & (n - 1)) == 0) {
-		std::printf("SrtStaleImageReads: %" PRIu64 " resource-table reads under superseded GPU-modified "
+		std::printf("SrtStaleImageReads: %" PRIu64
+		            " resource-table reads under superseded GPU-modified "
 		            "images read the guest bytes (last 0x%" PRIx64 "+0x%" PRIx64 ")\n",
 		            n, vaddr, size);
 	}
@@ -3125,12 +3153,14 @@ static void InitializeMemorySizes() {
 	const auto params        = Loader::SystemContentGetMemoryParams();
 	const auto trinity_extra = Loader::SystemContentIsTrinityMode() ? TRINITY_EXTRA_MEMORY_SIZE : 0;
 	if (UpstreamMemoryDefaults()) {
-		g_flexible_memory_size = params.flexible_size != 0 ? params.flexible_size : UPSTREAM_DEFAULT_FLEXIBLE_SIZE;
-		const auto cpu_tables  = std::max(params.cpu_table_memory, UPSTREAM_INCLUDED_TABLE_MEMORY);
-		const auto gpu_tables  = std::max(params.gpu_table_memory, UPSTREAM_INCLUDED_TABLE_MEMORY);
-		const auto amm_tables  = std::max(params.amm_table_memory, UPSTREAM_INCLUDED_TABLE_MEMORY);
-		const auto overhead    = cpu_tables + gpu_tables + amm_tables - 3 * UPSTREAM_INCLUDED_TABLE_MEMORY;
-		const auto budget      = UPSTREAM_GUEST_MEMORY_BUDGET + trinity_extra;
+		g_flexible_memory_size =
+		    params.flexible_size != 0 ? params.flexible_size : UPSTREAM_DEFAULT_FLEXIBLE_SIZE;
+		const auto cpu_tables = std::max(params.cpu_table_memory, UPSTREAM_INCLUDED_TABLE_MEMORY);
+		const auto gpu_tables = std::max(params.gpu_table_memory, UPSTREAM_INCLUDED_TABLE_MEMORY);
+		const auto amm_tables = std::max(params.amm_table_memory, UPSTREAM_INCLUDED_TABLE_MEMORY);
+		const auto overhead =
+		    cpu_tables + gpu_tables + amm_tables - 3 * UPSTREAM_INCLUDED_TABLE_MEMORY;
+		const auto budget = UPSTREAM_GUEST_MEMORY_BUDGET + trinity_extra;
 		EXIT_IF(g_flexible_memory_size + overhead >= budget - UPSTREAM_RESERVED_CACHE_SIZE);
 		g_guest_memory_size      = budget - UPSTREAM_RESERVED_CACHE_SIZE - overhead;
 		g_cpu_page_table_entries = cpu_tables / UPSTREAM_MAPPING_TABLE_SIZE;
@@ -3265,39 +3295,44 @@ const void* GuestReadPtr(uint64_t vaddr, uint64_t size) noexcept {
 // (SAROS maps adjacent 64 KiB direct-memory chunks, each with its own alias) has no single host
 // pointer, and GuestReadPtr returns the guest view for it, which can be watch-protected: a Kyty
 // thread copying through it faults on its own (or a neighbour's) page watch. On the GPU thread
-// inside a tracker upload callback that fault re-enters the memory tracker (CheckNotInUploadCallback,
-// SAROS r42/r43 exit 65). Here every piece is copied through its own alias instead: the same bytes
-// (alias and guest view share the backing), without the fault. Unregistered bytes, and memory that
-// is not hosted, are copied from GuestReadPtr exactly as before.
+// inside a tracker upload callback that fault re-enters the memory tracker
+// (CheckNotInUploadCallback, SAROS r42/r43 exit 65). Here every piece is copied through its own
+// alias instead: the same bytes (alias and guest view share the backing), without the fault.
+// Unregistered bytes, and memory that is not hosted, are copied from GuestReadPtr exactly as
+// before.
 void GuestReadCopy(void* dst, uint64_t vaddr, uint64_t size) noexcept {
 	if (size == 0) {
 		return;
 	}
 	if (Hosted::g_active && vaddr != 0 && UINT64_MAX - vaddr >= size &&
-	    !GuestReadCacheHolds(t_guest_read_cache, Hosted::g_map_generation.load(std::memory_order_acquire),
-	                         vaddr, size)) {
+	    !GuestReadCacheHolds(t_guest_read_cache,
+	                         Hosted::g_map_generation.load(std::memory_order_acquire), vaddr,
+	                         size)) {
 		auto*    out     = static_cast<uint8_t*>(dst);
 		uint32_t pieces  = 0;
 		bool     spanned = false;
 		{
 			const Hosted::SharedGuard lock;
 			if (Hosted::FindSingleRangeUnlocked(vaddr, size) == nullptr &&
-			    Hosted::ForEachPieceUnlocked(vaddr, size, [](uint64_t, const uint8_t*, uint64_t) {})) {
-				(void)Hosted::ForEachPieceUnlocked(vaddr, size, [&](uint64_t piece, const uint8_t* host, uint64_t bytes) {
-					std::memcpy(out + (piece - vaddr), host, bytes);
-					pieces++;
-				});
+			    Hosted::ForEachPieceUnlocked(vaddr, size,
+			                                 [](uint64_t, const uint8_t*, uint64_t) {})) {
+				(void)Hosted::ForEachPieceUnlocked(
+				    vaddr, size, [&](uint64_t piece, const uint8_t* host, uint64_t bytes) {
+					    std::memcpy(out + (piece - vaddr), host, bytes);
+					    pieces++;
+				    });
 				spanned = true;
 			}
 		}
 		if (spanned) {
 			static std::atomic<uint64_t> spanning {0};
 			if (spanning.fetch_add(1, std::memory_order_relaxed) == 0) {
-				std::fprintf(stderr,
-				             "[memtrk] guest read 0x%016" PRIx64 "+0x%" PRIx64
-				             " spans %u registered ranges: copied piece by piece through their aliases "
-				             "(logged once)\n",
-				             vaddr, size, pieces);
+				std::fprintf(
+				    stderr,
+				    "[memtrk] guest read 0x%016" PRIx64 "+0x%" PRIx64
+				    " spans %u registered ranges: copied piece by piece through their aliases "
+				    "(logged once)\n",
+				    vaddr, size, pieces);
 			}
 			return;
 		}
@@ -4746,7 +4781,9 @@ static void UnmapMemoryOwner(const VirtualRanges::Range& range, bool keep_pool_r
 	bool          unmapped     = false;
 	switch (range.type) {
 		case VirtualRangeType::Reserved:
-		case VirtualRangeType::PoolReserved: unmapped = g_guest_address_space->ReleaseFree(vaddr, len); break;
+		case VirtualRangeType::PoolReserved:
+			unmapped = g_guest_address_space->ReleaseFree(vaddr, len);
+			break;
 		case VirtualRangeType::Code:
 		case VirtualRangeType::Runtime: unmapped = FreeGuestMemoryOwner(vaddr, len); break;
 		case VirtualRangeType::Pooled: {
@@ -4761,7 +4798,9 @@ static void UnmapMemoryOwner(const VirtualRanges::Range& range, bool keep_pool_r
 			unmapped = g_guest_address_space->UnmapBacking(vaddr, len) &&
 			           g_physical_memory->Unmap(vaddr, len, &gpu_mode, &ignored_host);
 			break;
-		case VirtualRangeType::Stack: unmapped = g_guest_address_space->ReleaseCommitted(vaddr, len); break;
+		case VirtualRangeType::Stack:
+			unmapped = g_guest_address_space->ReleaseCommitted(vaddr, len);
+			break;
 		case VirtualRangeType::Flexible:
 			unmapped = g_flexible_memory->Unmap(vaddr, len, &gpu_mode, &ignored_host);
 			break;
@@ -4816,8 +4855,7 @@ static int UnmapMemory(uint64_t vaddr, size_t len) {
 
 	// Upstream b02375764: an unaligned address is rejected, the length rounds up to whole pages.
 	constexpr uint64_t page_size = 0x4000;
-	if (len == 0 || (vaddr & (page_size - 1)) != 0 ||
-	    len > UINT64_MAX - vaddr - (page_size - 1)) {
+	if (len == 0 || (vaddr & (page_size - 1)) != 0 || len > UINT64_MAX - vaddr - (page_size - 1)) {
 		return KERNEL_ERROR_EINVAL;
 	}
 	len = (len + page_size - 1) & ~(page_size - 1);
@@ -5179,7 +5217,8 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 		range.type   = VirtualRangeType::Direct;
 		aliases.push_back(range);
 	}
-	// Adjacent aliases are unmapped from the GPU with one call (UnmapGpuRanges, upstream d384084e3).
+	// Adjacent aliases are unmapped from the GPU with one call (UnmapGpuRanges, upstream
+	// d384084e3).
 	std::sort(aliases.begin(), aliases.end(),
 	          [](const auto& left, const auto& right) { return left.start < right.start; });
 	UnmapGpuRanges(aliases);
@@ -5196,9 +5235,9 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 	}
 
 	// KYTY_DROP_RELEASED=1 (default off; GT7 fork 7717116d8): the released range's host pages go
-	// back to the system; its views are unmapped above, and a later allocation gets undefined bytes (as
-	// on the console: zeros or the old ones). GT7 peaked
-	// at 9.8 GB of direct memory while using 3.5 GB, and the rest stayed resident.
+	// back to the system; its views are unmapped above, and a later allocation gets undefined bytes
+	// (as on the console: zeros or the old ones). GT7 peaked at 9.8 GB of direct memory while
+	// using 3.5 GB, and the rest stayed resident.
 	static const bool drop_released = [] {
 		const char* value = std::getenv("KYTY_DROP_RELEASED");
 		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
@@ -5211,7 +5250,8 @@ static int ReleaseDirectMemoryInternal(int64_t start, size_t len) {
 		}
 		const auto total = dropped_total.fetch_add(dropped) + dropped;
 		if (dropped >= (uint64_t {64} << 20u)) {
-			LOGF("Direct memory: %" PRIu64 " MiB of released memory handed back to the system (%" PRIu64
+			LOGF("Direct memory: %" PRIu64
+			     " MiB of released memory handed back to the system (%" PRIu64
 			     " MiB so far, KYTY_DROP_RELEASED)\n",
 			     dropped >> 20u, total >> 20u);
 		}
@@ -5283,15 +5323,17 @@ int KYTY_SYSV_ABI KernelReleaseDirectMemory(int64_t start, size_t len) {
 		return validation;
 	}
 	if (len != 0) {
-		MemoryOperationLock memory_operation_lock;
+		MemoryOperationLock                         memory_operation_lock;
 		std::vector<PhysicalMemory::AllocatedBlock> span;
 		if (ReleaseDirectMemoryInternal(start, len) != OK && ReleaseGapsEnabled() &&
 		    !g_physical_memory->GetAllocatedSpan(static_cast<uint64_t>(start), len, &span)) {
 			// Not one allocated span (a failed unmap of an alias is left as it was).
 			uint64_t freed = 0;
 			uint32_t parts = 0;
-			for (const auto& [part_start, part_size]: AllocatedRuns(static_cast<uint64_t>(start), len)) {
-				if (ReleaseDirectMemoryInternal(static_cast<int64_t>(part_start), part_size) == OK) {
+			for (const auto& [part_start, part_size]:
+			     AllocatedRuns(static_cast<uint64_t>(start), len)) {
+				if (ReleaseDirectMemoryInternal(static_cast<int64_t>(part_start), part_size) ==
+				    OK) {
 					freed += part_size;
 					parts++;
 				}
@@ -5299,7 +5341,8 @@ int KYTY_SYSV_ABI KernelReleaseDirectMemory(int64_t start, size_t len) {
 			static std::atomic<uint64_t> partial_releases {0};
 			const auto                   count = partial_releases.fetch_add(1) + 1u;
 			if (count <= 32u || std::has_single_bit(count)) {
-				LOGF("ReleaseDirectMemory: 0x%016" PRIx64 "+0x%" PRIx64 " is not one allocated span: "
+				LOGF("ReleaseDirectMemory: 0x%016" PRIx64 "+0x%" PRIx64
+				     " is not one allocated span: "
 				     "its %u allocated parts were released (0x%" PRIx64 " bytes; %" PRIu64
 				     " such releases so far)\n",
 				     static_cast<uint64_t>(start), static_cast<uint64_t>(len), parts, freed, count);
@@ -5947,7 +5990,6 @@ void ReleaseFlexibleMemory(uint64_t size) {
 	if (size != 0 && g_flexible_memory != nullptr) {
 		g_flexible_memory->Release(size);
 	}
-
 }
 
 uint64_t AllocateProgramMemory(uint64_t search_addr, uint64_t size, VirtualMemory::Mode mode,
@@ -5991,7 +6033,7 @@ uint64_t AllocateGuestStackMemory(uint64_t search_addr, uint64_t size, VirtualMe
 
 bool ProtectGuestMemory(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode,
                         VirtualMemory::Mode* old_mode) {
-	MemoryOperationLock memory_operation_lock;
+	MemoryOperationLock                   memory_operation_lock;
 	constexpr uint64_t                    GuestPageSize = 0x4000;
 	if (vaddr == 0 || size == 0 || size > UINT64_MAX - (vaddr & (GuestPageSize - 1u))) {
 		return false;
@@ -6088,7 +6130,8 @@ static int ProtectMemory(const void* addr, size_t len, int prot) {
 		// KYTY_MPROTECT_TRACKED_ONCE: a writable protection of GPU memory in one step with the
 		// tracker's (PageManager::ProtectGuestWritable), not protect-then-resync below.
 		const bool tracked_once = (prot & PROT_CPU_WRITE) != 0 && g_mprotect_tracked_once.On() &&
-		                          g_gpu_resources != nullptr && IsGpuAddressRange(range.start, range.size) &&
+		                          g_gpu_resources != nullptr &&
+		                          IsGpuAddressRange(range.start, range.size) &&
 		                          RemapTrackerProtectionEnabled() && range.start % 0x1000u == 0 &&
 		                          range.size % 0x1000u == 0;
 		if (tracked_once) {
@@ -6483,7 +6526,8 @@ int KYTY_SYSV_ABI KernelMemoryPoolGetBlockStats(KernelMemoryPoolBlockStats* outp
 
 	KernelMemoryPoolBlockStats stats {};
 	constexpr uint64_t         BLOCK_SIZE = 0x10000;
-	// Writers are serialized by the operation lock; readers take no lock (MemoryPoolSubtractCommitted).
+	// Writers are serialized by the operation lock; readers take no lock
+	// (MemoryPoolSubtractCommitted).
 	const uint64_t committed = g_memory_pool_committed.load(std::memory_order_relaxed);
 	uint64_t       available = 0;
 	if (g_pooled_memory != nullptr) {
@@ -6536,8 +6580,8 @@ DebugStats GetDebugStats() {
 } // namespace Libs::LibKernel::Memory
 
 // nps5 memtrk: see WriteJournal in Libs::LibKernel::Memory.
-extern "C" __attribute__((visibility("default"))) int kyty_guest_write_journal_lookup(uint64_t guest_addr, uint64_t len,
-                                                                                    char* out, size_t out_len) {
+extern "C" __attribute__((visibility("default"))) int
+kyty_guest_write_journal_lookup(uint64_t guest_addr, uint64_t len, char* out, size_t out_len) {
 	using namespace Libs::LibKernel::Memory::WriteJournal;
 	if (out != nullptr && out_len != 0) {
 		out[0] = '\0';
@@ -6561,11 +6605,12 @@ extern "C" __attribute__((visibility("default"))) int kyty_guest_write_journal_l
 		}
 		found++;
 		if (found <= 8 && out != nullptr && used + 1 < out_len) {
-			const int n = std::snprintf(out + used, out_len - used,
-			                            "kind=backing_write addr=0x%llx size=0x%llx age_ms=%llu caller=0x%llx tid=%llu\n",
-			                            static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
-			                            static_cast<unsigned long long>(now > ns ? (now - ns) / 1000000u : 0u),
-			                            static_cast<unsigned long long>(ra), static_cast<unsigned long long>(tid));
+			const int n = std::snprintf(
+			    out + used, out_len - used,
+			    "kind=backing_write addr=0x%llx size=0x%llx age_ms=%llu caller=0x%llx tid=%llu\n",
+			    static_cast<unsigned long long>(addr), static_cast<unsigned long long>(size),
+			    static_cast<unsigned long long>(now > ns ? (now - ns) / 1000000u : 0u),
+			    static_cast<unsigned long long>(ra), static_cast<unsigned long long>(tid));
 			if (n > 0) {
 				used = std::min(out_len - 1, used + static_cast<size_t>(n));
 			}

@@ -7,8 +7,8 @@
 #include <QChar>
 #include <QColor>
 #include <QJsonObject>
-#include <QMetaEnum>
 #include <QList>
+#include <QMetaEnum>
 #include <QMetaType>
 #include <QObject>
 #include <QPair>
@@ -157,8 +157,8 @@ public:
 	ControllerSettings controller;
 	// So do the audio mix levels.
 	AudioMixSettings audio_mix;
-	void WriteGlobalOnlySettings(QSettings* s) const { audio_mix.WriteSettings(s); }
-	void ReadGlobalOnlySettings(QSettings* s) { audio_mix.ReadSettings(s); }
+	void             WriteGlobalOnlySettings(QSettings* s) const { audio_mix.WriteSettings(s); }
+	void             ReadGlobalOnlySettings(QSettings* s) { audio_mix.ReadSettings(s); }
 	void CopyGlobalOnlySettingsFrom(const Configuration& other) {
 		controller = other.controller;
 		audio_mix  = other.audio_mix;
@@ -185,8 +185,8 @@ public:
 	// Occlusion mode, saved per game (key gpu_occlusion_accurate): false = the bundled preset's
 	// (performance: always visible), true = accurate GPU occlusion queries (--gpu-occlusion on).
 	// A game config saved before it was per game inherits the global value when read.
-	bool                   gpu_occlusion_accurate      = false;
-	bool                   relaxed_shader_float        = false;
+	bool gpu_occlusion_accurate = false;
+	bool relaxed_shader_float   = false;
 	// "Faster GPU synchronisation (experimental)", per game (key fast_gpu_sync): the game starts
 	// with FastGpuSyncVariables() (ApplyFastGpuSync).
 	bool                   fast_gpu_sync               = false;

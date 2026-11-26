@@ -65,11 +65,11 @@ struct Run {
 		std::shared_ptr<const Code>              resume;
 		std::vector<std::shared_ptr<const Code>> callees;
 		std::vector<bool>                        pending; // per callee: not planned yet (null code)
-		std::vector<uint64_t>                    targets; // per callee: its guest address (status line)
-		std::vector<uint32_t>                    record_slots;
-		uint32_t                                 exec_lo_slot  = 0; // uniform dwords
-		uint32_t                                 exec_hi_slot  = 0;
-		uint32_t                                 record_dword  = 0; // the record VGPR's lane 0
+		std::vector<uint64_t> targets; // per callee: its guest address (status line)
+		std::vector<uint32_t> record_slots;
+		uint32_t              exec_lo_slot = 0; // uniform dwords
+		uint32_t              exec_hi_slot = 0;
+		uint32_t              record_dword = 0; // the record VGPR's lane 0
 	};
 	uint64_t                    kernel = 0;
 	uint64_t                    hash   = 0; // the guest shader (status line)
@@ -92,7 +92,8 @@ public:
 	// A dispatch of `code` (guest address `base`): NotSplit when the program has no supported call
 	// loops (or splitting failed), Pending while its plan is built, Ready with `run`.
 	Result Plan(std::span<const uint32_t> code, uint64_t base, const CompileOptions& options,
-	            const ShaderComputeInputInfo& info, const Decoder::ShaderCodeReader& read, Run& run);
+	            const ShaderComputeInputInfo& info, const Decoder::ShaderCodeReader& read,
+	            Run& run);
 
 	// What the planner holds right now (the RT status line): split kernels still planning, ready
 	// or failed, and over the ready ones' sites the callee targets whose code is built, still being
@@ -121,7 +122,7 @@ private:
 		std::shared_ptr<const Code>            resume;
 		uint64_t                               table_digest = 0;
 		std::vector<uint32_t>                  record_slots;
-		uint32_t                               scanned_at   = 0;
+		uint32_t                               scanned_at = 0;
 		CallTableView                          view {};
 	};
 	struct Kernel {
@@ -132,7 +133,7 @@ private:
 		uint64_t                    base = 0;
 		std::vector<uint32_t>       user_data;
 		ShaderComputeInputInfo      info {};
-		uint64_t                    hash = 0;
+		uint64_t                    hash           = 0;
 		uint32_t                    user_data_base = 0;
 		std::shared_ptr<const Code> start;
 		std::vector<SitePlan>       sites;
@@ -140,9 +141,9 @@ private:
 		std::string                 failure;
 	};
 	struct Job {
-		uint64_t              kernel = 0;
-		uint32_t              site   = 0; // 0: the whole plan
-		uint64_t              target = 0;
+		uint64_t kernel = 0;
+		uint32_t site   = 0; // 0: the whole plan
+		uint64_t target = 0;
 	};
 
 	void Work();
@@ -150,14 +151,14 @@ private:
 	void PlanTarget(uint64_t id, uint32_t site, uint64_t target);
 	bool Translate(const Kernel& kernel, std::span<const uint32_t> code, Report& report);
 
-	std::mutex                          m_mutex;
-	std::condition_variable             m_wake;
-	std::deque<Job>                     m_jobs;
+	std::mutex                           m_mutex;
+	std::condition_variable              m_wake;
+	std::deque<Job>                      m_jobs;
 	std::unordered_map<uint64_t, Kernel> m_kernels;
-	std::vector<std::thread>            m_threads;
-	bool                                m_stop = false;
-	Decoder::ShaderCodeReader           m_read;
-	std::vector<uint32_t>               m_table_words;
+	std::vector<std::thread>             m_threads;
+	bool                                 m_stop = false;
+	Decoder::ShaderCodeReader            m_read;
+	std::vector<uint32_t>                m_table_words;
 };
 
 } // namespace Libs::Graphics::ShaderRecompiler::CallSplit

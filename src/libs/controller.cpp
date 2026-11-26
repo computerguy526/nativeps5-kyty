@@ -1,6 +1,5 @@
 #include "libs/controller.h"
 
-#include <SDL3/SDL.h>
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
@@ -15,26 +14,27 @@
 #include "libs/libs.h"
 #include "libs/padData.h"
 
+#include <SDL3/SDL.h>
 #include <algorithm>
+#include <arpa/inet.h>
 #include <array>
-#include <chrono>
-#include <string_view>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
-#include <set>
-#include <string>
-#include <thread>
-#include <vector>
-#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <set>
+#include <string>
+#include <string_view>
 #include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace Libs::Controller {
 
@@ -141,10 +141,10 @@ public:
 	void Button(int id, uint32_t button, bool down);
 	void Axis(int id, Axis axis, int value);
 	void RightStick(int id, int x, int y);
-	void TouchPad(int id, int finger, bool down, float x, float y, bool click);
+	void  TouchPad(int id, int finger, bool down, float x, float y, bool click);
 	void Motion(int id, Sensor sensor, const float* data, uint64_t time_us);
-	void GetMotionStatus(MotionStatus* status);
-	int  SensorRearmCandidate();
+	void  GetMotionStatus(MotionStatus* status);
+	int   SensorRearmCandidate();
 	void SetMotionSensorState(bool enable);
 	void ResetOrientation();
 	void ToggleGyroEmulation(int id);
@@ -233,13 +233,15 @@ static uint32_t g_keyboard_player = 0;
 static void RefreshPlayers();
 static void StopHostPad(SDL_Gamepad* pad);
 
-// Motion sensors of a host pad: enabled in SetDevices, re-asserted after output writes (LED, rumble)
-// and re-armed (off, on) by KeepHostPadSensors when SDL stops delivering sensor events. SDL's own
-// "enabled" flag cannot tell that the pad's driver dropped the IMU stream, so staleness is the check.
-static constexpr uint64_t SENSOR_LIVE_MS  = 250;  // newest event this young = live data
-static constexpr uint64_t SENSOR_STALE_MS = 1500; // no event for this long on an enabled pad = re-arm
-static constexpr uint64_t SENSOR_REARM_MS = 3000; // first re-arm spacing (doubles, max 60 s)
-static constexpr uint64_t SENSOR_REARM_MAX = 6;   // re-arms per connect, then give up
+// Motion sensors of a host pad: enabled in SetDevices, re-asserted after output writes (LED,
+// rumble) and re-armed (off, on) by KeepHostPadSensors when SDL stops delivering sensor events.
+// SDL's own "enabled" flag cannot tell that the pad's driver dropped the IMU stream, so staleness
+// is the check.
+static constexpr uint64_t SENSOR_LIVE_MS = 250; // newest event this young = live data
+static constexpr uint64_t SENSOR_STALE_MS =
+    1500; // no event for this long on an enabled pad = re-arm
+static constexpr uint64_t    SENSOR_REARM_MS  = 3000; // first re-arm spacing (doubles, max 60 s)
+static constexpr uint64_t    SENSOR_REARM_MAX = 6;    // re-arms per connect, then give up
 static std::atomic<uint64_t> g_sensor_events_total {0};
 static std::atomic<uint64_t> g_sensor_events_unrouted {0};
 
@@ -255,7 +257,8 @@ static bool ArmHostPadSensors(SDL_Gamepad* pad, bool force) {
 		if (force && SDL_GamepadSensorEnabled(pad, sensor)) {
 			(void)SDL_SetGamepadSensorEnabled(pad, sensor, false);
 		}
-		if (!SDL_GamepadSensorEnabled(pad, sensor) && !SDL_SetGamepadSensorEnabled(pad, sensor, true)) {
+		if (!SDL_GamepadSensorEnabled(pad, sensor) &&
+		    !SDL_SetGamepadSensorEnabled(pad, sensor, true)) {
 			LOGF("\t enabling controller sensor failed: %s\n", SDL_GetError());
 		}
 	}
@@ -312,32 +315,32 @@ static int TriggerTravel(const ControllerState& state, Axis axis) {
 // fractional) after pad initialization, "f<n>:<button>" at guest flip <n>. Buttons: cross, circle,
 // square, triangle, options, up, down, left, right, l1, r1, l2, r2 (l2/r2 at full travel).
 // Analogue sticks: "lstick=<x>/<y>" or "rstick=<x>/<y>" (0..255 per axis, 128 = centre, y 0 = up).
-// Any entry may end in ":<ms>", the hold time (default 300 ms), e.g. "40:lstick=128/0:2500,41:r2:2000"
-// holds the left stick up for 2.5 s and R2 for 2 s. While several entries hold one stick, the latest
-// fired wins. "swipe=<from>/<to>[:<ms>]" moves one finger over the touch pad (per mille of its
-// height, 0 = top), e.g. "f9000:swipe=900/100:400" is a swipe up (Erlou93/KytyPS5-Yotei v0.1.5:
-// the Ghost of Yotei 2.002 cutscene after the Snake fight waits for one).
-// KYTY_PAD_TRIGGER_FILE=<path> (default unset): while the game reads the pad, the file is polled
-// every 250 ms; when it exists, the entries it names without a time ("cross", "lstick=128/0:2000",
-// separated by commas or spaces) fire at once and the file is deleted, so a test runner can press
-// when it sees a prompt. Host input and window focus are never touched.
+// Any entry may end in ":<ms>", the hold time (default 300 ms), e.g.
+// "40:lstick=128/0:2500,41:r2:2000" holds the left stick up for 2.5 s and R2 for 2 s. While several
+// entries hold one stick, the latest fired wins. "swipe=<from>/<to>[:<ms>]" moves one finger over
+// the touch pad (per mille of its height, 0 = top), e.g. "f9000:swipe=900/100:400" is a swipe up
+// (Erlou93/KytyPS5-Yotei v0.1.5: the Ghost of Yotei 2.002 cutscene after the Snake fight waits for
+// one). KYTY_PAD_TRIGGER_FILE=<path> (default unset): while the game reads the pad, the file is
+// polled every 250 ms; when it exists, the entries it names without a time ("cross",
+// "lstick=128/0:2000", separated by commas or spaces) fire at once and the file is deleted, so a
+// test runner can press when it sees a prompt. Host input and window focus are never touched.
 namespace {
 
 struct PadScriptEvent {
-	bool     by_flip  = false;
-	double   at       = 0.0;
-	uint32_t button   = 0;
+	bool     by_flip = false;
+	double   at      = 0.0;
+	uint32_t button  = 0;
 	// 0 = none, 1 = left stick, 2 = right stick (stick_x/stick_y).
-	uint8_t  stick    = 0;
-	uint8_t  stick_x  = 128;
-	uint8_t  stick_y  = 128;
-	uint64_t hold_us  = 300000;
+	uint8_t  stick   = 0;
+	uint8_t  stick_x = 128;
+	uint8_t  stick_y = 128;
+	uint64_t hold_us = 300000;
 	// "swipe=<from>/<to>" (per mille of the touch pad's height, 0 = top): one finger moves over
 	// the touch pad's horizontal centre from <from> to <to> during the hold.
 	int16_t  swipe_from = -1;
 	int16_t  swipe_to   = -1;
-	bool     fired    = false;
-	uint64_t fired_us = 0;
+	bool     fired      = false;
+	uint64_t fired_us   = 0;
 };
 
 std::vector<PadScriptEvent> g_pad_script;
@@ -354,12 +357,19 @@ uint32_t PadScriptButton(const char* name, size_t len) {
 	static constexpr struct {
 		const char* name;
 		uint32_t    button;
-	} BUTTONS[] = {{"cross", PAD_BUTTON_CROSS}, {"circle", PAD_BUTTON_CIRCLE},
-	               {"square", PAD_BUTTON_SQUARE}, {"triangle", PAD_BUTTON_TRIANGLE},
-	               {"options", PAD_BUTTON_OPTIONS}, {"up", PAD_BUTTON_UP},
-	               {"down", PAD_BUTTON_DOWN}, {"left", PAD_BUTTON_LEFT},
-	               {"right", PAD_BUTTON_RIGHT}, {"l1", PAD_BUTTON_L1}, {"r1", PAD_BUTTON_R1},
-	               {"l2", PAD_BUTTON_L2}, {"r2", PAD_BUTTON_R2}};
+	} BUTTONS[] = {{"cross", PAD_BUTTON_CROSS},
+	               {"circle", PAD_BUTTON_CIRCLE},
+	               {"square", PAD_BUTTON_SQUARE},
+	               {"triangle", PAD_BUTTON_TRIANGLE},
+	               {"options", PAD_BUTTON_OPTIONS},
+	               {"up", PAD_BUTTON_UP},
+	               {"down", PAD_BUTTON_DOWN},
+	               {"left", PAD_BUTTON_LEFT},
+	               {"right", PAD_BUTTON_RIGHT},
+	               {"l1", PAD_BUTTON_L1},
+	               {"r1", PAD_BUTTON_R1},
+	               {"l2", PAD_BUTTON_L2},
+	               {"r2", PAD_BUTTON_R2}};
 	for (const auto& b: BUTTONS) {
 		if (std::strlen(b.name) == len && std::strncmp(b.name, name, len) == 0) {
 			return b.button;
@@ -376,14 +386,15 @@ bool PadScriptParseAction(const char* p, size_t len, PadScriptEvent* event) {
 	if (const auto colon = text.find(':'); colon != std::string::npos) {
 		char*      end = nullptr;
 		const auto ms  = std::strtod(text.c_str() + colon + 1, &end);
-		if (end == text.c_str() + colon + 1 || *end != '\0' || !(ms > 0.0) || ms > 600000.0) return false;
+		if (end == text.c_str() + colon + 1 || *end != '\0' || !(ms > 0.0) || ms > 600000.0)
+			return false;
 		event->hold_us = static_cast<uint64_t>(ms * 1000.0);
 		name.resize(colon);
 	}
 	if (name.starts_with("swipe=")) {
 		int from = -1, to = -1;
-		if (std::sscanf(name.c_str() + 6, "%d/%d", &from, &to) != 2 || from < 0 || from > 1000 || to < 0 ||
-		    to > 1000) {
+		if (std::sscanf(name.c_str() + 6, "%d/%d", &from, &to) != 2 || from < 0 || from > 1000 ||
+		    to < 0 || to > 1000) {
 			return false;
 		}
 		event->swipe_from = static_cast<int16_t>(from);
@@ -420,8 +431,8 @@ void PadScriptInit() {
 	g_pad_start_us    = PadScriptNowUs();
 	const char* value = std::getenv("KYTY_PAD_SCRIPT");
 	for (const char* p = value; p != nullptr && *p != '\0';) {
-		const char* end   = std::strchr(p, ',');
-		const char* next  = end != nullptr ? end + 1 : p + std::strlen(p);
+		const char* end  = std::strchr(p, ',');
+		const char* next = end != nullptr ? end + 1 : p + std::strlen(p);
 		if (end == nullptr) {
 			end = next;
 		}
@@ -449,7 +460,7 @@ void PadScriptPollTrigger(uint64_t now) {
 	if (now - last_poll < 250000) {
 		return;
 	}
-	last_poll = now;
+	last_poll  = now;
 	FILE* file = std::fopen(g_pad_trigger, "rb");
 	if (file == nullptr) {
 		return;
@@ -498,17 +509,20 @@ PadScriptHeld PadScriptHeldAt(uint64_t now, uint64_t flip) {
 			}
 			event.fired    = true;
 			event.fired_us = now;
-			LOGF("Kyty: KYTY_PAD_SCRIPT press 0x%05x stick %u (%u,%u) for %llu ms at %.2f s, guest flip %llu\n",
+			LOGF("Kyty: KYTY_PAD_SCRIPT press 0x%05x stick %u (%u,%u) for %llu ms at %.2f s, guest "
+			     "flip %llu\n",
 			     event.button, event.stick, event.stick_x, event.stick_y,
 			     static_cast<unsigned long long>(event.hold_us / 1000),
-			     static_cast<double>(now - g_pad_start_us) / 1e6, static_cast<unsigned long long>(flip));
+			     static_cast<double>(now - g_pad_start_us) / 1e6,
+			     static_cast<unsigned long long>(flip));
 		}
 		if (now - event.fired_us >= event.hold_us) {
 			continue;
 		}
 		held.buttons |= event.button;
 		if (event.swipe_from >= 0) {
-			const double t = std::clamp(static_cast<double>(now - event.fired_us) / static_cast<double>(event.hold_us),
+			const double t = std::clamp(static_cast<double>(now - event.fired_us) /
+			                                static_cast<double>(event.hold_us),
 			                            0.0, 1.0);
 			const double y = event.swipe_from + t * (event.swipe_to - event.swipe_from);
 			held.touch     = true;
@@ -570,15 +584,17 @@ void PadScriptApply(PadData* data) {
 // sticks and no buttons before the first record; the last record holds after the end); the pad
 // reports connected. KYTY_PAD_SCRIPT still adds on top (e.g. menu presses before the anchor).
 struct PadRecord {
-	int64_t                ms      = 0;
-	uint32_t               buttons = 0;
-	std::array<int, 6>     axes {};
+	int64_t            ms      = 0;
+	uint32_t           buttons = 0;
+	std::array<int, 6> axes {};
 };
 
 uint32_t PadAnchorEvent() {
 	static const uint32_t anchor = [] {
 		const char* value = std::getenv("KYTY_TEST_PAD_ANCHOR");
-		return value != nullptr && *value != '\0' ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 2u;
+		return value != nullptr && *value != '\0'
+		           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
+		           : 2u;
 	}();
 	return anchor;
 }
@@ -599,7 +615,8 @@ FILE* PadRecordFile() {
 		const char* path = std::getenv("KYTY_TEST_PAD_RECORD");
 		FILE*       f    = path != nullptr && *path != '\0' ? std::fopen(path, "w") : nullptr;
 		if (f != nullptr) {
-			LOGF("Kyty: KYTY_TEST_PAD_RECORD %s (anchor: loading-end #%u)\n", path, PadAnchorEvent());
+			LOGF("Kyty: KYTY_TEST_PAD_RECORD %s (anchor: loading-end #%u)\n", path,
+			     PadAnchorEvent());
 		}
 		return f;
 	}();
@@ -611,14 +628,15 @@ void PadRecordState(const PadData& data) {
 	if (file == nullptr) return;
 	const int64_t ms = PadMsSinceAnchor();
 	if (ms < 0) return;
-	const std::array<int, 6> axes = {data.left_stick_x,      data.left_stick_y,     data.right_stick_x,
-	                                 data.right_stick_y,     data.analog_buttons_l2, data.analog_buttons_r2};
-	Common::LockGuard  lock(g_pad_script_mutex);
-	static PadRecord   last {-1, 0xffffffffu, {-1, -1, -1, -1, -1, -1}};
+	const std::array<int, 6> axes = {data.left_stick_x,      data.left_stick_y,
+	                                 data.right_stick_x,     data.right_stick_y,
+	                                 data.analog_buttons_l2, data.analog_buttons_r2};
+	Common::LockGuard        lock(g_pad_script_mutex);
+	static PadRecord         last {-1, 0xffffffffu, {-1, -1, -1, -1, -1, -1}};
 	if (data.buttons == last.buttons && axes == last.axes) return;
 	last = {ms, data.buttons, axes};
-	std::fprintf(file, "%lld %x %d %d %d %d %d %d\n", static_cast<long long>(ms), data.buttons, axes[0], axes[1],
-	             axes[2], axes[3], axes[4], axes[5]);
+	std::fprintf(file, "%lld %x %d %d %d %d %d %d\n", static_cast<long long>(ms), data.buttons,
+	             axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]);
 	std::fflush(file);
 }
 
@@ -626,25 +644,29 @@ const std::vector<PadRecord>& PadReplay() {
 	static const std::vector<PadRecord> records = [] {
 		std::vector<PadRecord> out;
 		const char*            path = std::getenv("KYTY_TEST_PAD_REPLAY");
-		FILE*                  f    = path != nullptr && *path != '\0' ? std::fopen(path, "r") : nullptr;
+		FILE* f = path != nullptr && *path != '\0' ? std::fopen(path, "r") : nullptr;
 		if (f == nullptr) {
-			if (path != nullptr && *path != '\0') LOGF("Kyty: KYTY_TEST_PAD_REPLAY %s: cannot open\n", path);
+			if (path != nullptr && *path != '\0')
+				LOGF("Kyty: KYTY_TEST_PAD_REPLAY %s: cannot open\n", path);
 			return out;
 		}
 		long long ms      = 0;
 		unsigned  buttons = 0;
 		int       a[6]    = {};
-		while (std::fscanf(f, "%lld %x %d %d %d %d %d %d", &ms, &buttons, &a[0], &a[1], &a[2], &a[3], &a[4], &a[5]) == 8) {
+		while (std::fscanf(f, "%lld %x %d %d %d %d %d %d", &ms, &buttons, &a[0], &a[1], &a[2],
+		                   &a[3], &a[4], &a[5]) == 8) {
 			PadRecord r;
 			r.ms      = ms;
 			r.buttons = buttons;
-			for (int k = 0; k < 6; k++) r.axes[k] = std::clamp(a[k], 0, 255);
+			for (int k = 0; k < 6; k++)
+				r.axes[k] = std::clamp(a[k], 0, 255);
 			if (!out.empty() && r.ms < out.back().ms) r.ms = out.back().ms; // keep the times sorted
 			out.push_back(r);
 		}
 		std::fclose(f);
-		LOGF("Kyty: KYTY_TEST_PAD_REPLAY %s records=%zu last_ms=%lld (anchor: loading-end #%u)\n", path, out.size(),
-		     out.empty() ? 0ll : static_cast<long long>(out.back().ms), PadAnchorEvent());
+		LOGF("Kyty: KYTY_TEST_PAD_REPLAY %s records=%zu last_ms=%lld (anchor: loading-end #%u)\n",
+		     path, out.size(), out.empty() ? 0ll : static_cast<long long>(out.back().ms),
+		     PadAnchorEvent());
 		return out;
 	}();
 	return records;
@@ -684,7 +706,8 @@ bool PadReplayApply(PadData* data) {
 	if (next == records.end()) {
 		static std::atomic<bool> ended {false};
 		if (!ended.exchange(true, std::memory_order_relaxed)) {
-			LOGF("Kyty: KYTY_TEST_PAD_REPLAY reached its last record at %lld ms\n", static_cast<long long>(ms));
+			LOGF("Kyty: KYTY_TEST_PAD_REPLAY reached its last record at %lld ms\n",
+			     static_cast<long long>(ms));
 		}
 	}
 	data->connected       = true;
@@ -733,8 +756,8 @@ static void pad_fill_data(PadData* data, const ControllerState& state, bool conn
 	data->timestamp              = state.time;
 	data->connected_count        = static_cast<uint8_t>(std::min(connected_count, 255));
 	data->device_unique_data_len = 0;
-	PadRecordState(*data);        // KYTY_TEST_PAD_RECORD: the real pad, before any script
-	(void)PadReplayApply(data);   // KYTY_TEST_PAD_REPLAY
+	PadRecordState(*data);      // KYTY_TEST_PAD_RECORD: the real pad, before any script
+	(void)PadReplayApply(data); // KYTY_TEST_PAD_REPLAY
 	PadScriptApply(data);
 }
 
@@ -798,7 +821,8 @@ static float TriggerEffectIntensityPercent() {
 			return 1.0f;
 		}
 		const auto percent = std::clamp(std::strtol(value, nullptr, 10), 0L, 100L);
-		std::printf("Pad: trigger effects at %ld%% of the game's strength (KYTY_TRIGGER_EFFECT_INTENSITY)\n",
+		std::printf("Pad: trigger effects at %ld%% of the game's strength "
+		            "(KYTY_TRIGGER_EFFECT_INTENSITY)\n",
 		            percent);
 		return static_cast<float>(percent) / 100.0f;
 	}();
@@ -955,16 +979,18 @@ void GetTriggerEffectState(int32_t* state) {
 	g_players[0]->GetTriggerEffectState(state);
 }
 
-// NPS5_PAD_NET=<port>: a controller forwarded from another machine (28-byte packets over a loopback TCP stream, normally an
-// SSH local forward) drives the host-input port like the keyboard does. Off unless the variable is set; listens on
-// 127.0.0.1 only, one client; no packet for 500 ms or a disconnect releases everything. No rumble goes back.
-//   u16 magic 0x504e | u8 ver 1 | u8 flags | u32 seq | u32 ms | u32 buttons (bit n = SDL gamepad button n) | i16 axes[6]
+// NPS5_PAD_NET=<port>: a controller forwarded from another machine (28-byte packets over a loopback
+// TCP stream, normally an SSH local forward) drives the host-input port like the keyboard does. Off
+// unless the variable is set; listens on 127.0.0.1 only, one client; no packet for 500 ms or a
+// disconnect releases everything. No rumble goes back.
+//   u16 magic 0x504e | u8 ver 1 | u8 flags | u32 seq | u32 ms | u32 buttons (bit n = SDL gamepad
+//   button n) | i16 axes[6]
 namespace {
 std::atomic<bool> g_netpad_stop {false};
 std::thread       g_netpad_thread;
 
 struct NetPadState {
-	uint32_t pad = 0;   // PS button bits currently pressed by the forwarded pad
+	uint32_t pad = 0; // PS button bits currently pressed by the forwarded pad
 	int      axes[6] {128, 128, 128, 128, 0, 0};
 };
 
@@ -974,7 +1000,8 @@ void NetPadApply(NetPadState& shown, const NetPadState& want) {
 			SetButton(HOST_INPUT_CONTROLLER_ID, bit, (want.pad & bit) != 0);
 		}
 	}
-	static constexpr Axis kAxes[6] = {Axis::LeftX, Axis::LeftY, Axis::RightX, Axis::RightY, Axis::TriggerLeft, Axis::TriggerRight};
+	static constexpr Axis kAxes[6] = {Axis::LeftX,  Axis::LeftY,       Axis::RightX,
+	                                  Axis::RightY, Axis::TriggerLeft, Axis::TriggerRight};
 	for (int i = 0; i < 6; i++) {
 		if (want.axes[i] != shown.axes[i]) {
 			SetAxis(HOST_INPUT_CONTROLLER_ID, kAxes[i], want.axes[i]);
@@ -984,32 +1011,38 @@ void NetPadApply(NetPadState& shown, const NetPadState& want) {
 }
 
 NetPadState NetPadFromPacket(const uint8_t* p) {
-	static constexpr struct { int sdl; uint32_t ps; } kMap[] = {
-	    {0, PAD_BUTTON_CROSS}, {1, PAD_BUTTON_CIRCLE}, {2, PAD_BUTTON_SQUARE}, {3, PAD_BUTTON_TRIANGLE}, {4, PAD_BUTTON_TOUCH_PAD},
-	    {6, PAD_BUTTON_OPTIONS}, {7, PAD_BUTTON_L3}, {8, PAD_BUTTON_R3}, {9, PAD_BUTTON_L1}, {10, PAD_BUTTON_R1},
-	    {11, PAD_BUTTON_UP}, {12, PAD_BUTTON_DOWN}, {13, PAD_BUTTON_LEFT}, {14, PAD_BUTTON_RIGHT}};
-	const uint32_t buttons = p[12] | (p[13] << 8) | (p[14] << 16) | (static_cast<uint32_t>(p[15]) << 24);
-	NetPadState    state;
+	static constexpr struct {
+		int      sdl;
+		uint32_t ps;
+	} kMap[] = {{0, PAD_BUTTON_CROSS},    {1, PAD_BUTTON_CIRCLE},    {2, PAD_BUTTON_SQUARE},
+	            {3, PAD_BUTTON_TRIANGLE}, {4, PAD_BUTTON_TOUCH_PAD}, {6, PAD_BUTTON_OPTIONS},
+	            {7, PAD_BUTTON_L3},       {8, PAD_BUTTON_R3},        {9, PAD_BUTTON_L1},
+	            {10, PAD_BUTTON_R1},      {11, PAD_BUTTON_UP},       {12, PAD_BUTTON_DOWN},
+	            {13, PAD_BUTTON_LEFT},    {14, PAD_BUTTON_RIGHT}};
+	const uint32_t buttons =
+	    p[12] | (p[13] << 8) | (p[14] << 16) | (static_cast<uint32_t>(p[15]) << 24);
+	NetPadState state;
 	for (const auto& m: kMap) {
 		if ((buttons >> m.sdl) & 1u) {
 			state.pad |= m.ps;
 		}
 	}
 	for (int i = 0; i < 6; i++) {
-		const int v = static_cast<int16_t>(static_cast<uint16_t>(p[16 + 2 * i] | (p[17 + 2 * i] << 8)));
+		const int v =
+		    static_cast<int16_t>(static_cast<uint16_t>(p[16 + 2 * i] | (p[17 + 2 * i] << 8)));
 		state.axes[i] = i < 4 ? std::clamp((v + 32768) >> 8, 0, 255) : std::clamp(v >> 7, 0, 255);
 	}
 	return state;
 }
 
 void NetPadRun(int listen_fd) {
-	using Clock = std::chrono::steady_clock;
-	int          client = -1;
-	uint8_t      pending[28];
-	size_t       pending_size = 0;
-	NetPadState  shown;
+	using Clock              = std::chrono::steady_clock;
+	int               client = -1;
+	uint8_t           pending[28];
+	size_t            pending_size = 0;
+	NetPadState       shown;
 	Clock::time_point last_packet {};
-	bool         have = false;
+	bool              have = false;
 	while (!g_netpad_stop) {
 		pollfd fds[2] = {{listen_fd, POLLIN, 0}, {client, POLLIN, 0}};
 		if (poll(fds, client >= 0 ? 2 : 1, 50) > 0) {
@@ -1024,16 +1057,19 @@ void NetPadRun(int listen_fd) {
 					setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &on, sizeof on);
 					pending_size = 0;
 					have         = false;
-					NetPadApply(shown, NetPadState {});   // replaced sender: release whatever the old one held
+					NetPadApply(
+					    shown,
+					    NetPadState {}); // replaced sender: release whatever the old one held
 					std::printf("[netpad] sender connected\n");
 				}
 			}
 			if (client >= 0 && (fds[1].revents & (POLLIN | POLLHUP | POLLERR))) {
-				uint8_t     buf[256];
-				const auto  got = recv(client, buf, sizeof buf, 0);
-				bool        ok  = got > 0;
+				uint8_t    buf[256];
+				const auto got = recv(client, buf, sizeof buf, 0);
+				bool       ok  = got > 0;
 				for (ssize_t i = 0; ok && i < got;) {
-					const size_t take = std::min<size_t>(sizeof pending - pending_size, static_cast<size_t>(got - i));
+					const size_t take = std::min<size_t>(sizeof pending - pending_size,
+					                                     static_cast<size_t>(got - i));
 					std::memcpy(pending + pending_size, buf + i, take);
 					pending_size += take;
 					i += static_cast<ssize_t>(take);
@@ -1059,7 +1095,7 @@ void NetPadRun(int listen_fd) {
 		}
 		if (have && Clock::now() - last_packet > std::chrono::milliseconds(500)) {
 			have = false;
-			NetPadApply(shown, NetPadState {});   // silent sender: neutral
+			NetPadApply(shown, NetPadState {}); // silent sender: neutral
 		}
 	}
 	if (client >= 0) {
@@ -1084,9 +1120,10 @@ void NetPadStart() {
 	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
 	sockaddr_in addr {};
 	addr.sin_family      = AF_INET;
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // loopback only
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // loopback only
 	addr.sin_port        = htons(static_cast<uint16_t>(port));
-	if (fd < 0 || bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 || listen(fd, 1) != 0) {
+	if (fd < 0 || bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0 ||
+	    listen(fd, 1) != 0) {
 		std::printf("[netpad] cannot listen on 127.0.0.1:%d\n", port);
 		if (fd >= 0) {
 			close(fd);
@@ -1189,10 +1226,10 @@ void GameController::SetDevices(int active_id) {
 	m_active_id     = active_id;
 	m_connected     = new_connected;
 	m_state         = {};
-	m_sensor_events = {};
-	m_sensor_last_ms  = 0;
-	m_sensor_armed_ms = SDL_GetTicks();
-	m_sensor_rearms   = 0;
+	m_sensor_events      = {};
+	m_sensor_last_ms     = 0;
+	m_sensor_armed_ms    = SDL_GetTicks();
+	m_sensor_rearms      = 0;
 	m_gyro_time     = 0;
 	m_gyro_emulation = false;
 	m_emulated_time  = 0;
@@ -1447,15 +1484,14 @@ void GameController::GetMotionStatus(MotionStatus* status) {
 	status->gyro_events  = m_sensor_events[1];
 	status->rearms       = m_sensor_rearms;
 	status->emulated     = m_gyro_emulation;
-	status->live         = m_gyro_emulation ||
-	                       (m_sensor_events[0] != 0 && m_sensor_events[1] != 0 &&
-	                        SDL_GetTicks() - m_sensor_last_ms <= SENSOR_LIVE_MS);
+	status->live = m_gyro_emulation || (m_sensor_events[0] != 0 && m_sensor_events[1] != 0 &&
+	                                    SDL_GetTicks() - m_sensor_last_ms <= SENSOR_LIVE_MS);
 }
 
-// Decides (no blocking SDL write here) whether this player's pad needs its sensors re-armed; returns
-// the pad id or -1. Re-arms back off (3 s, 6 s, ... 60 s) and stop after SENSOR_REARM_MAX: a pad
-// whose driver never sends an IMU stream must not be toggled for ever (each toggle is a HID write
-// that waits for the pad's reply).
+// Decides (no blocking SDL write here) whether this player's pad needs its sensors re-armed;
+// returns the pad id or -1. Re-arms back off (3 s, 6 s, ... 60 s) and stop after SENSOR_REARM_MAX:
+// a pad whose driver never sends an IMU stream must not be toggled for ever (each toggle is a HID
+// write that waits for the pad's reply).
 int GameController::SensorRearmCandidate() {
 	int      id;
 	uint64_t reference;
@@ -1489,14 +1525,15 @@ int GameController::SensorRearmCandidate() {
 	m_sensor_rearm_ms = now;
 	m_sensor_rearms++;
 	if (m_sensor_rearms <= 2 || m_sensor_rearms == SENSOR_REARM_MAX) {
-		std::fprintf(stderr,
-		             "[astrohybrid 0] pad %d: no sensor events for %llu ms (accel %llu, gyro %llu so "
-		             "far): re-arming the sensors (#%llu%s)\n",
-		             id, static_cast<unsigned long long>(now - reference),
-		             static_cast<unsigned long long>(m_sensor_events[0]),
-		             static_cast<unsigned long long>(m_sensor_events[1]),
-		             static_cast<unsigned long long>(m_sensor_rearms),
-		             m_sensor_rearms == SENSOR_REARM_MAX ? ", the last one" : "");
+		std::fprintf(
+		    stderr,
+		    "[astrohybrid 0] pad %d: no sensor events for %llu ms (accel %llu, gyro %llu so "
+		    "far): re-arming the sensors (#%llu%s)\n",
+		    id, static_cast<unsigned long long>(now - reference),
+		    static_cast<unsigned long long>(m_sensor_events[0]),
+		    static_cast<unsigned long long>(m_sensor_events[1]),
+		    static_cast<unsigned long long>(m_sensor_rearms),
+		    m_sensor_rearms == SENSOR_REARM_MAX ? ", the last one" : "");
 		std::fflush(stderr);
 	}
 	return id;
@@ -1774,7 +1811,8 @@ bool GameController::SendTriggerEffect(const PadTriggerEffectParam& param) {
 	}
 
 	DualSenseEffects effect {};
-	const auto scale = GetSettingScale(Setting::TriggerEffectIntensity) * TriggerEffectIntensityPercent();
+	const auto       scale =
+	    GetSettingScale(Setting::TriggerEffectIntensity) * TriggerEffectIntensityPercent();
 	if ((param.trigger_mask & 0x01u) != 0) {
 		effect.enable_bits |= 0x08;
 		if (!trigger_effect_to_dualsense(param.command[0], effect.left_trigger, scale)) {

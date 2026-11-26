@@ -788,7 +788,8 @@ ShaderPrecompiler::ShaderPrecompiler(const ShaderJournal& journal, Settings sett
 		// Tier per entry: 0 priority source, 1 used, 2 the rest.
 		std::vector<char> priority(sources.size(), 0);
 		if (m_settings.priority_source) {
-			for (size_t i = 0; i < sources.size(); i++) priority[i] = m_settings.priority_source(sources[i]) ? 1 : 0;
+			for (size_t i = 0; i < sources.size(); i++)
+				priority[i] = m_settings.priority_source(sources[i]) ? 1 : 0;
 		}
 		std::vector<uint8_t> tier(entries.size(), 2);
 		for (uint32_t i = 0; i < entries.size(); i++) {
@@ -809,7 +810,8 @@ ShaderPrecompiler::ShaderPrecompiler(const ShaderJournal& journal, Settings sett
 			}
 		}
 		bool natural = m_order.size() == entries.size();
-		for (uint32_t i = 0; natural && i < m_order.size(); i++) natural = m_order[i] == i;
+		for (uint32_t i = 0; natural && i < m_order.size(); i++)
+			natural = m_order[i] == i;
 		m_total = m_order.size();
 		if (natural) m_order.clear(); // nothing moved or dropped
 	}
@@ -831,9 +833,9 @@ ShaderPrecompiler::ShaderPrecompiler(const ShaderJournal& journal, Settings sett
 			used = "; " + std::to_string(m_used_entries) + " bound by earlier runs first" +
 			       (m_settings.replay_unused ? "" : ", the others not replayed");
 		}
-		m_settings.log("Shader precompile: replaying " + std::to_string(m_total) + " permutations of " +
-		               std::to_string(m_journal.Sources().size()) + " sources on " +
-		               std::to_string(threads) + " threads" + used);
+		m_settings.log("Shader precompile: replaying " + std::to_string(m_total) +
+		               " permutations of " + std::to_string(m_journal.Sources().size()) +
+		               " sources on " + std::to_string(threads) + " threads" + used);
 	}
 	for (uint32_t i = 0; i < threads; i++) {
 		m_threads.emplace_back([this, i] { Worker(i); });
@@ -892,7 +894,8 @@ void ShaderPrecompiler::NoteDone(Outcome outcome) {
 		m_reported_ns   = now;
 		char text[96];
 		std::snprintf(text, sizeof(text), "Shader precompile: %llu/%llu (%llu%%): ",
-		              static_cast<unsigned long long>(done), static_cast<unsigned long long>(m_total),
+		              static_cast<unsigned long long>(done),
+		              static_cast<unsigned long long>(m_total),
 		              static_cast<unsigned long long>(done * 100 / m_total));
 		m_settings.log(text + Counts());
 	}
@@ -956,9 +959,10 @@ void ShaderPrecompiler::Worker(uint32_t index) {
 		const auto done = m_done.load(std::memory_order_relaxed);
 		if (m_settings.log) {
 			char text[96];
-			std::snprintf(text, sizeof(text), "Shader precompile: %s %llu/%llu: ",
-			              done == m_total ? "done," : "stopped,", static_cast<unsigned long long>(done),
-			              static_cast<unsigned long long>(m_total));
+			std::snprintf(
+			    text, sizeof(text),
+			    "Shader precompile: %s %llu/%llu: ", done == m_total ? "done," : "stopped,",
+			    static_cast<unsigned long long>(done), static_cast<unsigned long long>(m_total));
 			m_settings.log(text + Counts());
 		}
 		if (m_settings.on_finished) m_settings.on_finished();

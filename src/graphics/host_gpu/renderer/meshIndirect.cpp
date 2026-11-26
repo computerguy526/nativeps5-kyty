@@ -1,9 +1,9 @@
 #include "graphics/host_gpu/renderer/meshIndirect.h"
-#include "common/staticOnce.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/profiler.h"
+#include "common/staticOnce.h"
 #include "gpu_mesh_shaders/gpu_mesh_indirect_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"

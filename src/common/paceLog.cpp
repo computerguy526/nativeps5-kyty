@@ -1,4 +1,5 @@
 #include "common/paceLog.h"
+
 #include "common/staticOnce.h"
 
 #include <array>
@@ -165,10 +166,12 @@ bool StallTraceEnabled() {
 	return enabled;
 }
 
-void NoteStall(uint64_t begin_ns, uint64_t end_ns, StallCode code, uint64_t hash, int kind, const char* name) {
+void NoteStall(uint64_t begin_ns, uint64_t end_ns, StallCode code, uint64_t hash, int kind,
+               const char* name) {
 	static const uint64_t min_ns = [] {
 		const auto* value = std::getenv("KYTY_STALL_TRACE_MIN_MS");
-		return (value != nullptr && value[0] != 0 ? std::strtoull(value, nullptr, 10) : 20ull) * 1'000'000ull;
+		return (value != nullptr && value[0] != 0 ? std::strtoull(value, nullptr, 10) : 20ull) *
+		       1'000'000ull;
 	}();
 	if (!StallTraceEnabled() || end_ns < begin_ns || end_ns - begin_ns < min_ns) {
 		return;
@@ -179,8 +182,8 @@ void NoteStall(uint64_t begin_ns, uint64_t end_ns, StallCode code, uint64_t hash
 	const int tid = 0;
 #endif
 	std::lock_guard lock(g_mutex);
-	std::fprintf(g_waits, "%" PRIu64 ",%" PRIu64 ",%d,%d,0x%" PRIx64 ",%d,%s\n", Rel(begin_ns), Rel(end_ns), tid,
-	             static_cast<int>(code), hash, kind, name != nullptr ? name : "");
+	std::fprintf(g_waits, "%" PRIu64 ",%" PRIu64 ",%d,%d,0x%" PRIx64 ",%d,%s\n", Rel(begin_ns),
+	             Rel(end_ns), tid, static_cast<int>(code), hash, kind, name != nullptr ? name : "");
 	std::fflush(g_waits);
 }
 

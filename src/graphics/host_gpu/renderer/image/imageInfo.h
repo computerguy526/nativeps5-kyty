@@ -17,15 +17,23 @@
 
 namespace Libs::Graphics {
 
-// Narrow10_11_11: KYTY_10_11_11_RED (see Red10_11_11InRed). Rotate2_10_10_10: KYTY_2_10_10_10_ROTATE
-// (see Rotate2_10_10_10Enabled). The values are also used by gpu_tiler_color.inc.
-enum class ColorTransform : uint32_t { None, SwapBgra16, Reverse10_11_11, Narrow10_11_11, Rotate2_10_10_10 };
+// Narrow10_11_11: KYTY_10_11_11_RED (see Red10_11_11InRed). Rotate2_10_10_10:
+// KYTY_2_10_10_10_ROTATE (see Rotate2_10_10_10Enabled). The values are also used by
+// gpu_tiler_color.inc.
+enum class ColorTransform : uint32_t {
+	None,
+	SwapBgra16,
+	Reverse10_11_11,
+	Narrow10_11_11,
+	Rotate2_10_10_10
+};
 
-// KYTY_2_10_10_10_ROTATE=1 (default off; upstream 963aaeb3b). A guest 2_10_10_10 UNorm image is held as
-// A2R10G10B10 with the transfers rotating each element by two bits, so the guest's bytes keep their
-// layout (the 2-bit component at the bottom) in CPU reads, readbacks and copies. By default the host
-// image is A2B10G10R10 behind a component mapping, whose bytes come out shuffled when the guest reads
-// them. Off by default: the GT7 2_10_10_10 targets were checked with the mapping only.
+// KYTY_2_10_10_10_ROTATE=1 (default off; upstream 963aaeb3b). A guest 2_10_10_10 UNorm image is
+// held as A2R10G10B10 with the transfers rotating each element by two bits, so the guest's bytes
+// keep their layout (the 2-bit component at the bottom) in CPU reads, readbacks and copies. By
+// default the host image is A2B10G10R10 behind a component mapping, whose bytes come out shuffled
+// when the guest reads them. Off by default: the GT7 2_10_10_10 targets were checked with the
+// mapping only.
 [[nodiscard]] inline bool Rotate2_10_10_10Enabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_2_10_10_10_ROTATE");
@@ -148,10 +156,10 @@ struct ImageInfo {
 	Prospero::TileMode           tile_mode       = Prospero::TileMode::kLinear;
 	bool                         bgra16          = false;
 	// nps5 mipclamp: the level count the guest T# declared when it is above what the host image can
-	// hold (resources.levels is clamped to the extent). The guest memory layout (slice stride, total
-	// size) follows the declared count; only the host image and its views use the clamped one.
-	// 0 = the declared count is resources.levels.
-	uint32_t                     layout_levels   = 0;
+	// hold (resources.levels is clamped to the extent). The guest memory layout (slice stride,
+	// total size) follows the declared count; only the host image and its views use the clamped
+	// one. 0 = the declared count is resources.levels.
+	uint32_t                     layout_levels = 0;
 	std::array<ImageMipInfo, 16> mip_layout {};
 
 	[[nodiscard]] ColorTransform GetColorTransform() const noexcept {
@@ -524,9 +532,7 @@ inline constexpr std::array<VideoOutFormatPolicy, 12> VIDEO_OUT_FORMAT_POLICIES 
 			next.float32[2] = unorm16(clear_words >> 32u);
 			next.float32[3] = unorm16(clear_words >> 48u);
 			[[fallthrough]];
-		case vk::Format::eR16G16Unorm:
-			next.float32[1] = unorm16(packed >> 16u);
-			[[fallthrough]];
+		case vk::Format::eR16G16Unorm: next.float32[1] = unorm16(packed >> 16u); [[fallthrough]];
 		case vk::Format::eR16Unorm: next.float32[0] = unorm16(packed); break;
 		case vk::Format::eR16G16B16A16Uint:
 			for (uint32_t i = 0; i < 4; i++) {
@@ -804,16 +810,17 @@ inline constexpr std::array<VideoOutFormatPolicy, 12> VIDEO_OUT_FORMAT_POLICIES 
 		if ((bits & 0x7fffu) == 0) {
 			return std::bit_cast<float>((bits & 0x8000u) << 16u);
 		}
-		return std::bit_cast<float>(((bits & 0x8000u) << 16u) | ((((bits >> 10u) & 0x1fu) + 112u) << 23u) |
+		return std::bit_cast<float>(((bits & 0x8000u) << 16u) |
+		                            ((((bits >> 10u) & 0x1fu) + 112u) << 23u) |
 		                            ((bits & 0x3ffu) << 13u));
 	};
 	const auto unorm = [](uint32_t value, uint32_t bits) {
 		return static_cast<float>(value) / static_cast<float>((1u << bits) - 1u);
 	};
-	const uint32_t low         = packed & 0xffffu;
-	const uint32_t high        = packed >> 16u;
-	const bool     same_bytes  = packed == (packed & 0xffu) * 0x01010101u;
-	const bool     same_halves = low == high;
+	const uint32_t      low         = packed & 0xffffu;
+	const uint32_t      high        = packed >> 16u;
+	const bool          same_bytes  = packed == (packed & 0xffu) * 0x01010101u;
+	const bool          same_halves = low == high;
 	vk::ClearColorValue next {};
 	switch (format) {
 		case vk::Format::eR32Sfloat:

@@ -1,12 +1,10 @@
 ﻿#include "graphics/presentation/window.h"
-#include "graphics/presentation/window/eventDrain.h"
-#include "graphics/presentation/window/gamepadSensorDispatch.h"
 
 #include "common/assert.h"
-#include "common/flightRec.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
+#include "common/flightRec.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -23,6 +21,8 @@
 #include "graphics/presentation/renderDoc.h"
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
+#include "graphics/presentation/window/eventDrain.h"
+#include "graphics/presentation/window/gamepadSensorDispatch.h"
 #include "graphics/presentation/window/hostInput.h"
 #include "graphics/presentation/window/padFocus.h"
 #include "graphics/presentation/window/windowInternal.h"
@@ -36,7 +36,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -51,6 +50,7 @@
 #include <string>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 #include <vulkan/vk_platform.h>
@@ -920,7 +920,7 @@ bool QueryWindowScreen(SDL_Window* window, AutoCap::Screen& out) {
 
 void RefreshProgressTitle(SDL_Window* window, uint64_t now_ms) {
 	auto&      state = GetProgressTitle();
-	const auto text = CompileProgress::ValidUtf8Title(
+	const auto text  = CompileProgress::ValidUtf8Title(
 	    CompileProgress::ComposeTitle(state.first_frame ? state.base : ProgressTitleName(),
 	                                  CompileProgress::Read(), state.first_frame));
 	if (!state.throttle.ShouldSet(now_ms, text)) {
@@ -1043,7 +1043,7 @@ void WindowContext::RunBegin() {
 		}
 	}
 	loop.event     = {};
-	loop.need_exit = false;
+	loop.need_exit      = false;
 	g_run->title_time   = SDL_GetTicks();
 	g_run->title_frames = loop.presented_frames.load(std::memory_order_relaxed);
 	// Compile progress in the title (KYTY_PROGRESS_TITLE=0 off): polled here on the window thread
@@ -1371,12 +1371,13 @@ static void WindowCreate(WindowContext& context) {
 		SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "x11,wayland");
 	}
 #endif
-	// KYTY_SDL_JOYSTICK_MFI=0: SDL does not use macOS's GameController framework for pads (a Switch Pro
-	// that the framework took instead of the HIDAPI driver has no IMU); unset: SDL's default.
+	// KYTY_SDL_JOYSTICK_MFI=0: SDL does not use macOS's GameController framework for pads (a Switch
+	// Pro that the framework took instead of the HIDAPI driver has no IMU); unset: SDL's default.
 	if (const char* mfi = std::getenv("KYTY_SDL_JOYSTICK_MFI"); mfi != nullptr && mfi[0] != 0) {
 		SDL_SetHint(SDL_HINT_JOYSTICK_MFI, mfi);
 	}
-	// Pad input (motion sensors above all) must not depend on the window's keyboard focus: padFocus.h.
+	// Pad input (motion sensors above all) must not depend on the window's keyboard focus:
+	// padFocus.h.
 	(void)ApplyPadBackgroundInput();
 	if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
 		EXIT("%s\n", SDL_GetError());
@@ -1486,18 +1487,22 @@ namespace {
 std::atomic<bool> g_close_save_abandoned {false};
 } // namespace
 
-bool WindowCloseSaveAbandoned() { return g_close_save_abandoned.load(std::memory_order_acquire); }
+bool WindowCloseSaveAbandoned() {
+	return g_close_save_abandoned.load(std::memory_order_acquire);
+}
 
 void WindowRunEnd() {
 	EXIT_IF(g_window == nullptr);
 	g_window->RunEnd();
 	auto& cache = g_window->render_context->GetPipelineCache();
-	// mainhang (KYTY_CLOSE_SAVE_TIMEOUT_MS, default 0 = wait for ever, the old behaviour): the close-time
-	// save stops the pipeline builders first (join). A build stuck in the driver (2026-11-22 blame6)
-	// kept the main thread here for ever: the window never closed and the process had to be killed.
-	// With the switch the save runs on a helper thread and the main thread waits at most that long.
-	const char*    env        = std::getenv("KYTY_CLOSE_SAVE_TIMEOUT_MS");
-	const uint64_t timeout_ms = env != nullptr ? std::min<uint64_t>(std::strtoull(env, nullptr, 10), 600000) : 0;
+	// mainhang (KYTY_CLOSE_SAVE_TIMEOUT_MS, default 0 = wait for ever, the old behaviour): the
+	// close-time save stops the pipeline builders first (join). A build stuck in the driver
+	// (2026-11-22 blame6) kept the main thread here for ever: the window never closed and the
+	// process had to be killed. With the switch the save runs on a helper thread and the main
+	// thread waits at most that long.
+	const char*    env = std::getenv("KYTY_CLOSE_SAVE_TIMEOUT_MS");
+	const uint64_t timeout_ms =
+	    env != nullptr ? std::min<uint64_t>(std::strtoull(env, nullptr, 10), 600000) : 0;
 	if (timeout_ms == 0) {
 		cache.Save();
 		return;
@@ -1518,19 +1523,26 @@ void WindowRunEnd() {
 		state->done_cv.notify_all();
 	}).detach();
 	std::unique_lock lock(state->mutex);
-	if (!state->done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] { return state->done; })) {
+	if (!state->done_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+	                             [&] { return state->done; })) {
 		g_close_save_abandoned.store(true, std::memory_order_release);
-		std::fprintf(stderr,
-		             "[mainhang] close: the pipeline cache save is still running after %llu ms (a pipeline build "
-		             "or the driver is stuck); the window loop ends without it and the renderer teardown is "
-		             "skipped (KYTY_CLOSE_SAVE_TIMEOUT_MS)\n",
-		             static_cast<unsigned long long>(timeout_ms));
+		std::fprintf(
+		    stderr,
+		    "[mainhang] close: the pipeline cache save is still running after %llu ms (a pipeline "
+		    "build "
+		    "or the driver is stuck); the window loop ends without it and the renderer teardown is "
+		    "skipped (KYTY_CLOSE_SAVE_TIMEOUT_MS)\n",
+		    static_cast<unsigned long long>(timeout_ms));
 		FlightRec::Trigger("closesave");
 		return;
 	}
-	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
+	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                    std::chrono::steady_clock::now() - begin)
+	                    .count();
 	if (ms > 1000) {
-		std::fprintf(stderr, "[mainhang] close: pipeline cache save took %lld ms (KYTY_CLOSE_SAVE_TIMEOUT_MS=%llu)\n",
+		std::fprintf(stderr,
+		             "[mainhang] close: pipeline cache save took %lld ms "
+		             "(KYTY_CLOSE_SAVE_TIMEOUT_MS=%llu)\n",
 		             static_cast<long long>(ms), static_cast<unsigned long long>(timeout_ms));
 	}
 }

@@ -32,8 +32,9 @@ constexpr uint64_t RingSize  = uint64_t {1024} * SlotBytes;
 
 uint32_t EnvLimit(const char* name, uint32_t fallback) {
 	const auto* value = std::getenv(name);
-	return value != nullptr && value[0] != '\0' ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0))
-	                                             : fallback;
+	return value != nullptr && value[0] != '\0'
+	           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0))
+	           : fallback;
 }
 
 } // namespace
@@ -59,18 +60,19 @@ void DispatchGuard::Initialize() {
 	if (m_pipeline) {
 		return;
 	}
-	auto& graphics = m_context.GetGraphics();
+	auto&                                               graphics = m_context.GetGraphics();
 	const std::array<vk::DescriptorSetLayoutBinding, 2> bindings {{
 	    {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
 	    {1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
 	}};
-	vk::DescriptorSetLayoutCreateInfo descriptor {};
+	vk::DescriptorSetLayoutCreateInfo                   descriptor {};
 	descriptor.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
 	descriptor.bindingCount = static_cast<uint32_t>(bindings.size());
 	descriptor.pBindings    = bindings.data();
-	RequireVulkanSuccess(graphics.device.createDescriptorSetLayout(&descriptor, nullptr, &m_descriptors),
-	                     "create dispatch-guard descriptors");
-	const vk::PushConstantRange push {vk::ShaderStageFlagBits::eCompute, 0, sizeof(PushData)};
+	RequireVulkanSuccess(
+	    graphics.device.createDescriptorSetLayout(&descriptor, nullptr, &m_descriptors),
+	    "create dispatch-guard descriptors");
+	const vk::PushConstantRange  push {vk::ShaderStageFlagBits::eCompute, 0, sizeof(PushData)};
 	vk::PipelineLayoutCreateInfo layout {};
 	layout.setLayoutCount         = 1;
 	layout.pSetLayouts            = &m_descriptors;
@@ -78,14 +80,14 @@ void DispatchGuard::Initialize() {
 	layout.pPushConstantRanges    = &push;
 	RequireVulkanSuccess(graphics.device.createPipelineLayout(&layout, nullptr, &m_layout),
 	                     "create dispatch-guard layout");
-	const auto module = CompileSPV(GPU_DISPATCH_GUARD_SPV, graphics.device);
+	const auto                    module = CompileSPV(GPU_DISPATCH_GUARD_SPV, graphics.device);
 	vk::ComputePipelineCreateInfo pipeline {};
 	pipeline.layout       = m_layout;
 	pipeline.stage.stage  = vk::ShaderStageFlagBits::eCompute;
 	pipeline.stage.module = module;
 	pipeline.stage.pName  = "main";
-	const auto result = graphics.device.createComputePipelines(nullptr, 1, &pipeline, nullptr,
-	                                                           &m_pipeline);
+	const auto result =
+	    graphics.device.createComputePipelines(nullptr, 1, &pipeline, nullptr, &m_pipeline);
 	graphics.device.destroyShaderModule(module);
 	RequireVulkanSuccess(result, "create dispatch-guard pipeline");
 	m_ring = std::make_unique<StreamBuffer>(graphics, m_context.GetCommandScheduler(),
@@ -117,17 +119,17 @@ void DispatchGuard::Record(CommandBuffer& buffer, const Slot& slot, vk::Buffer a
 	auto& scheduler = m_context.GetCommandScheduler();
 	scheduler.EndRendering();
 	// Every earlier write (the record's producer) before the guard reads it.
-	buffer.RequestMemoryBarrier(vk::PipelineStageFlagBits2::eAllCommands,
-	                            vk::AccessFlagBits2::eMemoryWrite,
-	                            vk::PipelineStageFlagBits2::eComputeShader,
-	                            vk::AccessFlagBits2::eShaderStorageRead, BarrierOrigin::IndirectArgs);
+	buffer.RequestMemoryBarrier(
+	    vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eMemoryWrite,
+	    vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderStorageRead,
+	    BarrierOrigin::IndirectArgs);
 	const auto aligned = Common::AlignDown(args_offset, graphics.StorageMinAlignment());
 	EXIT_IF(((args_offset - aligned) & 3u) != 0);
 	const std::array<vk::DescriptorBufferInfo, 2> infos {{
 	    {args, aligned, args_offset - aligned + 12u},
 	    {slot.buffer, slot.offset, SlotBytes},
 	}};
-	std::array<vk::WriteDescriptorSet, 2> writes {};
+	std::array<vk::WriteDescriptorSet, 2>         writes {};
 	for (uint32_t i = 0; i < writes.size(); i++) {
 		writes[i].dstBinding      = i;
 		writes[i].descriptorCount = 1;
@@ -139,7 +141,7 @@ void DispatchGuard::Record(CommandBuffer& buffer, const Slot& slot, vk::Buffer a
 	                             static_cast<uint32_t>(writes.size()), writes.data());
 	static const uint32_t max_dim   = EnvLimit("KYTY_INDIRECT_GUARD_MAX_DIM", 65535u);
 	static const uint32_t max_total = EnvLimit("KYTY_INDIRECT_GUARD_MAX_GROUPS", 1u << 22u);
-	PushData push;
+	PushData              push;
 	push.args_word = static_cast<uint32_t>((args_offset - aligned) / 4u);
 	push.out_word  = 0;
 	push.max_dim   = guard ? max_dim : 0u;

@@ -816,10 +816,11 @@ static void audioout2_queue_context_audio(AudioOut2ContextHandle ctx, bool block
 	// KYTY_AUDIO2_CONSUME_PCM (upstream 64a554dea): a port's PCM covers one grain, so the push
 	// consumes it and a port the game stops feeding falls silent instead of replaying its last
 	// block. Locked push: the backend reads the ports' own PCM, so it is dropped after the call.
-	const bool consume = AudioInternal::AudioOut2GetSwitches().consume_pcm;
+	const bool consume     = AudioInternal::AudioOut2GetSwitches().consume_pcm;
 	const auto consume_pcm = [&] {
 		for (auto& state: g_audioout2_ports) {
-			if (state.used && state.context == ctx && !audioout2_port_type_is_object(state.port_type)) {
+			if (state.used && state.context == ctx &&
+			    !audioout2_port_type_is_object(state.port_type)) {
 				state.pcm_data.clear();
 			}
 		}
@@ -925,7 +926,7 @@ int KYTY_SYSV_ABI AudioOut2ContextCreate(const AudioOut2ContextParam* params, vo
 	state->queue_depth = (params->queue_depth == 0 ? 4u : params->queue_depth);
 	state->queued      = 0;
 	state->num_grains  = (params->num_grains == 0 ? 512u : params->num_grains);
-	state->last_update = audioout2_clock();
+	state->last_update      = audioout2_clock();
 	state->max_ports        = params->max_ports;
 	state->max_object_ports = params->max_object_ports;
 	g_audioout2_context_mutex.Unlock();

@@ -1592,7 +1592,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 	if (!ctx.unsupported.empty() && !mesh_stage) {
 		for (const auto& [reason, count]: ctx.unsupported) {
 			if (reason.rfind("refused:", 0) == 0) {
-				result.source = PreludeText(fuse_mad) + "// refused: " + reason + "\n";
+				result.source      = PreludeText(fuse_mad) + "// refused: " + reason + "\n";
 				result.unsupported = ctx.unsupported;
 				return result;
 			}

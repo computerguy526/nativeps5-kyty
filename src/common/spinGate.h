@@ -134,15 +134,16 @@ public:
 	bool Step(uint64_t now_ms, const GateInput& input) noexcept {
 		m_ring[m_next % m_config.window] = input;
 		m_next++;
-		const auto count = static_cast<uint32_t>(m_next < m_config.window ? m_next : m_config.window);
-		GateInput  mean   = input;
+		const auto count =
+		    static_cast<uint32_t>(m_next < m_config.window ? m_next : m_config.window);
+		GateInput mean = input;
 		mean.busy = mean.spinning = mean.idle_spinners = 0.0;
 		for (uint32_t i = 0; i < count; i++) {
 			mean.busy += m_ring[i].busy / count;
 			mean.spinning += m_ring[i].spinning / count;
 			mean.idle_spinners += m_ring[i].idle_spinners / count;
 		}
-		m_mean = mean;
+		m_mean          = mean;
 		const auto held = now_ms - m_since_ms;
 		if (m_open ? held < m_config.hold_open_ms : held < m_config.hold_closed_ms) {
 			return m_open;
@@ -161,13 +162,13 @@ public:
 
 private:
 	static constexpr uint32_t MaxWindow = 32;
-	GateConfig m_config;
-	GateInput  m_ring[MaxWindow] {};
-	GateInput  m_mean {};
-	uint64_t   m_next     = 0;
-	uint64_t   m_since_ms = 0;
-	uint64_t   m_closes   = 0;
-	bool       m_open     = true;
+	GateConfig                m_config;
+	GateInput                 m_ring[MaxWindow] {};
+	GateInput                 m_mean {};
+	uint64_t                  m_next     = 0;
+	uint64_t                  m_since_ms = 0;
+	uint64_t                  m_closes   = 0;
+	bool                      m_open     = true;
 };
 
 struct ThreadSample {

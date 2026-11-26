@@ -712,12 +712,12 @@ struct PageManager::Impl {
 	}
 
 	// KYTY_MPROTECT_TRACKED_ONCE (PageManager::ProtectGuestWritable): pages [first, last) get, in
-	// one host call per run under host_lock, the tracker's protection where its counts watch the page
-	// and the guest's (writable) mode elsewhere; `applied` records the tracker's level, as
+	// one host call per run under host_lock, the tracker's protection where its counts watch the
+	// page and the guest's (writable) mode elsewhere; `applied` records the tracker's level, as
 	// ResyncHostProtection leaves it. Takes both locks itself. Returns the host calls made.
 	uint32_t ApplyGuestSpan(Region& region, uint64_t base_addr, size_t first, size_t last,
 	                        Common::VirtualMemory::Mode guest_mode) noexcept {
-		SpinGuard host(region.host_lock, FaultCost::Split::HostLock);
+		SpinGuard                     host(region.host_lock, FaultCost::Split::HostLock);
 		std::array<Run, REGION_PAGES> runs {};
 		size_t                        count = 0;
 		{
@@ -727,7 +727,8 @@ struct PageManager::Impl {
 				if (count != 0 && runs[count - 1].level == level) {
 					runs[count - 1].last = static_cast<uint16_t>(page + 1);
 				} else {
-					runs[count++] = {static_cast<uint16_t>(page), static_cast<uint16_t>(page + 1), level};
+					runs[count++] = {static_cast<uint16_t>(page), static_cast<uint16_t>(page + 1),
+					                 level};
 				}
 			}
 		}
@@ -735,7 +736,8 @@ struct PageManager::Impl {
 		// may end up stricter than its counts, never looser (as in ApplySpan).
 		for (size_t index = 0; index < count; index++) {
 			const auto& run = runs[index];
-			Protect(base_addr + size_t {run.first} * PAGE_SIZE, static_cast<size_t>(run.last - run.first) * PAGE_SIZE,
+			Protect(base_addr + size_t {run.first} * PAGE_SIZE,
+			        static_cast<size_t>(run.last - run.first) * PAGE_SIZE,
 			        run.level == Level::ReadWrite ? guest_mode : ToMode(run.level));
 		}
 		SpinGuard counts(region.lock);
@@ -1290,8 +1292,10 @@ void PageManager::ResyncHostProtection(uint64_t vaddr, uint64_t size) {
 	}
 }
 
-void PageManager::ProtectGuestWritable(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode guest_mode) {
-	if (!GuestRange {vaddr, size}.Valid() || vaddr >= ADDRESS_SIZE || vaddr % PAGE_SIZE != 0 || size % PAGE_SIZE != 0) {
+void PageManager::ProtectGuestWritable(uint64_t vaddr, uint64_t size,
+                                       Common::VirtualMemory::Mode guest_mode) {
+	if (!GuestRange {vaddr, size}.Valid() || vaddr >= ADDRESS_SIZE || vaddr % PAGE_SIZE != 0 ||
+	    size % PAGE_SIZE != 0) {
 		return;
 	}
 	const auto end = std::min(vaddr + size, ADDRESS_SIZE);
@@ -1303,10 +1307,9 @@ void PageManager::ProtectGuestWritable(uint64_t vaddr, uint64_t size, Common::Vi
 			// Never watched: the guest's mode, as the guest protect did.
 			m_impl->Protect(chunk_begin, chunk_end - chunk_begin, guest_mode);
 		} else {
-			Impl::CountApplied(m_impl->ApplyGuestSpan(*region, region_base,
-			                                          static_cast<size_t>((chunk_begin - region_base) / PAGE_SIZE),
-			                                          static_cast<size_t>((chunk_end - region_base) / PAGE_SIZE),
-			                                          guest_mode));
+			Impl::CountApplied(m_impl->ApplyGuestSpan(
+			    *region, region_base, static_cast<size_t>((chunk_begin - region_base) / PAGE_SIZE),
+			    static_cast<size_t>((chunk_end - region_base) / PAGE_SIZE), guest_mode));
 		}
 		chunk_begin = chunk_end;
 	}

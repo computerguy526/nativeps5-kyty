@@ -770,10 +770,10 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			// KYTY_KNOWN_BITS_MASKS: an unsigned extract from bit 0 of a value with no bit at or
 			// above the width is the value.
 			if (sets != nullptr && GetCodegenOptions().known_bits_masks &&
-			    inst.GetOpcode() == ValueOpcode::BitFieldUExtract && !IsImmediate(value, Type::U32) &&
-			    IsImmediate(offset, Type::U32) && offset.U32() == 0u && IsImmediate(count, Type::U32) &&
-			    count.U32() >= 1u && count.U32() < 32u &&
-			    (~sets->KnownZeros(value) >> count.U32()) == 0u) {
+			    inst.GetOpcode() == ValueOpcode::BitFieldUExtract &&
+			    !IsImmediate(value, Type::U32) && IsImmediate(offset, Type::U32) &&
+			    offset.U32() == 0u && IsImmediate(count, Type::U32) && count.U32() >= 1u &&
+			    count.U32() < 32u && (~sets->KnownZeros(value) >> count.U32()) == 0u) {
 				Replace(inst, value);
 				return;
 			}
@@ -1001,7 +1001,8 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			    ReplaceBinaryIdentity(inst, Type::U32, 0xffffffffu)) {
 				return;
 			}
-			// KYTY_KNOWN_BITS_MASKS: a constant mask that keeps every bit the other operand can have.
+			// KYTY_KNOWN_BITS_MASKS: a constant mask that keeps every bit the other operand can
+			// have.
 			if (sets != nullptr && GetCodegenOptions().known_bits_masks) {
 				for (size_t side = 0; side < 2u; side++) {
 					const auto mask  = Arg(inst, side);
@@ -1021,13 +1022,15 @@ void FoldInstruction(Block& block, Block::iterator instruction,
 			return;
 		case ValueOpcode::BitwiseOr32:
 		case ValueOpcode::BitwiseXor32:
-			if (!FoldU32(inst, [opcode = inst.GetOpcode()](uint32_t a, uint32_t b) {
-				    return opcode == ValueOpcode::BitwiseOr32 ? a | b : a ^ b;
-			    }) && !ReplaceBinaryIdentity(inst, Type::U32, 0u) &&
-			    GetCodegenOptions().fold_lane_masks && IsComplement(Arg(inst, 0), Arg(inst, 1),
-			                                                        ValueOpcode::BitwiseNot32)) {
-				// KYTY_FOLD_LANE_MASKS (upstream ce5e57aa3): x | ~x and x ^ ~x are every bit, as the
-				// complementary EXEC words of s_orn2_saveexec.
+			if (!FoldU32(inst,
+			             [opcode = inst.GetOpcode()](uint32_t a, uint32_t b) {
+				             return opcode == ValueOpcode::BitwiseOr32 ? a | b : a ^ b;
+			             }) &&
+			    !ReplaceBinaryIdentity(inst, Type::U32, 0u) &&
+			    GetCodegenOptions().fold_lane_masks &&
+			    IsComplement(Arg(inst, 0), Arg(inst, 1), ValueOpcode::BitwiseNot32)) {
+				// KYTY_FOLD_LANE_MASKS (upstream ce5e57aa3): x | ~x and x ^ ~x are every bit, as
+				// the complementary EXEC words of s_orn2_saveexec.
 				Replace(inst, Value(UINT32_MAX));
 			}
 			return;

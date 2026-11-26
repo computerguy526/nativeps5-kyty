@@ -25,8 +25,8 @@
 
 namespace {
 
-constexpr int MAX_LINES        = 400;  // the output box keeps the last lines only
-constexpr int SHOW_INTERVAL_MS = 150;  // a console-direction run prints thousands of lines
+constexpr int MAX_LINES        = 400;   // the output box keeps the last lines only
+constexpr int SHOW_INTERVAL_MS = 150;   // a console-direction run prints thousands of lines
 constexpr int MAX_LINE_BYTES   = 65536; // output without a newline is shown once this long
 constexpr int BAR_RANGE        = 1000;
 // The bar is full only when the emulator has saved the caches and ended.
@@ -106,8 +106,9 @@ PrecompileDialog::PrecompileDialog(const QString& game, const QString& list, boo
 	m_process->setParent(this);
 	m_process->setProcessChannelMode(QProcess::MergedChannels);
 	connect(m_process, &QProcess::readyReadStandardOutput, this, [this]() { ReadOutput(); });
-	connect(m_process, &QProcess::finished, this,
-	        [this](int exit_code, QProcess::ExitStatus status) { ProcessFinished(exit_code, status); });
+	connect(
+	    m_process, &QProcess::finished, this,
+	    [this](int exit_code, QProcess::ExitStatus status) { ProcessFinished(exit_code, status); });
 	connect(m_process, &QProcess::errorOccurred, this,
 	        [this](QProcess::ProcessError error) { ProcessFailed(error); });
 	m_running = true;
@@ -152,17 +153,19 @@ QString PrecompileDialog::ChooseList(QWidget* parent, const QString& emulator_di
 		return {};
 	}
 	const auto native_target = QDir::toNativeSeparators(target);
-	const auto game_text     = game.gameVersion.isEmpty()
-	                               ? QStringLiteral("%1, %2").arg(game.name, game.title_id)
-	                               : tr("%1, %2 version %3")
-	                                     .arg(game.name, game.title_id, game.gameVersion);
+	const auto game_text =
+	    game.gameVersion.isEmpty()
+	        ? QStringLiteral("%1, %2").arg(game.name, game.title_id)
+	        : tr("%1, %2 version %3").arg(game.name, game.title_id, game.gameVersion);
 	QString source = s_test_list;
 	if (source.isEmpty()) {
 		const auto text =
-		    (explain_missing ? tr("No shader list is installed for %1.") : tr("Shader list for %1."))
+		    (explain_missing ? tr("No shader list is installed for %1.")
+		                     : tr("Shader list for %1."))
 		        .arg(game_text) +
 		    QStringLiteral("\n\n") +
-		    tr("A shader list (.kyplst) names the shaders and pipelines a game uses, so the emulator "
+		    tr("A shader list (.kyplst) names the shaders and pipelines a game uses, so the "
+		       "emulator "
 		       "can build them all before you play instead of one by one while you play.") +
 		    QStringLiteral("\n\n") + tr("The file you choose is copied to %1.").arg(native_target);
 		QMessageBox question(QMessageBox::Information, title, text, QMessageBox::Cancel, parent);
@@ -189,10 +192,9 @@ QString PrecompileDialog::ChooseList(QWidget* parent, const QString& emulator_di
 	bool replace = false;
 	if (QFileInfo::exists(target) &&
 	    QFileInfo(target).canonicalFilePath() != QFileInfo(source).canonicalFilePath()) {
-		if (QMessageBox::question(parent, title,
-		                          tr("%1 already exists.\n\nReplace it?").arg(native_target),
-		                          QMessageBox::Yes | QMessageBox::No,
-		                          QMessageBox::No) != QMessageBox::Yes) {
+		if (QMessageBox::question(
+		        parent, title, tr("%1 already exists.\n\nReplace it?").arg(native_target),
+		        QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
 			return {};
 		}
 		replace = true;

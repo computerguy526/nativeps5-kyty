@@ -388,7 +388,8 @@ vk::ImageView Image::FindView(const ImageViewInfo& view_info) {
 	    !IsValidViewType(image, normalized) || !IsValidAspect(image, normalized.aspect)) {
 		EXIT("invalid image view: image_format=%d view_format=%d type=%d aspect=0x%x "
 		     "mip=%u+%u layer=%u+%u usage=0x%x image_levels=%u image_layers=%u "
-		     "detail: image=%d image_type=%d fmt_ok=%d ranges_ok=%d map_ok=%d type_ok=%d aspect_ok=%d "
+		     "detail: image=%d image_type=%d fmt_ok=%d ranges_ok=%d map_ok=%d type_ok=%d "
+		     "aspect_ok=%d "
 		     "extent=%ux%ux%u flags=0x%x\n",
 		     static_cast<int>(image.format), static_cast<int>(normalized.format),
 		     static_cast<int>(normalized.type),

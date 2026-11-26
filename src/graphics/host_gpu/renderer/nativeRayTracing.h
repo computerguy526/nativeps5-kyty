@@ -9,9 +9,9 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
-#include <functional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -58,7 +58,8 @@ struct GraphicContext;
 // pointer + vsharp_offset (its base) + header_offset.
 class NativeRayTracing {
 public:
-	NativeRayTracing(GraphicContext& graphics, CommandScheduler& scheduler, BufferCache& buffer_cache);
+	NativeRayTracing(GraphicContext& graphics, CommandScheduler& scheduler,
+	                 BufferCache& buffer_cache);
 	~NativeRayTracing();
 	KYTY_CLASS_NO_COPY(NativeRayTracing);
 
@@ -72,21 +73,23 @@ public:
 		uint32_t root          = 0;
 	};
 	// The source of a program that traces through a guest TLAS (its info), or false.
-	[[nodiscard]] static bool FindTlasSource(const ShaderRecompiler::IR::ShaderInfo& info, TlasSource& source) noexcept;
+	[[nodiscard]] static bool FindTlasSource(const ShaderRecompiler::IR::ShaderInfo& info,
+	                                         TlasSource& source) noexcept;
 
 	// Records, before the dispatch, the builds of pending BLASes, the walk of the guest TLAS of
 	// `source` from the user data pointer `user_pointer`, and the TLAS build. Outside a render
 	// pass, into the native command buffer `command`. KYTY_RT_HW_NATIVE=0 (live) invalidates the
 	// context instead: the patched shaders run their guest loops.
 	// header_hint: the TLAS header address the host read from guest memory (0: the walk reads it).
-	void Prepare(vk::CommandBuffer command, uint64_t user_pointer, const TlasSource& source, uint64_t frame,
-	             uint64_t header_hint = 0);
+	void Prepare(vk::CommandBuffer command, uint64_t user_pointer, const TlasSource& source,
+	             uint64_t frame, uint64_t header_hint = 0);
 
 	// The device address of the context the shaders look their TLAS up in (ContextEntry in
 	// rt_tlas_walk.comp), 0 when disabled.
 	[[nodiscard]] uint64_t ContextAddress() const noexcept { return m_context_address; }
 
-	// Verify counters (KYTY_RT_HW_VERIFY, IR::RayQueryCounter) at this offset of the context buffer.
+	// Verify counters (KYTY_RT_HW_VERIFY, IR::RayQueryCounter) at this offset of the context
+	// buffer.
 	static constexpr uint32_t CountersOffset = 1024;
 	static constexpr uint32_t CounterCount   = 10;
 
@@ -102,9 +105,10 @@ private:
 	// fullest chunk; empty chunks are released; a large allocation gets a chunk of its own).
 	class Arena {
 	public:
-		Arena(GraphicContext& graphics, CommandScheduler& scheduler): m_graphics(graphics), m_scheduler(scheduler) {}
-		Allocation Allocate(uint64_t size, uint64_t alignment);
-		void       Free(const Allocation& allocation);
+		Arena(GraphicContext& graphics, CommandScheduler& scheduler)
+		    : m_graphics(graphics), m_scheduler(scheduler) {}
+		Allocation             Allocate(uint64_t size, uint64_t alignment);
+		void                   Free(const Allocation& allocation);
 		[[nodiscard]] uint64_t Used() const noexcept { return m_used; }
 		[[nodiscard]] uint64_t Reserved() const noexcept { return m_reserved; }
 
@@ -124,23 +128,25 @@ private:
 	};
 
 	struct SlotSizes {
-		uint32_t capacity0 = 0;
-		uint32_t capacity1 = 0;
-		uint64_t storage   = 0;
-		uint64_t vertices0 = 0;
-		uint64_t vertices1 = 0;
-		uint64_t entries   = 0;
-		uint64_t scratch   = 0;
-		[[nodiscard]] uint64_t Total() const noexcept { return storage + vertices0 + vertices1 + entries; }
+		uint32_t               capacity0 = 0;
+		uint32_t               capacity1 = 0;
+		uint64_t               storage   = 0;
+		uint64_t               vertices0 = 0;
+		uint64_t               vertices1 = 0;
+		uint64_t               entries   = 0;
+		uint64_t               scratch   = 0;
+		[[nodiscard]] uint64_t Total() const noexcept {
+			return storage + vertices0 + vertices1 + entries;
+		}
 	};
 
 	struct Slot {
-		uint64_t                     blas_va       = 0;
-		uint32_t                     root          = 0;
-		uint32_t                     table_index   = 0;
-		uint32_t                     capacity0     = 0;
-		uint32_t                     capacity1     = 0;
-		uint32_t                     leaf_count    = 0;
+		uint64_t                     blas_va     = 0;
+		uint32_t                     root        = 0;
+		uint32_t                     table_index = 0;
+		uint32_t                     capacity0   = 0;
+		uint32_t                     capacity1   = 0;
+		uint32_t                     leaf_count  = 0;
 		Allocation                   vertices0;
 		Allocation                   vertices1;
 		Allocation                   entries;
@@ -151,17 +157,17 @@ private:
 		bool                         built         = false;
 		bool                         needs_build   = false;
 		// Until this preparation the slot is rebuilt every time (the guest changed it lately).
-		uint32_t                     dynamic_until = 0;
-		uint64_t                     built_frame   = UINT64_MAX;
+		uint32_t dynamic_until = 0;
+		uint64_t built_frame   = UINT64_MAX;
 		// Changed since the last build with the same leaf count (a refit): gathered, not walked.
-		bool                         refit         = false;
+		bool refit = false;
 		// The last change the verification walk reported was a refit (same leaf count): the
 		// rebuilds of a dynamic slot gather.
-		bool                         refit_change  = false;
-		bool                         fast_built    = false;
-		uint32_t                     gathers       = 0;
-		uint64_t                     last_use_frame = 0;
-		bool                         evicted        = false;
+		bool     refit_change   = false;
+		bool     fast_built     = false;
+		uint32_t gathers        = 0;
+		uint64_t last_use_frame = 0;
+		bool     evicted        = false;
 	};
 
 	struct Retired {
@@ -169,7 +175,7 @@ private:
 		uint64_t                     prepare_id = 0;
 		vk::AccelerationStructureKHR handle     = nullptr;
 		std::array<Allocation, 4>    allocations {};
-		uint32_t                     slot       = UINT32_MAX;
+		uint32_t                     slot = UINT32_MAX;
 	};
 
 	struct PendingSlot {
@@ -186,8 +192,8 @@ private:
 		uint64_t                tick        = 0;
 		uint32_t                build_count = 0;
 		std::vector<uint32_t>   build_slots;
-		uint32_t                source_key  = 0;
-		uint64_t                frame       = 0;
+		uint32_t                source_key = 0;
+		uint64_t                frame      = 0;
 	};
 
 	void CreatePipelines();
@@ -210,8 +216,8 @@ private:
 	GraphicContext&   m_graphics;
 	CommandScheduler& m_scheduler;
 	BufferCache&      m_buffer_cache;
-	bool              m_enabled = false;
-	bool              m_cleared = false;
+	bool              m_enabled       = false;
+	bool              m_cleared       = false;
 	bool              m_context_valid = false;
 
 	vk::DescriptorSetLayout m_descriptor_layout = nullptr;
@@ -220,20 +226,20 @@ private:
 	vk::Pipeline            m_tlas_pipeline     = nullptr;
 	vk::Pipeline            m_blas_pipeline     = nullptr;
 
-	std::unique_ptr<Buffer> m_state;
-	std::unique_ptr<Buffer> m_queue;
-	std::unique_ptr<Buffer> m_instance_nodes;
-	std::unique_ptr<Buffer> m_instances;
-	std::unique_ptr<Buffer> m_table;
-	std::unique_ptr<Buffer> m_slots;
-	std::unique_ptr<Buffer> m_missing;
-	std::unique_ptr<Buffer> m_context;
-	std::unique_ptr<Buffer> m_pool;
-	std::unique_ptr<Buffer> m_verify_list;
-	std::unique_ptr<Buffer> m_changed;
-	std::unique_ptr<Buffer> m_jobs;
-	std::unique_ptr<Buffer> m_build_scratch;
-	std::unique_ptr<Buffer> m_tlas_storage;
+	std::unique_ptr<Buffer>      m_state;
+	std::unique_ptr<Buffer>      m_queue;
+	std::unique_ptr<Buffer>      m_instance_nodes;
+	std::unique_ptr<Buffer>      m_instances;
+	std::unique_ptr<Buffer>      m_table;
+	std::unique_ptr<Buffer>      m_slots;
+	std::unique_ptr<Buffer>      m_missing;
+	std::unique_ptr<Buffer>      m_context;
+	std::unique_ptr<Buffer>      m_pool;
+	std::unique_ptr<Buffer>      m_verify_list;
+	std::unique_ptr<Buffer>      m_changed;
+	std::unique_ptr<Buffer>      m_jobs;
+	std::unique_ptr<Buffer>      m_build_scratch;
+	std::unique_ptr<Buffer>      m_tlas_storage;
 	vk::AccelerationStructureKHR m_tlas              = nullptr;
 	vk::DeviceAddress            m_tlas_address      = 0;
 	uint64_t                     m_tlas_scratch_size = 0;
@@ -244,14 +250,14 @@ private:
 	std::array<Readback, 32> m_readbacks;
 	uint32_t                 m_readback_index = 0;
 
-	Common::Mutex                        m_mutex;
-	std::vector<PendingSlot>             m_new_slots;
-	std::vector<std::unique_ptr<Slot>>   m_slot_list;
+	Common::Mutex                                       m_mutex;
+	std::vector<PendingSlot>                            m_new_slots;
+	std::vector<std::unique_ptr<Slot>>                  m_slot_list;
 	std::unordered_map<uint64_t, std::vector<uint32_t>> m_slots_by_blas;
-	std::vector<uint32_t>                m_build_queue;
-	std::vector<uint32_t>                m_dynamic;
-	std::vector<std::array<uint32_t, 3>> m_grow;
-	std::vector<uint32_t>                m_retry;
+	std::vector<uint32_t>                               m_build_queue;
+	std::vector<uint32_t>                               m_dynamic;
+	std::vector<std::array<uint32_t, 3>>                m_grow;
+	std::vector<uint32_t>                               m_retry;
 	struct RetryState {
 		uint32_t count       = 0;
 		uint32_t table_index = 0;
@@ -272,8 +278,8 @@ private:
 		uint64_t prepares = 0, instances = 0, inactive = 0, unknown = 0, builds = 0, gathers = 0,
 		         changed = 0, missing = 0, overflow = 0, empty = 0, hinted = 0, reused = 0;
 		std::array<uint64_t, CounterCount> counters {};
-		uint64_t last_header = 0;
-		uint32_t headers     = 0;
+		uint64_t                           last_header = 0;
+		uint32_t                           headers     = 0;
 	} m_stats;
 	uint64_t m_report_every = 600;
 	// KYTY_RT_HW_CHECK_EVERY=<n> (default 8): each built slot's guest BLAS is compared with its
@@ -284,8 +290,8 @@ private:
 	uint64_t m_prepared_frame  = UINT64_MAX;
 };
 
-// KYTY_RT_HW on Windows: creates and destroys a ray tracing device before the guest address space is
-// reserved, so the driver's runtime owns the low virtual addresses it needs (adapted from
+// KYTY_RT_HW on Windows: creates and destroys a ray tracing device before the guest address space
+// is reserved, so the driver's runtime owns the low virtual addresses it needs (adapted from
 // ace31d73d's PrepareHardwareRuntime). Returns whether a device was created.
 bool PrepareNativeRayTracingRuntime(int gpu_index);
 

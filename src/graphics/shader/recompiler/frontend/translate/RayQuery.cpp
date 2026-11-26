@@ -1,8 +1,9 @@
+#include "graphics/shader/recompiler/ir/RayQuery.h"
+
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 #include "graphics/shader/recompiler/frontend/decode/RayTracingPatch.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
-#include "graphics/shader/recompiler/ir/RayQuery.h"
 
 #include <array>
 #include <bit>
@@ -29,7 +30,7 @@ Decoder::Operand ExecOperand() {
 } // namespace
 
 void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
-	using Op       = IR::ValueOpcode;
+	using Op        = IR::ValueOpcode;
 	const auto site = inst.offset;
 	if (site >= IR::MaxRayQuerySites) {
 		EXIT("ray tracing patch site %u out of range at pc 0x%08x", site, inst.pc);
@@ -68,13 +69,14 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 			std::array<IR::U32, 8> ray;
 			for (uint32_t i = 0; i < 8; i++) {
 				// A site without a mask register traces against every instance.
-				ray[i] = i == 7 && inst.image_nsa_addr[i] == Decoder::NoRegister ? IR::U32(IR::Value(0xffu))
-				                                                                   : vreg(inst.image_nsa_addr[i]);
+				ray[i] = i == 7 && inst.image_nsa_addr[i] == Decoder::NoRegister
+				             ? IR::U32(IR::Value(0xffu))
+				             : vreg(inst.image_nsa_addr[i]);
 			}
 			const auto header = ReadU32Pair(inst.src0);
 			const auto native = IR::U1(ir.Emit(Op::RayQueryInit,
-			                                   {ray[0], ray[1], ray[2], ray[3], ray[4], ray[5], ray[6], ray[7],
-			                                    header[0], header[1], ir.GetExec()},
+			                                   {ray[0], ray[1], ray[2], ray[3], ray[4], ray[5],
+			                                    ray[6], ray[7], header[0], header[1], ir.GetExec()},
 			                                   flags(0u)));
 			// The same in every lane: the host has (or not) the TLAS of the header.
 			ir.SetScc(any_lane(native));
@@ -88,8 +90,9 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 			// The wave's smallest instance with a candidate: a uniform value.
 			const auto next     = ir.Emit(Op::RayQueryNext, {}, flags(0u));
 			const auto instance = IR::U32(ir.CompositeExtract(next, 0));
-			const auto has      = ir.INotEqual(IR::U32(ir.CompositeExtract(next, 1)), IR::U32(IR::Value(0u)));
-			const auto match    = IR::U1(ir.Emit(Op::RayQueryMatch, {}, flags(0u)));
+			const auto has =
+			    ir.INotEqual(IR::U32(ir.CompositeExtract(next, 1)), IR::U32(IR::Value(0u)));
+			const auto match = IR::U1(ir.Emit(Op::RayQueryMatch, {}, flags(0u)));
 			WriteOperand(inst.dst, instance);
 			WriteMask(ExecOperand(), match);
 			ir.SetScc(has);
@@ -98,8 +101,10 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 		case Decoder::Opcode::RT_LEAF: {
 			// The lanes of the instance (the setup kept EXEC) test their own candidates.
 			const auto lanes = IR::U1(ir.Emit(Op::RayQueryMatch, {}, flags(1u)));
-			const auto node  = IR::U32(ir.Emit(Op::RayQueryCandidate, {}, flags(IR::RayQueryCandidateKind::Node)));
-			const auto word  = IR::U32(ir.Emit(Op::RayQueryCandidate, {}, flags(IR::RayQueryCandidateKind::Word)));
+			const auto node =
+			    IR::U32(ir.Emit(Op::RayQueryCandidate, {}, flags(IR::RayQueryCandidateKind::Node)));
+			const auto word =
+			    IR::U32(ir.Emit(Op::RayQueryCandidate, {}, flags(IR::RayQueryCandidateKind::Word)));
 			set_vreg(inst.dst.reg, lanes, node);
 			set_vreg(inst.dst2.reg, lanes, word);
 			WriteMask(ExecOperand(), lanes);
@@ -136,7 +141,8 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 					set_vreg(reg, lanes, kept(i));
 				}
 			}
-			keep(IR::RayQueryKeepFlag, ir.Select(lanes, IR::U32(IR::Value(1u)), IR::U32(IR::Value(0u))));
+			keep(IR::RayQueryKeepFlag,
+			     ir.Select(lanes, IR::U32(IR::Value(1u)), IR::U32(IR::Value(0u))));
 			WriteOperand(inst.dst, IR::U32(IR::Value(inst.secondary_offset)));
 			if (inst.dst2.kind == Decoder::OperandKind::Sgpr) {
 				WriteOperand(inst.dst2, IR::U32(IR::Value(inst.data_format)));
@@ -144,8 +150,8 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 			return;
 		}
 		case Decoder::Opcode::RT_VERIFY_CHECK: {
-			const auto lanes = ir.LogicalAnd(ir.INotEqual(kept(IR::RayQueryKeepFlag), IR::U32(IR::Value(0u))),
-			                                 ir.GetExec());
+			const auto lanes = ir.LogicalAnd(
+			    ir.INotEqual(kept(IR::RayQueryKeepFlag), IR::U32(IR::Value(0u))), ir.GetExec());
 			// 0 t, 1 u, 2 v, 3 word, 4 node, 5 instance low, 6 high, 7 alpha counter.
 			std::array<IR::U32, 7> guest, native, entry;
 			for (uint32_t i = 0; i < 7; i++) {
@@ -154,7 +160,8 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 				native[i]      = has ? kept(8 + i) : IR::U32(IR::Value(0u));
 				entry[i]       = has ? kept(i) : IR::U32(IR::Value(0u));
 			}
-			const auto differs = [&](const std::array<IR::U32, 7>& a, const std::array<IR::U32, 7>& b,
+			const auto differs = [&](const std::array<IR::U32, 7>&   a,
+			                         const std::array<IR::U32, 7>&   b,
 			                         std::initializer_list<uint32_t> fields) {
 				IR::U1 any = IR::U1(IR::Value(false));
 				for (const auto f: fields) {
@@ -166,16 +173,21 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 			const auto native_hit = differs(native, entry, {0, 4, 5, 6});
 			const auto both       = ir.LogicalAnd(guest_hit, native_hit);
 			const auto same_inst  = ir.LogicalNot(differs(guest, native, {5, 6}));
-			const auto same_prim  = ir.LogicalAnd(same_inst, ir.LogicalNot(differs(guest, native, {3, 4})));
-			const auto f32        = [&](IR::U32 value) { return IR::F32(ir.Emit(Op::BitCastF32U32, {value})); };
-			const auto far_apart  = [&](uint32_t field, float scale_relative, float absolute) {
-				const auto a     = f32(guest[field]);
-				const auto b     = f32(native[field]);
-				const auto delta = IR::F32(ir.Emit(Op::FPAbs32, {IR::F32(ir.Emit(Op::FPSub32, {a, b}))}));
-				const auto limit = scale_relative != 0.0f
-				                       ? IR::F32(ir.Emit(Op::FPMul32, {IR::F32(ir.Emit(Op::FPAbs32, {a})),
-				                                                       IR::F32(IR::Value::F32(scale_relative))}))
-				                       : IR::F32(IR::Value::F32(absolute));
+			const auto same_prim =
+			    ir.LogicalAnd(same_inst, ir.LogicalNot(differs(guest, native, {3, 4})));
+			const auto f32 = [&](IR::U32 value) {
+				return IR::F32(ir.Emit(Op::BitCastF32U32, {value}));
+			};
+			const auto far_apart = [&](uint32_t field, float scale_relative, float absolute) {
+				const auto a = f32(guest[field]);
+				const auto b = f32(native[field]);
+				const auto delta =
+				    IR::F32(ir.Emit(Op::FPAbs32, {IR::F32(ir.Emit(Op::FPSub32, {a, b}))}));
+				const auto limit =
+				    scale_relative != 0.0f
+				        ? IR::F32(ir.Emit(Op::FPMul32, {IR::F32(ir.Emit(Op::FPAbs32, {a})),
+				                                        IR::F32(IR::Value::F32(scale_relative))}))
+				        : IR::F32(IR::Value::F32(absolute));
 				return IR::U1(ir.Emit(Op::FPOrdGreaterThan32, {delta, limit}));
 			};
 			const auto count = [&](IR::RayQueryCounter counter, IR::U1 value) {
@@ -185,14 +197,19 @@ void Translator::EmitRayTracing(const Decoder::Instruction& inst) {
 			count(IR::RayQueryCounter::Rays, IR::U1(IR::Value(true)));
 			count(IR::RayQueryCounter::NativeHits, native_hit);
 			count(IR::RayQueryCounter::GuestHits, guest_hit);
-			count(IR::RayQueryCounter::HitMismatch, ir.LogicalOr(ir.LogicalAnd(guest_hit, ir.LogicalNot(native_hit)),
-			                                                     ir.LogicalAnd(native_hit, ir.LogicalNot(guest_hit))));
+			count(IR::RayQueryCounter::HitMismatch,
+			      ir.LogicalOr(ir.LogicalAnd(guest_hit, ir.LogicalNot(native_hit)),
+			                   ir.LogicalAnd(native_hit, ir.LogicalNot(guest_hit))));
 			count(IR::RayQueryCounter::InstanceDiff, ir.LogicalAnd(both, ir.LogicalNot(same_inst)));
-			count(IR::RayQueryCounter::PrimitiveDiff, ir.LogicalAnd(ir.LogicalAnd(both, same_inst), ir.LogicalNot(same_prim)));
-			count(IR::RayQueryCounter::DistanceDiff, ir.LogicalAnd(both_prim, far_apart(0, 1e-4f, 0.0f)));
-			if (inst.image_nsa_addr[1] != Decoder::NoRegister && inst.image_nsa_addr[2] != Decoder::NoRegister) {
+			count(IR::RayQueryCounter::PrimitiveDiff,
+			      ir.LogicalAnd(ir.LogicalAnd(both, same_inst), ir.LogicalNot(same_prim)));
+			count(IR::RayQueryCounter::DistanceDiff,
+			      ir.LogicalAnd(both_prim, far_apart(0, 1e-4f, 0.0f)));
+			if (inst.image_nsa_addr[1] != Decoder::NoRegister &&
+			    inst.image_nsa_addr[2] != Decoder::NoRegister) {
 				count(IR::RayQueryCounter::BaryDiff,
-				      ir.LogicalAnd(both_prim, ir.LogicalOr(far_apart(1, 0.0f, 1e-3f), far_apart(2, 0.0f, 1e-3f))));
+				      ir.LogicalAnd(both_prim, ir.LogicalOr(far_apart(1, 0.0f, 1e-3f),
+				                                            far_apart(2, 0.0f, 1e-3f))));
 			}
 			keep(IR::RayQueryKeepFlag, IR::U32(IR::Value(0u)));
 			return;

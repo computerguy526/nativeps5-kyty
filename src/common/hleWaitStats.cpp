@@ -21,10 +21,11 @@ const bool g_on = [] {
 	return value != nullptr && value[0] == '1';
 }();
 
-constexpr const char* kNames[Count] = {"yield",    "usleep",   "nanosleep", "sema",      "eventflag", "eq_flip",
-                                       "eq_vblank", "eq_vo_other", "eq_graphics", "eq_user", "eq_other", "eq_none",
-                                       "cond",     "cond_timed", "mutex",   "rw_read",   "rw_write",  "agc_suspend",
-                                       "agc_submit", "flip_submit"};
+constexpr const char* kNames[Count] = {"yield",       "usleep",      "nanosleep",  "sema",
+                                       "eventflag",   "eq_flip",     "eq_vblank",  "eq_vo_other",
+                                       "eq_graphics", "eq_user",     "eq_other",   "eq_none",
+                                       "cond",        "cond_timed",  "mutex",      "rw_read",
+                                       "rw_write",    "agc_suspend", "agc_submit", "flip_submit"};
 
 struct PerThread {
 	uint32_t              tid = 0;
@@ -42,15 +43,16 @@ std::vector<PerThread*>& Threads() {
 }
 
 std::string Lines(uint64_t seq) {
-	std::string out;
-	const auto  tsc = Tsc();
+	std::string     out;
+	const auto      tsc = Tsc();
 	std::lock_guard lock(Mutex());
 	for (const auto* t: Threads()) {
 		std::string row;
 		for (uint32_t i = 0; i < Count; i++) {
 			const auto c = t->calls[i].load(std::memory_order_relaxed);
 			if (c != 0) {
-				row += fmt::format(" {} {}/{}", kNames[i], t->ticks[i].load(std::memory_order_relaxed), c);
+				row += fmt::format(" {} {}/{}", kNames[i],
+				                   t->ticks[i].load(std::memory_order_relaxed), c);
 			}
 		}
 		if (!row.empty()) {
@@ -88,7 +90,8 @@ bool Enabled() noexcept {
 
 void Add(Id id, uint64_t ticks) noexcept {
 	auto* t = Local();
-	t->ticks[id].store(t->ticks[id].load(std::memory_order_relaxed) + ticks, std::memory_order_relaxed);
+	t->ticks[id].store(t->ticks[id].load(std::memory_order_relaxed) + ticks,
+	                   std::memory_order_relaxed);
 	t->calls[id].store(t->calls[id].load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 }
 

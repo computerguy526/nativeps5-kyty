@@ -33,11 +33,11 @@ namespace PixelRate {
 // were made for. Registered when the program is finished on a device with NV mixed samples,
 // forgotten (and the copy's module destroyed) with the program.
 struct Lookup {
-	bool             shades_per_sample = false; // the program reads SampleId (or another per-sample input)
-	vk::ShaderModule module            = nullptr; // its per-pixel copy, null if none
+	bool shades_per_sample  = false;   // the program reads SampleId (or another per-sample input)
+	vk::ShaderModule module = nullptr; // its per-pixel copy, null if none
 };
-void   Register(uint64_t program_id, bool shades_per_sample, vk::ShaderModule module);
-void   Forget(vk::Device device, uint64_t program_id);
+void                 Register(uint64_t program_id, bool shades_per_sample, vk::ShaderModule module);
+void                 Forget(vk::Device device, uint64_t program_id);
 [[nodiscard]] Lookup Find(uint64_t program_id);
 
 } // namespace PixelRate
@@ -63,8 +63,8 @@ struct Lookup {
 	vk::ShaderModule module     = nullptr; // the SpirvNormalizedExplicitLod copy, null if none
 	uint64_t         variant_id = 0;       // its program id (its pipelines differ)
 };
-void   Register(uint64_t program_id, vk::ShaderModule module, uint64_t variant_id);
-void   Forget(vk::Device device, uint64_t program_id);
+void                 Register(uint64_t program_id, vk::ShaderModule module, uint64_t variant_id);
+void                 Forget(vk::Device device, uint64_t program_id);
 [[nodiscard]] Lookup Find(uint64_t program_id);
 
 } // namespace NormalizedLod

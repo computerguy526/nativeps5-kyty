@@ -320,8 +320,8 @@ void ConfigurationListWidget::SetPrecompileRunning(bool running) {
 }
 
 // Each button's tooltip names the game's shader list as it is on disk now. A game that runs from
-// another row (its folder and its archive are two rows) blocks the button like a running precompile:
-// both write the title's caches.
+// another row (its folder and its archive are two rows) blocks the button like a running
+// precompile: both write the title's caches.
 void ConfigurationListWidget::UpdatePrecompileButtons() {
 	QSet<QString> running_titles;
 	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); index++) {
@@ -332,13 +332,13 @@ void ConfigurationListWidget::UpdatePrecompileButtons() {
 	}
 	// The Export list buttons need kyty_pipeline_list next to the launcher (or one folder up).
 	const bool can_export =
-	    !m_runtime_directory.isEmpty() && !ShaderListExport::FindTool(QCoreApplication::applicationDirPath()).isEmpty();
+	    !m_runtime_directory.isEmpty() &&
+	    !ShaderListExport::FindTool(QCoreApplication::applicationDirPath()).isEmpty();
 	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); index++) {
 		auto* item = static_cast<ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(index));
-		item->SetPrecompileState(m_runtime_directory,
-		                         m_precompile_running ||
-		                             running_titles.contains(item->GetInfo().title_id),
-		                         can_export);
+		item->SetPrecompileState(
+		    m_runtime_directory,
+		    m_precompile_running || running_titles.contains(item->GetInfo().title_id), can_export);
 	}
 }
 
@@ -356,7 +356,8 @@ bool ConfigurationListWidget::PressPrecompile(const QString& game) {
 
 bool ConfigurationListWidget::IsTitleRunning(const QString& title_id) const {
 	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); index++) {
-		const auto* item = static_cast<const ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(index));
+		const auto* item =
+		    static_cast<const ConfigurationItem*>(m_ui->cfgs_list->topLevelItem(index));
 		if (item->IsRunning() && item->GetInfo().title_id == title_id) {
 			return true;
 		}
@@ -381,7 +382,8 @@ bool ConfigurationListWidget::OpenContextMenu(const QString& game) {
 	const auto key = PathKey(game);
 	for (int index = 0; index < m_ui->cfgs_list->topLevelItemCount(); index++) {
 		auto* item = m_ui->cfgs_list->topLevelItem(index);
-		if (!key.isEmpty() && PathKey(static_cast<ConfigurationItem*>(item)->GetInfo().game_path) == key) {
+		if (!key.isEmpty() &&
+		    PathKey(static_cast<ConfigurationItem*>(item)->GetInfo().game_path) == key) {
 			m_ui->cfgs_list->setCurrentItem(item);
 			ShowContextMenu(item); // returns when the menu closes
 			return true;

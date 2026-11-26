@@ -76,11 +76,13 @@ void Translator::EmitFloatOrderedCompare(const Decoder::Instruction& inst, bool 
 	// V_CMP_U_F16 (b1f154a21): F16 operands are widened to F32 for the NaN test.
 	const auto is_nan_op =
 	    type == IR::Type::F64 ? IR::ValueOpcode::FPIsNan64 : IR::ValueOpcode::FPIsNan32;
-	// reprofix: BOTH operands are read before either NaN test, the emission order of every earlier release. The IR value
-	// numbering (so the MSL text, so the sha256 of every verified Metal override row) depends on it: reading src1 after
-	// isnan(src0) moved a BitCast past an IsNan and broke reproduction of 263 of 553 verified rows.
+	// reprofix: BOTH operands are read before either NaN test, the emission order of every earlier
+	// release. The IR value numbering (so the MSL text, so the sha256 of every verified Metal
+	// override row) depends on it: reading src1 after isnan(src0) moved a BitCast past an IsNan and
+	// broke reproduction of 263 of 553 verified rows.
 	const auto read = [&](const Decoder::Operand& operand) {
-		return type == IR::Type::F16 ? IR::Value(ReadF16AsF32(operand)) : ReadOperand(operand, type);
+		return type == IR::Type::F16 ? IR::Value(ReadF16AsF32(operand))
+		                             : ReadOperand(operand, type);
 	};
 	const auto lhs       = read(inst.src0);
 	const auto rhs       = read(inst.src1);

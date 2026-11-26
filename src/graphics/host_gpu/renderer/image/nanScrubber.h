@@ -25,7 +25,9 @@ public:
 	KYTY_CLASS_NO_COPY(NanScrubber);
 
 	// False when a pipeline could not be created (logged); Scrub then records nothing.
-	[[nodiscard]] bool Valid() const { return m_pipelines[0] != nullptr && m_pipelines[1] != nullptr; }
+	[[nodiscard]] bool Valid() const {
+		return m_pipelines[0] != nullptr && m_pipelines[1] != nullptr;
+	}
 
 	// Records the scrub of the words of [offset, offset + size) of `buffer` (storage usage), with
 	// barriers from and to transfers on either side. Binds a compute pipeline and push descriptors.

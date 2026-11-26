@@ -9,7 +9,8 @@
 // into the stream ring by a small read binding. From that it classifies
 //   - each write fault: consecutive-frame streak (1, 2, 3+) and whether the page was uploaded or
 //     streamed in this or the previous frame;
-//   - each command-processor write of guest memory (WRITE_DATA, DMA_DATA fill / copy, DUMP_CONST_RAM,
+//   - each command-processor write of guest memory (WRITE_DATA, DMA_DATA fill / copy,
+//   DUMP_CONST_RAM,
 //     labels and other CP writes): whether it lands on a page that faulted, was uploaded or was
 //     streamed in this or the previous frame (the in-place candidate ranges).
 // One console line every 10 s at a guest flip, "InplaceStats 10s: ...", per-frame averages.

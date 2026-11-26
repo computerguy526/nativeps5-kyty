@@ -23,8 +23,8 @@ constexpr size_t kMaxRanges = 64;
 // Records a buffer write of [address, address + size) clipped to the image's bytes
 // [image_begin, image_end). False when the ranges overflow kMaxRanges (the caller then refreshes
 // the image whole); a write that misses the image changes nothing.
-[[nodiscard]] inline bool Record(List& ranges, uint64_t address, uint64_t size, uint64_t image_begin,
-                                 uint64_t image_end) {
+[[nodiscard]] inline bool Record(List& ranges, uint64_t address, uint64_t size,
+                                 uint64_t image_begin, uint64_t image_end) {
 	if (size == 0 || address >= image_end || image_begin >= image_end) {
 		return true;
 	}

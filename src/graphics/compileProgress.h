@@ -191,9 +191,11 @@ inline std::string ComposeTitle(const std::string& base, const Snapshot& s, bool
 	return base + " \xE2\x80\x94 " + status;
 }
 
-// A window title must be valid UTF-8: SDL's Cocoa backend builds an NSString from it, which is nil for invalid bytes, and
-// -[NSWindow setTitle:] then throws NSInternalInconsistencyException ('aString != nil') on the main thread (a v1.4 laptop crash:
-// the title was set while the process was already tearing down). Invalid bytes become U+FFFD; embedded NULs end the title.
+// A window title must be valid UTF-8: SDL's Cocoa backend builds an NSString from it, which is nil
+// for invalid bytes, and
+// -[NSWindow setTitle:] then throws NSInternalInconsistencyException ('aString != nil') on the main
+// thread (a v1.4 laptop crash: the title was set while the process was already tearing down).
+// Invalid bytes become U+FFFD; embedded NULs end the title.
 inline std::string ValidUtf8Title(const std::string& in) {
 	std::string out;
 	out.reserve(in.size());
@@ -202,15 +204,21 @@ inline std::string ValidUtf8Title(const std::string& in) {
 		const auto c = static_cast<unsigned char>(in[i]);
 		if (c == 0) break;
 		size_t len = 0;
-		if (c < 0x80) len = 1;
-		else if (c >= 0xC2 && c <= 0xDF) len = 2;
-		else if (c >= 0xE0 && c <= 0xEF) len = 3;
-		else if (c >= 0xF0 && c <= 0xF4) len = 4;
+		if (c < 0x80)
+			len = 1;
+		else if (c >= 0xC2 && c <= 0xDF)
+			len = 2;
+		else if (c >= 0xE0 && c <= 0xEF)
+			len = 3;
+		else if (c >= 0xF0 && c <= 0xF4)
+			len = 4;
 		bool ok = len != 0 && i + len <= n;
-		for (size_t k = 1; ok && k < len; k++) ok = (static_cast<unsigned char>(in[i + k]) & 0xC0) == 0x80;
+		for (size_t k = 1; ok && k < len; k++)
+			ok = (static_cast<unsigned char>(in[i + k]) & 0xC0) == 0x80;
 		if (ok && len == 3) {
 			const auto c1 = static_cast<unsigned char>(in[i + 1]);
-			if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 >= 0xA0)) ok = false; // overlong, surrogate
+			if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 >= 0xA0))
+				ok = false; // overlong, surrogate
 		}
 		if (ok && len == 4) {
 			const auto c1 = static_cast<unsigned char>(in[i + 1]);

@@ -1,12 +1,11 @@
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
-#include "common/staticOnce.h"
-
-#include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
-#include "graphics/host_gpu/renderer/drawPrep/texDelta.h"
 
 #include "common/assert.h"
+#include "common/staticOnce.h"
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawPrep.h"
+#include "graphics/host_gpu/renderer/drawPrep/ownedCounters.h"
+#include "graphics/host_gpu/renderer/drawPrep/texDelta.h"
 
 #include <algorithm>
 #include <array>
@@ -16,7 +15,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
-
 #include <xxhash.h>
 
 namespace Libs::Graphics::DrawRun {
@@ -194,7 +192,8 @@ uint64_t StructureKey(const HW::Context& context, const HW::UserConfig& user_con
 	// The user-config registers but the per-draw index offset and object id.
 	auto config = user_config;
 	config.SetIndexOffset(0);
-	// KYTY_OBJPRIM_ID: a draw writing VGT_OBJECT_ID to a colour slot needs its own (pushed per draw).
+	// KYTY_OBJPRIM_ID: a draw writing VGT_OBJECT_ID to a colour slot needs its own (pushed per
+	// draw).
 	if (!ShaderObjprimIdEnabled() || (context.GetDrawPayloadControl() & 0x1u) == 0) {
 		config.SetObjectId(0);
 	}
@@ -285,7 +284,8 @@ void StructureKeyParts(const HW::Context& context, const HW::UserConfig& user_co
 	});
 	auto config = user_config;
 	config.SetIndexOffset(0);
-	// KYTY_OBJPRIM_ID: a draw writing VGT_OBJECT_ID to a colour slot needs its own (pushed per draw).
+	// KYTY_OBJPRIM_ID: a draw writing VGT_OBJECT_ID to a colour slot needs its own (pushed per
+	// draw).
 	if (!ShaderObjprimIdEnabled() || (context.GetDrawPayloadControl() & 0x1u) == 0) {
 		config.SetObjectId(0);
 	}

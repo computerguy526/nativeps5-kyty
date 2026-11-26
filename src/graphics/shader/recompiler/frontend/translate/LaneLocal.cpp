@@ -268,8 +268,9 @@ const char* RefusedOpcode(const Instruction& inst) {
 		case Opcode::S_SETREG_B32:
 		case Opcode::S_TRAP:
 		case Opcode::S_TTRACEDATA:
-			// In a compute program these translate to IR Sendmsg, TtraceData or a control no-op, and
-			// none of them emits anything (KYTY_LANE_LOCAL_NOPS=1; off by default, see NopMessagesLaneLocal).
+			// In a compute program these translate to IR Sendmsg, TtraceData or a control no-op,
+			// and none of them emits anything (KYTY_LANE_LOCAL_NOPS=1; off by default, see
+			// NopMessagesLaneLocal).
 			if (NopMessagesLaneLocal()) return nullptr;
 			return "wave message";
 		case Opcode::IMAGE_GET_LOD: return "compute derivatives"; // (their quads: the two-lane layout's)

@@ -340,10 +340,12 @@ bool SaveUnlockData(const std::filesystem::path& path, const UnlockData& unlocks
 	for (const auto& [id, value]: unlocks.progress) {
 		progress[std::to_string(id)] = value;
 	}
-	const auto text = Json {{"unlockedTrophies", unlocks.unlocked},
-	                        {"unlockedAt", timestamps},
-	                        {"maxStats", stats},
-	                        {"progressValues", progress}}.dump();
+	const auto text = Json {
+	    {"unlockedTrophies", unlocks.unlocked},
+	    {"unlockedAt", timestamps},
+	    {"maxStats", stats},
+	    {"progressValues",
+	     progress}}.dump();
 	auto temporary = path;
 	temporary += ".tmp";
 	File file;

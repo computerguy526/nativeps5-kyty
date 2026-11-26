@@ -122,8 +122,8 @@ struct GpuTotals {
 };
 void SetGpuTotalsProvider(GpuTotals (*provider)()) noexcept;
 
-// wholecp measurement: cumulative CP idle buckets in TSC ticks (PrepStats::CpIdle) plus the TSC at the
-// line, so a reader converts with the TSC rate between two lines:
+// wholecp measurement: cumulative CP idle buckets in TSC ticks (PrepStats::CpIdle) plus the TSC at
+// the line, so a reader converts with the TSC rate between two lines:
 //   ... cpidle [tsc T, nowork N, empty E, blocked B, fence F, starved S]: ...
 struct CpIdleTotals {
 	uint64_t tsc     = 0;

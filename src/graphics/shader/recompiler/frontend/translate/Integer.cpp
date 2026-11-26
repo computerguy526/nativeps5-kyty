@@ -291,8 +291,8 @@ void Translator::Integer24(const Decoder::Instruction& inst, bool sign, bool add
 	};
 	const auto lhs    = extract24(ReadU32(inst.src0));
 	const auto rhs    = extract24(ReadU32(inst.src1));
-	const auto multiply = high ? (sign ? IR::ValueOpcode::SMulHi : IR::ValueOpcode::UMulHi)
-	                           : IR::ValueOpcode::IMul32;
+	const auto multiply =
+	    high ? (sign ? IR::ValueOpcode::SMulHi : IR::ValueOpcode::UMulHi) : IR::ValueOpcode::IMul32;
 	auto result = IR::U32(ir.Emit(multiply, {lhs, rhs}));
 	if (addend) {
 		result = ir.IAdd(result, ReadU32(inst.src2));
@@ -370,8 +370,9 @@ void Translator::V_MBCNT_U32_B32(const Decoder::Instruction& inst, bool low) {
 	// (d7873b2a4, an AMD tester's RX 9070 XT patch). Our KYTY_WAVE32_CLUSTERS (default auto)
 	// already makes the lane id the low 5 bits there, so the wrap is emitted only with clusters
 	// off (CodegenOptions::vs_lane_wrap32, KYTY_VS_LANE_WRAP32=0 turns it off; in the fingerprint).
-	const auto& codegen      = GetCodegenOptions();
-	const bool  wrap_lane32  = codegen.vs_lane_wrap32 && codegen.wave32_clusters == Wave32Clusters::Off;
+	const auto& codegen = GetCodegenOptions();
+	const bool  wrap_lane32 =
+	    codegen.vs_lane_wrap32 && codegen.wave32_clusters == Wave32Clusters::Off;
 	auto lane = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
 	if (wrap_lane32 && program.stage == ShaderType::Vertex && program.wave_size == 32u) {
 		lane = ir.BitwiseAnd(lane, IR::U32(IR::Value(31u)));
@@ -422,8 +423,8 @@ void Translator::S_QUADMASK(const Decoder::Instruction& inst, bool is64) {
 	IR::U32 quads;
 	if (is64) {
 		const auto source = ReadU32Pair(inst.src0);
-		quads = ir.BitwiseOr(
-		    compact(source[0]), ir.ShiftLeftLogical(compact(source[1]), IR::U32(IR::Value(8u))));
+		quads = ir.BitwiseOr(compact(source[0]),
+		                     ir.ShiftLeftLogical(compact(source[1]), IR::U32(IR::Value(8u))));
 		WriteOperand(DestinationOperand(inst), ir.ConstructU64(quads, IR::U32(IR::Value(0u))));
 	} else {
 		quads = compact(ReadU32(inst.src0));

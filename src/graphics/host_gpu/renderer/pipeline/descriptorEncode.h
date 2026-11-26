@@ -1,10 +1,10 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_DESCRIPTORENCODE_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_DESCRIPTORENCODE_H_
 
-// The descriptor part of a commit's encode (drawEncode.h): the descriptor writes and push data built
-// from the stages' prepared bindings, then the push constants, push descriptors and bindless set
-// they record through the command buffer's shadow. The build reads the bindings and a few handles
-// captured by the commit thread (DescriptorEnv); it touches no cache, tracker or device.
+// The descriptor part of a commit's encode (drawEncode.h): the descriptor writes and push data
+// built from the stages' prepared bindings, then the push constants, push descriptors and bindless
+// set they record through the command buffer's shadow. The build reads the bindings and a few
+// handles captured by the commit thread (DescriptorEnv); it touches no cache, tracker or device.
 
 #include "graphics/host_gpu/renderer/drawEncode.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
@@ -51,8 +51,8 @@ void               CountPushMiss(int32_t result, std::span<const vk::WriteDescri
 // The push constants of the build (a mesh stage then records its draw dwords over them, so the
 // shadow is forgotten).
 template <typename Sink>
-void EmitPushConstants(Sink& sink, Shadow& shadow, const ShadowFlags& flags, vk::PipelineLayout layout,
-                       const BuiltDescriptors& built) {
+void EmitPushConstants(Sink& sink, Shadow& shadow, const ShadowFlags& flags,
+                       vk::PipelineLayout layout, const BuiltDescriptors& built) {
 	if (built.has_push_data) {
 		shadow.PushConstants(sink, flags, layout, built.push_stages, sizeof(built.push_data),
 		                     built.push_data.dwords.data());
@@ -66,7 +66,8 @@ template <typename Sink>
 int32_t EmitPushDescriptors(Sink& sink, Shadow& shadow, const ShadowFlags& flags,
                             vk::PipelineBindPoint point, vk::PipelineLayout layout,
                             const DescriptorScratch& scratch, bool known_miss) {
-	return shadow.PushDescriptors(sink, flags, point, layout, 0, static_cast<uint32_t>(scratch.writes.size()),
+	return shadow.PushDescriptors(sink, flags, point, layout, 0,
+	                              static_cast<uint32_t>(scratch.writes.size()),
 	                              scratch.writes.data(), known_miss);
 }
 

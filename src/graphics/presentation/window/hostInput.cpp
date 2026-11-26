@@ -1,15 +1,14 @@
 #include "graphics/presentation/window/hostInput.h"
-#include "graphics/presentation/window/hostInputPulse.h"
-
-#include <SDL3/SDL.h>
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
 #include "common/hostInputTrace.h"
 #include "common/logging/log.h"
 #include "common/skipInvalid.h"
+#include "graphics/presentation/window/hostInputPulse.h"
 #include "libs/controller.h"
 
+#include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
 #include <cmath>

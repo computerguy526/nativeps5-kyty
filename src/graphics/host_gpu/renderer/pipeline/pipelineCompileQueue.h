@@ -33,14 +33,14 @@ class PipelineCompileQueue {
 public:
 	using Ordering = PipelineCompileOrdering;
 	struct Task {
-		uint64_t              ticket   = 0;
+		uint64_t              ticket = 0;
 		std::function<void()> run;
 		uint64_t              asked_ms = 0;
 	};
 
 	// `thread_init` runs first on each worker (Common::PlaceCurrentThreadCold in the emulator).
-	explicit PipelineCompileQueue(size_t threads, size_t limit, std::function<void()> thread_init = {},
-	                              Ordering ordering = {})
+	explicit PipelineCompileQueue(size_t threads, size_t limit,
+	                              std::function<void()> thread_init = {}, Ordering ordering = {})
 	    : m_limit(limit), m_ordering(ordering) {
 		for (size_t i = 0; i < threads; ++i) {
 			m_threads.emplace_back([this, thread_init, i] {
@@ -114,8 +114,9 @@ public:
 
 	// With the ordering: the index of the task worker `worker` takes now, if any (tests pass their
 	// own clock).
-	[[nodiscard]] static std::optional<size_t> PickOrdered(const std::deque<Task>& tasks, size_t worker,
-	                                                       uint64_t now_ms, uint64_t stalled_until_ms,
+	[[nodiscard]] static std::optional<size_t> PickOrdered(const std::deque<Task>& tasks,
+	                                                       size_t worker, uint64_t now_ms,
+	                                                       uint64_t        stalled_until_ms,
 	                                                       const Ordering& ordering) {
 		if (tasks.empty()) return std::nullopt;
 		size_t pick = 0;
@@ -178,12 +179,12 @@ private:
 	}
 
 	std::mutex m_mutex;
-	std::condition_variable m_wake;
+	std::condition_variable  m_wake;
 	std::deque<Task> m_tasks;
 	size_t m_outstanding = 0;
 	size_t m_limit;
-	Ordering m_ordering;
-	uint64_t m_stalled_until = 0;
+	Ordering                 m_ordering;
+	uint64_t                 m_stalled_until = 0;
 	bool m_stopping = false;
 	std::vector<std::thread> m_threads;
 };

@@ -56,9 +56,10 @@ namespace Libs::Graphics::DrawPrep {
 
 // The active-worker cap (pure: unit tests). `busy_cores`: the workers' busy time over the last
 // interval divided by its length.
-[[nodiscard]] inline uint32_t AdaptiveCap(double busy_cores, uint32_t workers, uint32_t affinity_lps,
-                                          uint32_t min_cap, uint32_t max_override) {
-	const uint32_t bound = max_override != 0 ? max_override : AdaptiveProcessorBound(affinity_lps);
+[[nodiscard]] inline uint32_t AdaptiveCap(double busy_cores, uint32_t workers,
+                                          uint32_t affinity_lps, uint32_t min_cap,
+                                          uint32_t max_override) {
+	const uint32_t bound  = max_override != 0 ? max_override : AdaptiveProcessorBound(affinity_lps);
 	const auto     wanted = static_cast<uint32_t>(std::ceil(1.3 * std::max(busy_cores, 0.0))) + 1u;
 	auto           cap    = std::min({wanted, std::max(bound, 1u), workers});
 	cap                   = std::max({cap, std::min(min_cap, workers), 1u});
@@ -76,7 +77,7 @@ public:
 
 	[[nodiscard]] uint32_t Workers() const noexcept { return m_workers; }
 	[[nodiscard]] uint32_t Cap() const noexcept { return m_cap.load(std::memory_order_relaxed); }
-	void SetCap(uint32_t cap) noexcept {
+	void                   SetCap(uint32_t cap) noexcept {
 		m_cap.store(std::clamp(cap, 1u, m_workers), std::memory_order_seq_cst);
 	}
 
@@ -141,7 +142,9 @@ public:
 		m_parked.fetch_and(~bit, std::memory_order_seq_cst);
 	}
 
-	[[nodiscard]] uint64_t Wakes() const noexcept { return m_wakes.load(std::memory_order_relaxed); }
+	[[nodiscard]] uint64_t Wakes() const noexcept {
+		return m_wakes.load(std::memory_order_relaxed);
+	}
 	[[nodiscard]] uint32_t Spinning() const noexcept {
 		return m_spinning.load(std::memory_order_relaxed);
 	}
@@ -149,8 +152,8 @@ public:
 		return m_parked.load(std::memory_order_relaxed);
 	}
 
-	// Publisher: the cap's interval accounting (Engine::Workers::Wake). Returns true when it is time
-	// to recompute (every `interval_ns`), checking the clock only every 64th call.
+	// Publisher: the cap's interval accounting (Engine::Workers::Wake). Returns true when it is
+	// time to recompute (every `interval_ns`), checking the clock only every 64th call.
 	[[nodiscard]] bool CapDue(uint64_t interval_ns) noexcept {
 		if ((++m_cap_calls & 63u) != 0u) {
 			return false;
@@ -172,7 +175,8 @@ public:
 		const auto tsc   = PrepStats::Tsc();
 		double     cores = 0.0;
 		if (m_cap_last_tsc != 0 && tsc > m_cap_last_tsc) {
-			cores = static_cast<double>(busy - m_cap_last_busy) / static_cast<double>(tsc - m_cap_last_tsc);
+			cores = static_cast<double>(busy - m_cap_last_busy) /
+			        static_cast<double>(tsc - m_cap_last_tsc);
 		}
 		m_cap_last_busy = busy;
 		m_cap_last_tsc  = tsc;
@@ -185,12 +189,12 @@ private:
 		std::atomic<uint32_t> signal {0};
 	};
 
-	const uint32_t                        m_workers;
-	alignas(64) std::atomic<uint32_t>     m_spinning {0};
-	alignas(64) std::atomic<uint64_t>     m_parked {0};
-	alignas(64) std::atomic<uint32_t>     m_cap {1};
-	std::atomic<uint64_t>                 m_wakes {0};
-	std::array<Word, MaxWorkers>          m_words {};
+	const uint32_t m_workers;
+	alignas(64) std::atomic<uint32_t> m_spinning {0};
+	alignas(64) std::atomic<uint64_t> m_parked {0};
+	alignas(64) std::atomic<uint32_t> m_cap {1};
+	std::atomic<uint64_t>        m_wakes {0};
+	std::array<Word, MaxWorkers> m_words {};
 	// Publisher only.
 	uint32_t m_cap_calls     = 0;
 	uint64_t m_cap_last_ns   = 0;
@@ -203,20 +207,20 @@ private:
 template <typename WindowT, typename Prepare, typename MaxBatch>
 void RunAdaptiveWorker(AdaptivePool& pool, WindowT& window, uint32_t index, uint64_t spin_ns,
                        const std::atomic<bool>& stop, Prepare&& prepare, MaxBatch&& max_batch) {
-	auto& stats    = PrepStats::t_local;
-	stats.index    = index + 1u;
-	auto  idle_tsc = PrepStats::Tsc();
-	bool  spinning = false;
-	auto  idle_start = WorkerNowNs();
-	uint32_t spins   = 0;
+	auto& stats         = PrepStats::t_local;
+	stats.index         = index + 1u;
+	auto     idle_tsc   = PrepStats::Tsc();
+	bool     spinning   = false;
+	auto     idle_start = WorkerNowNs();
+	uint32_t spins      = 0;
 	while (!stop.load(std::memory_order_acquire)) {
 		const bool active = index < pool.Cap();
 		if (active) {
-			uint64_t   seq   = 0;
-			uint32_t   count = 1;
-			const auto batch = static_cast<uint32_t>(max_batch());
-			decltype(window.TryClaim(seq)) slot = nullptr;
-			bool claimed = false;
+			uint64_t                       seq     = 0;
+			uint32_t                       count   = 1;
+			const auto                     batch   = static_cast<uint32_t>(max_batch());
+			decltype(window.TryClaim(seq)) slot    = nullptr;
+			bool                           claimed = false;
 			if (batch <= 1u) {
 				slot    = window.TryClaim(seq);
 				claimed = slot != nullptr;

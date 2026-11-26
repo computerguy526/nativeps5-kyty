@@ -7,11 +7,11 @@
 #include <atomic>
 #include <bit>
 #include <chrono>
+#include <cpuid.h>
 #include <cstdlib>
 #include <cstring>
 #include <emmintrin.h>
 #include <xmmintrin.h>
-#include <cpuid.h>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <windows.h> // IWYU pragma: keep
@@ -544,7 +544,7 @@ static void LogFirstTrap(const Context& context, ZydisMnemonic mnemonic) {
 	    !logged.exchange(true, std::memory_order_relaxed)) {
 		Log::WriteToConsoleAndLog(
 		    fmt::format("AMD CPU compatibility: trapping {} (first at 0x{:x})\n",
-			            ZydisMnemonicGetString(mnemonic), context.Rip()));
+		                ZydisMnemonicGetString(mnemonic), context.Rip()));
 	}
 }
 
@@ -1115,10 +1115,12 @@ bool TryEmulateStore(void* native_context, uint64_t fault_vaddr, StoreWriter wri
 	if (!ZYAN_SUCCESS(
 	        ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)) ||
 	    !ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, reinterpret_cast<const void*>(context.Rip()),
-	                                         ZYDIS_MAX_INSTRUCTION_LENGTH, &instruction, operands))) {
+	                                         ZYDIS_MAX_INSTRUCTION_LENGTH, &instruction,
+	                                         operands))) {
 		return false;
 	}
-	if (instruction.operand_count_visible != 2 || (instruction.attributes & ZYDIS_ATTRIB_HAS_LOCK) != 0 ||
+	if (instruction.operand_count_visible != 2 ||
+	    (instruction.attributes & ZYDIS_ATTRIB_HAS_LOCK) != 0 ||
 	    (instruction.encoding != ZYDIS_INSTRUCTION_ENCODING_LEGACY &&
 	     instruction.encoding != ZYDIS_INSTRUCTION_ENCODING_VEX)) {
 		return false;
@@ -1156,15 +1158,18 @@ bool TryEmulateStore(void* native_context, uint64_t fault_vaddr, StoreWriter wri
 			if (source.type == ZYDIS_OPERAND_TYPE_REGISTER) {
 				const auto reg_class = ZydisRegisterGetClass(source.reg.value);
 				// The 64-bit register that holds it: ZydisRegisterGetId numbers GPR8 as AL CL DL BL
-				// AH CH DH BH SPL BPL SIL DIL R8B.., so SIL (id 10) or R8B (id 12) would have read R10
-				// or R12 and stored the wrong bytes (GT7 crashed in guest code with this switch).
+				// AH CH DH BH SPL BPL SIL DIL R8B.., so SIL (id 10) or R8B (id 12) would have read
+				// R10 or R12 and stored the wrong bytes (GT7 crashed in guest code with this
+				// switch).
 				const auto enclosing =
 				    ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LONG_64, source.reg.value);
-				const auto index = static_cast<int>(enclosing) - static_cast<int>(ZYDIS_REGISTER_RAX);
+				const auto index =
+				    static_cast<int>(enclosing) - static_cast<int>(ZYDIS_REGISTER_RAX);
 				if ((reg_class != ZYDIS_REGCLASS_GPR8 && reg_class != ZYDIS_REGCLASS_GPR16 &&
 				     reg_class != ZYDIS_REGCLASS_GPR32 && reg_class != ZYDIS_REGCLASS_GPR64) ||
 				    index < 0 || index >= 16 || source.reg.value == ZYDIS_REGISTER_AH ||
-				    source.reg.value == ZYDIS_REGISTER_CH || source.reg.value == ZYDIS_REGISTER_DH ||
+				    source.reg.value == ZYDIS_REGISTER_CH ||
+				    source.reg.value == ZYDIS_REGISTER_DH ||
 				    source.reg.value == ZYDIS_REGISTER_BH) {
 					return false; // segment registers, high-byte registers
 				}
@@ -1181,7 +1186,8 @@ bool TryEmulateStore(void* native_context, uint64_t fault_vaddr, StoreWriter wri
 			break;
 		}
 		default: {
-			if (!IsVectorStore(instruction.mnemonic) || source.type != ZYDIS_OPERAND_TYPE_REGISTER ||
+			if (!IsVectorStore(instruction.mnemonic) ||
+			    source.type != ZYDIS_OPERAND_TYPE_REGISTER ||
 			    ZydisRegisterGetClass(source.reg.value) != ZYDIS_REGCLASS_XMM) {
 				return false; // YMM, MMX, or a general-purpose source
 			}

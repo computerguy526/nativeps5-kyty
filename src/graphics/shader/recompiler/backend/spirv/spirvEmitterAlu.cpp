@@ -120,8 +120,8 @@ bool IsPlainConstant(const F32Operand& operand) {
 F32Operand EmitFastMinMaxF32(EmitterState& state, F32Operand lhs, F32Operand rhs,
                              bool max_value) {
 	if (GetCodegenOptions().native_float_min_max || GetCodegenOptions().relaxed_float) {
-		// KYTY_NATIVE_FMINMAX / KYTY_RELAXED_FLOAT: NMin/NMax return the other operand for one NaN, as the guest does;
-		// which zero min/max(-0, +0) returns is left to the host.
+		// KYTY_NATIVE_FMINMAX / KYTY_RELAXED_FLOAT: NMin/NMax return the other operand for one NaN,
+		// as the guest does; which zero min/max(-0, +0) returns is left to the host.
 		const auto result = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpExtInst, TypeF32(state), result, GlslStd450(state),
 		                          max_value ? GLSLstd450NMax : GLSLstd450NMin, lhs.id, rhs.id);
@@ -158,10 +158,11 @@ F32Operand EmitFastMinMax3F32(EmitterState& state, F32Operand a, F32Operand b, F
 	return EmitFastMinMaxF32(state, EmitFastMinMaxF32(state, a, b, max_value), c, max_value);
 }
 
-// KYTY_MED3_NAN_S0=1 (default off; KytyPS5 3f8f9784): with all three V_MED3_F32 sources NaN the result
-// is S0, as RDNA2 MIN3/MAX3 (the NaN path runs min(min(c, b), a): a NaN lhs yields rhs). Off keeps the
-// operand order a, b, c (all-NaN gives S2) and, with it, the SPIR-V of every shader with V_MED3_F32 and the
-// keys of the Metal overrides built from it (the port changed one shipped compute override's key: ASTRO +1.9 ms).
+// KYTY_MED3_NAN_S0=1 (default off; KytyPS5 3f8f9784): with all three V_MED3_F32 sources NaN the
+// result is S0, as RDNA2 MIN3/MAX3 (the NaN path runs min(min(c, b), a): a NaN lhs yields rhs). Off
+// keeps the operand order a, b, c (all-NaN gives S2) and, with it, the SPIR-V of every shader with
+// V_MED3_F32 and the keys of the Metal overrides built from it (the port changed one shipped
+// compute override's key: ASTRO +1.9 ms).
 bool Med3NanS0() {
 	static const bool on = [] {
 		const char* value = std::getenv("KYTY_MED3_NAN_S0");
@@ -170,15 +171,16 @@ bool Med3NanS0() {
 	return on;
 }
 
-// V_MED3_F32 exactly as EmitFPMedTri32 defines it (any NaN operand gives min3 in source order, otherwise
-// max(min(a,b), min(max(a,b),c))), from the exact min/max above. Constant non-NaN operands drop
-// out of the NaN test.
+// V_MED3_F32 exactly as EmitFPMedTri32 defines it (any NaN operand gives min3 in source order,
+// otherwise max(min(a,b), min(max(a,b),c))), from the exact min/max above. Constant non-NaN
+// operands drop out of the NaN test.
 uint32_t EmitFastMedTri32(EmitterState& state, F32Operand a, F32Operand b, F32Operand c) {
 	const auto min_ab   = EmitFastMinMaxF32(state, a, b, false);
-	// KYTY_MED3_NAN_S0: the NaN path is MIN3 in source order, all-NaN gives S0 (see Med3NanS0). The numeric
-	// result is the same for any operand order.
-	const auto min3     = Med3NanS0() ? EmitFastMinMaxF32(state, EmitFastMinMaxF32(state, c, b, false), a, false)
-	                                  : EmitFastMinMaxF32(state, min_ab, c, false);
+	// KYTY_MED3_NAN_S0: the NaN path is MIN3 in source order, all-NaN gives S0 (see Med3NanS0). The
+	// numeric result is the same for any operand order.
+	const auto min3 =
+	    Med3NanS0() ? EmitFastMinMaxF32(state, EmitFastMinMaxF32(state, c, b, false), a, false)
+	                : EmitFastMinMaxF32(state, min_ab, c, false);
 	const auto max_ab   = EmitFastMinMaxF32(state, a, b, true);
 	const auto high_min = EmitFastMinMaxF32(state, max_ab, c, false);
 	const auto median   = EmitFastMinMaxF32(state, min_ab, high_min, true);
@@ -242,7 +244,8 @@ uint32_t EmitFPMedTri32(ValueEmitContext& ctx, IR::Value arg0, IR::Value arg1, I
 		const auto b       = ctx.Def(arg1);
 		const auto c       = ctx.Def(arg2);
 		const auto min_max = [&](uint32_t x, uint32_t y, bool max_value) {
-			return EmitExt(state, TypeF32(state), max_value ? GLSLstd450NMax : GLSLstd450NMin, {x, y});
+			return EmitExt(state, TypeF32(state), max_value ? GLSLstd450NMax : GLSLstd450NMin,
+			               {x, y});
 		};
 		const auto ab = min_max(a, b, true);
 		const auto bc = min_max(b, c, true);
@@ -257,10 +260,11 @@ uint32_t EmitFPMedTri32(ValueEmitContext& ctx, IR::Value arg0, IR::Value arg1, I
 	const auto b        = ctx.Def(arg1);
 	const auto c        = ctx.Def(arg2);
 	const auto min_ab   = EmitMinMaxF32Value(state, a, b, false);
-	// KYTY_MED3_NAN_S0: MIN3 in source order for the NaN path (RDNA2: all sources NaN gives S0, as MIN3
-	// and MAX3; see Med3NanS0). Numerically the same for any order.
-	const auto min3     = Med3NanS0() ? EmitMinMaxF32Value(state, EmitMinMaxF32Value(state, c, b, false), a, false)
-	                                  : EmitMinMaxF32Value(state, min_ab, c, false);
+	// KYTY_MED3_NAN_S0: MIN3 in source order for the NaN path (RDNA2: all sources NaN gives S0, as
+	// MIN3 and MAX3; see Med3NanS0). Numerically the same for any order.
+	const auto min3 =
+	    Med3NanS0() ? EmitMinMaxF32Value(state, EmitMinMaxF32Value(state, c, b, false), a, false)
+	                : EmitMinMaxF32Value(state, min_ab, c, false);
 	const auto max_ab   = EmitMinMaxF32Value(state, a, b, true);
 	const auto high_min = EmitMinMaxF32Value(state, max_ab, c, false);
 	const auto median   = EmitMinMaxF32Value(state, min_ab, high_min, true);
@@ -328,8 +332,8 @@ uint32_t EmitConvertF32F64(EmitterState& state, uint32_t arg0) {
 	    Binary(state, spv::OpLogicalAnd, TypeBool(state),
 	           EmitCompareU32Constant(state, spv::OpUGreaterThan, exponent, 0x47e00000u),
 	           EmitCompareU32Constant(state, spv::OpULessThan, exponent, 0x7ff00000u));
-	// KYTY_CVT_F32_F64_INF: round to nearest (FLOAT_MODE 0xC0) overflows to +-INF; the legacy result
-	// saturates at +-FLT_MAX.
+	// KYTY_CVT_F32_F64_INF: round to nearest (FLOAT_MODE 0xC0) overflows to +-INF; the legacy
+	// result saturates at +-FLT_MAX.
 	const auto clamped = EmitOrU32(
 	    state, EmitAndConstant(state, source, 0x80000000u),
 	    ConstantU32(state, GetCodegenOptions().cvt_f32_f64_inf ? 0x7f800000u : 0x7f7fffffu));
@@ -413,45 +417,47 @@ uint32_t EmitFastF32ToF16RtzBits(EmitterState& state, uint32_t f32) {
 //    a signed zero.
 //  - NaN: quiet (0x7e00) with the top payload bits; INF: 0x7c00.
 uint32_t EmitF32ToF16RteBits(EmitterState& state, uint32_t f32) {
-	const auto bits   = EmitBitcastF32ToU32(state, f32);
-	const auto abs    = EmitAndConstant(state, bits, 0x7fffffffu);
-	const auto sign   = EmitAndConstant(state, EmitShiftRightConstant(state, bits, 16), 0x8000u);
-	const auto rebias = Binary(state, spv::OpISub, TypeU32(state), abs, ConstantU32(state, 0x38000000u));
-	const auto keep   = EmitAndConstant(state, EmitShiftRightConstant(state, rebias, 13), 1u);
-	const auto normal = EmitMinMaxU32Value(
-	    state,
-	    EmitShiftRightConstant(
-	        state,
-	        Binary(state, spv::OpIAdd, TypeU32(state),
-	               Binary(state, spv::OpIAdd, TypeU32(state), rebias, ConstantU32(state, 0xfffu)),
-	               keep),
-	        13),
-	    ConstantU32(state, 0x7c00u), false);
+	const auto bits = EmitBitcastF32ToU32(state, f32);
+	const auto abs  = EmitAndConstant(state, bits, 0x7fffffffu);
+	const auto sign = EmitAndConstant(state, EmitShiftRightConstant(state, bits, 16), 0x8000u);
+	const auto rebias =
+	    Binary(state, spv::OpISub, TypeU32(state), abs, ConstantU32(state, 0x38000000u));
+	const auto keep = EmitAndConstant(state, EmitShiftRightConstant(state, rebias, 13), 1u);
+	const auto normal =
+	    EmitMinMaxU32Value(state,
+	                       EmitShiftRightConstant(state,
+	                                              Binary(state, spv::OpIAdd, TypeU32(state),
+	                                                     Binary(state, spv::OpIAdd, TypeU32(state),
+	                                                            rebias, ConstantU32(state, 0xfffu)),
+	                                                     keep),
+	                                              13),
+	                       ConstantU32(state, 0x7c00u), false);
 	const auto exponent = EmitShiftRightConstant(state, abs, 23);
 	const auto shift    = EmitMinMaxU32Value(state, EmitSubConstantMinusU32(state, 126, exponent),
 	                                         ConstantU32(state, 25), false);
 	const auto mantissa =
 	    EmitOrU32(state, EmitAndConstant(state, abs, 0x007fffffu), ConstantU32(state, 0x00800000u));
-	const auto half_minus_one = Binary(
-	    state, spv::OpISub, TypeU32(state),
-	    Binary(state, spv::OpShiftLeftLogical, TypeU32(state), ConstantU32(state, 1u),
-	           Binary(state, spv::OpISub, TypeU32(state), shift, ConstantU32(state, 1u))),
-	    ConstantU32(state, 1u));
+	const auto half_minus_one =
+	    Binary(state, spv::OpISub, TypeU32(state),
+	           Binary(state, spv::OpShiftLeftLogical, TypeU32(state), ConstantU32(state, 1u),
+	                  Binary(state, spv::OpISub, TypeU32(state), shift, ConstantU32(state, 1u))),
+	           ConstantU32(state, 1u));
 	const auto odd = EmitAndConstant(
 	    state, Binary(state, spv::OpShiftRightLogical, TypeU32(state), mantissa, shift), 1u);
-	const auto subnormal = Binary(
-	    state, spv::OpShiftRightLogical, TypeU32(state),
-	    Binary(state, spv::OpIAdd, TypeU32(state),
-	           Binary(state, spv::OpIAdd, TypeU32(state), mantissa, half_minus_one), odd),
-	    shift);
+	const auto subnormal =
+	    Binary(state, spv::OpShiftRightLogical, TypeU32(state),
+	           Binary(state, spv::OpIAdd, TypeU32(state),
+	                  Binary(state, spv::OpIAdd, TypeU32(state), mantissa, half_minus_one), odd),
+	           shift);
 	auto result =
 	    EmitSelectValueU32(state, EmitCompareU32Constant(state, spv::OpULessThan, abs, 0x38800000u),
 	                       subnormal, normal);
-	const auto nan = EmitOrU32(state, EmitAndConstant(state, EmitShiftRightConstant(state, abs, 13), 0x3ffu),
-	                           ConstantU32(state, 0x7e00u));
-	const auto special =
-	    EmitSelectValueU32(state, EmitCompareU32Constant(state, spv::OpUGreaterThan, abs, 0x7f800000u),
-	                       nan, ConstantU32(state, 0x7c00u));
+	const auto nan =
+	    EmitOrU32(state, EmitAndConstant(state, EmitShiftRightConstant(state, abs, 13), 0x3ffu),
+	              ConstantU32(state, 0x7e00u));
+	const auto special = EmitSelectValueU32(
+	    state, EmitCompareU32Constant(state, spv::OpUGreaterThan, abs, 0x7f800000u), nan,
+	    ConstantU32(state, 0x7c00u));
 	result = EmitSelectValueU32(
 	    state, EmitCompareU32Constant(state, spv::OpUGreaterThanEqual, abs, 0x7f800000u), special,
 	    result);
@@ -882,15 +888,18 @@ uint32_t EmitFPRecipSqrt32(EmitterState& state, uint32_t arg0) {
 }
 
 uint32_t EmitFPSqrt(EmitterState& state, uint32_t arg0) {
-	return EmitExt(state, TypeF32(state), GLSLstd450Sqrt, {FlushTranscendentalInput(state, arg0, F32FlushClassSqrt)});
+	return EmitExt(state, TypeF32(state), GLSLstd450Sqrt,
+	               {FlushTranscendentalInput(state, arg0, F32FlushClassSqrt)});
 }
 
 uint32_t EmitFPExp2(EmitterState& state, uint32_t arg0) {
-	return EmitExt(state, TypeF32(state), GLSLstd450Exp2, {FlushTranscendentalInput(state, arg0, F32FlushClassExp)});
+	return EmitExt(state, TypeF32(state), GLSLstd450Exp2,
+	               {FlushTranscendentalInput(state, arg0, F32FlushClassExp)});
 }
 
 uint32_t EmitFPLog2(EmitterState& state, uint32_t arg0) {
-	return EmitExt(state, TypeF32(state), GLSLstd450Log2, {FlushTranscendentalInput(state, arg0, F32FlushClassLog)});
+	return EmitExt(state, TypeF32(state), GLSLstd450Log2,
+	               {FlushTranscendentalInput(state, arg0, F32FlushClassLog)});
 }
 
 uint32_t EmitFPLdexp(EmitterState& state, uint32_t arg0, uint32_t arg1) {

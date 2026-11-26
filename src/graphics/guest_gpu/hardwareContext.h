@@ -385,8 +385,9 @@ struct Viewport {
 	bool  viewport_scissor_window_offset_enable = false;
 };
 
-// KYTY_CLIP_RECT_DEFAULT=1 (upstream 4eb5ee110, via Erlou93/KytyPS5-Yotei): clip rects the game never
-// wrote cover (0,0)-(16384,16384), so a clip rule other than 0xffff does not empty the scissor.
+// KYTY_CLIP_RECT_DEFAULT=1 (upstream 4eb5ee110, via Erlou93/KytyPS5-Yotei): clip rects the game
+// never wrote cover (0,0)-(16384,16384), so a clip rule other than 0xffff does not empty the
+// scissor.
 inline int ClipRectDefaultExtent() {
 	static const int extent = [] {
 		const char* value = std::getenv("KYTY_CLIP_RECT_DEFAULT");
@@ -423,10 +424,10 @@ struct ScreenViewport {
 	uint16_t clip_rect_rule                       = 0xffffu;
 	int      clip_rect_left[4]                    = {};
 	int      clip_rect_top[4]                     = {};
-	int      clip_rect_right[4]                   = {ClipRectDefaultExtent(), ClipRectDefaultExtent(),
-	                                                 ClipRectDefaultExtent(), ClipRectDefaultExtent()};
-	int      clip_rect_bottom[4]                  = {ClipRectDefaultExtent(), ClipRectDefaultExtent(),
-	                                                 ClipRectDefaultExtent(), ClipRectDefaultExtent()};
+	int      clip_rect_right[4]  = {ClipRectDefaultExtent(), ClipRectDefaultExtent(),
+	                                ClipRectDefaultExtent(), ClipRectDefaultExtent()};
+	int      clip_rect_bottom[4] = {ClipRectDefaultExtent(), ClipRectDefaultExtent(),
+	                                ClipRectDefaultExtent(), ClipRectDefaultExtent()};
 	bool     clip_rect_window_offset_enable[4]    = {};
 };
 
@@ -630,8 +631,8 @@ struct VertexShaderInfo {
 	int32_t start_instance_user_sgpr = -1;
 	// KYTY_INDIRECT_VERTEX_BASE: an indirect draw's index VGPR excludes its record's base vertex,
 	// which the CP writes only to the GS user SGPR at BASE_VTX_LOC (-1: none, or the switch off).
-	bool    indirect_vertex_base   = false;
-	int32_t base_vertex_user_sgpr  = -1;
+	bool    indirect_vertex_base  = false;
+	int32_t base_vertex_user_sgpr = -1;
 };
 
 struct PixelShaderInfo {
@@ -901,9 +902,9 @@ public:
 	[[nodiscard]] uint32_t GetPrimitiveResetIndex() const { return m_primitive_reset_index; }
 	void SetPrimitiveResetIndex(uint32_t index) { m_primitive_reset_index = index; }
 
-	// VGT_DRAW_PAYLOAD_CNTL (bit 0 OBJPRIM_ID_EN) and PA_CL_OBJPRIM_ID_CNTL (bit 0 OBJ_ID_SEL, bit 1
-	// ADD_PIPED_PRIM_ID, bit 2 EN_32BIT_OBJPRIMID): the hardware ObjPrimID write (KYTY_OBJPRIM_ID,
-	// PipelineCache ObjprimIdSlot).
+	// VGT_DRAW_PAYLOAD_CNTL (bit 0 OBJPRIM_ID_EN) and PA_CL_OBJPRIM_ID_CNTL (bit 0 OBJ_ID_SEL, bit
+	// 1 ADD_PIPED_PRIM_ID, bit 2 EN_32BIT_OBJPRIMID): the hardware ObjPrimID write
+	// (KYTY_OBJPRIM_ID, PipelineCache ObjprimIdSlot).
 	[[nodiscard]] uint32_t GetDrawPayloadControl() const { return m_draw_payload_cntl; }
 	void                   SetDrawPayloadControl(uint32_t value) { m_draw_payload_cntl = value; }
 	[[nodiscard]] uint32_t GetObjprimIdControl() const { return m_objprim_id_cntl; }

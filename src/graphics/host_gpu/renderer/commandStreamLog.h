@@ -15,9 +15,9 @@
 namespace Libs::Graphics::CommandStream {
 
 struct Call {
-	Op       op   = Op::Wrap;
-	uint64_t hash = 0;
-	bool operator==(const Call&) const = default;
+	Op       op                            = Op::Wrap;
+	uint64_t hash                          = 0;
+	bool     operator==(const Call&) const = default;
 };
 
 // Receives replayed calls and hashes their arguments with the shared VerifyHash functions.
@@ -55,7 +55,8 @@ struct CallLog {
 	                     vk::DependencyFlags flags, uint32_t mc, const vk::MemoryBarrier* m,
 	                     uint32_t bc, const vk::BufferMemoryBarrier* b, uint32_t ic,
 	                     const vk::ImageMemoryBarrier* i) {
-		Push(Op::PipelineBarrier, VerifyHash::PipelineBarrier(src, dst, flags, mc, m, bc, b, ic, i));
+		Push(Op::PipelineBarrier,
+		     VerifyHash::PipelineBarrier(src, dst, flags, mc, m, bc, b, ic, i));
 	}
 	void copyBuffer(vk::Buffer s, vk::Buffer d, uint32_t n, const vk::BufferCopy* r) {
 		Push(Op::CopyBuffer, VerifyHash::CopyBuffer(s, d, n, r));
@@ -82,8 +83,8 @@ struct CallLog {
 	                        const vk::DescriptorSet* s, uint32_t dn, const uint32_t* d) {
 		Push(Op::BindDescriptorSets, VerifyHash::BindDescriptorSets(p, l, f, n, s, dn, d));
 	}
-	void pushDescriptorSetKHR(vk::PipelineBindPoint p, vk::PipelineLayout l, uint32_t s,
-	                          uint32_t n, const vk::WriteDescriptorSet* w) {
+	void pushDescriptorSetKHR(vk::PipelineBindPoint p, vk::PipelineLayout l, uint32_t s, uint32_t n,
+	                          const vk::WriteDescriptorSet* w) {
 		Push(Op::PushDescriptorSet, VerifyHash::PushDescriptorSet(p, l, s, n, w));
 	}
 	void updateDescriptorSets(vk::DescriptorSet s, uint32_t n, const vk::WriteDescriptorSet* w) {
@@ -93,9 +94,8 @@ struct CallLog {
 	                   const void* d) {
 		Push(Op::PushConstants, VerifyHash::PushConstants(l, st, o, s, d));
 	}
-	void bindVertexBuffers2(uint32_t f, uint32_t n, const vk::Buffer* b,
-	                        const vk::DeviceSize* o, const vk::DeviceSize* s,
-	                        const vk::DeviceSize* st) {
+	void bindVertexBuffers2(uint32_t f, uint32_t n, const vk::Buffer* b, const vk::DeviceSize* o,
+	                        const vk::DeviceSize* s, const vk::DeviceSize* st) {
 		Push(Op::BindVertexBuffers2, VerifyHash::BindVertexBuffers2(f, n, b, o, s, st));
 	}
 	void bindIndexBuffer(vk::Buffer b, vk::DeviceSize o, vk::IndexType t) {
@@ -107,7 +107,9 @@ struct CallLog {
 	void setScissorWithCount(uint32_t n, const vk::Rect2D* s) {
 		Push(Op::SetScissorWithCount, VerifyHash::Scissors(n, s));
 	}
-	void setLineWidth(float w) { Push(Op::SetLineWidth, VerifyHash::Floats(Op::SetLineWidth, &w, 1)); }
+	void setLineWidth(float w) {
+		Push(Op::SetLineWidth, VerifyHash::Floats(Op::SetLineWidth, &w, 1));
+	}
 	void setBlendConstants(const float c[4]) {
 		Push(Op::SetBlendConstants, VerifyHash::Floats(Op::SetBlendConstants, c, 4));
 	}
@@ -194,7 +196,8 @@ struct CallLog {
 		return v;
 	}
 	void drawMeshTasksIndirectEXT(vk::Buffer b, vk::DeviceSize o, uint32_t n, uint32_t s) {
-		Push(Op::DrawMeshTasksIndirect, VerifyHash::Value(Op::DrawMeshTasksIndirect, Bits(b), o, n, s));
+		Push(Op::DrawMeshTasksIndirect,
+		     VerifyHash::Value(Op::DrawMeshTasksIndirect, Bits(b), o, n, s));
 	}
 	void drawMeshTasksIndirectCountEXT(vk::Buffer b, vk::DeviceSize o, vk::Buffer cb,
 	                                   vk::DeviceSize co, uint32_t m, uint32_t s) {
@@ -212,8 +215,8 @@ struct CallLog {
 		Push(Op::DrawIndirectCount,
 		     VerifyHash::Value(Op::DrawIndirectCount, Bits(b), o, Bits(cb), co, m, s));
 	}
-	void drawIndexedIndirectCount(vk::Buffer b, vk::DeviceSize o, vk::Buffer cb,
-	                              vk::DeviceSize co, uint32_t m, uint32_t s) {
+	void drawIndexedIndirectCount(vk::Buffer b, vk::DeviceSize o, vk::Buffer cb, vk::DeviceSize co,
+	                              uint32_t m, uint32_t s) {
 		Push(Op::DrawIndexedIndirectCount,
 		     VerifyHash::Value(Op::DrawIndexedIndirectCount, Bits(b), o, Bits(cb), co, m, s));
 	}
@@ -239,9 +242,9 @@ struct CallLog {
 	void copyQueryPoolResults(vk::QueryPool p, uint32_t f, uint32_t n, vk::Buffer d,
 	                          vk::DeviceSize o, vk::DeviceSize s, vk::QueryResultFlags fl) {
 		Push(Op::CopyQueryPoolResults,
-		     VerifyHash::Value(Op::CopyQueryPoolResults, Bits(p), f, n, Bits(d), o,
-		                       s ^ (static_cast<uint64_t>(static_cast<VkQueryResultFlags>(fl))
-		                            << 40u)));
+		     VerifyHash::Value(
+		         Op::CopyQueryPoolResults, Bits(p), f, n, Bits(d), o,
+		         s ^ (static_cast<uint64_t>(static_cast<VkQueryResultFlags>(fl)) << 40u)));
 	}
 	void writeTimestamp2(vk::PipelineStageFlags2 st, vk::QueryPool p, uint32_t q) {
 		Push(Op::WriteTimestamp2,
@@ -249,13 +252,16 @@ struct CallLog {
 		                       static_cast<uint64_t>(static_cast<VkPipelineStageFlags2>(st))));
 	}
 	void hostCopy(void* d, uint64_t src, uint64_t n) {
-		Push(Op::HostCopy, VerifyHash::Value(Op::HostCopy, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(d)), src, n));
+		Push(Op::HostCopy,
+		     VerifyHash::Value(Op::HostCopy, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(d)),
+		                       src, n));
 	}
 	void insertDebugLabel(const char* name) {
 		const auto size = static_cast<uint32_t>(std::strlen(name) + 1u);
 		Push(Op::InsertDebugLabel, VerifyHash::DebugLabel(name, size));
 	}
-	void writeBufferMarkerAMD(vk::PipelineStageFlagBits st, vk::Buffer b, vk::DeviceSize o, uint32_t m) {
+	void writeBufferMarkerAMD(vk::PipelineStageFlagBits st, vk::Buffer b, vk::DeviceSize o,
+	                          uint32_t m) {
 		Push(Op::WriteBufferMarker,
 		     VerifyHash::Value(Op::WriteBufferMarker, Bits(b), o,
 		                       static_cast<uint32_t>(static_cast<VkPipelineStageFlagBits>(st)), m));
@@ -269,7 +275,6 @@ struct CallLog {
 		Push(Op::ClearDepthStencilImage, VerifyHash::ClearDepthStencilImage(i, l, *v, n, r));
 	}
 };
-
 
 // Replays the packets of `ring` from `begin` to `end` (producer positions; Wrap packets skipped)
 // into `log`. The caller is the ring's producer, or nothing writes the ring meanwhile.

@@ -21,11 +21,12 @@ struct ShaderParams {
 	uint32_t                  user_data_count = 0;
 	uint64_t                  hash = 0;
 	std::span<const uint32_t> back_code;
-	// A compute program whose S_SWAPPC_B64 calls were expanded (ShaderRecompiler::ShaderCallExpander):
-	// `code` holds the expanded words, `guest_base` the guest address of the original program and
-	// `call_expansion` the expansion's digest (part of the program key). Zero otherwise.
-	uint64_t                  guest_base     = 0;
-	uint64_t                  call_expansion = 0;
+	// A compute program whose S_SWAPPC_B64 calls were expanded
+	// (ShaderRecompiler::ShaderCallExpander): `code` holds the expanded words, `guest_base` the
+	// guest address of the original program and `call_expansion` the expansion's digest (part of
+	// the program key). Zero otherwise.
+	uint64_t guest_base     = 0;
+	uint64_t call_expansion = 0;
 
 	[[nodiscard]] uint64_t Base() const {
 		// nps5: a GUEST address (the SRT walker forms resource addresses from it: descriptors of
@@ -43,7 +44,7 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 std::array<ShaderParams, 3>
 PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context& context,
                             std::array<ShaderVertexInputInfo, 3>& input_info,
-                            bool* unsupported = nullptr);
+                            bool*                                 unsupported = nullptr);
 ShaderParams PrepareProgram(
     const HW::PixelShaderInfo& regs, const HW::ShaderRegisters& sh,
     std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,

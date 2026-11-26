@@ -40,9 +40,9 @@ constexpr bool FormattedSelectorMissing(const BufferFormatInfo& info, uint32_t s
 }
 
 // canonical (KYTY_FORMAT_MISSING_CANON): a channel the format lacks reads as the texture unit's
-// canonical RGBA expansion fills it, 0 for X/Y/Z and 1 for W (RDNA2 ISA 8.2.5 "filling in zero or one
-// for missing components"; Table 31: BUFFER_LOAD_FORMAT_* take DST_SEL from the V#). Without it the
-// selector wraps onto the format's components (upstream b34b2ec09).
+// canonical RGBA expansion fills it, 0 for X/Y/Z and 1 for W (RDNA2 ISA 8.2.5 "filling in zero or
+// one for missing components"; Table 31: BUFFER_LOAD_FORMAT_* take DST_SEL from the V#). Without it
+// the selector wraps onto the format's components (upstream b34b2ec09).
 constexpr FormattedSource ResolveFormattedSource(const BufferFormatInfo& info, uint32_t selector,
                                                  bool canonical = false) {
 	if (selector == 0u) return {};
@@ -107,7 +107,8 @@ constexpr ComponentType GetFormatComponentType(Prospero::BufferFormat format) {
 		case Prospero::BufferFormat::k10_10_10_2UNorm:
 		case Prospero::BufferFormat::k8_8_8_8UNorm:
 		case Prospero::BufferFormat::k16_16_16_16UNorm:
-		// 8 / 8_8 sRGB textures: UNorm backing, decoded in the shader (IsSrgbFormat, KYTY_SRGB8_DECODE).
+		// 8 / 8_8 sRGB textures: UNorm backing, decoded in the shader (IsSrgbFormat,
+		// KYTY_SRGB8_DECODE).
 		case Prospero::BufferFormat::k8Srgb:
 		case Prospero::BufferFormat::k8_8Srgb: return ComponentType::Unorm;
 		case Prospero::BufferFormat::k8SNorm:

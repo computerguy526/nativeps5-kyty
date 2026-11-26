@@ -10,10 +10,18 @@
 #error CACHING_PAGEBITS must be defined
 #endif
 
-layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Ref { uint v; };
-layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Ref { uvec4 v; };
-layout(buffer_reference, std430, buffer_reference_align = 8) buffer U64Ref { uint64_t v; };
-layout(buffer_reference, std430, buffer_reference_align = 4) buffer F32Ref { float v; };
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer U32Ref {
+	uint v;
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer U32x4Ref {
+	uvec4 v;
+};
+layout(buffer_reference, std430, buffer_reference_align = 8) buffer U64Ref {
+	uint64_t v;
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer F32Ref {
+	float v;
+};
 
 // The BufferCache device-address page table: the host address of each caching page (0 when the
 // page has no cached buffer).
@@ -21,7 +29,7 @@ layout(set = 0, binding = 0, std430) readonly buffer PageTable {
 	uint64_t pages[];
 };
 
-const uint     kPageMask    = (1u << CACHING_PAGEBITS) - 1u;
+const uint kPageMask = (1u << CACHING_PAGEBITS) - 1u;
 // The 40-bit guest space the table covers (BufferCache::CACHING_NUMPAGES); the entries after it
 // (the native ray tracing context) are no guest pages.
 const uint64_t kGuestPages  = uint64_t(1) << (40 - CACHING_PAGEBITS);
@@ -77,14 +85,14 @@ BoxNode LoadBoxNode(uint64_t base, uint node) {
 	const uint64_t address = NodeAddress(base, node);
 	BoxNode        box;
 	const uvec4    first = LoadGuestU32x4(address);
-	box.children[0] = first.x;
-	box.children[1] = first.y;
-	box.children[2] = first.z;
-	box.children[3] = first.w;
+	box.children[0]      = first.x;
+	box.children[1]      = first.y;
+	box.children[2]      = first.z;
+	box.children[3]      = first.w;
 	if (NodeType(node) == 4u) {
-		const uvec4 a = LoadGuestU32x4(address + 16);
-		const uvec4 b = LoadGuestU32x4(address + 32);
-		const uvec4 c = LoadGuestU32x4(address + 48);
+		const uvec4 a        = LoadGuestU32x4(address + 16);
+		const uvec4 b        = LoadGuestU32x4(address + 32);
+		const uvec4 c        = LoadGuestU32x4(address + 48);
 		const uint words[12] = uint[12](a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w, c.x, c.y, c.z, c.w);
 		for (uint child = 0; child < 4; child++) {
 			const vec2 xy = unpackHalf2x16(words[child * 3]);
@@ -96,15 +104,17 @@ BoxNode LoadBoxNode(uint64_t base, uint node) {
 	} else {
 		uint words[24];
 		for (uint i = 0; i < 6; i++) {
-			const uvec4 v = LoadGuestU32x4(address + 16 + i * 16);
+			const uvec4 v    = LoadGuestU32x4(address + 16 + i * 16);
 			words[i * 4]     = v.x;
 			words[i * 4 + 1] = v.y;
 			words[i * 4 + 2] = v.z;
 			words[i * 4 + 3] = v.w;
 		}
 		for (uint child = 0; child < 4; child++) {
-			box.lo[child] = uintBitsToFloat(uvec3(words[child * 6], words[child * 6 + 1], words[child * 6 + 2]));
-			box.hi[child] = uintBitsToFloat(uvec3(words[child * 6 + 3], words[child * 6 + 4], words[child * 6 + 5]));
+			box.lo[child] = uintBitsToFloat(
+			    uvec3(words[child * 6], words[child * 6 + 1], words[child * 6 + 2]));
+			box.hi[child] = uintBitsToFloat(
+			    uvec3(words[child * 6 + 3], words[child * 6 + 4], words[child * 6 + 5]));
 		}
 	}
 	return box;
@@ -138,8 +148,8 @@ layout(buffer_reference, std430, buffer_reference_align = 8) buffer RtState {
 
 // A host BLAS: the guest BLAS it mirrors and its acceleration structure of triangles, in two
 // geometries: 0 = opaque, 1 = alpha tested. Per primitive (geometry 1 after the capacity of
-// geometry 0), the entry table holds (16 bytes) the guest leaf pointer of its list entry, its primitive
-// word, its triangle node and the barycentric remap of the node (see rt_blas_walk.comp).
+// geometry 0), the entry table holds (16 bytes) the guest leaf pointer of its list entry, its
+// primitive word, its triangle node and the barycentric remap of the node (see rt_blas_walk.comp).
 layout(buffer_reference, std430, buffer_reference_align = 8) buffer SlotInfo {
 	uint64_t as_address;
 	uint64_t entry_table;
@@ -154,10 +164,10 @@ layout(buffer_reference, std430, buffer_reference_align = 8) buffer SlotInfo {
 	uint     stamp;
 	uint     leaf_count;
 	// Set by a gathered build (see MODE_GATHER in rt_blas_walk.comp) to bit 31 and the preparation:
-	// the triangles follow the guest's refit boxes, so the check of that same preparation takes their
-	// signature instead of reporting a change. A later check (the guest may have changed the BLAS
-	// since) compares as usual.
-	uint     rebase;
+	// the triangles follow the guest's refit boxes, so the check of that same preparation takes
+	// their signature instead of reporting a change. A later check (the guest may have changed the
+	// BLAS since) compares as usual.
+	uint rebase;
 };
 
 // A guest BLAS the top-level walk did not find, counted by the BLAS walk.

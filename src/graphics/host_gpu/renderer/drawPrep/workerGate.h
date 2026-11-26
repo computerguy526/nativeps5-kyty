@@ -238,15 +238,15 @@ void RunPreparationWorkerBatched(WorkerGate& gate, WindowT& window, uint32_t ind
 	auto       idle_start = WorkerNowNs();
 	uint32_t   spins      = 0;
 	// PrepStats (prepStats.h): TSC split of this worker's time into preparing, spinning, parked.
-	auto& stats    = PrepStats::t_local;
-	stats.index    = index + 1u;
-	auto  idle_tsc = PrepStats::Tsc();
+	auto& stats   = PrepStats::t_local;
+	stats.index   = index + 1u;
+	auto idle_tsc = PrepStats::Tsc();
 	while (!stop.load(std::memory_order_acquire)) {
-		uint64_t   seq   = 0;
-		uint32_t   count = 1;
-		const auto batch = static_cast<uint32_t>(max_batch());
-		decltype(window.TryClaim(seq)) slot = nullptr;
-		bool claimed = false;
+		uint64_t                       seq     = 0;
+		uint32_t                       count   = 1;
+		const auto                     batch   = static_cast<uint32_t>(max_batch());
+		decltype(window.TryClaim(seq)) slot    = nullptr;
+		bool                           claimed = false;
 		if (batch <= 1u) {
 			slot    = window.TryClaim(seq);
 			claimed = slot != nullptr;
@@ -312,8 +312,8 @@ void RunPreparationWorker(WorkerGate& gate, WindowT& window, uint32_t index, uin
                           uint64_t cold_spin_ns, const std::atomic<bool>& stop, Prepare&& prepare,
                           OnColdWake&& on_cold_wake) {
 	RunPreparationWorkerBatched(gate, window, index, hot_spin_ns, cold_spin_ns, stop,
-	                            std::forward<Prepare>(prepare), std::forward<OnColdWake>(on_cold_wake),
-	                            [] { return 1u; });
+	                            std::forward<Prepare>(prepare),
+	                            std::forward<OnColdWake>(on_cold_wake), [] { return 1u; });
 }
 
 // When the producer steals (KYTY_DRAW_PREP_STEAL, KYTY_DRAW_PREP_STEAL_AFTER_US). A stolen
@@ -330,8 +330,8 @@ struct StealPolicy {
 // commands are queued. `pending` is asked only at a look that could serve.
 enum class HeadWaitService { None, Serve, Guard };
 template <typename Pending>
-[[nodiscard]] HeadWaitService HeadWaitServiceAt(uint32_t spins, uint64_t waited_ns, bool serve_in_waits,
-                                                Pending&& pending) {
+[[nodiscard]] HeadWaitService HeadWaitServiceAt(uint32_t spins, uint64_t waited_ns,
+                                                bool serve_in_waits, Pending&& pending) {
 	if (serve_in_waits && (spins & 63u) == 63u && pending()) {
 		return HeadWaitService::Serve;
 	}

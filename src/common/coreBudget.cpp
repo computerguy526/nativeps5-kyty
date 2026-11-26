@@ -30,7 +30,8 @@ std::string Mask(uint64_t mask) {
 		if (!text.empty()) {
 			text += ',';
 		}
-		text += last == bit ? std::to_string(bit) : std::to_string(bit) + "-" + std::to_string(last);
+		text +=
+		    last == bit ? std::to_string(bit) : std::to_string(bit) + "-" + std::to_string(last);
 		bit = last;
 	}
 	return text.empty() ? "none" : text;
@@ -41,18 +42,18 @@ std::string Mask(uint64_t mask) {
 CoreBudget ComputeCoreBudget(const std::vector<CpuSetInfo>& sets) {
 	CoreBudget budget;
 	struct Core {
-		uint32_t total   = 0;
-		uint32_t allowed = 0;
+		uint32_t total      = 0;
+		uint32_t allowed    = 0;
 		uint8_t  efficiency = 0;
 	};
-	std::map<uint32_t, Core>     cores;
-	std::map<uint8_t, uint32_t>  per_cache;
-	std::set<uint8_t>            classes;
+	std::map<uint32_t, Core>    cores;
+	std::map<uint8_t, uint32_t> per_cache;
+	std::set<uint8_t>           classes;
 	for (const auto& set: sets) {
 		if (set.group != 0 || set.logical >= 64) {
 			continue;
 		}
-		auto& core      = cores[set.core];
+		auto& core = cores[set.core];
 		core.total++;
 		core.efficiency = std::max(core.efficiency, set.efficiency_class);
 		if (!set.allowed) {
@@ -90,15 +91,15 @@ CoreBudget ComputeCoreBudget(const std::vector<CpuSetInfo>& sets) {
 	for (const auto& [cache, count]: per_cache) {
 		budget.largest_cache_logical = std::max(budget.largest_cache_logical, count);
 	}
-	budget.description = std::to_string(budget.logical) + " logical processors on " +
-	                     std::to_string(budget.cores) + " cores (" +
-	                     std::to_string(budget.smt_cores) + " with SMT, " +
-	                     std::to_string(budget.whole_cores) + " whole), " +
-	                     std::to_string(budget.caches) + (budget.caches == 1 ? " L3" : " L3s") +
-	                     ", logical " + Mask(budget.mask);
+	budget.description =
+	    std::to_string(budget.logical) + " logical processors on " + std::to_string(budget.cores) +
+	    " cores (" + std::to_string(budget.smt_cores) + " with SMT, " +
+	    std::to_string(budget.whole_cores) + " whole), " + std::to_string(budget.caches) +
+	    (budget.caches == 1 ? " L3" : " L3s") + ", logical " + Mask(budget.mask);
 	if (budget.hybrid) {
 		budget.description += "; hybrid: " + std::to_string(budget.performance_cores) +
-		                      " fastest-class cores (logical " + Mask(budget.performance_mask) + ")";
+		                      " fastest-class cores (logical " + Mask(budget.performance_mask) +
+		                      ")";
 	}
 	return budget;
 }
@@ -147,8 +148,8 @@ int64_t NowMs() {
 }
 
 std::mutex            g_mutex;
-CoreBudget            g_budget;     // under g_mutex
-std::string           g_logged;     // the description last logged
+CoreBudget            g_budget;      // under g_mutex
+std::string           g_logged;      // the description last logged
 std::atomic<int64_t>  g_next_ms {0}; // next re-read
 std::atomic<uint32_t> g_logical {0};
 
@@ -188,8 +189,8 @@ void OnCoreBudgetProfileChange(void (*listener)(bool on)) {
 }
 
 CoreBudget CurrentCoreBudget(bool force) {
-	const auto now  = NowMs();
-	auto       next = g_next_ms.load(std::memory_order_acquire);
+	const auto      now  = NowMs();
+	auto            next = g_next_ms.load(std::memory_order_acquire);
 	std::lock_guard lock(g_mutex);
 	if (force || now >= next || g_logical.load(std::memory_order_relaxed) == 0) {
 		g_next_ms.store(now + 1000, std::memory_order_release);

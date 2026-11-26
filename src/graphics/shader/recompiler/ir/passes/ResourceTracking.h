@@ -16,8 +16,8 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 // workgroup (compute and mesh programs, may be null): thread counts and LDS size for proofs about
 // one-wave LDS append lists (KYTY_SELECTOR_SHARED_LIST).
 uint32_t TrackResources(Program& program, bool indirect_scalar_buffers = false,
-                        bool bda_writes = false,
-                        const ShaderWorkgroupInputInfo* workgroup = nullptr);
+                        bool                            bda_writes = false,
+                        const ShaderWorkgroupInputInfo* workgroup  = nullptr);
 // Tests: KYTY_TEXTURE_LAYER_BOUND forced on (1) or off (0); -1: the switch decides.
 void SetLayerBoundForTest(int enabled);
 

@@ -7,15 +7,15 @@
 
 namespace Libs::Graphics {
 
-// KYTY_RT_DUMP_BVH=<n>[,<n>...] (or / between the numbers; off by default; diagnostic only). At the n-th compute dispatch
-// of a program with BVH instructions (1-based over the run, whether KYTY_RT_STUB translated the
-// program or it was skipped), dump the Psr TLAS the dispatch's SRT names (s[0:1]: +0 in the
-// lighting shaders, +40 in the GI shaders, other offsets as a fallback) and every BLAS its
-// instances reference. Files go to KYTY_RT_DUMP_BVH_DIR (default <shader log folder>/bvh): a
-// .kbvh snapshot (graphics/host_gpu/rt/bvhDump.h) and a .txt summary. The dump reads the BVHs back
-// coherently (GPU-written bytes are synchronized first), so it stalls the GPU thread while it
-// runs. A dispatch whose SRT names no plausible TLAS is retried at the next BVH dispatch (at most
-// 64 times per requested ordinal).
+// KYTY_RT_DUMP_BVH=<n>[,<n>...] (or / between the numbers; off by default; diagnostic only). At the
+// n-th compute dispatch of a program with BVH instructions (1-based over the run, whether
+// KYTY_RT_STUB translated the program or it was skipped), dump the Psr TLAS the dispatch's SRT
+// names (s[0:1]: +0 in the lighting shaders, +40 in the GI shaders, other offsets as a fallback)
+// and every BLAS its instances reference. Files go to KYTY_RT_DUMP_BVH_DIR (default <shader log
+// folder>/bvh): a .kbvh snapshot (graphics/host_gpu/rt/bvhDump.h) and a .txt summary. The dump
+// reads the BVHs back coherently (GPU-written bytes are synchronized first), so it stalls the GPU
+// thread while it runs. A dispatch whose SRT names no plausible TLAS is retried at the next BVH
+// dispatch (at most 64 times per requested ordinal).
 [[nodiscard]] bool RtBvhDumpEnabled() noexcept;
 
 struct RtBvhDispatch {
@@ -39,7 +39,7 @@ void RtBvhDumpOnDispatch(const RtBvhDispatch& dispatch);
 // dispatch shows what an earlier one wrote. Files go to KYTY_WATCH_READ_DIR (default
 // _Shaders/watch), at most KYTY_WATCH_READ_MAX (default 48) dispatches.
 [[nodiscard]] bool WatchReadEnabled() noexcept;
-void               WatchReadOnDispatch(uint64_t shader_hash, std::span<const uint32_t> user_sgpr, int frame);
+void WatchReadOnDispatch(uint64_t shader_hash, std::span<const uint32_t> user_sgpr, int frame);
 
 } // namespace Libs::Graphics
 

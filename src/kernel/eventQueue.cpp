@@ -1,13 +1,13 @@
-﻿#include "common/hleWaitStats.h"
-#include "kernel/eventQueue.h"
+﻿#include "kernel/eventQueue.h"
 
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/gthreadStats.h"
 #include "common/hangWatchdog.h"
+#include "common/hleWaitStats.h"
 #include "common/logging/log.h"
-#include "common/profiler.h"
 #include "common/paceLog.h"
+#include "common/profiler.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
@@ -395,7 +395,7 @@ int KernelEqueuePrivate::WaitForEvents(KernelEvent* ev, int num, uint32_t micros
 		HangWatchdog::Scope wait("guest-equeue", reinterpret_cast<uint64_t>(this), num, 0, 0,
 		                         micros);
 		uint32_t   timer_wait = 0;
-		const bool has_timer  = GetNextTimerWaitMicros(Common::SteadyNs(), &timer_wait);
+		const bool          has_timer  = GetNextTimerWaitMicros(Common::SteadyNs(), &timer_wait);
 		if (micros == 0 && !has_timer) {
 			m_cond_var.Wait(&m_mutex);
 		} else {
@@ -648,9 +648,11 @@ int KYTY_SYSV_ABI KernelWaitEqueue(KernelEqueue eq, KernelEvent* ev, int num, in
 		}
 	}
 	if (*out > 0) {
-		const auto f = ev[0].filter;
+		const auto f  = ev[0].filter;
 		const auto id = static_cast<uint64_t>(ev[0].ident);
-		hle_wait_scope.Set(f == KERNEL_EVFILT_VIDEO_OUT ? (id == 0 ? HleWait::EqFlip : id == 1 ? HleWait::EqVblank : HleWait::EqVideoOutOther)
+		hle_wait_scope.Set(f == KERNEL_EVFILT_VIDEO_OUT  ? (id == 0   ? HleWait::EqFlip
+		                                                    : id == 1 ? HleWait::EqVblank
+		                                                              : HleWait::EqVideoOutOther)
 		                   : f == KERNEL_EVFILT_GRAPHICS ? HleWait::EqGraphics
 		                   : f == KERNEL_EVFILT_USER     ? HleWait::EqUser
 		                                                 : HleWait::EqOther);
@@ -753,7 +755,7 @@ int KYTY_SYSV_ABI KernelDeleteUserEvent(KernelEqueue eq, int id) {
 }
 
 static int AddTimerEvent(KernelEqueue eq, int id, uint64_t delay_ns, bool periodic, void* udata) {
-	const auto now_ns = Common::SteadyNs();
+	const auto        now_ns = Common::SteadyNs();
 	KernelEqueueEvent event {};
 	event.deadline_ns  = delay_ns <= UINT64_MAX - now_ns ? now_ns + delay_ns : UINT64_MAX;
 	event.interval_ns  = periodic ? delay_ns : 0;

@@ -26,10 +26,9 @@
 // execution of the operation (the same race the full pass has), and stale bytes of a hot page the
 // guest rewrites after the previous operation's reach covered it, until the next trap scan.
 
-#include "graphics/host_gpu/renderer/cache/bufferCache.h"
-
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "kernel/memory.h"
 
 #include <algorithm>
@@ -44,20 +43,21 @@
 namespace Libs::Graphics {
 
 struct BufferCache::BdaReachVerify {
-	bool                   active = false;
+	bool active = false;
 	// Caching pages whose page-table entry the verification zeroed.
-	std::set<uint64_t>     trapped;
+	std::set<uint64_t> trapped;
 	// Every page trapped since its buffer was registered (faults on them are counted).
-	std::mutex             fault_mutex;
+	std::mutex                   fault_mutex;
 	std::unordered_set<uint64_t> ever_trapped;
 	// Candidates for the next trap scan.
-	RangeSet               candidates;
-	RangeSet               log;
+	RangeSet                                   candidates;
+	RangeSet                                   log;
 	std::vector<std::pair<uint64_t, uint64_t>> previous;
-	BdaReachVerifyTotals   totals;
+	BdaReachVerifyTotals                       totals;
 };
 
-uint64_t BufferCache::SynchronizeBdaReach(std::span<const std::pair<uint64_t, uint64_t>> spans, bool verify) {
+uint64_t BufferCache::SynchronizeBdaReach(std::span<const std::pair<uint64_t, uint64_t>> spans,
+                                          bool                                           verify) {
 	BdaSyncStats stats;
 	stats.reach = true;
 	// Before the upload: a page that turns CPU-dirty after it advances this epoch.
@@ -103,16 +103,18 @@ uint64_t BufferCache::SynchronizeBdaReach(std::span<const std::pair<uint64_t, ui
 		if (check.verify_mismatch_pages != 0) {
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-				std::fprintf(stderr, "BdaReachVerify: %" PRIu64 " CPU-dirty page(s) left inside the reach\n",
-				             check.verify_mismatch_pages);
+				std::fprintf(
+				    stderr, "BdaReachVerify: %" PRIu64 " CPU-dirty page(s) left inside the reach\n",
+				    check.verify_mismatch_pages);
 			}
 		}
 	}
 	// (b) Entries of the reach come back (their pages were just uploaded).
 	const auto in_spans = [&](uint64_t page) {
 		const auto address = page << CACHING_PAGEBITS;
-		const auto found   = std::upper_bound(spans.begin(), spans.end(), address,
-		                                      [](uint64_t value, const auto& span) { return value < span.second; });
+		const auto found =
+		    std::upper_bound(spans.begin(), spans.end(), address,
+		                     [](uint64_t value, const auto& span) { return value < span.second; });
 		return found != spans.end() && found->first <= address;
 	};
 	std::vector<uint64_t> restore;
@@ -127,7 +129,8 @@ uint64_t BufferCache::SynchronizeBdaReach(std::span<const std::pair<uint64_t, ui
 		std::vector<vk::DeviceAddress> addresses;
 		for (size_t first = 0; first < pages.size();) {
 			size_t last = first + 1;
-			while (last < pages.size() && pages[last] == pages[last - 1] + 1) ++last;
+			while (last < pages.size() && pages[last] == pages[last - 1] + 1)
+				++last;
 			const auto run = last - first;
 			if (zero) {
 				m_bda_pagetable_buffer.Fill(pages[first] * sizeof(vk::DeviceAddress),
@@ -138,12 +141,15 @@ uint64_t BufferCache::SynchronizeBdaReach(std::span<const std::pair<uint64_t, ui
 					const auto* entry = m_page_table.Find(pages[first + k]);
 					if (entry != nullptr && *entry) {
 						const auto& buffer = m_slot_buffers[*entry];
-						addresses[k]       = TaggedBdaEntry(pages[first + k], buffer.BufferDeviceAddress() +
-						               ((pages[first + k] - (buffer.CpuAddress() >> CACHING_PAGEBITS)) << CACHING_PAGEBITS));
+						addresses[k]       = TaggedBdaEntry(
+						    pages[first + k],
+						    buffer.BufferDeviceAddress() +
+						        ((pages[first + k] - (buffer.CpuAddress() >> CACHING_PAGEBITS))
+						         << CACHING_PAGEBITS));
 					}
 				}
-				WriteDataBuffer(m_bda_pagetable_buffer, pages[first] * sizeof(vk::DeviceAddress), addresses.data(),
-				                run * sizeof(vk::DeviceAddress));
+				WriteDataBuffer(m_bda_pagetable_buffer, pages[first] * sizeof(vk::DeviceAddress),
+				                addresses.data(), run * sizeof(vk::DeviceAddress));
 			}
 			first = last;
 		}
@@ -151,14 +157,16 @@ uint64_t BufferCache::SynchronizeBdaReach(std::span<const std::pair<uint64_t, ui
 	std::sort(restore.begin(), restore.end());
 	write_entries(restore, false);
 	state.totals.restored += restore.size();
-	// Candidates: the reach log, buffers registered since (NoteBdaReachRegister), the previous reach.
+	// Candidates: the reach log, buffers registered since (NoteBdaReachRegister), the previous
+	// reach.
 	if (!m_memory_tracker.TakeReachLog(state.log)) {
 		state.totals.log_overflows++;
 		for (const auto& [address, id]: m_buffers) {
 			state.candidates.Add(address, m_slot_buffers[id].Size());
 		}
 	}
-	state.log.ForEach([&](uint64_t begin, uint64_t end) { state.candidates.Add(begin, end - begin); });
+	state.log.ForEach(
+	    [&](uint64_t begin, uint64_t end) { state.candidates.Add(begin, end - begin); });
 	for (const auto& [begin, end]: state.previous) {
 		state.candidates.Add(begin, end - begin);
 	}
@@ -221,22 +229,25 @@ void BufferCache::RestoreBdaReachTraps(bool keep_verifying) {
 	std::vector<vk::DeviceAddress> addresses;
 	for (size_t first = 0; first < pages.size();) {
 		size_t last = first + 1;
-		while (last < pages.size() && pages[last] == pages[last - 1] + 1) ++last;
+		while (last < pages.size() && pages[last] == pages[last - 1] + 1)
+			++last;
 		addresses.assign(last - first, 0);
 		for (size_t k = first; k < last; ++k) {
 			const auto* entry = m_page_table.Find(pages[k]);
 			if (entry != nullptr && *entry) {
 				const auto& buffer   = m_slot_buffers[*entry];
-				addresses[k - first] = TaggedBdaEntry(pages[k], buffer.BufferDeviceAddress() +
-				                       ((pages[k] - (buffer.CpuAddress() >> CACHING_PAGEBITS)) << CACHING_PAGEBITS));
+				addresses[k - first] = TaggedBdaEntry(
+				    pages[k], buffer.BufferDeviceAddress() +
+				                  ((pages[k] - (buffer.CpuAddress() >> CACHING_PAGEBITS))
+				                   << CACHING_PAGEBITS));
 			}
 			// A trapped page is CPU-dirty: a later scan may trap it again.
 			if (state.active) {
 				state.candidates.Add(pages[k] << CACHING_PAGEBITS, CACHING_PAGESIZE);
 			}
 		}
-		WriteDataBuffer(m_bda_pagetable_buffer, pages[first] * sizeof(vk::DeviceAddress), addresses.data(),
-		                (last - first) * sizeof(vk::DeviceAddress));
+		WriteDataBuffer(m_bda_pagetable_buffer, pages[first] * sizeof(vk::DeviceAddress),
+		                addresses.data(), (last - first) * sizeof(vk::DeviceAddress));
 		first = last;
 	}
 	state.totals.restored += pages.size();
@@ -249,11 +260,13 @@ void BufferCache::NoteBdaReachRegister(uint64_t first_page, uint64_t last_page, 
 	auto& state = *m_bda_reach;
 	// ChangeRegister rewrote these entries: they are present (or zero for a removed buffer) and
 	// not the verification's any more; a new buffer's pages start CPU-dirty.
-	for (auto it = state.trapped.lower_bound(first_page); it != state.trapped.end() && *it < last_page;) {
+	for (auto it = state.trapped.lower_bound(first_page);
+	     it != state.trapped.end() && *it < last_page;) {
 		it = state.trapped.erase(it);
 	}
 	if (insert) {
-		state.candidates.Add(first_page << CACHING_PAGEBITS, (last_page - first_page) << CACHING_PAGEBITS);
+		state.candidates.Add(first_page << CACHING_PAGEBITS, (last_page - first_page)
+		                                                         << CACHING_PAGEBITS);
 	} else {
 		std::scoped_lock lock(state.fault_mutex);
 		for (auto page = first_page; page < last_page; ++page) {
@@ -269,13 +282,15 @@ void BufferCache::NoteBdaReachFault(uint64_t start, uint64_t size) {
 	auto&            state = *m_bda_reach;
 	std::scoped_lock lock(state.fault_mutex);
 	uint64_t         hits = 0;
-	for (uint64_t page = start >> CACHING_PAGEBITS; page < (start + size + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS;
-	     ++page) {
+	for (uint64_t page = start >> CACHING_PAGEBITS;
+	     page < (start + size + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS; ++page) {
 		if (state.ever_trapped.contains(page)) {
 			hits++;
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
-				std::fprintf(stderr, "BdaReachVerify: a shader read trapped page 0x%" PRIx64 " outside its reach\n",
+				std::fprintf(stderr,
+				             "BdaReachVerify: a shader read trapped page 0x%" PRIx64
+				             " outside its reach\n",
 				             page << CACHING_PAGEBITS);
 			}
 		}

@@ -70,7 +70,8 @@ void load_element(ivec3 coord, uint dst) {
 		if (SUBWORD_CAS != 0u) {
 			uint old = tiled_buffer.data[dst >> 2];
 			for (;;) {
-				uint seen = atomicCompSwap(tiled_buffer.data[dst >> 2], old, (old & ~(mask << shift)) | ((value.x & mask) << shift));
+				uint seen = atomicCompSwap(tiled_buffer.data[dst >> 2], old,
+				                           (old & ~(mask << shift)) | ((value.x & mask) << shift));
 				if (seen == old) break;
 				old = seen;
 			}
@@ -121,7 +122,8 @@ void copy_element(uint src, uint dst) {
 		if (SUBWORD_CAS != 0u) {
 			uint old = output_buffer.data[dst >> 2];
 			for (;;) {
-				uint seen = atomicCompSwap(output_buffer.data[dst >> 2], old, (old & ~(mask << shift)) | (value << shift));
+				uint seen = atomicCompSwap(output_buffer.data[dst >> 2], old,
+				                           (old & ~(mask << shift)) | (value << shift));
 				if (seen == old) break;
 				old = seen;
 			}

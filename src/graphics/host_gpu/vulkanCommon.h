@@ -28,9 +28,9 @@ vk::Format  VulkanFormat(Prospero::BufferFormat guest_format);
 void        RequireVulkanSuccess(vk::Result result, const char* operation);
 vk::ShaderModule CompileSPV(std::span<const uint32_t> code, vk::Device device);
 // specialization: optional specialization constants of the compute stage.
-vk::Pipeline     CreateComputePipeline(vk::Device device, std::span<const uint32_t> code,
-                                       vk::PipelineLayout layout, const char* operation,
-                                       const vk::SpecializationInfo* specialization = nullptr);
+vk::Pipeline CreateComputePipeline(vk::Device device, std::span<const uint32_t> code,
+                                   vk::PipelineLayout layout, const char* operation,
+                                   const vk::SpecializationInfo* specialization = nullptr);
 
 // CompileSPV phase times (KYTY_SHADER_PRECOMPILE_STATS=1; all zero otherwise): the function-array
 // shrink, the spirv-val run on a shrunk module (or its skip, a known-valid module) and the driver's
@@ -71,7 +71,8 @@ void               AddressBindingReportNoteName(uint64_t handle, std::string nam
 template <typename Handle, typename... Args>
 void SetVulkanObjectNameF(vk::Device device, Handle handle, fmt::format_string<Args...> format,
                           Args&&... args) {
-	if constexpr (Handle::objectType == vk::ObjectType::eBuffer || Handle::objectType == vk::ObjectType::eImage) {
+	if constexpr (Handle::objectType == vk::ObjectType::eBuffer ||
+	              Handle::objectType == vk::ObjectType::eImage) {
 		if (AddressBindingReportActive() && handle != nullptr) {
 			const auto key = static_cast<uint64_t>(
 			    reinterpret_cast<uintptr_t>(static_cast<typename Handle::CType>(handle)));
@@ -80,8 +81,10 @@ void SetVulkanObjectNameF(vk::Device device, Handle handle, fmt::format_string<A
 			}
 		}
 	}
-	// Names are set for the debug dump and under --rd (RenderDoc shows them: images by guest address).
-	if ((!Config::GraphicsDebugDumpEnabled() && !Config::RenderDocEnabled()) || device == nullptr || handle == nullptr ||
+	// Names are set for the debug dump and under --rd (RenderDoc shows them: images by guest
+	// address).
+	if ((!Config::GraphicsDebugDumpEnabled() && !Config::RenderDocEnabled()) || device == nullptr ||
+	    handle == nullptr ||
 	    VULKAN_HPP_DEFAULT_DISPATCHER.vkSetDebugUtilsObjectNameEXT == nullptr) {
 		return;
 	}

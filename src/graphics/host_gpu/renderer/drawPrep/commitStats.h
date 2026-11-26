@@ -113,66 +113,66 @@ enum class Item : uint8_t {
 // boundary closes after the previous draw's end belongs to the next draw's gap.
 enum class Step : uint8_t {
 	// The gap, from the previous commit's end (after its statistics) to BeginDraw.
-	GapCommitTail,  // Engine::Commit after EndDraw: periodic summaries
-	GapRetire,      // CommitHead: window retire; ExecDrawIndex tail (MaybeYieldSlice)
-	GapOpExit,      // ExecuteOp's scope exit, register restore, op pop, NoteExecuted, loop top
-	GapLoop,        // resolver loop: commands check, Peek, placement, epoch, snapshot, bind
-	GapOpHead,      // ExecuteOp: scope, run activity checks, the switch
-	GapDrawOp,      // ExecDrawIndex/ExecDrawAuto up to CommitPublished
-	GapHead,        // ReadyHead: claim/prepare/wait for the head
-	GapCommitIn,    // Engine::Commit entry up to BeginDraw
+	GapCommitTail, // Engine::Commit after EndDraw: periodic summaries
+	GapRetire,     // CommitHead: window retire; ExecDrawIndex tail (MaybeYieldSlice)
+	GapOpExit,     // ExecuteOp's scope exit, register restore, op pop, NoteExecuted, loop top
+	GapLoop,       // resolver loop: commands check, Peek, placement, epoch, snapshot, bind
+	GapOpHead,     // ExecuteOp: scope, run activity checks, the switch
+	GapDrawOp,     // ExecDrawIndex/ExecDrawAuto up to CommitPublished
+	GapHead,       // ReadyHead: claim/prepare/wait for the head
+	GapCommitIn,   // Engine::Commit entry up to BeginDraw
 	// The commit (BeginDraw to EndDraw).
-	BindRegs,       // Engine::Commit: BindRegisters, executor fields
-	PopReady,       // DrawIndex: PopReadyOperations
-	DebugInfo,      // SetDebugInfo
-	Lock,           // the render mutex
-	BeginRun,       // BeginDrawRun
-	TargetOps,      // ConsumeMetadataColorOperation, DepthStencilCopy, ResolveColorTargets
-	VsCheck,        // DrawHasValidVertexShader, debug dump check
-	DrawChecks,     // RunDrawChecks
-	StateReset,     // topology, index source, state.Reset
-	PsActive,       // DrawHasActivePixelShader
-	TakePrepared,   // RefreshShaders up to Validate (prepared draw, export mapping)
-	Validate,       // DrawPrep::Validate (certificate)
-	Apply,          // ApplyPreparedDraw, plan activation
-	RunCandidate,   // DrawRunCandidate (and recall)
-	MarkBindings,   // DrawRunMarkBindings / target resolution
-	Restart,        // ResolvePrimitiveRestart, 8-bit indices, LogDrawState, offsets
-	ExecHead,       // ExecutePreparedDraw up to PrepareBindings (prefetch, mesh, indirect)
-	PrepStages,     // PrepareBindings of every stage
-	FindBuffers,    // FindBuffers of every stage
-	Bda,            // PrepareBda
-	Images,         // RebindImages, colour targets
-	RbHead,         // RebindBuffers: tick, shader-data reset, upload batch, memo prefetch
-	RbBindings,     // RebindBuffers: write ranges, NativeStorageBuffer per V#
-	RbMipStats,     // RebindBuffers: WriteMipStatsFields
-	RbTables,       // RebindBuffers: flattened SRT and shader-data uploads
-	RbBatchEnd,     // the stages' upload batch end
-	VertexAcquire,  // AcquireVertexBuffers
-	IndexPrepare,   // PrepareIndexBuffer, indirect buffers
-	LateCheck,      // the continuation's late check (command, images), verify
-	PipelineSel,    // plain-pixel choice, planned pipeline / lookup
-	Acquire,        // written rectangle, rendering state (acquisition or reuse)
-	BarrierSafe,    // DrawIsBarrierSafe
-	DrawScope,      // DrawScope, EmissionSink, debug phase
-	VertexCommit,   // CommitVertexBuffers
-	CbHead,         // CommitBindings: retick, address writes, counts, vector resets
-	CbTransitions,  // CommitBindings: image transitions (per stage)
-	CbBuild,        // CommitBindings: descriptor write list and push data (per stage)
-	CbPushConst,    // CommitBindings: push constants
-	CbDescriptors,  // CommitBindings: descriptor push or set
-	CbTail,         // the run push verify, transition check
-	IndexCommit,    // CommitIndexBuffer
-	DynamicState,   // the dynamic-state check and emission
-	Begin,          // BeginRendering, depth feedback
-	BindPipeline,   // pipeline bind and shadow
-	DrawCmd,        // the draw command
-	Occlusion,      // occlusion diagnostics checks, shader write stages and barrier
-	RunRecord,      // the run eligibility and record
-	ResetBindings,  // DrawIndex: ResetBindings
-	CommitTail,     // Engine::Commit: plan count, repeat trace, register restore, after-commit
-	KernelEntry,    // KYTY_CONT_KERNEL: the kernel's entry test (ContinuationKernelEntry)
-	Calib,          // an empty step (the boundary's own cost)
+	BindRegs,      // Engine::Commit: BindRegisters, executor fields
+	PopReady,      // DrawIndex: PopReadyOperations
+	DebugInfo,     // SetDebugInfo
+	Lock,          // the render mutex
+	BeginRun,      // BeginDrawRun
+	TargetOps,     // ConsumeMetadataColorOperation, DepthStencilCopy, ResolveColorTargets
+	VsCheck,       // DrawHasValidVertexShader, debug dump check
+	DrawChecks,    // RunDrawChecks
+	StateReset,    // topology, index source, state.Reset
+	PsActive,      // DrawHasActivePixelShader
+	TakePrepared,  // RefreshShaders up to Validate (prepared draw, export mapping)
+	Validate,      // DrawPrep::Validate (certificate)
+	Apply,         // ApplyPreparedDraw, plan activation
+	RunCandidate,  // DrawRunCandidate (and recall)
+	MarkBindings,  // DrawRunMarkBindings / target resolution
+	Restart,       // ResolvePrimitiveRestart, 8-bit indices, LogDrawState, offsets
+	ExecHead,      // ExecutePreparedDraw up to PrepareBindings (prefetch, mesh, indirect)
+	PrepStages,    // PrepareBindings of every stage
+	FindBuffers,   // FindBuffers of every stage
+	Bda,           // PrepareBda
+	Images,        // RebindImages, colour targets
+	RbHead,        // RebindBuffers: tick, shader-data reset, upload batch, memo prefetch
+	RbBindings,    // RebindBuffers: write ranges, NativeStorageBuffer per V#
+	RbMipStats,    // RebindBuffers: WriteMipStatsFields
+	RbTables,      // RebindBuffers: flattened SRT and shader-data uploads
+	RbBatchEnd,    // the stages' upload batch end
+	VertexAcquire, // AcquireVertexBuffers
+	IndexPrepare,  // PrepareIndexBuffer, indirect buffers
+	LateCheck,     // the continuation's late check (command, images), verify
+	PipelineSel,   // plain-pixel choice, planned pipeline / lookup
+	Acquire,       // written rectangle, rendering state (acquisition or reuse)
+	BarrierSafe,   // DrawIsBarrierSafe
+	DrawScope,     // DrawScope, EmissionSink, debug phase
+	VertexCommit,  // CommitVertexBuffers
+	CbHead,        // CommitBindings: retick, address writes, counts, vector resets
+	CbTransitions, // CommitBindings: image transitions (per stage)
+	CbBuild,       // CommitBindings: descriptor write list and push data (per stage)
+	CbPushConst,   // CommitBindings: push constants
+	CbDescriptors, // CommitBindings: descriptor push or set
+	CbTail,        // the run push verify, transition check
+	IndexCommit,   // CommitIndexBuffer
+	DynamicState,  // the dynamic-state check and emission
+	Begin,         // BeginRendering, depth feedback
+	BindPipeline,  // pipeline bind and shadow
+	DrawCmd,       // the draw command
+	Occlusion,     // occlusion diagnostics checks, shader write stages and barrier
+	RunRecord,     // the run eligibility and record
+	ResetBindings, // DrawIndex: ResetBindings
+	CommitTail,    // Engine::Commit: plan count, repeat trace, register restore, after-commit
+	KernelEntry,   // KYTY_CONT_KERNEL: the kernel's entry test (ContinuationKernelEntry)
+	Calib,         // an empty step (the boundary's own cost)
 	Count
 };
 
@@ -240,9 +240,9 @@ inline void StepMark(Step step) {
 // KYTY_CONT_KERNEL's decision for the draw (DrawIndex): switched off or not a DrawIndex, its entry
 // test failed, the kernel declined (normal path from the start), took it, or left it late.
 enum class KernelOutcome : uint8_t { Off, NoEntry, Declined, Taken, Left };
-// KYTY_DRAW_RUN's candidate check for the draw (DrawRunCandidate): not reached, or its first failing
-// condition (no record, key, activity, command buffer/tick, rendering instance, validation, programs,
-// writes over the run, pipeline-swap incompatible), or continued.
+// KYTY_DRAW_RUN's candidate check for the draw (DrawRunCandidate): not reached, or its first
+// failing condition (no record, key, activity, command buffer/tick, rendering instance, validation,
+// programs, writes over the run, pipeline-swap incompatible), or continued.
 enum class CandidateOutcome : uint8_t {
 	NotReached,
 	NoRecord,
@@ -273,14 +273,14 @@ struct DrawShape {
 	uint64_t bind_input       = 0; // cross-frame: complete binding inputs
 	uint64_t struct_input     = 0; // cross-frame: structure only
 	// The parts of `structure`, for the change classes (StartPhases/Steps reasons, ChangeMasks).
-	uint64_t programs         = 0; // every stage's program
-	uint64_t textures         = 0; // texture views, layouts and mip views
-	uint64_t samplers         = 0; // sampler handles
-	uint64_t attachments      = 0; // colour/depth attachment views and layouts
+	uint64_t         programs         = 0; // every stage's program
+	uint64_t         textures         = 0; // texture views, layouts and mip views
+	uint64_t         samplers         = 0; // sampler handles
+	uint64_t         attachments      = 0; // colour/depth attachment views and layouts
 	bool     shader_writes    = false;
 	bool     run_continued    = false; // KYTY_DRAW_RUN continued the previous draw's run
-	KernelOutcome kernel      = KernelOutcome::Off;
-	CandidateOutcome candidate = CandidateOutcome::NotReached;
+	KernelOutcome    kernel           = KernelOutcome::Off;
+	CandidateOutcome candidate        = CandidateOutcome::NotReached;
 	uint8_t prev_inelig = 0; // the previous draw's DrawRun::KeyDiag::Inelig (why it left no record)
 };
 

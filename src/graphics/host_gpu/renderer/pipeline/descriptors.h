@@ -94,8 +94,8 @@ struct PreparedBindings {
 	bool                                  plan_shader_data = false;
 	// Bindless images (Senaxx; RenderExecutor::PrepareBindlessHeaps): flattened-SRT words to patch
 	// (offset, region, entries) and the heaps whose images must be readable for this stage.
-	std::vector<std::array<uint32_t, 3>>  bindless_patches;
-	std::vector<BindlessHeap*>            bindless_heaps;
+	std::vector<std::array<uint32_t, 3>> bindless_patches;
+	std::vector<BindlessHeap*>           bindless_heaps;
 };
 
 // NoteBufferOutOfBoundsMode's combination of a V# (OOB_SELECT, stride, swizzle, ADD_TID): the bit
@@ -157,7 +157,8 @@ template <typename T>
 // KYTY_DEPTH_ENCODING_FIELDS: 1 = the T# differs from a supported depth encoding only in fields
 // the texture unit does not use for a non-array 1D/2D resource, 2 = the same with CORNER_SAMPLES
 // set, 0 = anything else (descriptors.cpp).
-[[nodiscard]] uint32_t DepthEncodingFieldsVerdict(const ShaderTextureResource& descriptor, bool r128);
+[[nodiscard]] uint32_t DepthEncodingFieldsVerdict(const ShaderTextureResource& descriptor,
+                                                  bool                         r128);
 [[nodiscard]] bool IsSupportedSampledDepthBinding(const ShaderRecompiler::IR::ImageResource& resource,
                                                    const ShaderTextureResource& descriptor,
                                                    vk::Format image_format, vk::Format view_format);

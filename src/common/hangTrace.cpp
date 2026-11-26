@@ -1,4 +1,5 @@
 #include "common/hangTrace.h"
+
 #include "common/staticOnce.h"
 #include "common/threadQos.h"
 #if defined(__APPLE__)
@@ -1062,7 +1063,8 @@ bool ImportsEnabled() {
 
 bool CpTraceEnabled() {
 	static constinit Common::StaticOnce<bool> enabled_once;
-	const bool& enabled = enabled_once.Get([&] { return Enabled() && EnvFlag("KYTY_HANG_TRACE_CP", false); });
+	const bool&                               enabled =
+	    enabled_once.Get([&] { return Enabled() && EnvFlag("KYTY_HANG_TRACE_CP", false); });
 	return enabled;
 }
 

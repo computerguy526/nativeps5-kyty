@@ -17,16 +17,16 @@ struct State {
 	uint64_t draw_base     = 0;
 	uint64_t dispatch_base = 0;
 	// Diagnostics: the last SET_BASE seen (shader_type 0 = draw, 1 = dispatch) and how many.
-	uint64_t last_set_addr = 0;
-	uint32_t last_set_type = 0xffffffffu;
-	uint64_t set_count     = 0;
-	uint64_t skipped_draws = 0;
+	uint64_t last_set_addr      = 0;
+	uint32_t last_set_type      = 0xffffffffu;
+	uint64_t set_count          = 0;
+	uint64_t skipped_draws      = 0;
 	uint64_t skipped_dispatches = 0;
 
 	void Set(uint32_t shader_type, uint64_t addr) {
 		(shader_type == 0u ? draw_base : dispatch_base) = addr;
-		last_set_addr = addr;
-		last_set_type = shader_type;
+		last_set_addr                                   = addr;
+		last_set_type                                   = shader_type;
 		set_count++;
 	}
 	// A CP reset keeps the bases (the registers persist on the real CP). Kept as a named no-op so
@@ -36,7 +36,8 @@ struct State {
 
 enum class DrawVerdict { Draw, SkipNoBase, SkipBadInitiator };
 
-[[nodiscard]] inline DrawVerdict ClassifyDraw(uint64_t base, uint32_t draw_initiator, bool indexed) {
+[[nodiscard]] inline DrawVerdict ClassifyDraw(uint64_t base, uint32_t draw_initiator,
+                                              bool indexed) {
 	// Indexed records select the DMA index source (0), auto-index records generated indices (2).
 	if ((draw_initiator & ~0x20u) != (indexed ? 0u : 2u)) {
 		return DrawVerdict::SkipBadInitiator;
@@ -49,7 +50,8 @@ enum class DrawVerdict { Draw, SkipNoBase, SkipBadInitiator };
 	return count <= 8 || (count & (count - 1)) == 0;
 }
 
-// KYTY_INDIRECT_DIAG=1: print every indirect op's offset, initiator, submit id and the last SET_BASE.
+// KYTY_INDIRECT_DIAG=1: print every indirect op's offset, initiator, submit id and the last
+// SET_BASE.
 [[nodiscard]] inline bool DiagEnabled() {
 	static const bool enabled = [] {
 		const char* v = std::getenv("KYTY_INDIRECT_DIAG");

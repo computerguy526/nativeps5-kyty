@@ -19,8 +19,9 @@ namespace {
 thread_local uint64_t t_shader = 0;
 
 struct State {
-	std::mutex                                                               mutex;
-	std::array<std::unordered_map<uint64_t, uint64_t>, static_cast<size_t>(NullTraceKind::Count)> counts;
+	std::mutex mutex;
+	std::array<std::unordered_map<uint64_t, uint64_t>, static_cast<size_t>(NullTraceKind::Count)>
+	                                      counts;
 	std::chrono::steady_clock::time_point window_start = std::chrono::steady_clock::now();
 };
 
@@ -64,18 +65,20 @@ void NullTraceNote(NullTraceKind kind, uint64_t shader_hash) {
 		const auto now = std::chrono::steady_clock::now();
 		if (now - state.window_start < std::chrono::seconds(10)) return;
 		state.window_start = now;
-		lines = "Kyty null trace (last 10 s, shader hash x count):\n";
+		lines              = "Kyty null trace (last 10 s, shader hash x count):\n";
 		for (size_t k = 0; k < state.counts.size(); k++) {
 			auto& map = state.counts[k];
 			if (map.empty()) continue;
 			std::vector<std::pair<uint64_t, uint64_t>> top(map.begin(), map.end());
-			std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+			std::sort(top.begin(), top.end(),
+			          [](const auto& a, const auto& b) { return a.second > b.second; });
 			char buffer[64];
 			lines += "  ";
 			lines += KindName(k);
 			lines += ":";
 			for (size_t i = 0; i < top.size() && i < 16; i++) {
-				std::snprintf(buffer, sizeof(buffer), " %016" PRIx64 "x%" PRIu64, top[i].first, top[i].second);
+				std::snprintf(buffer, sizeof(buffer), " %016" PRIx64 "x%" PRIu64, top[i].first,
+				              top[i].second);
 				lines += buffer;
 			}
 			if (top.size() > 16) lines += " +" + std::to_string(top.size() - 16) + " more";

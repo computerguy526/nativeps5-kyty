@@ -970,7 +970,8 @@ struct Ngs2VoiceInternal {
 		} else if (retained != 0) {
 			blocks.back().info.data_size = tail.info.data_size;
 		}
-		// CANCEL marks the outstanding blocks; a marked block that has not started decodes as data only.
+		// CANCEL marks the outstanding blocks; a marked block that has not started decodes as data
+		// only.
 		if ((flags & 8u) != 0) {
 			for (auto& block: blocks) {
 				block.canceled = true;
@@ -2717,7 +2718,7 @@ int KYTY_SYSV_ABI Ngs2GeomApply(const Ngs2GeomListenerWork* listener,
 		const auto  axis        = GeomNormalize(source->direction, {0.0f, 0.0f, 1.0f});
 		const auto  to_listen   = GeomScale(offset, -1.0f / distance);
 		const float angle       = std::acos(std::clamp(GeomDot(axis, to_listen), -1.0f, 1.0f)) *
-		                          (180.0f / std::numbers::pi_v<float>) * 2.0f;
+		                          (180.0f / std::numbers::pi_v<float>)*2.0f;
 		const float inner_level = std::clamp(source->cone.inner_level, 0.0f, 2.0f);
 		const float outer_level = std::clamp(source->cone.outer_level, 0.0f, 2.0f);
 		float       cone        = 1.0f;
@@ -3025,8 +3026,8 @@ int KYTY_SYSV_ABI Ngs2VoiceControl(uintptr_t voice_handle, const Ngs2VoiceParamH
 					break;
 				}
 				if (module_id == 0x17) {
-					EXIT_NOT_IMPLEMENTED(param->size != sizeof(Ngs2VoiceParamHeader) +
-					                                       37 * 37 * sizeof(float));
+					EXIT_NOT_IMPLEMENTED(param->size !=
+					                     sizeof(Ngs2VoiceParamHeader) + 37 * 37 * sizeof(float));
 					const auto* levels = reinterpret_cast<const float*>(param + 1);
 					module.channel_matrix.resize(37 * 37);
 					std::transform(levels, levels + module.channel_matrix.size(),
@@ -3238,14 +3239,16 @@ int KYTY_SYSV_ABI Ngs2VoiceGetState(uintptr_t voice_handle, Ngs2VoiceState* stat
 			const bool sampler = voice->rack->type == Ngs2RackType::CustomSampler;
 			const auto configured_size =
 			    voice->rack->option.custom_sampler.custom_rack_option.state_size;
-			EXIT_NOT_IMPLEMENTED(configured_size < (sampler ? sizeof(Ngs2CustomSamplerVoiceState)
-			                                                : sizeof(Ngs2CustomMasteringVoiceState)));
+			EXIT_NOT_IMPLEMENTED(configured_size < (sampler
+			                                            ? sizeof(Ngs2CustomSamplerVoiceState)
+			                                            : sizeof(Ngs2CustomMasteringVoiceState)));
 			if (state_size < configured_size) {
 				return static_cast<int32_t>(0x804a8011u);
 			}
 			std::memset(state, 0, configured_size);
 			if (sampler) {
-				Ngs2FillSamplerState(*voice, *reinterpret_cast<Ngs2CustomSamplerVoiceState*>(state));
+				Ngs2FillSamplerState(*voice,
+				                     *reinterpret_cast<Ngs2CustomSamplerVoiceState*>(state));
 			} else {
 				state->state_flags = Ngs2GetStateFlags(voice);
 			}

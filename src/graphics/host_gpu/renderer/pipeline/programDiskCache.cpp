@@ -113,7 +113,9 @@ void ProgramDiskCache::BuildSourceKey(const SourceKeyInputs& inputs, SourceKey& 
 	Put<uint32_t>(bytes, inputs.user_data_base);
 	Put<uint8_t>(bytes, inputs.plain_mip_stats_variant ? 1u : 0u);
 	if (inputs.variant != 0)
-		Put<uint64_t>(bytes, inputs.variant); // sarosperf: absent for variant 0, so every existing key is unchanged
+		Put<uint64_t>(
+		    bytes,
+		    inputs.variant); // sarosperf: absent for variant 0, so every existing key is unchanged
 	PutWords(bytes, inputs.code);
 	PutWords(bytes, inputs.back_code);
 	const auto digest = XXH3_128bits(bytes.data(), bytes.size());
@@ -176,7 +178,8 @@ bool ProgramDiskCache::ParseRecord(std::span<const uint8_t> bytes, Record& recor
 			record.packed   = c.Rest();
 			record.expanded = false;
 			if (c.Failed() || record.raw_size == 0 || record.packed.empty() ||
-			    ZSTD_getFrameContentSize(record.packed.data(), record.packed.size()) != record.raw_size) {
+			    ZSTD_getFrameContentSize(record.packed.data(), record.packed.size()) !=
+			        record.raw_size) {
 				return false;
 			}
 		} else {
@@ -215,7 +218,7 @@ bool ProgramDiskCache::ParseBody(std::span<const uint8_t> body, Record& record) 
 }
 
 std::shared_ptr<std::vector<uint8_t>> ProgramDiskCache::Unpack(std::span<const uint8_t> packed,
-                                                               uint32_t raw_size) {
+                                                               uint32_t                 raw_size) {
 	auto       body = std::make_shared<std::vector<uint8_t>>(raw_size);
 	const auto size = ZSTD_decompress(body->data(), body->size(), packed.data(), packed.size());
 	if (ZSTD_isError(size) != 0 || size != body->size()) return nullptr;
@@ -226,7 +229,7 @@ std::vector<uint8_t> ProgramDiskCache::Pack(std::span<const uint8_t> body) const
 	// The frame carries its content checksum: a damaged frame fails to expand instead of
 	// returning wrong bytes.
 	thread_local std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> context(ZSTD_createCCtx(),
-	                                                                           &ZSTD_freeCCtx);
+	                                                                          &ZSTD_freeCCtx);
 	if (context == nullptr || body.empty() || body.size() > UINT32_MAX ||
 	    ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel,
 	                                        m_settings.compress_level)) != 0 ||
@@ -234,7 +237,8 @@ std::vector<uint8_t> ProgramDiskCache::Pack(std::span<const uint8_t> body) const
 		return {};
 	}
 	std::vector<uint8_t> packed(ZSTD_compressBound(body.size()));
-	const auto size = ZSTD_compress2(context.get(), packed.data(), packed.size(), body.data(), body.size());
+	const auto           size =
+	    ZSTD_compress2(context.get(), packed.data(), packed.size(), body.data(), body.size());
 	if (ZSTD_isError(size) != 0 || size + 8u >= body.size()) return {};
 	packed.resize(size);
 	return packed;
@@ -373,7 +377,8 @@ void ProgramDiskCache::Load() {
 				const auto id = static_cast<uint32_t>(m_records.size());
 				m_records.push_back(record);
 				if (IndexRecord(id)) {
-					if (IsSourceKind(record.kind)) m_stats.loaded_sources++;
+					if (IsSourceKind(record.kind))
+						m_stats.loaded_sources++;
 					else m_stats.loaded_permutations++;
 				} else {
 					// Duplicate or ambiguous: kept out of the index and out of later saves.
@@ -417,7 +422,8 @@ void ProgramDiskCache::Load() {
 	}
 }
 
-std::optional<ProgramDiskCache::SourceRecord> ProgramDiskCache::FindSource(const SourceKey& key, bool note_use) {
+std::optional<ProgramDiskCache::SourceRecord> ProgramDiskCache::FindSource(const SourceKey& key,
+                                                                           bool note_use) {
 	WaitLoaded();
 	std::unique_lock lock(m_mutex);
 	for (;;) {
@@ -442,7 +448,8 @@ std::optional<ProgramDiskCache::SourceRecord> ProgramDiskCache::FindSource(const
 		m_stats.source_hits++;
 		if (note_use) NoteUsed(match);
 		const auto& record = m_records[match];
-		return SourceRecord {.id = match, .skip_dispatch = record.skip_dispatch, .plan = record.plan};
+		return SourceRecord {
+		    .id = match, .skip_dispatch = record.skip_dispatch, .plan = record.plan};
 	}
 }
 
@@ -473,7 +480,9 @@ ProgramDiskCache::FindPermutation(const Digest& source, uint32_t push_data_curso
 			m_stats.permutation_hits++;
 			if (note_use) NoteUsed(match);
 			const auto& record = m_records[match];
-			return PermutationRecord {.id = match, .info = record.info, .spirv = record.spirv,
+			return PermutationRecord {.id          = match,
+			                          .info        = record.info,
+			                          .spirv       = record.spirv,
 			                          .spirv_plain = record.spirv_plain};
 		}
 		// Packed: expanded unlocked into a buffer the returned record owns.
@@ -483,8 +492,8 @@ ProgramDiskCache::FindPermutation(const Digest& source, uint32_t push_data_curso
 		const auto begin = NowNs();
 		auto       body  = Unpack(packed, raw_size);
 		Record     parsed;
-		const bool ok    = body != nullptr && ParseBody(*body, parsed);
-		const auto ns    = NowNs() - begin;
+		const bool ok = body != nullptr && ParseBody(*body, parsed);
+		const auto ns = NowNs() - begin;
 		lock.lock();
 		if (!ok) {
 			InvalidateLocked(match); // a damaged frame: look again
@@ -496,8 +505,11 @@ ProgramDiskCache::FindPermutation(const Digest& source, uint32_t push_data_curso
 		m_stats.expand_ns += ns;
 		m_stats.permutation_hits++;
 		if (note_use) NoteUsed(match);
-		return PermutationRecord {.id = match, .info = parsed.info, .spirv = parsed.spirv,
-		                          .spirv_plain = parsed.spirv_plain, .body = std::move(body)};
+		return PermutationRecord {.id          = match,
+		                          .info        = parsed.info,
+		                          .spirv       = parsed.spirv,
+		                          .spirv_plain = parsed.spirv_plain,
+		                          .body        = std::move(body)};
 	}
 }
 
@@ -535,7 +547,8 @@ void ProgramDiskCache::AppendRecord(uint32_t kind, const std::vector<uint8_t>& p
 	m_bytes += total;
 	m_changes++;
 	m_last_change_ns = NowNs();
-	if (IsSourceKind(kind)) m_stats.added_sources++;
+	if (IsSourceKind(kind))
+		m_stats.added_sources++;
 	else m_stats.added_permutations++;
 }
 
@@ -591,7 +604,8 @@ void ProgramDiskCache::AddPermutation(const Digest& source, uint32_t push_data_c
 		const auto body  = std::span<const uint8_t>(payload).subspan(key_size);
 		const auto frame = Pack(body);
 		if (!frame.empty()) {
-			std::vector<uint8_t> packed(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(key_size));
+			std::vector<uint8_t> packed(payload.begin(),
+			                            payload.begin() + static_cast<std::ptrdiff_t>(key_size));
 			Put<uint32_t>(packed, static_cast<uint32_t>(body.size()));
 			packed.insert(packed.end(), frame.begin(), frame.end());
 			raw_bytes = payload.size();
@@ -602,7 +616,7 @@ void ProgramDiskCache::AddPermutation(const Digest& source, uint32_t push_data_c
 	}
 	{
 		std::scoped_lock lock(m_mutex);
-		const auto added = m_stats.added_permutations;
+		const auto       added = m_stats.added_permutations;
 		AppendRecord(kind, payload, source);
 		if (kind == RecordPermutationPacked && m_stats.added_permutations != added) {
 			m_stats.packed_added++;
@@ -641,13 +655,15 @@ bool ProgramDiskCache::MakeRoom(uint64_t bytes) {
 	// Requires m_mutex.
 	if (!m_settings.evict_unused || bytes > m_settings.max_file_bytes) return false;
 	uint64_t available = 0;
-	for (uint32_t id = 0; id < m_loaded_count && m_bytes + bytes > m_settings.max_file_bytes + available; id++) {
+	for (uint32_t id = 0;
+	     id < m_loaded_count && m_bytes + bytes > m_settings.max_file_bytes + available; id++) {
 		const auto& record = m_records[id];
 		if (!record.used && !record.evicted && !record.invalid) available += record.bytes.size();
 	}
 	if (m_bytes + bytes > m_settings.max_file_bytes + available) return false;
 	uint64_t freed = 0;
-	for (uint32_t id = 0; id < m_loaded_count && m_bytes + bytes > m_settings.max_file_bytes; id++) {
+	for (uint32_t id = 0; id < m_loaded_count && m_bytes + bytes > m_settings.max_file_bytes;
+	     id++) {
 		auto& record = m_records[id];
 		if (record.used || record.evicted || record.invalid) continue;
 		record.evicted = true;
@@ -659,9 +675,10 @@ bool ProgramDiskCache::MakeRoom(uint64_t bytes) {
 	if (freed != 0) {
 		m_changes++;
 		if (m_stats.evicted_bytes == freed && !m_settings.quiet) {
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "Program cache: {} is at {} MiB; records this run has not used are dropped for new ones\n",
-			    Common::PathToString(m_settings.path), m_settings.max_file_bytes >> 20u));
+			Log::WriteToConsoleAndLog(fmt::format("Program cache: {} is at {} MiB; records this "
+			                                      "run has not used are dropped for new ones\n",
+			                                      Common::PathToString(m_settings.path),
+			                                      m_settings.max_file_bytes >> 20u));
 		}
 	}
 	return true;
@@ -824,9 +841,11 @@ bool ProgramDiskCache::Save(bool final_save) {
 				std::scoped_lock lock(m_mutex);
 				if (m_stats.packed_added != 0 || m_stats.expanded != 0) {
 					packing = fmt::format(
-					    "; packed {} new permutations {:.1f} -> {:.1f} MiB in {:.0f} ms, expanded {} "
+					    "; packed {} new permutations {:.1f} -> {:.1f} MiB in {:.0f} ms, expanded "
+					    "{} "
 					    "({:.1f} MiB) in {:.0f} ms",
-					    m_stats.packed_added, static_cast<double>(m_stats.packed_raw_bytes) / (1024.0 * 1024.0),
+					    m_stats.packed_added,
+					    static_cast<double>(m_stats.packed_raw_bytes) / (1024.0 * 1024.0),
 					    static_cast<double>(m_stats.packed_bytes) / (1024.0 * 1024.0),
 					    static_cast<double>(m_stats.pack_ns) / 1.0e6, m_stats.expanded,
 					    static_cast<double>(m_stats.expanded_bytes) / (1024.0 * 1024.0),

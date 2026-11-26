@@ -1,6 +1,7 @@
 #include "mainDialog.h"
 
 #include "cheatFile.h"
+#include "common/u59Preset.h"
 #include "configuration.h"
 #include "configurationItem.h"
 #include "configurationListWidget.h"
@@ -11,8 +12,6 @@
 #include "shaderListExport.h"
 #include "titleSound.h"
 #include "updateChecker.h"
-
-#include "common/u59Preset.h"
 
 #include <QApplication>
 #include <QByteArray>
@@ -32,12 +31,12 @@
 #include <QProcessEnvironment>
 #include <QProgressDialog>
 #include <QPushButton>
-#include <QUrl>
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStringList>
 #include <QStyleHints>
+#include <QUrl>
 #include <QVariant>
 #include <QtCore>
 
@@ -125,7 +124,7 @@ private:
 	bool                       m_precompiling = false;
 	QString                    m_precompile_title; // its game: no row of it runs meanwhile
 	bool                       m_exporting = false;
-	QString                    m_export_out; // --export-list-out: the list's file instead of the default
+	QString m_export_out; // --export-list-out: the list's file instead of the default
 
 	// Running games and a running precompile.
 	int m_running_games = 0;
@@ -270,8 +269,8 @@ void MainDialogPrivate::FindInterpreter() {
 
 	// --precompile <game folder or archive> (scripts, tests): the launcher starts as if that game's
 	// Precompile button had been clicked. Item widgets of the list are not reachable through UI
-	// Automation, so nothing else can press the button without the mouse. With --precompile-list <file>
-	// the list that game asks for is that file, as if it had been chosen in the file dialog.
+	// Automation, so nothing else can press the button without the mouse. With --precompile-list
+	// <file> the list that game asks for is that file, as if it had been chosen in the file dialog.
 	const auto arguments = QCoreApplication::arguments();
 	if (const auto at = arguments.indexOf(QStringLiteral("--context-menu"));
 	    at >= 0 && at + 1 < arguments.size()) {
@@ -561,7 +560,8 @@ static void ApplyTitlePreset(QProcess* process, const QString& title_id) {
 	// previous title's preset never carries over (also when this title has no valid preset).
 	process->setProcessEnvironment(QProcessEnvironment::systemEnvironment());
 	const QDir                         app_dir(QApplication::applicationDirPath());
-	std::vector<std::filesystem::path> dirs {std::filesystem::path(app_dir.absolutePath().toStdU16String())};
+	std::vector<std::filesystem::path> dirs {
+	    std::filesystem::path(app_dir.absolutePath().toStdU16String())};
 	if (QDir parent = app_dir; parent.cdUp()) {
 		dirs.emplace_back(parent.absolutePath().toStdU16String());
 	}
@@ -570,7 +570,8 @@ static void ApplyTitlePreset(QProcess* process, const QString& title_id) {
 		return;
 	}
 	if (result.status != Common::U59Preset::Status::Loaded) {
-		qWarning().noquote() << QString::fromStdString(Common::U59Preset::TitleFileName(title_id.toStdString()))
+		qWarning().noquote() << QString::fromStdString(
+		                            Common::U59Preset::TitleFileName(title_id.toStdString()))
 		                     << "was not applied:" << QString::fromStdString(result.error);
 		return;
 	}
@@ -584,8 +585,8 @@ static void ApplyTitlePreset(QProcess* process, const QString& title_id) {
 }
 
 // What a normal run and a prepare run share: the game's arguments, and on the process its
-// environment (title preset, frametime fix) and working directory. Empty arguments: the configuration
-// is not valid.
+// environment (title preset, frametime fix) and working directory. Empty arguments: the
+// configuration is not valid.
 static QStringList SetupEmulatorProcess(QProcess* process, const QString& interpreter,
                                         const Configuration& info) {
 	ApplyTitlePreset(process, info.title_id);
@@ -768,8 +769,8 @@ void MainDialogPrivate::PrecompileShaders() {
 	auto       environment = process->processEnvironment();
 	const bool custom =
 	    Precompile::IsCustomList(environment.value(QLatin1String(Precompile::ENV_LIST)));
-	auto list = custom ? QString()
-	                   : Precompile::FindList(emulator_dir, info->title_id, info->gameVersion);
+	auto list =
+	    custom ? QString() : Precompile::FindList(emulator_dir, info->title_id, info->gameVersion);
 	bool installed_now = false;
 	if (!custom && list.isEmpty()) {
 		list = PrecompileDialog::ChooseList(m_main_dialog, emulator_dir, *info, true);
@@ -817,8 +818,8 @@ void MainDialogPrivate::PrecompileShaders() {
 
 // Runs kyty_pipeline_list with a modal window that says what it does and can cancel it. The exit
 // code, or -1 when it could not be started or was cancelled; its output in `output`.
-static int RunListTool(QWidget* parent, const QString& tool, const QStringList& args, const QString& label,
-                       QString* output, bool* cancelled) {
+static int RunListTool(QWidget* parent, const QString& tool, const QStringList& args,
+                       const QString& label, QString* output, bool* cancelled) {
 	QProcess process;
 	process.setProgram(tool);
 	process.setArguments(args);
@@ -855,7 +856,8 @@ static int RunListTool(QWidget* parent, const QString& tool, const QStringList& 
 		for (auto line = lines.crbegin(); line != lines.crend(); ++line) {
 			ShaderListExport::Scan scan;
 			if (ShaderListExport::ParseScan(*line, &scan)) {
-				progress.setLabelText(label + QStringLiteral("\n\n") + ShaderListExport::ScanText(scan));
+				progress.setLabelText(label + QStringLiteral("\n\n") +
+				                      ShaderListExport::ScanText(scan));
 				progress.setRange(0, 1000);
 				progress.setValue(ShaderListExport::ScanPermille(scan));
 				break;
@@ -890,7 +892,8 @@ void MainDialogPrivate::ExportShaderList() {
 	const auto  emulator_dir = QFileInfo(m_interpreter).absolutePath();
 	const auto  window_title = tr("Export shader list");
 	const auto& game_name    = info->name;
-	const auto  fail         = [this, &window_title](const QString& text, QMessageBox::Icon icon = QMessageBox::Warning) {
+	const auto  fail = [this, &window_title](const QString&    text,
+	                                         QMessageBox::Icon icon = QMessageBox::Warning) {
 		qInfo().noquote() << "export-list: failed:" << text;
 		QMessageBox box(icon, window_title, text, QMessageBox::Ok, m_main_dialog);
 		box.setTextFormat(Qt::PlainText);
@@ -899,7 +902,8 @@ void MainDialogPrivate::ExportShaderList() {
 
 	const auto tool = ShaderListExport::FindTool(QApplication::applicationDirPath());
 	if (tool.isEmpty()) {
-		fail(tr("kyty_pipeline_list is missing: it belongs next to the launcher. Unpack the whole release "
+		fail(tr("kyty_pipeline_list is missing: it belongs next to the launcher. Unpack the whole "
+		        "release "
 		        "archive again."));
 		return;
 	}
@@ -915,43 +919,48 @@ void MainDialogPrivate::ExportShaderList() {
 	// A running session (or a precompile) of this game still writes what it records.
 	if (item->IsRunning() || (m_precompiling && m_precompile_title == info->title_id) ||
 	    m_ui->widget->IsTitleRunning(info->title_id)) {
-		fail(tr("%1 is running, or its shaders are being precompiled. Close it first: the game is still "
+		fail(tr("%1 is running, or its shaders are being precompiled. Close it first: the game is "
+		        "still "
 		        "writing what it records.")
 		         .arg(game_name),
 		     QMessageBox::Information);
 		return;
 	}
-	const auto journals = ShaderListExport::FindJournals(emulator_dir, info->title_id);
-	const auto nothing_recorded =
-	    tr("Nothing has been recorded for %1 yet.\n\nKyty records the shaders and pipelines a game uses while "
-	       "you play it with this launcher. Play the game for a while, close it, then export the list.")
-	        .arg(game_name);
+	const auto journals         = ShaderListExport::FindJournals(emulator_dir, info->title_id);
+	const auto nothing_recorded = tr("Nothing has been recorded for %1 yet.\n\nKyty records the "
+	                                 "shaders and pipelines a game uses while "
+	                                 "you play it with this launcher. Play the game for a while, "
+	                                 "close it, then export the list.")
+	                                  .arg(game_name);
 	if (journals.IsEmpty()) {
 		fail(nothing_recorded, QMessageBox::Information);
 		return;
 	}
-	const auto out = m_export_out.isEmpty()
-	                     ? ShaderListExport::DefaultOutput(emulator_dir, info->title_id, info->gameVersion)
-	                     : m_export_out;
+	const auto out =
+	    m_export_out.isEmpty()
+	        ? ShaderListExport::DefaultOutput(emulator_dir, info->title_id, info->gameVersion)
+	        : m_export_out;
 	if (!QDir().mkpath(QFileInfo(out).absolutePath())) {
-		fail(tr("Could not create the folder %1.").arg(QDir::toNativeSeparators(QFileInfo(out).absolutePath())));
+		fail(tr("Could not create the folder %1.")
+		         .arg(QDir::toNativeSeparators(QFileInfo(out).absolutePath())));
 		return;
 	}
 	const auto partial = ShaderListExport::PartialPath(out);
 	QFile::remove(partial);
 	// A folder game started from another executable than eboot.bin: that one holds the shaders.
 	QString executable;
-	if (!GameContent::IsArchive(info->basedir) && !info->elf.isEmpty() && info->elf != QStringLiteral("eboot.bin")) {
+	if (!GameContent::IsArchive(info->basedir) && !info->elf.isEmpty() &&
+	    info->elf != QStringLiteral("eboot.bin")) {
 		executable = QDir(info->basedir).filePath(info->elf);
 	}
 
-	// The list the game's sessions ran with (as Precompile finds it): the emulator records only what
-	// it did not get from that list, so the export takes it in.
+	// The list the game's sessions ran with (as Precompile finds it): the emulator records only
+	// what it did not get from that list, so the export takes it in.
 	QProcess probe;
 	(void)SetupEmulatorProcess(&probe, m_interpreter, *info);
-	const auto base_list =
-	    ShaderListExport::BaseList(emulator_dir, info->title_id, info->gameVersion,
-	                               probe.processEnvironment().value(QLatin1String(Precompile::ENV_LIST)));
+	const auto base_list = ShaderListExport::BaseList(
+	    emulator_dir, info->title_id, info->gameVersion,
+	    probe.processEnvironment().value(QLatin1String(Precompile::ENV_LIST)));
 
 	m_exporting = true;
 	struct Done {
@@ -960,9 +969,10 @@ void MainDialogPrivate::ExportShaderList() {
 	} done {&m_exporting};
 	QString output;
 	bool    cancelled = false;
-	int     code      = RunListTool(m_main_dialog, tool,
-	                                ShaderListExport::ExportArguments(partial, info->basedir, executable, journals, base_list),
-	                                tr("Making the shader list of %1...").arg(game_name), &output, &cancelled);
+	int     code      = RunListTool(
+	    m_main_dialog, tool,
+	    ShaderListExport::ExportArguments(partial, info->basedir, executable, journals, base_list),
+	    tr("Making the shader list of %1...").arg(game_name), &output, &cancelled);
 	ShaderListExport::Written written;
 	if (cancelled) {
 		QFile::remove(partial);
@@ -980,9 +990,10 @@ void MainDialogPrivate::ExportShaderList() {
 		return;
 	}
 	QString verify_output;
-	code = RunListTool(m_main_dialog, tool,
-	                   ShaderListExport::VerifyArguments(partial, info->basedir, executable, journals),
-	                   tr("Checking that the list holds no shader code..."), &verify_output, &cancelled);
+	code = RunListTool(
+	    m_main_dialog, tool,
+	    ShaderListExport::VerifyArguments(partial, info->basedir, executable, journals),
+	    tr("Checking that the list holds no shader code..."), &verify_output, &cancelled);
 	if (cancelled) {
 		QFile::remove(partial);
 		fail(tr("Cancelled."), QMessageBox::Information);
@@ -1003,32 +1014,37 @@ void MainDialogPrivate::ExportShaderList() {
 	m_ui->widget->UpdatePrecompileButtons();
 
 	const auto native = QDir::toNativeSeparators(out);
-	qInfo().noquote() << "export-list: ok:" << native << written.shaders << "shaders" << written.permutations
-	                  << "permutations" << written.pipelines << "pipelines";
+	qInfo().noquote() << "export-list: ok:" << native << written.shaders << "shaders"
+	                  << written.permutations << "permutations" << written.pipelines << "pipelines";
 	// With a list installed for the game: what the sessions added to it.
 	QString                   added_text;
 	ShaderListExport::Written added;
 	if (ShaderListExport::ParseAdded(output, &added)) {
 		added_text = added.shaders == 0 && added.permutations == 0 && added.pipelines == 0
-		                 ? tr("Your sessions added nothing to the shader list this game already has here: the file "
+		                 ? tr("Your sessions added nothing to the shader list this game already "
+		                      "has here: the file "
 		                      "holds that list.\n\n")
-		                 : tr("It holds the shader list this game already has here and what your sessions added to "
+		                 : tr("It holds the shader list this game already has here and what your "
+		                      "sessions added to "
 		                      "it: %1 shaders, %2 permutations, %3 pipelines.\n\n")
 		                       .arg(added.shaders)
 		                       .arg(added.permutations)
 		                       .arg(added.pipelines);
 	}
-	QMessageBox box(QMessageBox::Information, window_title,
-	                tr("The shader list of %1 is saved:\n%2\n\n%3 shaders, %4 permutations, %5 pipelines.\n\n%6"
-	                   "Send this one file to other players. It holds where each shader is in the game files and "
-	                   "its hashes, no game code. Do not send the _PipelineCache folder, the .journal files or any "
-	                   "game files.")
-	                    .arg(game_name, native)
-	                    .arg(written.shaders)
-	                    .arg(written.permutations)
-	                    .arg(written.pipelines)
-	                    .arg(added_text),
-	                QMessageBox::Close, m_main_dialog);
+	QMessageBox box(
+	    QMessageBox::Information, window_title,
+	    tr("The shader list of %1 is saved:\n%2\n\n%3 shaders, %4 permutations, %5 pipelines.\n\n%6"
+	       "Send this one file to other players. It holds where each shader is in the game files "
+	       "and "
+	       "its hashes, no game code. Do not send the _PipelineCache folder, the .journal files or "
+	       "any "
+	       "game files.")
+	        .arg(game_name, native)
+	        .arg(written.shaders)
+	        .arg(written.permutations)
+	        .arg(written.pipelines)
+	        .arg(added_text),
+	    QMessageBox::Close, m_main_dialog);
 	box.setTextFormat(Qt::PlainText);
 	box.setTextInteractionFlags(Qt::TextSelectableByMouse);
 	auto* open = box.addButton(tr("Open folder"), QMessageBox::ActionRole);

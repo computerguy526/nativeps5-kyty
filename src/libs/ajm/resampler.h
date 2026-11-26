@@ -80,8 +80,8 @@ public:
 					m_frame.resize(5760 * channels * AjmBytesPerSample(encoding));
 					auto decoded =
 					    decoder.Decode(static_cast<const uint8_t*>(input) + result.input_consumed,
-						               input_size - result.input_consumed, m_frame.data(),
-						               m_frame.size(), false, gapless);
+					                   input_size - result.input_consumed, m_frame.data(),
+					                   m_frame.size(), false, gapless);
 					result.input_consumed += decoded.input_consumed;
 					result.frames += decoded.frames;
 					result.frames_per_packet     = decoded.frames_per_packet;

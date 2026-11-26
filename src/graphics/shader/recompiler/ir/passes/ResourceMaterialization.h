@@ -29,13 +29,13 @@ struct ResourceSpecialization {
 		bool                          fmask                      = false;
 		bool                          bindless                   = false;
 		// KYTY_RUNTIME_IMAGES (ImageResource::runtime).
-		bool                          runtime                    = false;
+		bool runtime = false;
 		// KYTY_EQAA_MIXED, EQAA FMASK only: colour fragments stored per pixel (1, 2, 4 or 8) when
 		// the format has fewer fragments than coverage samples, so samples share fragments; 0
 		// otherwise (the identity map).
-		uint8_t                       fmask_fragments            = 0;
+		uint8_t fmask_fragments = 0;
 		// KYTY_FLOAT_STORE_CLAMP (ImageResource::clamp_half_float).
-		bool                          clamp_half_float           = false;
+		bool                          clamp_half_float               = false;
 		bool                          operator==(const Image&) const = default;
 	};
 
@@ -101,8 +101,9 @@ bool MaterializeResources(const ResourcePlan& program, const SrtRuntime& runtime
 // KYTY_SPEC_UNMAPPED_NULL: whether a V# base is inside a guest mapping (the binding's test; the V#
 // is nulled when not). Null: off. Set once by the renderer before draws.
 void SetUnmappedBufferProbe(SrtMappedRange probe);
-// KYTY_NULL_BUFFER_SHARE: records the live buffer slots of a journaled permutation as the slots' last
-// live specializations, so a null V# seen first in a later session takes them (Erlou93 M115 seeding).
+// KYTY_NULL_BUFFER_SHARE: records the live buffer slots of a journaled permutation as the slots'
+// last live specializations, so a null V# seen first in a later session takes them (Erlou93 M115
+// seeding).
 void SeedNullBufferShare(uint64_t shader_hash, uint32_t stage, uint32_t user_data_base,
                          uint32_t user_data_count, const ResourceSpecialization& specialization);
 // Tests: KYTY_MS_DEPTH_SAMPLE0's specialization part (multisample depth T#s read through a
@@ -116,8 +117,9 @@ void SetEqaaFmaskMapForTesting(bool enabled);
 
 // Why ApplyResourceSpecialization cannot apply this specialization to the program (it would stop
 // the emulator), or null: the permutation is skipped instead.
-[[nodiscard]] const char* UnsupportedResourceSpecialization(const Program&                program,
-                                                            const ResourceSpecialization& specialization);
+[[nodiscard]] const char*
+UnsupportedResourceSpecialization(const Program&                program,
+                                  const ResourceSpecialization& specialization);
 // Applies an already-derived specialization to native IR before layout and emission.
 void ApplyResourceSpecialization(Program& program, const ResourceSpecialization& specialization);
 

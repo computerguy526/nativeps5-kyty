@@ -25,8 +25,8 @@
 //                         shader/pipeline builds started since the last idle period and none has
 //                         been in flight for KYTY_EVENTS_IDLE_MS (default 3000); smaller trickles
 //                         are not reported.
-// The "Prepare shaders" run (KYTY_PIPELINE_LIST_PREPARE=1, pipelineCache.cpp) prints two more in the
-// same form, whatever KYTY_EVENTS says (the launcher's Precompile window reads them):
+// The "Prepare shaders" run (KYTY_PIPELINE_LIST_PREPARE=1, pipelineCache.cpp) prints two more in
+// the same form, whatever KYTY_EVENTS says (the launcher's Precompile window reads them):
 //   prepare-progress      about once a second: phase=<shaders|pipelines|compute|saving>
 //                         shaders=<done>/<total> pipelines=<done>/<total> compute=<done>/<total>
 //                         (replayed shader permutations, graphics pipelines, prewarmed compute
@@ -73,9 +73,9 @@ public:
 	explicit Detector(const Params& params): m_params(params) {}
 	std::vector<std::string> Step(uint64_t now_ms, uint64_t frames, uint64_t read_bytes,
 	                              uint64_t builds_started, int64_t builds_in_flight);
-	[[nodiscard]] bool   Loading() const { return m_loading; }
-	[[nodiscard]] double ReadMbps() const { return m_read_mbps; }
-	[[nodiscard]] double Fps() const { return m_fps; }
+	[[nodiscard]] bool       Loading() const { return m_loading; }
+	[[nodiscard]] double     ReadMbps() const { return m_read_mbps; }
+	[[nodiscard]] double     Fps() const { return m_fps; }
 
 private:
 	struct Sample {
@@ -83,18 +83,19 @@ private:
 	};
 	Params              m_params;
 	std::vector<Sample> m_samples;
-	double              m_read_mbps        = 0.0;
-	double              m_fps              = 0.0;
-	bool                m_first_flip       = false;
-	bool                m_loading          = false;
-	uint64_t            m_load_start_ms    = 0;
-	uint64_t            m_load_bytes0      = 0;
-	uint64_t            m_quiet_since_ms   = UINT64_MAX;
-	uint64_t            m_idle_since_ms    = UINT64_MAX;
-	uint64_t            m_builds_reported  = 0;
+	double              m_read_mbps       = 0.0;
+	double              m_fps             = 0.0;
+	bool                m_first_flip      = false;
+	bool                m_loading         = false;
+	uint64_t            m_load_start_ms   = 0;
+	uint64_t            m_load_bytes0     = 0;
+	uint64_t            m_quiet_since_ms  = UINT64_MAX;
+	uint64_t            m_idle_since_ms   = UINT64_MAX;
+	uint64_t            m_builds_reported = 0;
 };
 
 // "GUEST: ..." lines for `text` written to `fd`, as GuestWrite prints them (for the tests).
-std::vector<std::string> SplitForTest(int fd, const std::string& text, uint64_t frame, double seconds);
+std::vector<std::string> SplitForTest(int fd, const std::string& text, uint64_t frame,
+                                      double seconds);
 
 } // namespace KytyEvents

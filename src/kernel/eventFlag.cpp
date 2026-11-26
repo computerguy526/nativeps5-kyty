@@ -1,10 +1,10 @@
-#include "common/hleWaitStats.h"
 #include "kernel/eventFlag.h"
 
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/gthreadStats.h"
 #include "common/hangWatchdog.h"
+#include "common/hleWaitStats.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"

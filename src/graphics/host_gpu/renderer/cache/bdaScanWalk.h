@@ -25,8 +25,8 @@
 namespace Libs::Graphics::BdaScanWalk {
 
 struct Visit {
-	uint64_t key   = 0; // the map key of the buffer
-	uint64_t start = 0; // the clipped range [start, finish)
+	uint64_t key    = 0; // the map key of the buffer
+	uint64_t start  = 0; // the clipped range [start, finish)
 	uint64_t finish = 0;
 	bool     operator==(const Visit& other) const {
 		return key == other.key && start == other.start && finish == other.finish;

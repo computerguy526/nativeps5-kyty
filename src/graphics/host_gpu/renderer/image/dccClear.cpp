@@ -9,9 +9,9 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
 #include <array>
@@ -80,11 +80,11 @@ DccClearHelper::DccClearHelper(GraphicContext& graphics, CommandScheduler& sched
 	};
 	create_pipeline(GPU_DCC_VALIDATE_SPV, m_validate_pipeline);
 	create_pipeline(GPU_DCC_CLEAR_SPV, m_clear_pipeline);
-	m_scratch = std::make_unique<Buffer>(
-	    graphics, scheduler, MemoryUsage::DeviceLocal, 0,
-	    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
-	        vk::BufferUsageFlagBits::eTransferSrc,
-	    ScratchSize);
+	m_scratch = std::make_unique<Buffer>(graphics, scheduler, MemoryUsage::DeviceLocal, 0,
+	                                     vk::BufferUsageFlagBits::eStorageBuffer |
+	                                         vk::BufferUsageFlagBits::eIndirectBuffer |
+	                                         vk::BufferUsageFlagBits::eTransferSrc,
+	                                     ScratchSize);
 	m_palette = std::make_unique<Buffer>(
 	    graphics, scheduler, MemoryUsage::DeviceLocal, 0,
 	    vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst,
@@ -183,9 +183,10 @@ DccClearHelper::Support DccClearHelper::SupportsImage(const Image& image, vk::Fo
 	return Support::Ok;
 }
 
-// KYTY_DCC_PALETTE_REUSE (live, default off): a DCC clear whose view format and decoded clear values
-// equal those of the previous one reuses the palette buffer as it is (only RecordPalette writes it,
-// in queue order) instead of rebuilding it with three barriers, up to six image clears and a copy.
+// KYTY_DCC_PALETTE_REUSE (live, default off): a DCC clear whose view format and decoded clear
+// values equal those of the previous one reuses the palette buffer as it is (only RecordPalette
+// writes it, in queue order) instead of rebuilding it with three barriers, up to six image clears
+// and a copy.
 static Live::Switch g_dcc_palette_reuse("KYTY_DCC_PALETTE_REUSE", Live::ParseDefaultOff);
 
 void DccClearHelper::RecordPalette(vk::CommandBuffer command, vk::Format view_format,
@@ -323,13 +324,13 @@ void DccClearHelper::RecordSlice(Image& image, vk::Format view_format, uint32_t 
 	const auto groups = std::min<uint64_t>(
 	    (elements + WorkgroupSize - 1) / WorkgroupSize,
 	    m_graphics.physical_device_properties.limits.maxComputeWorkGroupCount[0]);
-	const Push push {static_cast<uint32_t>(prefix / sizeof(uint32_t)),
-	                 static_cast<uint32_t>(metadata_size / sizeof(uint32_t)),
-	                 image.backing.extent.width,
-	                 image.backing.extent.height,
-	                 static_cast<uint32_t>(groups),
-	                 decodable | (keep_keys ? KeepKeysBit : 0u),
-	                 texel_bytes};
+	const Push    push {static_cast<uint32_t>(prefix / sizeof(uint32_t)),
+	                    static_cast<uint32_t>(metadata_size / sizeof(uint32_t)),
+	                    image.backing.extent.width,
+	                    image.backing.extent.height,
+	                    static_cast<uint32_t>(groups),
+	                    decodable | (keep_keys ? KeepKeysBit : 0u),
+	                    texel_bytes};
 	ImageViewInfo view_info {};
 	view_info.format      = alias;
 	view_info.type        = vk::ImageViewType::e2D;
@@ -423,7 +424,8 @@ void DccClearHelper::RecordSlice(Image& image, vk::Format view_format, uint32_t 
 		vk::MemoryBarrier2 host {};
 		host.srcStageMask  = vk::PipelineStageFlagBits2::eTransfer;
 		host.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
-		host.dstStageMask  = vk::PipelineStageFlagBits2::eHost | vk::PipelineStageFlagBits2::eAllCommands;
+		host.dstStageMask =
+		    vk::PipelineStageFlagBits2::eHost | vk::PipelineStageFlagBits2::eAllCommands;
 		host.dstAccessMask = vk::AccessFlagBits2::eHostRead | vk::AccessFlagBits2::eMemoryRead |
 		                     vk::AccessFlagBits2::eMemoryWrite;
 		dependency.pMemoryBarriers = &host;

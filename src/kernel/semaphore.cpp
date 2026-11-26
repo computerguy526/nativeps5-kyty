@@ -1,9 +1,9 @@
-﻿#include "common/hleWaitStats.h"
-#include "kernel/semaphore.h"
+﻿#include "kernel/semaphore.h"
 
 #include "common/assert.h"
 #include "common/gthreadStats.h"
 #include "common/hangWatchdog.h"
+#include "common/hleWaitStats.h"
 #include "common/logging/log.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
@@ -52,8 +52,9 @@ public:
 	// Waiters not yet made runnable (tests).
 	[[nodiscard]] int Waiting() {
 		Common::LockGuard lock(m_mutex);
-		return static_cast<int>(std::count_if(m_waiting_threads.begin(), m_waiting_threads.end(),
-		                                      [](const WaitingThread* waiter) { return !waiter->ready; }));
+		return static_cast<int>(
+		    std::count_if(m_waiting_threads.begin(), m_waiting_threads.end(),
+		                  [](const WaitingThread* waiter) { return !waiter->ready; }));
 	}
 
 private:
@@ -248,7 +249,7 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 
 	HangWatchdog::Scope wait("guest-semaphore", reinterpret_cast<uint64_t>(this), need_count,
 	                         m_count, 0, micros);
-	WaitingThread waiter {};
+	WaitingThread       waiter {};
 	waiter.priority   = (m_fifo_order ? 0 : Libs::LibKernel::PthreadGetCurrentPriorityForKernel());
 	waiter.need_count = need_count;
 	AddWaiter(&waiter);
@@ -264,8 +265,8 @@ KernelSemaPrivate::Result KernelSemaPrivate::Wait(int need_count, uint32_t* ptr_
 			return Result::TimedOut;
 		}
 
-		const bool woke =
-		    waiter.cond_var.WaitFor(&m_mutex, infinitely ? SIGNAL_APC_POLL_MICROS : micros - elapsed);
+		const bool woke = waiter.cond_var.WaitFor(&m_mutex, infinitely ? SIGNAL_APC_POLL_MICROS
+		                                                               : micros - elapsed);
 		if (stats && woke) {
 			auto& counters = GThreadStats::Local();
 			GThreadStats::Add(counters.sema_wake);

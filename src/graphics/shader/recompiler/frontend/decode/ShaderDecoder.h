@@ -753,8 +753,8 @@ enum class Opcode {
 	// MIMG 0xe6/0xe7: one ray/BVH-node test (RDNA2 ISA 8.2.10). Four result dwords, no sampler.
 	IMAGE_BVH_INTERSECT_RAY,
 	IMAGE_BVH64_INTERSECT_RAY,
-	// PS5 Pro (Trinity) MIMG 0xe5: one ray against a BVH8 node (two 4-child boxes, a triangle pair or
-	// an instance). Eleven address dwords, ten result dwords; an instance also rewrites the ray.
+	// PS5 Pro (Trinity) MIMG 0xe5: one ray against a BVH8 node (two 4-child boxes, a triangle pair
+	// or an instance). Eleven address dwords, ten result dwords; an instance also rewrites the ray.
 	IMAGE_BVH8_INTERSECT_RAY,
 	V_INTERP_P1_F32,
 	V_INTERP_P2_F32,
@@ -788,7 +788,8 @@ enum class Opcode {
 	S_CLAUSE,
 	S_ENDPGM,
 	// Not an RDNA2 instruction: the emulator's call-split marker (SOPP opcode 0x7f, CallSplit.h).
-	// offset = sub-operation, secondary_offset = word index of its payload, word_count = 1 + payload.
+	// offset = sub-operation, secondary_offset = word index of its payload, word_count = 1 +
+	// payload.
 	S_KYTY_CALL_STATE,
 	EXP,
 	// Added after EXP so the values of the earlier opcodes stay the same.
@@ -864,12 +865,13 @@ constexpr uint32_t CallStateSoppOpcode = 0x7fu;
 // leave EXEC for the rest of the program: another dispatch of the shader runs their target).
 // SplitTargetCompare (call-split callee programs, CallSplitPlan.cpp): one payload word, the call's
 // target pair register; sets SCC to whether the pair equals the callee the split dispatch runs
-// (CallSplit::ParamTargetLo/Hi). ShaderAddress: two payload words, a scalar pair register and a byte
-// offset; the pair becomes the shader base plus the offset (S_MOV_B32 semantics: SCC is kept). With
-// both, a callee program carries neither its callee's nor its kernel's guest address as a literal,
-// so its translation and pipeline are the same in every session wherever the game loaded them.
-// SaveChanged (end of a callee program): no payload stores every lane's changed registers; one payload
-// word 1 stores only the lanes whose call matched the callee (KYTY_SHADER_CALLS_SPLIT_SHADED_ONLY).
+// (CallSplit::ParamTargetLo/Hi). ShaderAddress: two payload words, a scalar pair register and a
+// byte offset; the pair becomes the shader base plus the offset (S_MOV_B32 semantics: SCC is kept).
+// With both, a callee program carries neither its callee's nor its kernel's guest address as a
+// literal, so its translation and pipeline are the same in every session wherever the game loaded
+// them. SaveChanged (end of a callee program): no payload stores every lane's changed registers;
+// one payload word 1 stores only the lanes whose call matched the callee
+// (KYTY_SHADER_CALLS_SPLIT_SHADED_ONLY).
 enum class CallStateOp : uint32_t {
 	Header             = 1,
 	Save               = 2,
@@ -881,7 +883,7 @@ enum class CallStateOp : uint32_t {
 	ShaderAddress      = 8,
 	// KYTY_CALL_LEARN (ShaderCalls.h): one payload word, the target pair register, reported to the
 	// dispatch's report set as PartitionDrop does; the lanes stay (they take the skip path).
-	MissReport         = 9,
+	MissReport = 9,
 };
 [[nodiscard]] constexpr uint32_t EncodeCallStateWord(CallStateOp op, uint32_t payload_words) {
 	return 0xbf800000u | (CallStateSoppOpcode << 16u) | (static_cast<uint32_t>(op) << 12u) |
@@ -962,7 +964,7 @@ struct Instruction {
 	uint32_t       branch_target                                = 0;
 	// The pc the instruction had in the decoded guest code when a rewrite moved it (the native
 	// ray tracing patch); S_GETPC_B64 returns the address after it. UINT32_MAX: not moved.
-	uint32_t       guest_pc                                     = UINT32_MAX;
+	uint32_t guest_pc = UINT32_MAX;
 	struct {
 		uint32_t target = 0;
 		uint32_t en     = 0;
@@ -999,9 +1001,9 @@ Program DecodeFrontProgram(std::span<const uint32_t> front);
 void DecodeProgram(std::span<const uint32_t> code, Program& program, bool decode_bvh = false);
 // KYTY_SKIP_UNDECODABLE=1: unknown scalar operands decode as Null and are recorded; TakeUndecodable
 // returns (and clears) the first one of this thread since the last call.
-bool SkipUndecodable();
-void NoteUndecodable(uint32_t pc, uint32_t code);
-bool TakeUndecodable(uint32_t& pc, uint32_t& code);
+bool               SkipUndecodable();
+void               NoteUndecodable(uint32_t pc, uint32_t code);
+bool               TakeUndecodable(uint32_t& pc, uint32_t& code);
 [[nodiscard]] bool IsBvhIntersect(const Instruction& inst);
 bool IsConditionalBranch(Opcode opcode);
 bool IsDirectBranch(Opcode opcode);

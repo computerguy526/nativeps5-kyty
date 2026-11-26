@@ -28,14 +28,13 @@
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
+#include "graphics/presentation/window/padFocus.h"
 #include "hybrid/footprintGovernor.h"
 #include "hybrid/kytyGpuApi.h"
-#include "kytyGitVersion.h"
 #include "hybrid/mainLoopGate.h"
-#include "graphics/presentation/window/padFocus.h"
 #include "hybrid/padMotion.h"
-#include "hybrid/virtualPad.h"
 #include "hybrid/pendingMemory.h"
+#include "hybrid/virtualPad.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
 #include "kernel/pthread.h"
@@ -398,13 +397,14 @@ void Relay() {
 	// motion' line at 1 Hz (controller type, sensor rate, last sample).
 	// ASTROHYBRID_PAD_MOTION_REC=<file>: record the samples (trace format of hybrid/padMotion.h)
 	// for replay tests.
-	namespace PM     = Hybrid::PadMotion;
-	// ASTROHYBRID_PAD_VIRTUAL=ps5|switch (default off; rehearsal / regression runs without a pad): a
-	// virtual DualSense / Switch Pro (SDL virtual joystick) plays a tilt ramp and a shake at 1000 Hz
-	// through SDL's real event path. work/release/v140/rc/check-motion-live.sh then asserts the
+	namespace PM = Hybrid::PadMotion;
+	// ASTROHYBRID_PAD_VIRTUAL=ps5|switch (default off; rehearsal / regression runs without a pad):
+	// a virtual DualSense / Switch Pro (SDL virtual joystick) plays a tilt ramp and a shake at 1000
+	// Hz through SDL's real event path. work/release/v140/rc/check-motion-live.sh then asserts the
 	// "[pad] motion status" line says live=yes (ASTROHYBRID_PAD_MOTION_LOG=1).
 	static Hybrid::VirtualPad::Player virtual_pad;
-	if (Hybrid::VirtualPad::Kind kind; Hybrid::VirtualPad::ParseEnv(std::getenv("ASTROHYBRID_PAD_VIRTUAL"), &kind)) {
+	if (Hybrid::VirtualPad::Kind kind;
+	    Hybrid::VirtualPad::ParseEnv(std::getenv("ASTROHYBRID_PAD_VIRTUAL"), &kind)) {
 		if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
 			(void)SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 		}
@@ -429,15 +429,15 @@ void Relay() {
 		SDL_UnlockJoysticks();
 		return has;
 	};
-	int         pad_type    = 0;
-	float       pad_rate    = 0.0f;
-	const bool  has_sensors = pad_sensors(&pad_type, &pad_rate);
-	bool        pad_has_sensors = has_sensors; // the pad's real sensors, re-read twice a second
-	int         logged_pad_id   = -1;
-	int         logged_focus    = -1;
-	const bool  pad_background  = Libs::Graphics::ApplyPadBackgroundInput();
-	bool        motion_held     = false;       // motion values are the neutral default (no live SDL sensor data)
-	const char* motion_env  = std::getenv("ASTROHYBRID_PAD_MOTION");
+	int        pad_type        = 0;
+	float      pad_rate        = 0.0f;
+	const bool has_sensors     = pad_sensors(&pad_type, &pad_rate);
+	bool       pad_has_sensors = has_sensors; // the pad's real sensors, re-read twice a second
+	int        logged_pad_id   = -1;
+	int        logged_focus    = -1;
+	const bool pad_background  = Libs::Graphics::ApplyPadBackgroundInput();
+	bool motion_held = false; // motion values are the neutral default (no live SDL sensor data)
+	const char* motion_env = std::getenv("ASTROHYBRID_PAD_MOTION");
 	// Re-evaluated twice a second: the pad may connect (or change) after the relay started.
 	bool motion       = PM::Wanted(motion_env, has_sensors) && g_host.publish_pad_motion != nullptr;
 	auto motion_check = std::chrono::steady_clock::now();
@@ -460,8 +460,10 @@ void Relay() {
 	float prev_q[4]  = {0.0f, 0.0f, 0.0f, 1.0f};
 	auto  prev_time  = std::chrono::steady_clock::now();
 	bool  prev_valid = false;
-	bool motion_problem_logged = false;
-	if (const auto problem = PM::HostMotionProblem(motion_env, has_sensors, g_host.publish_pad_motion != nullptr, std::getenv("DYLD_LIBRARY_PATH"));
+	bool  motion_problem_logged = false;
+	if (const auto problem =
+	        PM::HostMotionProblem(motion_env, has_sensors, g_host.publish_pad_motion != nullptr,
+	                              std::getenv("DYLD_LIBRARY_PATH"));
 	    !problem.empty()) {
 		Log(0, "%s", problem.c_str());
 		motion_problem_logged = true;
@@ -481,12 +483,12 @@ void Relay() {
 			pad_has_sensors    = now_has;
 			if (const int pad_id = Controller::GetActiveControllerId(); pad_id != logged_pad_id) {
 				logged_pad_id = pad_id;
-				// Which SDL driver owns the pad (HIDAPI sends the Switch IMU; macOS's GameController
-				// framework path does not): vendor:product, path, connection.
+				// Which SDL driver owns the pad (HIDAPI sends the Switch IMU; macOS's
+				// GameController framework path does not): vendor:product, path, connection.
 				SDL_LockJoysticks();
-				if (auto* sdl_pad = pad_id > 0 ? SDL_GetGamepadFromID(
-				                                     static_cast<SDL_JoystickID>(pad_id))
-				                               : nullptr) {
+				if (auto* sdl_pad = pad_id > 0
+				                        ? SDL_GetGamepadFromID(static_cast<SDL_JoystickID>(pad_id))
+				                        : nullptr) {
 					const char* path = SDL_GetGamepadPath(sdl_pad);
 					Log(0,
 					    "input relay: pad '%s' %04x:%04x type %s, connection %d, path '%.60s', "
@@ -515,7 +517,9 @@ void Relay() {
 			const bool want =
 			    PM::Wanted(motion_env, now_has) && g_host.publish_pad_motion != nullptr;
 			if (!motion_problem_logged) {
-				if (const auto problem = PM::HostMotionProblem(motion_env, now_has, g_host.publish_pad_motion != nullptr, std::getenv("DYLD_LIBRARY_PATH"));
+				if (const auto problem = PM::HostMotionProblem(motion_env, now_has,
+				                                               g_host.publish_pad_motion != nullptr,
+				                                               std::getenv("DYLD_LIBRARY_PATH"));
 				    !problem.empty()) {
 					Log(0, "%s", problem.c_str());
 					motion_problem_logged = true;
@@ -557,15 +561,14 @@ void Relay() {
 					    prev_q, q, std::chrono::duration<float>(now - prev_time).count(), gyro);
 				}
 				std::memcpy(prev_q, q, sizeof(prev_q));
-				prev_time              = now;
-				prev_valid             = true;
-				const float accel_g[3] = {data.acceleration_x, data.acceleration_y,
-				                          data.acceleration_z};
+				prev_time                           = now;
+				prev_valid                          = true;
+				const float              accel_g[3] = {data.acceleration_x, data.acceleration_y,
+				                                       data.acceleration_z};
 				PM::Sample  sample;
 				Controller::MotionStatus motion_status {};
 				const bool have_status = Controller::PadGetMotionStatus(handle, &motion_status);
-				const auto plan =
-				    PM::PlanRelay(pad_has_sensors, have_status && motion_status.live);
+				const auto plan = PM::PlanRelay(pad_has_sensors, have_status && motion_status.live);
 				if (plan.motion_flagged != motion_held) {
 					motion_held = plan.motion_flagged;
 					Log(0,
@@ -612,18 +615,16 @@ void Relay() {
 					        .c_str(),
 					    static_cast<double>(pad_rate));
 					Log(0, "%s",
-					    PM::FormatStatusLine(pad_has_sensors, motion_status.live,
-					                         motion_status.accel_events, motion_status.gyro_events,
-					                         motion_status.events_total,
-					                         motion_status.events_unrouted, motion_status.rearms,
-					                         motion_held,
-					                         static_cast<uint64_t>(std::max(
-					                             0, SDL_PeepEvents(nullptr, 0, SDL_PEEKEVENT,
-					                                               SDL_EVENT_GAMEPAD_SENSOR_UPDATE,
-					                                               SDL_EVENT_GAMEPAD_SENSOR_UPDATE))),
-					                         Libs::Graphics::WindowStepCount(),
-					                         SDL_GetKeyboardFocus() != nullptr ? 1 : 0,
-					                         pad_background ? 1 : 0)
+					    PM::FormatStatusLine(
+					        pad_has_sensors, motion_status.live, motion_status.accel_events,
+					        motion_status.gyro_events, motion_status.events_total,
+					        motion_status.events_unrouted, motion_status.rearms, motion_held,
+					        static_cast<uint64_t>(
+					            std::max(0, SDL_PeepEvents(nullptr, 0, SDL_PEEKEVENT,
+					                                       SDL_EVENT_GAMEPAD_SENSOR_UPDATE,
+					                                       SDL_EVENT_GAMEPAD_SENSOR_UPDATE))),
+					        Libs::Graphics::WindowStepCount(),
+					        SDL_GetKeyboardFocus() != nullptr ? 1 : 0, pad_background ? 1 : 0)
 					        .c_str());
 				}
 			}
@@ -1044,9 +1045,10 @@ void RendererEnd() {
 		Log(0, "renderer: window loop ended, shutting the subsystems down");
 	}
 	if (Libs::Graphics::WindowCloseSaveAbandoned()) {
-		// mainhang: a stuck close-time save still runs on a helper thread and uses the pipeline cache;
-		// tearing the renderer down under it would crash. The process is ending: leave it.
-		Log(1, "[mainhang] renderer: teardown skipped, the close-time pipeline cache save is stuck");
+		// mainhang: a stuck close-time save still runs on a helper thread and uses the pipeline
+		// cache; tearing the renderer down under it would crash. The process is ending: leave it.
+		Log(1,
+		    "[mainhang] renderer: teardown skipped, the close-time pipeline cache save is stuck");
 		Log(0, "renderer: stopped");
 		return;
 	}
@@ -1154,22 +1156,24 @@ void StartSelfMemoryLimit() {
 	if (limit <= 0) {
 		return;
 	}
-	// KYTY_FOOTPRINT_GOVERNOR=1 (default off): see hybrid/footprintGovernor.h. Never changes the limit.
+	// KYTY_FOOTPRINT_GOVERNOR=1 (default off): see hybrid/footprintGovernor.h. Never changes the
+	// limit.
 	const auto gov_config = Hybrid::FootprintConfigFromEnv(
 	    std::getenv("KYTY_FOOTPRINT_GOVERNOR"), std::getenv("KYTY_FOOTPRINT_SOFT_PCT"),
 	    std::getenv("KYTY_FOOTPRINT_HOLD_MS"), std::getenv("KYTY_FOOTPRINT_FACTOR_PCT"),
 	    static_cast<uint64_t>(limit));
 	if (gov_config.enabled) {
 		Hybrid::FootprintGovernor probe(gov_config);
-		std::fprintf(stderr,
-		             "[footprint-gov] on: soft mark %llu MiB (%u%% of %ld), leave below %llu MiB for %u ms, "
-		             "budget factor %u%%\n",
-		             static_cast<unsigned long long>(probe.SoftMib()), gov_config.soft_pct, limit,
-		             static_cast<unsigned long long>(probe.LeaveMib()), gov_config.hold_ms,
-		             gov_config.factor_permille / 10);
+		std::fprintf(
+		    stderr,
+		    "[footprint-gov] on: soft mark %llu MiB (%u%% of %ld), leave below %llu MiB for %u ms, "
+		    "budget factor %u%%\n",
+		    static_cast<unsigned long long>(probe.SoftMib()), gov_config.soft_pct, limit,
+		    static_cast<unsigned long long>(probe.LeaveMib()), gov_config.hold_ms,
+		    gov_config.factor_permille / 10);
 	}
 	std::thread([limit, gov_config] {
-		uint64_t                 peak = 0;
+		uint64_t                  peak = 0;
 		Hybrid::FootprintGovernor governor(gov_config);
 		Hybrid::LogGate           log_gate(1000);
 		for (;;) {
@@ -1186,19 +1190,21 @@ void StartSelfMemoryLimit() {
 					        .count());
 					const auto transition = governor.Step(mib, now_ms);
 					if (transition != Hybrid::FootprintGovernor::Transition::None) {
-						const bool on = transition == Hybrid::FootprintGovernor::Transition::Activated;
+						const bool on =
+						    transition == Hybrid::FootprintGovernor::Transition::Activated;
 						Hybrid::g_footprint_budget_permille.store(governor.FactorPermille(),
 						                                          std::memory_order_relaxed);
 						if (on) {
 							Hybrid::g_footprint_pool_flush.store(true, std::memory_order_relaxed);
 						}
 						if (log_gate.Allow(now_ms)) {
-							std::fprintf(stderr,
-							             "[footprint-gov] %s: footprint %llu MiB (soft %llu, limit %ld), "
-							             "budget factor %u%%\n",
-							             on ? "ACTIVE" : "released", static_cast<unsigned long long>(mib),
-							             static_cast<unsigned long long>(governor.SoftMib()), limit,
-							             governor.FactorPermille() / 10);
+							std::fprintf(
+							    stderr,
+							    "[footprint-gov] %s: footprint %llu MiB (soft %llu, limit %ld), "
+							    "budget factor %u%%\n",
+							    on ? "ACTIVE" : "released", static_cast<unsigned long long>(mib),
+							    static_cast<unsigned long long>(governor.SoftMib()), limit,
+							    governor.FactorPermille() / 10);
 						}
 					}
 				}
@@ -1502,10 +1508,10 @@ int ApiHandleFault(uint64_t address, int is_write) {
 	    is_write == 0 && g_host_serves_loads ? static_cast<void*>(&g_host) : nullptr);
 	// nps5 faultwin: KYTY_HOSTED_RETRIED_WRITES=1 (default off). The seam retries every store whose
 	// tracker page it offered (nps5_kyty_watch.c returns 1: the instruction runs again, or traps
-	// again while the page stays armed), so a write fault on a GPU-owned page may take the side path
-	// (KYTY_READBACK_SIDE_WRITES: side copy, wait on this thread, second fault makes it CPU-dirty)
-	// instead of draining the GPU on the command processor. Without it every such write drains
-	// (RetriedFaultScope was only set by the x86 exception handler).
+	// again while the page stays armed), so a write fault on a GPU-owned page may take the side
+	// path (KYTY_READBACK_SIDE_WRITES: side copy, wait on this thread, second fault makes it
+	// CPU-dirty) instead of draining the GPU on the command processor. Without it every such write
+	// drains (RetriedFaultScope was only set by the x86 exception handler).
 	static const bool retried_writes = [] {
 		const char* value = std::getenv("KYTY_HOSTED_RETRIED_WRITES");
 		return value != nullptr && value[0] == '1';
@@ -1771,10 +1777,10 @@ extern "C" KYTY_GPU_EXPORT uint64_t KytyGpuQueuePadAudio(uint32_t freq, int is_s
 }
 
 #if defined(KYTY_PGO_GENERATE) && !defined(_WIN32)
-// Instrumented dylib (CMake KYTY_PGO_GENERATE): the host stops the process by signal, so the profile
-// runtime's exit-time write never runs. With KYTY_PGO_FILE=<file.profraw> a thread started at load
-// writes the counters every KYTY_PGO_DUMP_SECONDS (default 20) to <file>.tmp and renames it over
-// <file>. "%p" in the name becomes the process id.
+// Instrumented dylib (CMake KYTY_PGO_GENERATE): the host stops the process by signal, so the
+// profile runtime's exit-time write never runs. With KYTY_PGO_FILE=<file.profraw> a thread started
+// at load writes the counters every KYTY_PGO_DUMP_SECONDS (default 20) to <file>.tmp and renames it
+// over <file>. "%p" in the name becomes the process id.
 extern "C" void __llvm_profile_set_filename(const char*);
 extern "C" int  __llvm_profile_write_file(void);
 
@@ -1784,7 +1790,8 @@ __attribute__((constructor)) static void KytyGpuStartPgoDumps() {
 		return;
 	}
 	const char* seconds_text = std::getenv("KYTY_PGO_DUMP_SECONDS");
-	const int   seconds      = (seconds_text != nullptr && std::atoi(seconds_text) > 0) ? std::atoi(seconds_text) : 20;
+	const int   seconds =
+	    (seconds_text != nullptr && std::atoi(seconds_text) > 0) ? std::atoi(seconds_text) : 20;
 	static std::string target = file;
 	if (const auto at = target.find("%p"); at != std::string::npos) {
 		target.replace(at, 2, std::to_string(::getpid()));

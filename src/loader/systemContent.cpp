@@ -605,13 +605,13 @@ void SystemContentLoadParamSfo(const std::filesystem::path& file_name) {
 
 	sc->psf_path = file_name;
 	sc->psf.DbgPrint();
-	int32_t attribute3 = 0;
+	int32_t    attribute3             = 0;
 	const bool title_supports_trinity = sc->psf.GetParamInt("ATTRIBUTE3", &attribute3) &&
 	                                    (static_cast<uint32_t>(attribute3) & (1u << 22u)) != 0;
-	sc->trinity_mode = Config::Ps5ProEnabled() && title_supports_trinity;
+	sc->trinity_mode                  = Config::Ps5ProEnabled() && title_supports_trinity;
 	if (Config::Ps5ProEnabled()) {
-		Log::WriteToConsoleAndLog(fmt::format("[PS5] title Trinity support={}\n",
-		                                    title_supports_trinity ? "yes" : "no"));
+		Log::WriteToConsoleAndLog(
+		    fmt::format("[PS5] title Trinity support={}\n", title_supports_trinity ? "yes" : "no"));
 	}
 
 	sc->icon_path = file_name.parent_path() / "icon0.png";

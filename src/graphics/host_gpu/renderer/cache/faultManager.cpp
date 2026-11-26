@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 
 #include "common/assert.h"
@@ -10,6 +9,7 @@
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 
@@ -44,8 +44,8 @@ bool StoreLogEnabled() {
 // KYTY_FAULT_SCAN_WORDS=16 (default 4 = upstream fd04c3fa9; 16 from chenxiao07/KytyPS5 b7aa2b877):
 // bitmap words each invocation of fault_buffer_process.comp reads (its WORDS_PER_INVOCATION
 // specialization constant). 4: one uvec4 per invocation (upstream's scan). 16: a quarter of those
-// invocations, each reading four uvec4s, skipping zero blocks and storing only into nonzero words; the
-// reported pages are the same. Any other value: 4.
+// invocations, each reading four uvec4s, skipping zero blocks and storing only into nonzero words;
+// the reported pages are the same. Any other value: 4.
 uint32_t FaultScanWords() {
 	static const uint32_t words = [] {
 		const auto* value = std::getenv("KYTY_FAULT_SCAN_WORDS");
@@ -55,9 +55,9 @@ uint32_t FaultScanWords() {
 	return words;
 }
 
-// KYTY_FAULT_SCAN_MAPPED=1 (live, default 0): fault_buffer_process.comp scans only the bitmap words of
-// pages inside guest GPU mappings (RenderContext's mapped ranges), one vkCmdDispatchBase per run of
-// 64-invocation groups (8192 pages, 128 MiB each) that holds mapped memory, instead of the whole
+// KYTY_FAULT_SCAN_MAPPED=1 (live, default 0): fault_buffer_process.comp scans only the bitmap words
+// of pages inside guest GPU mappings (RenderContext's mapped ranges), one vkCmdDispatchBase per run
+// of 64-invocation groups (8192 pages, 128 MiB each) that holds mapped memory, instead of the whole
 // 1 TiB bitmap. Faults are taken only inside mappings (FindBuffer of the page); bits of unmapped
 // pages stay set and are scanned once the range is mapped. Only with KYTY_FAULT_SCAN_WORDS=4.
 Live::Switch g_fault_scan_mapped("KYTY_FAULT_SCAN_MAPPED", Live::ParseDefaultOff);
@@ -69,7 +69,8 @@ FaultManager::FaultManager(GraphicContext& graphics, CommandScheduler& scheduler
     : m_graphics(graphics), m_scheduler(scheduler), m_buffer_cache(buffer_cache),
       m_fault_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 0, AllFlags,
                      ShaderRecompiler::GetCodegenOptions().bda_tags_gpu_count
-                         ? BufferCache::BDA_TAG_COUNTER_WORD * sizeof(uint32_t) + 16 // KYTY_BDA_TAGS_GPU_COUNT
+                         ? BufferCache::BDA_TAG_COUNTER_WORD * sizeof(uint32_t) +
+                               16 // KYTY_BDA_TAGS_GPU_COUNT
                      : BdaWritesEnabled() ? BufferCache::BDA_WRITES_FAULT_BUFFER_SIZE
                                           : BufferCache::CACHING_NUMPAGES / 8),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 0, AllFlags,
@@ -101,10 +102,9 @@ FaultManager::FaultManager(GraphicContext& graphics, CommandScheduler& scheduler
 	const uint32_t                   scan_words = FaultScanWords();
 	const vk::SpecializationMapEntry scan_entry {0, 0, sizeof(uint32_t)};
 	const vk::SpecializationInfo     scan_spec {1, &scan_entry, sizeof(uint32_t), &scan_words};
-	m_fault_process_pipeline =
-	    CreateComputePipeline(m_graphics.device, FAULT_BUFFER_PROCESS_SPV,
-	                          m_fault_process_pipeline_layout, "create fault-buffer pipeline",
-	                          &scan_spec);
+	m_fault_process_pipeline = CreateComputePipeline(m_graphics.device, FAULT_BUFFER_PROCESS_SPV,
+	                                                 m_fault_process_pipeline_layout,
+	                                                 "create fault-buffer pipeline", &scan_spec);
 	SetVulkanObjectNameF(m_graphics.device, m_fault_process_pipeline, "Fault Buffer Parser");
 }
 
@@ -169,7 +169,8 @@ void FaultManager::ProcessFaultBuffer(const std::vector<std::pair<uint64_t, uint
 	dependency.bufferMemoryBarrierCount = 1;
 	dependency.pBufferMemoryBarriers    = &pre_barrier;
 	command.pipelineBarrier2(dependency);
-	const auto num_threads    = BufferCache::CACHING_NUMPAGES / 32 / FaultScanWords(); // Four words per invocation by default (fd04c3fa9).
+	const auto num_threads = BufferCache::CACHING_NUMPAGES / 32 /
+	                         FaultScanWords(); // Four words per invocation by default (fd04c3fa9).
 	const auto num_workgroups = (num_threads + 63) / 64;
 	// KYTY_FAULT_SCAN_MAPPED: runs of groups over the mapped pages (one group: 64 x 128 pages).
 	std::vector<std::pair<uint32_t, uint32_t>> runs;
@@ -192,33 +193,37 @@ void FaultManager::ProcessFaultBuffer(const std::vector<std::pair<uint64_t, uint
 		if (m_fault_process_pipeline_base == nullptr && !runs.empty()) {
 			const uint32_t                   scan_words = FaultScanWords();
 			const vk::SpecializationMapEntry scan_entry {0, 0, sizeof(uint32_t)};
-			const vk::SpecializationInfo     scan_spec {1, &scan_entry, sizeof(uint32_t), &scan_words};
-			const auto                       shader = CompileSPV(FAULT_BUFFER_PROCESS_SPV, m_graphics.device);
-			vk::ComputePipelineCreateInfo    create {};
+			const vk::SpecializationInfo scan_spec {1, &scan_entry, sizeof(uint32_t), &scan_words};
+			const auto shader = CompileSPV(FAULT_BUFFER_PROCESS_SPV, m_graphics.device);
+			vk::ComputePipelineCreateInfo create {};
 			create.flags                     = vk::PipelineCreateFlagBits::eDispatchBase;
 			create.stage.stage               = vk::ShaderStageFlagBits::eCompute;
 			create.stage.module              = shader;
 			create.stage.pName               = "main";
 			create.stage.pSpecializationInfo = &scan_spec;
 			create.layout                    = m_fault_process_pipeline_layout;
-			const auto result = m_graphics.device.createComputePipelines(nullptr, 1, &create, nullptr,
-			                                                             &m_fault_process_pipeline_base);
+			const auto result                = m_graphics.device.createComputePipelines(
+			    nullptr, 1, &create, nullptr, &m_fault_process_pipeline_base);
 			m_graphics.device.destroyShaderModule(shader, nullptr);
 			RequireVulkanSuccess(result, "create fault-buffer pipeline (dispatch base)");
 		}
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
 			uint64_t groups = 0;
-			for (const auto& run: runs) groups += run.second - run.first;
-			std::printf("KYTY_FAULT_SCAN_MAPPED: %zu mapped ranges -> %zu runs, %" PRIu64 " of %" PRIu64
-			            " groups scanned\n",
-			            mappings.size(), runs.size(), groups, static_cast<uint64_t>(num_workgroups));
+			for (const auto& run: runs)
+				groups += run.second - run.first;
+			std::printf("KYTY_FAULT_SCAN_MAPPED: %zu mapped ranges -> %zu runs, %" PRIu64
+			            " of %" PRIu64 " groups scanned\n",
+			            mappings.size(), runs.size(), groups,
+			            static_cast<uint64_t>(num_workgroups));
 		}
 	}
 	if (!runs.empty()) {
-		m_scheduler.Current().BindPipeline(vk::PipelineBindPoint::eCompute, m_fault_process_pipeline_base);
+		m_scheduler.Current().BindPipeline(vk::PipelineBindPoint::eCompute,
+		                                   m_fault_process_pipeline_base);
 	} else {
-		m_scheduler.Current().BindPipeline(vk::PipelineBindPoint::eCompute, m_fault_process_pipeline);
+		m_scheduler.Current().BindPipeline(vk::PipelineBindPoint::eCompute,
+		                                   m_fault_process_pipeline);
 	}
 	m_scheduler.Current().PushDescriptors(vk::PipelineBindPoint::eCompute,
 	                             m_fault_process_pipeline_layout, 0,
@@ -250,20 +255,21 @@ void FaultManager::ProcessFaultBuffer(const std::vector<std::pair<uint64_t, uint
 	const bool gpu_count = ShaderRecompiler::GetCodegenOptions().bda_tags_gpu_count;
 	if (gpu_count) {
 		if (m_tag_count_download == nullptr) {
-			m_tag_count_download = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
-			                                                AllFlags, MaxPendingFaults * 16);
+			m_tag_count_download = std::make_unique<Buffer>(
+			    m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags, MaxPendingFaults * 16);
 		}
 		vk::BufferMemoryBarrier2 count_barrier {};
-		count_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
-		count_barrier.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
-		count_barrier.dstStageMask  = vk::PipelineStageFlagBits2::eTransfer;
-		count_barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
-		count_barrier.buffer        = m_fault_buffer.Handle();
-		count_barrier.offset        = BufferCache::BDA_TAG_COUNTER_WORD * sizeof(uint32_t);
-		count_barrier.size          = 16;
+		count_barrier.srcStageMask       = vk::PipelineStageFlagBits2::eAllCommands;
+		count_barrier.srcAccessMask      = vk::AccessFlagBits2::eShaderWrite;
+		count_barrier.dstStageMask       = vk::PipelineStageFlagBits2::eTransfer;
+		count_barrier.dstAccessMask      = vk::AccessFlagBits2::eTransferRead;
+		count_barrier.buffer             = m_fault_buffer.Handle();
+		count_barrier.offset             = BufferCache::BDA_TAG_COUNTER_WORD * sizeof(uint32_t);
+		count_barrier.size               = 16;
 		dependency.pBufferMemoryBarriers = &count_barrier;
 		command.pipelineBarrier2(dependency);
-		const vk::BufferCopy copy {BufferCache::BDA_TAG_COUNTER_WORD * sizeof(uint32_t), m_current_area * 16u, 16};
+		const vk::BufferCopy copy {BufferCache::BDA_TAG_COUNTER_WORD * sizeof(uint32_t),
+		                           m_current_area * 16u, 16};
 		command.copyBuffer(m_fault_buffer.Handle(), m_tag_count_download->Handle(), 1, &copy);
 	}
 
@@ -276,10 +282,11 @@ void FaultManager::ProcessFaultBuffer(const std::vector<std::pair<uint64_t, uint
 			m_tag_count_download->Invalidate(area * 16u, 16);
 			uint32_t now[3] {};
 			std::memcpy(now, m_tag_count_download->Mapped().data() + area * 16u, sizeof(now));
-			auto& hops = BufferCache::s_tag_hops;
+			auto&                  hops = BufferCache::s_tag_hops;
 			std::atomic<uint64_t>* totals[3] {&hops.gpu_calls, &hops.gpu_zero, &hops.gpu_untagged};
 			for (int k = 0; k < 3; ++k) {
-				totals[k]->fetch_add(static_cast<uint32_t>(now[k] - m_tag_count_last[k]), std::memory_order_relaxed);
+				totals[k]->fetch_add(static_cast<uint32_t>(now[k] - m_tag_count_last[k]),
+				                     std::memory_order_relaxed);
 				m_tag_count_last[k] = now[k];
 			}
 		}
@@ -294,7 +301,8 @@ void FaultManager::ProcessFaultBuffer(const std::vector<std::pair<uint64_t, uint
 		BufferCache::s_tag_hops.records.fetch_add(count, std::memory_order_relaxed);
 		for (uint32_t index = 1; index <= count; ++index) {
 			fault_ranges.Add(faults[index], BufferCache::CACHING_PAGESIZE);
-			if (!m_buffer_cache.BdaAccessTagsBuilt()) { // tags: most reports are untagged backed pages
+			if (!m_buffer_cache
+			         .BdaAccessTagsBuilt()) { // tags: most reports are untagged backed pages
 				LOGF("Accessed non-GPU cached memory at 0x%016" PRIx64 "\n", faults[index]);
 			}
 		}
@@ -339,17 +347,18 @@ FaultManager::BdaWrites FaultManager::CollectBdaWrites() {
 void FaultManager::FetchBdaStoreLogTail(BdaWrites& writes) {
 	KYTY_GPU_OP_SITE("fault.bda-log-tail");
 	constexpr uint64_t tail_offset =
-	    (BufferCache::BDA_STORE_LOG_WORD + 4 + 4 * BufferCache::BDA_STORE_LOG_PREFIX) * sizeof(uint32_t);
+	    (BufferCache::BDA_STORE_LOG_WORD + 4 + 4 * BufferCache::BDA_STORE_LOG_PREFIX) *
+	    sizeof(uint32_t);
 	constexpr uint64_t tail_capacity =
 	    (BufferCache::BDA_STORE_LOG_ENTRIES - BufferCache::BDA_STORE_LOG_PREFIX) * sizeof(BdaStore);
 	const uint64_t bytes = uint64_t {writes.log_tail} * sizeof(BdaStore);
 	EXIT_IF(bytes > tail_capacity);
 	if (m_bda_tail_download == nullptr) {
-		m_bda_tail_download = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
-		                                               AllFlags, tail_capacity);
+		m_bda_tail_download = std::make_unique<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags, tail_capacity);
 	}
 	m_scheduler.EndRendering();
-	const auto command = m_scheduler.Current().HelperSink();
+	const auto               command = m_scheduler.Current().HelperSink();
 	vk::BufferMemoryBarrier2 before {};
 	before.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
 	before.srcAccessMask = vk::AccessFlagBits2::eShaderWrite;
@@ -409,7 +418,7 @@ uint32_t FaultManager::RecordBdaWrites() {
 		RequireVulkanSuccess(result, "create BDA written-page pipeline");
 		SetVulkanObjectNameF(m_graphics.device, m_bda_pages_pipeline, "BDA Written Page Parser");
 	}
-	const auto slot = m_bda_next_slot++ % BdaSlots;
+	const auto slot           = m_bda_next_slot++ % BdaSlots;
 	auto&      m_bda_download = m_bda_downloads[slot];
 	if (m_bda_download == nullptr) {
 		m_bda_download = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
@@ -464,7 +473,8 @@ uint32_t FaultManager::RecordBdaWrites() {
 	const bool     store_log  = StoreLogEnabled();
 	constexpr auto log_offset = BufferCache::BDA_STORE_LOG_WORD * sizeof(uint32_t);
 	if (store_log) {
-		// The first BDA_STORE_LOG_PREFIX entries; CollectBdaWrites fetches the rest when there are more.
+		// The first BDA_STORE_LOG_PREFIX entries; CollectBdaWrites fetches the rest when there are
+		// more.
 		const vk::BufferCopy log_copy {log_offset, BdaStoreLogOffset,
 		                               BufferCache::BDA_STORE_LOG_PREFIX_BYTES};
 		command.copyBuffer(m_fault_buffer.Handle(), m_bda_download->Handle(), 1, &log_copy);
@@ -510,9 +520,9 @@ uint32_t FaultManager::RecordBdaWrites() {
 }
 
 FaultManager::BdaWrites FaultManager::ParseBdaWrites(uint32_t slot) {
-	auto&       m_bda_download = m_bda_downloads[slot % BdaSlots];
-	const bool  store_log      = StoreLogEnabled();
-	auto*       mapped         = m_bda_download->Mapped().data();
+	auto&      m_bda_download = m_bda_downloads[slot % BdaSlots];
+	const bool store_log      = StoreLogEnabled();
+	auto*      mapped         = m_bda_download->Mapped().data();
 	// Read back only what was written: the count, then its entries and the counter copy.
 	m_bda_download->Invalidate(0, sizeof(uint64_t));
 	BdaWrites result;
@@ -531,9 +541,10 @@ FaultManager::BdaWrites FaultManager::ParseBdaWrites(uint32_t slot) {
 		m_bda_download->Invalidate(BdaStoreLogOffset, sizeof(uint32_t));
 		uint32_t logged = 0;
 		std::memcpy(&logged, mapped + BdaStoreLogOffset, sizeof(logged));
-		// The device log kept `kept` entries (its capacity); the download holds the first `entries`.
-		const auto kept    = std::min<size_t>(logged, BufferCache::BDA_STORE_LOG_ENTRIES);
-		const auto entries = std::min<size_t>(kept, BufferCache::BDA_STORE_LOG_PREFIX);
+		// The device log kept `kept` entries (its capacity); the download holds the first
+		// `entries`.
+		const auto kept     = std::min<size_t>(logged, BufferCache::BDA_STORE_LOG_ENTRIES);
+		const auto entries  = std::min<size_t>(kept, BufferCache::BDA_STORE_LOG_PREFIX);
 		result.log_overflow = logged - static_cast<uint32_t>(kept);
 		result.log_tail     = static_cast<uint32_t>(kept - entries);
 		if (entries != 0) {

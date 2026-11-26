@@ -9,10 +9,10 @@
 #include "gpu_blit_shaders/gpu_blit_ms_stencil_sample0_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/renderTarget.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
 #include <array>
@@ -366,23 +366,23 @@ void BlitHelper::CopyMsSample0(Image& source, Image& destination, bool stencil) 
 		// FindView turns these view formats into the depth/stencil image's own format with the
 		// depth or the stencil aspect.
 		ImageViewInfo source_view_info {};
-		source_view_info.format     = stencil ? vk::Format::eS8Uint : vk::Format::eD32Sfloat;
-		source_view_info.type       = vk::ImageViewType::e2D;
-		source_view_info.aspect     = stencil ? vk::ImageAspectFlagBits::eStencil
-		                                      : vk::ImageAspectFlagBits::eDepth;
+		source_view_info.format = stencil ? vk::Format::eS8Uint : vk::Format::eD32Sfloat;
+		source_view_info.type   = vk::ImageViewType::e2D;
+		source_view_info.aspect =
+		    stencil ? vk::ImageAspectFlagBits::eStencil : vk::ImageAspectFlagBits::eDepth;
 		source_view_info.base_layer = layer;
 		source_view_info.usage      = vk::ImageUsageFlagBits::eSampled;
 		const auto source_view      = source.FindView(source_view_info);
 
 		ImageViewInfo destination_view_info {};
-		destination_view_info.format     = destination.backing.format;
-		destination_view_info.type       = vk::ImageViewType::e2D;
-		destination_view_info.aspect     = stencil ? vk::ImageAspectFlagBits::eColor
-		                                           : vk::ImageAspectFlagBits::eDepth;
+		destination_view_info.format = destination.backing.format;
+		destination_view_info.type   = vk::ImageViewType::e2D;
+		destination_view_info.aspect =
+		    stencil ? vk::ImageAspectFlagBits::eColor : vk::ImageAspectFlagBits::eDepth;
 		destination_view_info.base_layer = layer;
-		destination_view_info.usage      = stencil ? vk::ImageUsageFlagBits::eColorAttachment
-		                                           : vk::ImageUsageFlagBits::eDepthStencilAttachment;
-		const auto destination_view      = destination.FindView(destination_view_info);
+		destination_view_info.usage = stencil ? vk::ImageUsageFlagBits::eColorAttachment
+		                                      : vk::ImageUsageFlagBits::eDepthStencilAttachment;
+		const auto destination_view = destination.FindView(destination_view_info);
 
 		vk::RenderingAttachmentInfo attachment {};
 		attachment.imageView   = destination_view;
@@ -413,9 +413,9 @@ void BlitHelper::CopyMsSample0(Image& source, Image& destination, bool stencil) 
 		command_buffer.PushDescriptors(vk::PipelineBindPoint::eGraphics, m_pipeline_layout, 0, 1,
 		                               &descriptor_write);
 		command_buffer.BindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
-		const vk::Viewport viewport {0.0f, 0.0f, static_cast<float>(width),
-		                             static_cast<float>(height), 0.0f, 1.0f};
-		const vk::Rect2D   scissor {{0, 0}, {width, height}};
+		const vk::Viewport viewport {
+		    0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+		const vk::Rect2D scissor {{0, 0}, {width, height}};
 		command.setViewport(0, 1, &viewport);
 		command.setScissor(0, 1, &scissor);
 		command.draw(3, 1, 0, 0);

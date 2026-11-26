@@ -1,9 +1,9 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_ENCODEOFFLOAD_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_ENCODEOFFLOAD_H_
 
-// KYTY_ENC_OFFLOAD (live; default 0; 1 on; verify): the emission of draws (drawEncode.h) runs on one
-// in-order emit thread between the commit thread and the recorder (the C1 cut at the emission point:
-// resolve on the commit thread, a value packet per draw part, emit later in order).
+// KYTY_ENC_OFFLOAD (live; default 0; 1 on; verify): the emission of draws (drawEncode.h) runs on
+// one in-order emit thread between the commit thread and the recorder (the C1 cut at the emission
+// point: resolve on the commit thread, a value packet per draw part, emit later in order).
 //
 //  - The commit thread does a draw's cache and barrier work and builds its descriptor writes as
 //    before, then posts its encode parts (job data it owns until they are spliced) and goes on.
@@ -52,7 +52,7 @@ public:
 
 	// Commit thread. Posts a job; false when MaxJobs are pending (the caller settles or encodes
 	// inline). `job` stays the caller's and must not change until the job is settled or discarded.
-	[[nodiscard]] bool Post(void* job, RunFn run);
+	[[nodiscard]] bool     Post(void* job, RunFn run);
 	[[nodiscard]] uint32_t Pending() const noexcept { return m_posted - m_settled; }
 	// Waits for every pending job and appends its packets to `target` in posting order. Returns the
 	// bytes appended.
@@ -68,11 +68,11 @@ public:
 		std::atomic<uint64_t> settles {0};
 		std::atomic<uint64_t> spliced_bytes {0};
 		std::atomic<uint64_t> spliced_jobs {0};
-		std::atomic<uint64_t> waits {0};      // settles that found a job not yet run
-		std::atomic<uint64_t> wait_ns {0};    // sampled (every 64th settle)
-		std::atomic<uint64_t> splice_ns {0};  // sampled (every 64th settle)
+		std::atomic<uint64_t> waits {0};     // settles that found a job not yet run
+		std::atomic<uint64_t> wait_ns {0};   // sampled (every 64th settle)
+		std::atomic<uint64_t> splice_ns {0}; // sampled (every 64th settle)
 		std::atomic<uint64_t> timed {0};
-		std::atomic<uint64_t> worker_ns {0};  // sampled (every 64th job)
+		std::atomic<uint64_t> worker_ns {0}; // sampled (every 64th job)
 		std::atomic<uint64_t> worker_timed {0};
 		std::atomic<uint64_t> parks {0};
 	};
@@ -95,13 +95,14 @@ private:
 	// m_posted: commit thread writes, encode thread reads; m_run: encode thread only.
 	alignas(64) std::atomic<uint64_t> m_posted_shared {0};
 	std::atomic<uint32_t> m_parked {0};
-	std::atomic<uint32_t> m_bell {0}; // the encode thread parks on it (Post and the destructor ring it)
-	std::atomic<bool>     m_stop {false};
-	alignas(64) uint64_t  m_posted  = 0; // commit thread
-	uint64_t              m_settled = 0; // commit thread
-	alignas(64) uint64_t  m_run     = 0; // encode thread
-	Stats                 m_stats;
-	std::thread           m_thread;
+	std::atomic<uint32_t> m_bell {
+	    0}; // the encode thread parks on it (Post and the destructor ring it)
+	std::atomic<bool> m_stop {false};
+	alignas(64) uint64_t m_posted = 0; // commit thread
+	uint64_t m_settled            = 0; // commit thread
+	alignas(64) uint64_t m_run    = 0; // encode thread
+	Stats       m_stats;
+	std::thread m_thread;
 };
 
 template <typename Log>

@@ -144,8 +144,10 @@ RenderTargetFormatInfo TextureGetRenderTargetFormat(Prospero::ChannelLayout layo
                                                     Prospero::ChannelType   type,
                                                     Prospero::ChannelOrder  order) {
 	auto encoding = Prospero::ResolveRenderTargetFormat(layout, type);
-	if (encoding.buffer_format == Prospero::BufferFormat::k11_11_10UNorm && Prospero::Fmt30AsFloat()) {
-		// KYTY_FMT30_UFLOAT: scene targets programmed as COLOR_11_11_10 UNORM store packed unsigned floats.
+	if (encoding.buffer_format == Prospero::BufferFormat::k11_11_10UNorm &&
+	    Prospero::Fmt30AsFloat()) {
+		// KYTY_FMT30_UFLOAT: scene targets programmed as COLOR_11_11_10 UNORM store packed unsigned
+		// floats.
 		encoding.buffer_format = Prospero::BufferFormat::k11_11_10Float;
 	}
 	if (encoding.IsValid() && encoding.SupportsOrder(order)) {

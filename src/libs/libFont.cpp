@@ -2,8 +2,8 @@
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/logging/log.h"
-#include "common/systemFonts.h"
 #include "common/stringUtils.h"
+#include "common/systemFonts.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "loader/symbolDatabase.h"
@@ -83,10 +83,10 @@ constexpr int SCE_FONT_TEXT_PARSER_RESULT_ERROR     = -1;
 constexpr int SCE_FONT_WRITING_FORM_HORIZONTAL      = 0x10;
 constexpr int FONT_BITMAP_MAX_DIM                   = 128;
 // TrueType glyphs are rasterized at the requested size; the limit only rejects absurd scales.
-constexpr int FONT_GLYPH_MAX_DIM                    = 4096;
-constexpr int FONT_ERROR_INVALID_PARAMETER          = static_cast<int>(0x80460002u);
-constexpr int FONT_ERROR_INVALID_FONT_HANDLE        = static_cast<int>(0x80460005u);
-constexpr int FONT_ERROR_NO_SUPPORT_CODE            = static_cast<int>(0x80460041u);
+constexpr int FONT_GLYPH_MAX_DIM             = 4096;
+constexpr int FONT_ERROR_INVALID_PARAMETER   = static_cast<int>(0x80460002u);
+constexpr int FONT_ERROR_INVALID_FONT_HANDLE = static_cast<int>(0x80460005u);
+constexpr int FONT_ERROR_NO_SUPPORT_CODE     = static_cast<int>(0x80460041u);
 
 struct FontMemory {
 	uint16_t                   type;
@@ -2169,8 +2169,8 @@ int KYTY_SYSV_ABI FontGetKerning(FontHandle font_handle, uint32_t pre_code, uint
 	const auto valid_index = [&](int index) {
 		return index > 0 && index < font->font_info.numGlyphs;
 	};
-	const int  left        = glyph_index(pre_code);
-	const int  right       = glyph_index(code);
+	const int left  = glyph_index(pre_code);
+	const int right = glyph_index(code);
 	if (!valid_index(left) || !valid_index(right)) {
 		// Code points drawn from the host CJK fallback face have no kerning with the font's own
 		// face, but they are supported: report zero kerning instead of an error.
@@ -2184,8 +2184,9 @@ int KYTY_SYSV_ABI FontGetKerning(FontHandle font_handle, uint32_t pre_code, uint
 		}
 		return FONT_ERROR_NO_SUPPORT_CODE;
 	}
-	kerning->offset_x = static_cast<float>(stbtt_GetGlyphKernAdvance(&font->font_info, left, right)) *
-	                    stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_w);
+	kerning->offset_x =
+	    static_cast<float>(stbtt_GetGlyphKernAdvance(&font->font_info, left, right)) *
+	    stbtt_ScaleForMappingEmToPixels(&font->font_info, font->scale_w);
 	LOGF("\t handle = 0x%016" PRIx64 ", pre_code = 0x%08" PRIx32 ", code = 0x%08" PRIx32
 	     ", offset_x = %f\n",
 	     reinterpret_cast<uint64_t>(font_handle), pre_code, code,

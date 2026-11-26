@@ -57,10 +57,10 @@ void NoteGpuFillMiss(const ResourcePlan& program, uint32_t slot) {
 	struct KeyHash {
 		size_t operator()(const Key& key) const { return key.hash * 31u + key.slot; }
 	};
-	static std::mutex                                mutex;
+	static std::mutex                                 mutex;
 	static std::unordered_map<Key, uint64_t, KeyHash> misses;
-	static auto last = std::chrono::steady_clock::now();
-	std::scoped_lock lock(mutex);
+	static auto                                       last = std::chrono::steady_clock::now();
+	std::scoped_lock                                  lock(mutex);
 	misses[{program.shader_hash, slot}]++;
 	const auto now = std::chrono::steady_clock::now();
 	if (now - last < std::chrono::seconds(10)) {
@@ -68,7 +68,8 @@ void NoteGpuFillMiss(const ResourcePlan& program, uint32_t slot) {
 	}
 	last = now;
 	std::vector<std::pair<Key, uint64_t>> sorted(misses.begin(), misses.end());
-	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+	std::sort(sorted.begin(), sorted.end(),
+	          [](const auto& a, const auto& b) { return a.second > b.second; });
 	std::string line = "SrtGpuFill misses 10s:";
 	for (size_t i = 0; i < std::min<size_t>(sorted.size(), 12); i++) {
 		const auto& [key, count] = sorted[i];
@@ -78,7 +79,8 @@ void NoteGpuFillMiss(const ResourcePlan& program, uint32_t slot) {
 			line += fmt::format(" {:016x}/trace x{}", key.hash, count);
 		} else {
 			line += fmt::format(" {:016x}/slot{}{} x{}", key.hash, key.slot,
-			                    key.slot < program.gpu_fill_slots.size() && program.gpu_fill_slots[key.slot] != 0u &&
+			                    key.slot < program.gpu_fill_slots.size() &&
+			                            program.gpu_fill_slots[key.slot] != 0u &&
 			                            key.hash == program.shader_hash
 			                        ? "(fillable)"
 			                        : "",
@@ -176,13 +178,16 @@ bool ComputeRawAddress(bool buffer, int64_t immediate, uint64_t low, uint64_t hi
 			if (oor_log) {
 				static std::mutex                   mutex;
 				static std::unordered_set<uint64_t> seen;
-				const uint64_t key = base ^ (uint64_t {stride} << 48u) ^ (static_cast<uint64_t>(records) << 20u);
+				const uint64_t                      key =
+				    base ^ (uint64_t {stride} << 48u) ^ (static_cast<uint64_t>(records) << 20u);
 				std::scoped_lock lock(mutex);
 				if (seen.size() < 64 && seen.insert(key).second) {
-					std::printf("SrtOOR: base 0x%llx stride %u records %u size %llu read at %llu (V# hi 0x%08x)\n",
-					            static_cast<unsigned long long>(base), stride, static_cast<uint32_t>(records),
-					            static_cast<unsigned long long>(size), static_cast<unsigned long long>(aligned),
-					            static_cast<uint32_t>(high));
+					std::printf(
+					    "SrtOOR: base 0x%llx stride %u records %u size %llu read at %llu (V# hi "
+					    "0x%08x)\n",
+					    static_cast<unsigned long long>(base), stride,
+					    static_cast<uint32_t>(records), static_cast<unsigned long long>(size),
+					    static_cast<unsigned long long>(aligned), static_cast<uint32_t>(high));
 					std::fflush(stdout);
 				}
 			}
@@ -228,8 +233,9 @@ bool IsRuntimeSelect(ValueOpcode op) {
 	       op == ValueOpcode::SelectF32;
 }
 
-// nps5 kytyone (port of upstream KytyPS5 8d0ebb8f, shadowbeat070): KYTY_SRT_SMIN=1 lets the SRT walker
-// evaluate S_MIN_I32 in runtime descriptor values (SAROS bindless T#). Default off: ASTRO's plans unchanged.
+// nps5 kytyone (port of upstream KytyPS5 8d0ebb8f, shadowbeat070): KYTY_SRT_SMIN=1 lets the SRT
+// walker evaluate S_MIN_I32 in runtime descriptor values (SAROS bindless T#). Default off: ASTRO's
+// plans unchanged.
 bool SrtSignedMin() {
 	static const bool on = [] {
 		const char* value = std::getenv("KYTY_SRT_SMIN");
@@ -581,9 +587,10 @@ private:
 			const auto cycle = m_visiting_set.contains(inst) ? std::ranges::find(m_visiting, inst)
 			                                                 : m_visiting.end();
 			if (cycle != m_visiting.end()) {
-				const auto contains_phi = std::any_of(cycle, m_visiting.end(), [](const Inst* other) {
-					return other->GetOpcode() == ValueOpcode::Phi;
-				});
+				const auto contains_phi =
+				    std::any_of(cycle, m_visiting.end(), [](const Inst* other) {
+					    return other->GetOpcode() == ValueOpcode::Phi;
+				    });
 				if (contains_phi) {
 					return;
 				}
@@ -644,7 +651,8 @@ private:
 		uint64_t   shape = static_cast<uint64_t>(inst.GetOpcode()) << 48u;
 		if (index < m_program.memory_info.size()) {
 			const auto& memory = m_program.memory_info[index];
-			shape ^= (static_cast<uint64_t>(memory.offset) << 8u) ^ static_cast<uint64_t>(memory.kind);
+			shape ^=
+			    (static_cast<uint64_t>(memory.offset) << 8u) ^ static_cast<uint64_t>(memory.kind);
 		}
 		return shape;
 	}
@@ -659,7 +667,8 @@ private:
 			if (const auto* inst = info.condition.Resolve().TryInstruction(); inst != nullptr) {
 				conditions[inst].push_back(index);
 			}
-			if (const auto* inst = info.indirect_target.Resolve().TryInstruction(); inst != nullptr) {
+			if (const auto* inst = info.indirect_target.Resolve().TryInstruction();
+			    inst != nullptr) {
 				targets[inst].push_back(index);
 			}
 		}
@@ -685,7 +694,8 @@ private:
 			}
 			if (const auto found = targets.find(patch.inst); found != targets.end()) {
 				for (const auto index: found->second) {
-					if (m_program.block_info[index].indirect_target.Resolve() == Value(patch.inst)) {
+					if (m_program.block_info[index].indirect_target.Resolve() ==
+					    Value(patch.inst)) {
 						m_program.block_info[index].indirect_target = flat;
 					}
 				}
@@ -720,9 +730,9 @@ private:
 
 	Program&           m_program;
 	std::vector<Inst*> m_visiting;
-	std::unordered_set<const Inst*> m_visiting_set;
-	std::unordered_set<const Inst*> m_visited;
-	std::unordered_set<const Inst*> m_dynamic_reads;
+	std::unordered_set<const Inst*>                     m_visiting_set;
+	std::unordered_set<const Inst*>                     m_visited;
+	std::unordered_set<const Inst*>                     m_dynamic_reads;
 	std::unordered_map<uint64_t, std::vector<uint32_t>> m_slots_by_shape;
 	std::vector<Patch> m_patches;
 	bool               m_variant_reads = false;
@@ -1718,9 +1728,11 @@ void SrtWalker::NoteUnmappedRead(uint64_t address) const {
 			for (size_t i = 0; i < user.size() && i < 16; i++) {
 				words += fmt::format(" {:08x}", user[i]);
 			}
-			std::fprintf(stderr, "[memtrk] SRT unmapped read: %s 0x%016llx addr 0x%llx; user data (%zu):%s\n",
-			             StageName(m_program.stage), static_cast<unsigned long long>(m_program.shader_hash),
-			             static_cast<unsigned long long>(address), user.size(), words.c_str());
+			std::fprintf(
+			    stderr,
+			    "[memtrk] SRT unmapped read: %s 0x%016llx addr 0x%llx; user data (%zu):%s\n",
+			    StageName(m_program.stage), static_cast<unsigned long long>(m_program.shader_hash),
+			    static_cast<unsigned long long>(address), user.size(), words.c_str());
 		}
 	}
 	static std::mutex                   mutex;
@@ -1961,14 +1973,16 @@ bool SrtWalker::EvaluateInstWithOperands(const Inst& inst, uint64_t& result, Rea
 			return false;
 		case ValueOpcode::SMax32:
 			if (binary()) {
-				result = static_cast<uint32_t>(std::max(static_cast<int32_t>(static_cast<uint32_t>(a)),
-				                                        static_cast<int32_t>(static_cast<uint32_t>(b))));
+				result =
+				    static_cast<uint32_t>(std::max(static_cast<int32_t>(static_cast<uint32_t>(a)),
+				                                   static_cast<int32_t>(static_cast<uint32_t>(b))));
 				return true;
 			}
 			return false;
 		case ValueOpcode::SMin32:
 			if (binary()) {
-				result = static_cast<uint32_t>(std::min(static_cast<int32_t>(a), static_cast<int32_t>(b)));
+				result = static_cast<uint32_t>(
+				    std::min(static_cast<int32_t>(a), static_cast<int32_t>(b)));
 				return true;
 			}
 			return false;
@@ -2347,8 +2361,9 @@ bool SrtWalker::RefreshFlatBufferImpl(std::vector<uint32_t>& flat) {
 			m_fill_active = true;
 			m_fill_offset = read.flat_offset;
 			const bool ok = index < m_program.flat_read_roots.size()
-			    ? EvaluateRoot(read.value, m_program.flat_read_roots[index], flat[read.flat_offset])
-			    : Evaluate(read.value, flat[read.flat_offset]);
+			                    ? EvaluateRoot(read.value, m_program.flat_read_roots[index],
+			                                   flat[read.flat_offset])
+			                    : Evaluate(read.value, flat[read.flat_offset]);
 			m_fill_active = false;
 			m_diag_slot   = DiagSlotNone;
 			if (!ok) {
@@ -2782,9 +2797,9 @@ static uint64_t GetTickCountMs() {
 
 void SrtWalker::DiagWatchSlots(const std::vector<uint32_t>& flat) {
 	static std::mutex mutex;
-	static uint64_t   refreshes = 0;
-	static uint32_t   lines     = 0;
-	static bool       armed     = false;
+	static uint64_t   refreshes  = 0;
+	static uint32_t   lines      = 0;
+	static bool       armed      = false;
 	static uint32_t   last_first = 0xdeadbeefu;
 	static auto       last_time  = std::chrono::steady_clock::now();
 	std::scoped_lock  lock(mutex);
@@ -2793,14 +2808,16 @@ void SrtWalker::DiagWatchSlots(const std::vector<uint32_t>& flat) {
 	const uint32_t    first = !slots.empty() && slots[0] < flat.size() ? flat[slots[0]] : 0u;
 	const auto        now   = std::chrono::steady_clock::now();
 	// Refreshes 1-4, whenever the first listed slot changes, and every 10 s; at most 160 lines.
-	if (!(n <= 4 || first != last_first || now - last_time >= std::chrono::seconds(10)) || lines >= 160) return;
-	last_first = first;
-	last_time  = now;
+	if (!(n <= 4 || first != last_first || now - last_time >= std::chrono::seconds(10)) ||
+	    lines >= 160)
+		return;
+	last_first        = first;
+	last_time         = now;
 	auto* const saved = m_trace;
 	m_trace           = nullptr;
 	for (const auto slot: slots) {
-		std::string line  = fmt::format("SrtSlotWatch: t={} shader {:016x} refresh {} flat[{}]", GetTickCountMs(),
-		                                m_program.shader_hash, n, slot);
+		std::string line  = fmt::format("SrtSlotWatch: t={} shader {:016x} refresh {} flat[{}]",
+		                                GetTickCountMs(), m_program.shader_hash, n, slot);
 		uint32_t    index = UINT32_MAX;
 		for (uint32_t i = 0; i < m_program.srt_reads.size(); i++) {
 			if (m_program.srt_reads[i].flat_offset == slot) {
@@ -2817,18 +2834,23 @@ void SrtWalker::DiagWatchSlots(const std::vector<uint32_t>& flat) {
 			uint64_t    address = 0, available = 0;
 			if (inst == nullptr || (inst->GetOpcode() != ValueOpcode::LoadAddressU32 &&
 			                        inst->GetOpcode() != ValueOpcode::ReadConstBuffer)) {
-				line += fmt::format(" derived (op {})", inst != nullptr ? static_cast<int>(inst->GetOpcode()) : -1);
+				line += fmt::format(" derived (op {})",
+				                    inst != nullptr ? static_cast<int>(inst->GetOpcode()) : -1);
 			} else if (!ResolveRawReadAddress(*inst, address, available)) {
 				line += " address unresolved";
 			} else if (address == OutOfRangeReadAddress) {
 				line += " OUT OF RANGE (reads 0)";
 			} else {
-				line += fmt::format(" {} addr 0x{:x} avail {} mem",
-				                    inst->GetOpcode() == ValueOpcode::ReadConstBuffer ? "cb" : "ptr", address, available);
+				line +=
+				    fmt::format(" {} addr 0x{:x} avail {} mem",
+				                inst->GetOpcode() == ValueOpcode::ReadConstBuffer ? "cb" : "ptr",
+				                address, available);
 				for (int k = -4; k < 8; k++) {
 					uint64_t   word = 0;
 					const auto a    = address + static_cast<uint64_t>(static_cast<int64_t>(k) * 4);
-					line += ReadRawWord(a, word, false) ? fmt::format(" {:08x}", static_cast<uint32_t>(word)) : " ????????";
+					line += ReadRawWord(a, word, false)
+					            ? fmt::format(" {:08x}", static_cast<uint32_t>(word))
+					            : " ????????";
 				}
 				if (!armed && slot == slots[0] && slot < flat.size() && flat[slot] == 0u) {
 					armed = true;
@@ -2844,7 +2866,8 @@ void SrtWalker::DiagWatchSlots(const std::vector<uint32_t>& flat) {
 }
 
 bool SrtWalker::RefreshFlatBuffer(std::vector<uint32_t>& flat) {
-	if (SlotWatchSettings().hash != 0 && SlotWatchSettings().hash == m_program.shader_hash) [[unlikely]] {
+	if (SlotWatchSettings().hash != 0 && SlotWatchSettings().hash == m_program.shader_hash)
+	    [[unlikely]] {
 		const bool ok = RefreshFlatBufferImpl(flat);
 		if (ok) DiagWatchSlots(flat);
 		return ok;

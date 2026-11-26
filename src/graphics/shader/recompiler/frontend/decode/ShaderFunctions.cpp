@@ -104,7 +104,7 @@ bool ReadFunction(uint64_t address, uint32_t return_reg, const ShaderCodeReader&
 	const auto ensure = [&](size_t count) {
 		while (!at_end && words.size() < count && words.size() < MaxShaderFunctionWords) {
 			std::array<uint32_t, 64> chunk {};
-			const auto           at = guest + words.size() * sizeof(uint32_t);
+			const auto               at = guest + words.size() * sizeof(uint32_t);
 			if (read(at, chunk)) {
 				words.insert(words.end(), chunk.begin(), chunk.end());
 				continue;
@@ -132,17 +132,19 @@ bool ReadFunction(uint64_t address, uint32_t return_reg, const ShaderCodeReader&
 		}
 		(void)ensure(next + MaxInstructionRawWords);
 		if (GetInstructionFamily(words[next]) == Family::Unknown) {
-			reason = fmt::format("callee 0x{:x} has an unknown encoding at +0x{:x}", address, next * 4u);
+			reason =
+			    fmt::format("callee 0x{:x} has an unknown encoding at +0x{:x}", address, next * 4u);
 			return false;
 		}
-		std::vector<uint32_t> window(words.begin() + next,
-		                             words.begin() + std::min<size_t>(words.size(),
-		                                                              next + MaxInstructionRawWords));
+		std::vector<uint32_t> window(
+		    words.begin() + next,
+		    words.begin() + std::min<size_t>(words.size(), next + MaxInstructionRawWords));
 		window.resize(MaxInstructionRawWords, 0u);
 		Instruction inst;
 		DecodeInstruction(window, 0, inst);
 		if (next + inst.word_count > words.size()) {
-			reason = fmt::format("callee 0x{:x} code is not readable at +0x{:x}", address, next * 4u);
+			reason =
+			    fmt::format("callee 0x{:x} code is not readable at +0x{:x}", address, next * 4u);
 			return false;
 		}
 		// Decoded at pc 0: move it and its branch target to its place in the callee.
@@ -151,7 +153,8 @@ bool ReadFunction(uint64_t address, uint32_t return_reg, const ShaderCodeReader&
 			inst.branch_target += inst.pc;
 		}
 		if (IsCall(inst)) {
-			reason = fmt::format("callee 0x{:x} calls another function (+0x{:x})", address, inst.pc);
+			reason =
+			    fmt::format("callee 0x{:x} calls another function (+0x{:x})", address, inst.pc);
 			return false;
 		}
 		if (inst.opcode == Opcode::S_ENDPGM || inst.opcode == Opcode::UNSUPPORTED ||
@@ -192,7 +195,8 @@ bool ReadFunction(uint64_t address, uint32_t return_reg, const ShaderCodeReader&
 	}
 	for (const auto& inst: function.instructions) {
 		if (IsDirectBranch(inst.opcode) && !starts.contains(inst.branch_target)) {
-			reason = fmt::format("callee 0x{:x} branches outside itself (+0x{:x})", address, inst.pc);
+			reason =
+			    fmt::format("callee 0x{:x} branches outside itself (+0x{:x})", address, inst.pc);
 			return false;
 		}
 	}
@@ -209,10 +213,10 @@ bool WritesScc(const Instruction& inst) {
 	if (inst.family == Family::SOPC) return true;
 	if (inst.family != Family::SOP2 && inst.family != Family::SOP1) return false;
 	const auto name = magic_enum::enum_name(inst.opcode);
-	for (const std::string_view prefix: {"S_ADD_", "S_SUB_", "S_AND_", "S_OR_", "S_XOR_", "S_NAND_",
-	                                     "S_NOR_", "S_XNOR_", "S_ANDN2_", "S_ORN2_", "S_LSHL_",
-	                                     "S_LSHR_", "S_ASHR_", "S_BFE_", "S_MIN_", "S_MAX_",
-	                                     "S_ABSDIFF_", "S_NOT_", "S_ABS_", "S_BCNT"}) {
+	for (const std::string_view prefix:
+	     {"S_ADD_",  "S_SUB_",   "S_AND_",     "S_OR_",   "S_XOR_",  "S_NAND_", "S_NOR_",
+	      "S_XNOR_", "S_ANDN2_", "S_ORN2_",    "S_LSHL_", "S_LSHR_", "S_ASHR_", "S_BFE_",
+	      "S_MIN_",  "S_MAX_",   "S_ABSDIFF_", "S_NOT_",  "S_ABS_",  "S_BCNT"}) {
 		if (name.starts_with(prefix)) return true;
 	}
 	return false;
@@ -236,8 +240,9 @@ bool HasBackEdge(const Function& function) {
 }
 
 bool HasBarrier(const Function& function) {
-	return std::ranges::any_of(function.instructions,
-	                           [](const Instruction& inst) { return inst.opcode == Opcode::S_BARRIER; });
+	return std::ranges::any_of(function.instructions, [](const Instruction& inst) {
+		return inst.opcode == Opcode::S_BARRIER;
+	});
 }
 
 // KYTY_CALL_WATERFALL_CLEAR (after usa-ratt/KytyPS5-GT7 655faf07e): the VGPR a waterfall around the
@@ -255,8 +260,8 @@ uint32_t WaterfallFlag(const std::vector<Instruction>& instructions, size_t call
 		return operand.kind == OperandKind::IntegerInlineConstant && operand.value == 0;
 	};
 	const auto next = [&](size_t k) {
-		while (k < instructions.size() &&
-		       (instructions[k].opcode == Opcode::S_WAITCNT || instructions[k].opcode == Opcode::S_NOP)) {
+		while (k < instructions.size() && (instructions[k].opcode == Opcode::S_WAITCNT ||
+		                                   instructions[k].opcode == Opcode::S_NOP)) {
 			k++;
 		}
 		return k;
@@ -278,16 +283,18 @@ uint32_t WaterfallFlag(const std::vector<Instruction>& instructions, size_t call
 	}
 	for (size_t k = call; k-- > 0 && k + 24u > call;) {
 		const auto& inst = instructions[k];
-		if (inst.opcode == Opcode::V_MOV_B32 && inst.dst.kind == OperandKind::Vgpr && inst.dst.reg == flag &&
-		    zero(inst.src0)) {
+		if (inst.opcode == Opcode::V_MOV_B32 && inst.dst.kind == OperandKind::Vgpr &&
+		    inst.dst.reg == flag && zero(inst.src0)) {
 			const auto clear   = inst.pc;
 			const auto end     = instructions[call].pc;
 			const bool entered = std::ranges::any_of(instructions, [&](const Instruction& other) {
-				return IsDirectBranch(other.opcode) && other.branch_target > clear && other.branch_target <= end;
+				return IsDirectBranch(other.opcode) && other.branch_target > clear &&
+				       other.branch_target <= end;
 			});
 			return instructions[branch].branch_target <= clear && !entered ? flag : UINT32_MAX;
 		}
-		if (!magic_enum::enum_name(inst.opcode).starts_with("S_") || IsDirectBranch(inst.opcode) || IsCall(inst)) {
+		if (!magic_enum::enum_name(inst.opcode).starts_with("S_") || IsDirectBranch(inst.opcode) ||
+		    IsCall(inst)) {
 			break;
 		}
 	}
@@ -299,8 +306,8 @@ using Branches = std::vector<std::pair<uint32_t, uint32_t>>; // (branch word, ta
 // Patches the SOPP branches. An edge beyond simm16 goes through an island of two S_BRANCH placed
 // at an instruction boundary between its ends: the first skips the island for code that falls
 // into it, the second continues the long edge. No guest SGPR or SCC is touched.
-bool RelocateBranches(std::vector<uint32_t>& code, Branches& branches, std::vector<ShaderCallBody>& bodies,
-                      std::string& reason) {
+bool RelocateBranches(std::vector<uint32_t>& code, Branches& branches,
+                      std::vector<ShaderCallBody>& bodies, std::string& reason) {
 	for (size_t index = 0; index < branches.size();) {
 		const auto [at, target] = branches[index];
 		const auto delta        = int64_t(target) - int64_t(at) - 1;
@@ -396,7 +403,8 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 		const auto dest   = (inst.raw[0] >> 16u) & 0x7fu;
 		if (source >= 104u || (source & 1u) != 0 || dest >= 104u || (dest & 1u) != 0 ||
 		    found->second->source_reg != source || found->second->return_reg != dest) {
-			reason = fmt::format("the call at pc 0x{:x} uses a special or odd scalar pair", inst.pc);
+			reason =
+			    fmt::format("the call at pc 0x{:x} uses a special or odd scalar pair", inst.pc);
 			return false;
 		}
 	}
@@ -417,7 +425,8 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 			if (!functions.contains(key) && !unusable.contains(key)) {
 				Function    function;
 				std::string why;
-				const bool readable = ReadFunction(address, site.return_reg, read, wave_size, function, why);
+				const bool  readable =
+				    ReadFunction(address, site.return_reg, read, wave_size, function, why);
 				if (readable && !GetCodegenOptions().call_loops && HasBackEdge(function)) {
 					// KYTY_CALL_LOOPS=0: looping callees take the skip path.
 					unusable.insert(key);
@@ -457,31 +466,37 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 				if (!EmitGetPc(result, inst, base + inst.pc, reason, relative_base)) return false;
 			} else {
 				if (IsDirectBranch(inst.opcode)) {
-					main_branches.emplace_back(static_cast<uint32_t>(result.size()), inst.branch_target);
+					main_branches.emplace_back(static_cast<uint32_t>(result.size()),
+					                           inst.branch_target);
 				}
 				result.insert(result.end(), inst.raw, inst.raw + inst.word_count);
 			}
 		} else {
-			auto site      = *found->second;
-			site.addresses = reachable.at(site.pc);
-			const uint64_t return_pc = base + inst.pc + inst.word_count * sizeof(uint32_t);
-			const auto     set_return = [&] { EmitPair(result, site.return_reg, return_pc, relative_base); };
-			// Selection, shaped for the structurizer: every selection of it has its own merge block (an
-			// S_BRANCH to the next instruction) and no block is entered from two places, so the CFG
-			// needs no merge splitting. The targets of a high address word are found by a balanced
-			// search over their low words (s_cmp_lt_u32), each leaf comparing for equality; a match
-			// runs its own copy of the body, a miss its own skip path (the call returns at once), and
-			// every path leaves through the merges to the continuation. The comparisons change SCC and
-			// S_SWAPPC_B64 does not: when a callee may see the SCC of the call (NeedsCallScc), there is
-			// one selection per incoming SCC value, each restoring it.
+			auto site                 = *found->second;
+			site.addresses            = reachable.at(site.pc);
+			const uint64_t return_pc  = base + inst.pc + inst.word_count * sizeof(uint32_t);
+			const auto     set_return = [&] {
+				EmitPair(result, site.return_reg, return_pc, relative_base);
+			};
+			// Selection, shaped for the structurizer: every selection of it has its own merge block
+			// (an S_BRANCH to the next instruction) and no block is entered from two places, so the
+			// CFG needs no merge splitting. The targets of a high address word are found by a
+			// balanced search over their low words (s_cmp_lt_u32), each leaf comparing for
+			// equality; a match runs its own copy of the body, a miss its own skip path (the call
+			// returns at once), and every path leaves through the merges to the continuation. The
+			// comparisons change SCC and S_SWAPPC_B64 does not: when a callee may see the SCC of
+			// the call (NeedsCallScc), there is one selection per incoming SCC value, each
+			// restoring it.
 			std::map<uint32_t, std::vector<size_t>> groups; // high word -> targets, by low word
 			for (size_t t = 0; t < site.addresses.size(); t++) {
 				groups[static_cast<uint32_t>(site.addresses[t] >> 32u)].push_back(t);
 			}
 			for (auto& [high, targets]: groups) {
-				std::ranges::sort(targets, {}, [&](size_t t) { return static_cast<uint32_t>(site.addresses[t]); });
+				std::ranges::sort(targets, {}, [&](size_t t) {
+					return static_cast<uint32_t>(site.addresses[t]);
+				});
 			}
-			const bool dual = std::ranges::any_of(site.addresses, [&](uint64_t address) {
+			const bool dual   = std::ranges::any_of(site.addresses, [&](uint64_t address) {
 				return NeedsCallScc(functions.at({address, site.return_reg}));
 			});
 			const auto branch = [&] {
@@ -499,10 +514,10 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 			};
 			const auto emit_body = [&](const Function& function, std::vector<uint32_t>& exits) {
 				const auto body_begin = static_cast<uint32_t>(result.size());
-				// KYTY_CALL_LOOP_CAP: a looping body without a barrier is bracketed for the loop budget
-				// (the end marker before its last return, so that it is reached).
-				const bool bounded = GetCodegenOptions().call_loop_cap != 0u && HasBackEdge(function) &&
-				                     !HasBarrier(function);
+				// KYTY_CALL_LOOP_CAP: a looping body without a barrier is bracketed for the loop
+				// budget (the end marker before its last return, so that it is reached).
+				const bool bounded = GetCodegenOptions().call_loop_cap != 0u &&
+				                     HasBackEdge(function) && !HasBarrier(function);
 				if (bounded) result.push_back(ShaderCallLoopBodyBegin);
 				set_return();
 				std::map<uint32_t, uint32_t> local_pc;
@@ -516,12 +531,14 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 					if (body.opcode == Opcode::S_SETPC_B64) {
 						exits.push_back(branch());
 					} else if (body.opcode == Opcode::S_GETPC_B64) {
-						if (!EmitGetPc(result, body, (function.address & 0x0000ffffffffffffull) + body.pc,
+						if (!EmitGetPc(result, body,
+						               (function.address & 0x0000ffffffffffffull) + body.pc,
 						               reason)) {
 							return false;
 						}
 					} else {
-						if (IsDirectBranch(body.opcode)) local_branches.emplace_back(at, body.branch_target);
+						if (IsDirectBranch(body.opcode))
+							local_branches.emplace_back(at, body.branch_target);
 						result.insert(result.end(), body.raw, body.raw + body.word_count);
 					}
 				}
@@ -534,8 +551,8 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 				                            .address = function.address});
 				return result.size() <= MaxExpandedShaderWords;
 			};
-			// Code that enters with the target pair in s[source_reg:+1] and leaves by falling through.
-			// KYTY_CALL_LEARN: a miss reports the target first (the marker keeps SCC).
+			// Code that enters with the target pair in s[source_reg:+1] and leaves by falling
+			// through. KYTY_CALL_LEARN: a miss reports the target first (the marker keeps SCC).
 			const auto skip = [&](uint32_t restore) {
 				if (site.report_misses && !site.partition) {
 					result.push_back(EncodeCallStateWord(CallStateOp::MissReport, 1u));
@@ -555,7 +572,8 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 					const auto miss = static_cast<uint32_t>(result.size());
 					result.push_back(SCbranchScc0);
 					if (restore != 0) result.push_back(restore);
-					if (!emit_body(functions.at({site.addresses[t], site.return_reg}), exits)) return false;
+					if (!emit_body(functions.at({site.addresses[t], site.return_reg}), exits))
+						return false;
 					relocations.emplace_back(miss, static_cast<uint32_t>(result.size()));
 					skip(restore);
 				} else {
@@ -589,8 +607,8 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 				}
 				return true;
 			};
-			// A partition (ShaderCallSite::partition): the target the dispatch passes in runs its body,
-			// every other one is reported and its lanes leave the wave; then the skip path.
+			// A partition (ShaderCallSite::partition): the target the dispatch passes in runs its
+			// body, every other one is reported and its lanes leave the wave; then the skip path.
 			const auto marker = [&](CallStateOp op) {
 				result.push_back(EncodeCallStateWord(op, 1u));
 				result.push_back(site.source_reg);
@@ -606,15 +624,16 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 				const auto miss = static_cast<uint32_t>(result.size());
 				result.push_back(SCbranchScc0);
 				if (restore != 0) result.push_back(restore);
-				if (!emit_body(functions.at({site.addresses.front(), site.return_reg}), exits)) return false;
+				if (!emit_body(functions.at({site.addresses.front(), site.return_reg}), exits))
+					return false;
 				relocations.emplace_back(miss, static_cast<uint32_t>(result.size()));
 				marker(CallStateOp::PartitionDrop);
 				skip(restore);
 				merge(exits);
 				return true;
 			};
-			// A call-split callee program: the callee the dispatch runs (bin pass) against the target
-			// pair, compared at run time instead of with its guest address.
+			// A call-split callee program: the callee the dispatch runs (bin pass) against the
+			// target pair, compared at run time instead of with its guest address.
 			const auto emit_split = [&](uint32_t restore) -> bool {
 				if (site.addresses.empty()) {
 					skip(0);
@@ -625,7 +644,8 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 				const auto miss = static_cast<uint32_t>(result.size());
 				result.push_back(SCbranchScc0);
 				if (restore != 0) result.push_back(restore);
-				if (!emit_body(functions.at({site.addresses.front(), site.return_reg}), exits)) return false;
+				if (!emit_body(functions.at({site.addresses.front(), site.return_reg}), exits))
+					return false;
 				relocations.emplace_back(miss, static_cast<uint32_t>(result.size()));
 				skip(restore);
 				merge(exits);
@@ -680,12 +700,13 @@ bool ExpandShaderCalls(std::span<const uint32_t> code, uint64_t base,
 				if (reason.empty()) reason = "the expanded program exceeds the code bound";
 				return false;
 			}
-			// KYTY_CALL_WATERFALL_CLEAR: every callee leaves a waterfall's flag clear on the console
-			// (its lanes would be called forever otherwise); a body run on data the emulator does not
-			// reproduce may not, so the flag is cleared again where the call returns.
+			// KYTY_CALL_WATERFALL_CLEAR: every callee leaves a waterfall's flag clear on the
+			// console (its lanes would be called forever otherwise); a body run on data the
+			// emulator does not reproduce may not, so the flag is cleared again where the call
+			// returns.
 			if (GetCodegenOptions().call_waterfall_clear && !site.addresses.empty()) {
-				const auto flag =
-				    WaterfallFlag(program.instructions, static_cast<size_t>(&inst - program.instructions.data()));
+				const auto flag = WaterfallFlag(
+				    program.instructions, static_cast<size_t>(&inst - program.instructions.data()));
 				if (flag != UINT32_MAX) {
 					result.push_back(0x7e000280u | (flag << 17u)); // V_MOV_B32 v[flag], 0
 				}

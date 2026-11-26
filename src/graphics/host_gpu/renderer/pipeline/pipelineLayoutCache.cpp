@@ -102,15 +102,15 @@ MakePipelineLayoutSignature(std::span<const vk::DescriptorSetLayoutBinding> bind
 uint64_t HashPipelineLayoutSignature(const PipelineLayoutSignature& signature) {
 	const uint64_t seed = (static_cast<uint64_t>(signature.push_stages) << 32u) ^
 	                      (static_cast<uint64_t>(signature.push_size) << 1u) ^
-	                      (signature.push_descriptors ? 1u : 0u) ^ (signature.bindless_set * 0x9e3779b97f4a7c15ull);
+	                      (signature.push_descriptors ? 1u : 0u) ^
+	                      (signature.bindless_set * 0x9e3779b97f4a7c15ull);
 	return XXH3_64bits_withSeed(signature.bindings.data(),
 	                            signature.bindings.size() * sizeof(signature.bindings[0]), seed);
 }
 
-PipelineLayoutHandles AcquirePipelineLayout(GraphicContext& graphics,
-                                            std::span<const vk::DescriptorSetLayoutBinding> bindings,
-                                            vk::ShaderStageFlags push_stages, uint32_t push_size,
-                                            vk::DescriptorSetLayout bindless_set) {
+PipelineLayoutHandles AcquirePipelineLayout(
+    GraphicContext& graphics, std::span<const vk::DescriptorSetLayoutBinding> bindings,
+    vk::ShaderStageFlags push_stages, uint32_t push_size, vk::DescriptorSetLayout bindless_set) {
 	auto signature = MakePipelineLayoutSignature(bindings, push_stages, push_size,
 	                                             graphics.max_push_descriptors);
 	signature.bindless_set =

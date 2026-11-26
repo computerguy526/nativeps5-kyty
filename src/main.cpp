@@ -20,10 +20,10 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
-#include <string_view>
-#include <vector>
 #include <fmt/format.h>
 #include <magic_enum.hpp>
+#include <string_view>
+#include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #ifndef NOMINMAX
@@ -107,9 +107,10 @@ static void PrintUsage() {
 	::printf("  --game <dir|elf|zar>                 Game directory, ELF, or ZArchive to load.\n");
 	::printf("  --game-patch <json>                  ETAHen cheat file.\n");
 	::printf("  --addcont-dir <dir>                  Add-ons (DLC) folder (default: none).\n");
-	::printf(
-	    "  --addcont <label>[=<dir>]            Add-on (DLC) by entitlement label with its data in\n"
-	    "                                       <dir>, or license only without <dir>. Repeatable.\n");
+	::printf("  --addcont <label>[=<dir>]            Add-on (DLC) by entitlement label with its "
+	         "data in\n"
+	         "                                       <dir>, or license only without <dir>. "
+	         "Repeatable.\n");
 	::printf("  --screen-width <num>                 Window width. Default: 1280.\n");
 	::printf("  --screen-height <num>                Window height. Default: 720.\n");
 	::printf(
@@ -142,8 +143,10 @@ static void PrintUsage() {
 	    "  --stretch                            Stretch the image to the window. Default: off.\n");
 	::printf("  --no-splash                          Disable the startup splash screen.\n");
 	::printf("  --vr                                 Enable the virtual VR headset.\n");
-	::printf("  --trinity                            Enable experimental PS5 Pro mode for supported titles\n"
-	         "                                       (PSSR uses linear scaling unless --dlss is set). Default: off.\n");
+	::printf("  --trinity                            Enable experimental PS5 Pro mode for "
+	         "supported titles\n"
+	         "                                       (PSSR uses linear scaling unless --dlss is "
+	         "set). Default: off.\n");
 	::printf("  --dlss <folder>                      With --trinity, upscale PSSR with the DLSS\n"
 	         "                                       model in <folder> instead of linearly.\n");
 	::printf("  --dlss-preset <A-O>                  DLSS preset. Default: the model's own.\n");
@@ -169,7 +172,8 @@ static void PrintUsage() {
 	::printf("  --gpu-occlusion <on|off>             Accurate GPU occlusion queries (on) or always visible\n"
 	         "                                       (off, faster). Overrides KYTY_GPU_OCCLUSION (the\n"
 	         "                                       bundled preset: off).\n");
-	::printf("  --relaxed-shader-float               Native GPU float ops in shaders; faster, can be inaccurate.\n");
+	::printf("  --relaxed-shader-float               Native GPU float ops in shaders; faster, can "
+	         "be inaccurate.\n");
 	::printf("  --lod-stats                          Report bound textures in mip statistics.\n");
 	::printf("  --shader-optimization-type <value>   None, Size, or Performance.\n");
 	::printf("  --shader-log-direction <value>       Silent, Console, or File.\n");
@@ -389,8 +393,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			continue;
 		}
 
-		// --shader-cache and --occlusion-queries (upstream launcher flags) are accepted and have no effect:
-		// ours keeps its own program cache and --gpu-occlusion.
+		// --shader-cache and --occlusion-queries (upstream launcher flags) are accepted and have no
+		// effect: ours keeps its own program cache and --gpu-occlusion.
 		if (arg == "--shader-cache") {
 			options.config.shader_cache_enabled = true;
 			continue;
@@ -400,7 +404,6 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 			options.config.occlusion_queries_enabled = true;
 			continue;
 		}
-
 
 		if (arg == "--amd-cpu" || arg == "--no-amd-cpu") {
 			amd_cpu        = arg == "--amd-cpu" ? AmdCpuChoice::On : AmdCpuChoice::Off;
@@ -766,14 +769,16 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 	// KYTY_READBACK_LINEAR_IMAGES=1|0 overrides --readback-linear-images (the launcher's "Readback"
 	// box), so a title preset can turn it on for a game that needs it: Miles Morales reads a
 	// GPU-written linear image on the CPU during the boot logos and freezes there without it.
-	if (const char* env = std::getenv("KYTY_READBACK_LINEAR_IMAGES"); env != nullptr && env[0] != '\0') {
+	if (const char* env = std::getenv("KYTY_READBACK_LINEAR_IMAGES");
+	    env != nullptr && env[0] != '\0') {
 		bool on = options.config.readback_linear_images;
 		if (!ParseBool(env, on)) {
 			::printf("invalid boolean for KYTY_READBACK_LINEAR_IMAGES: %s\n", env);
 			return false;
 		}
 		if (on != options.config.readback_linear_images) {
-			::printf("KYTY_READBACK_LINEAR_IMAGES=%s: read-back of linear images %s (the command line had it %s)\n",
+			::printf("KYTY_READBACK_LINEAR_IMAGES=%s: read-back of linear images %s (the command "
+			         "line had it %s)\n",
 			         env, on ? "on" : "off", on ? "off" : "on");
 		}
 		options.config.readback_linear_images = on;
@@ -786,8 +791,8 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 // NVIDIA Smooth Motion makes its frames with CUDA in the driver's present layer, which initializes
 // CUDA only when the swapchain is created. By then the guest address space owns every free range
 // below GUEST_ADDRESS_SPACE_END (kernel/memory.h), CUDA finds no room for its address range there,
-// and cuInit fails with CUDA_ERROR_OUT_OF_MEMORY (2): Smooth Motion stays off (the layer's log is in
-// C:/NvPresent/logs). So CUDA is initialized here, before any reservation, with the free ranges
+// and cuInit fails with CUDA_ERROR_OUT_OF_MEMORY (2): Smooth Motion stays off (the layer's log is
+// in C:/NvPresent/logs). So CUDA is initialized here, before any reservation, with the free ranges
 // below a floor held for the duration of cuInit and released right after it: CUDA's range lands
 // above the floor, and the guest address space later reserves everything around it.
 //
@@ -797,12 +802,11 @@ static bool ParseArgs(int argc, char* argv[], RunOptions& options, bool& show_he
 // floor is the end of the guest range itself: CUDA then sits right above it and opens no hole in
 // guest VA (measured: 0xfd00000000-0xfec0000000 with the floor at 1008 GiB). The first attempt uses
 // that floor. A failed cuInit can be retried, so if it fails (a driver that wants more room, or a
-// guest range that grew towards 1 TiB) the floor steps down by 64 GiB, skipping the AMM window at the
-// top of the guest range (kernel/memory.h kAmmWindowBase), until cuInit succeeds; the
-// log line then says how much of the guest range CUDA took, since a fixed-address guest mapping
-// there would fail.
-// KYTY_CUDA_EARLY_INIT=1 turns it on (default off: it adds a DLL, CUDA threads and startup time to
-// every NVIDIA run, while only RTX 40/50 drivers with Smooth Motion gain anything).
+// guest range that grew towards 1 TiB) the floor steps down by 64 GiB, skipping the AMM window at
+// the top of the guest range (kernel/memory.h kAmmWindowBase), until cuInit succeeds; the log line
+// then says how much of the guest range CUDA took, since a fixed-address guest mapping there would
+// fail. KYTY_CUDA_EARLY_INIT=1 turns it on (default off: it adds a DLL, CUDA threads and startup
+// time to every NVIDIA run, while only RTX 40/50 drivers with Smooth Motion gain anything).
 // KYTY_CUDA_VA_FLOOR_GB=<GiB> forces one floor (no search). Without nvcuda.dll (no NVIDIA driver)
 // nothing happens.
 static uint64_t ReservedBytesIn(uint64_t begin, uint64_t end) {
@@ -813,8 +817,9 @@ static uint64_t ReservedBytesIn(uint64_t begin, uint64_t end) {
 		if (VirtualQuery(reinterpret_cast<const void*>(next), &info, sizeof(info)) == 0) {
 			break;
 		}
-		const auto base       = reinterpret_cast<uint64_t>(info.BaseAddress);
-		const auto region_end = std::min<uint64_t>(end, base + static_cast<uint64_t>(info.RegionSize));
+		const auto base = reinterpret_cast<uint64_t>(info.BaseAddress);
+		const auto region_end =
+		    std::min<uint64_t>(end, base + static_cast<uint64_t>(info.RegionSize));
 		if (region_end <= next) {
 			break;
 		}
@@ -839,12 +844,12 @@ static void InitCudaEarly() {
 	if (init == nullptr) {
 		return;
 	}
-	constexpr uint64_t GiB        = uint64_t {1} << 30u;
-	constexpr uint64_t Step       = 64 * GiB;
-	constexpr uint64_t LowestTry  = 64 * GiB;
-	const uint64_t     guest_end  = Libs::LibKernel::Memory::GUEST_ADDRESS_SPACE_END;
-	uint64_t           first      = guest_end;
-	bool               search     = true;
+	constexpr uint64_t GiB       = uint64_t {1} << 30u;
+	constexpr uint64_t Step      = 64 * GiB;
+	constexpr uint64_t LowestTry = 64 * GiB;
+	const uint64_t     guest_end = Libs::LibKernel::Memory::GUEST_ADDRESS_SPACE_END;
+	uint64_t           first     = guest_end;
+	bool               search    = true;
 	if (const char* value = std::getenv("KYTY_CUDA_VA_FLOOR_GB"); value != nullptr && std::atoi(value) > 0) {
 		first  = std::min<uint64_t>(static_cast<uint64_t>(std::atoi(value)), 65536) * GiB;
 		search = false;
@@ -866,14 +871,16 @@ static void InitCudaEarly() {
 				break;
 			}
 			const auto base = reinterpret_cast<uint64_t>(info.BaseAddress);
-			const auto end  = std::min<uint64_t>(floor, base + static_cast<uint64_t>(info.RegionSize));
+			const auto end =
+			    std::min<uint64_t>(floor, base + static_cast<uint64_t>(info.RegionSize));
 			if (end <= next) {
 				break;
 			}
 			// Reservations start on the 64 KiB allocation granularity.
 			const auto start = (std::max<uint64_t>(base, next) + 0xffffu) & ~uint64_t {0xffff};
 			if (info.State == MEM_FREE && end > start) {
-				void* ptr = VirtualAlloc(reinterpret_cast<void*>(start), end - start, MEM_RESERVE, PAGE_NOACCESS);
+				void* ptr = VirtualAlloc(reinterpret_cast<void*>(start), end - start, MEM_RESERVE,
+				                         PAGE_NOACCESS);
 				if (ptr != nullptr) {
 					held.push_back(ptr);
 				}
@@ -907,15 +914,18 @@ static void InitCudaEarly() {
 		         " GiB), NVIDIA Smooth Motion will not start\n",
 		         result, tries, floor / GiB);
 	} else if (taken == 0) {
-		::printf("CUDA: initialized above the guest address space (floor %" PRIu64 " GiB, %d tr%s)\n", floor / GiB,
-		         tries, tries == 1 ? "y" : "ies");
+		::printf("CUDA: initialized above the guest address space (floor %" PRIu64
+		         " GiB, %d tr%s)\n",
+		         floor / GiB, tries, tries == 1 ? "y" : "ies");
 	} else {
-		::printf("CUDA: initialized with the floor at %" PRIu64 " GiB, inside the guest address space (ends at %" PRIu64
-		         " GiB): CUDA holds %" PRIu64 " MiB of guest VA, which fixed-address guest mappings cannot use%s\n",
-		         floor / GiB, guest_end / GiB, taken >> 20u,
-		         amm_taken != 0 ? " (some of it in the AMM window: games that use AMM may fail, turn "
-		                          "KYTY_CUDA_EARLY_INIT off for them)"
-		                        : "");
+		::printf(
+		    "CUDA: initialized with the floor at %" PRIu64
+		    " GiB, inside the guest address space (ends at %" PRIu64 " GiB): CUDA holds %" PRIu64
+		    " MiB of guest VA, which fixed-address guest mappings cannot use%s\n",
+		    floor / GiB, guest_end / GiB, taken >> 20u,
+		    amm_taken != 0 ? " (some of it in the AMM window: games that use AMM may fail, turn "
+		                     "KYTY_CUDA_EARLY_INIT off for them)"
+		                   : "");
 	}
 }
 #endif
@@ -959,8 +969,8 @@ static std::filesystem::path EmulatorDirectory() {
 
 // u59-preset.<TITLE_ID>.json when no launcher applied it. Per-title presets are applied by the
 // launcher (KYTY_TITLE_PRESET names the file), but a launcher older than them (int21 and before)
-// starting a newer emulator, or a direct start, ran the game without its title's switches: Ratchet &
-// Clank then ran without KYTY_INDIRECT_COHERENT and the rest of its preset and lost the device at
+// starting a newer emulator, or a direct start, ran the game without its title's switches: Ratchet
+// & Clank then ran without KYTY_INDIRECT_COHERENT and the rest of its preset and lost the device at
 // its first gameplay load. The emulator then loads the file itself, from its own folder or the one
 // above (where the launcher looks), with the launcher's precedence: over the bundled preset and the
 // environment, under the command line (it runs before the arguments are parsed, so
@@ -979,8 +989,8 @@ static void ApplyTitlePresetFallback(int argc, char* argv[]) {
 	if (game.empty()) {
 		return;
 	}
-	const auto      path = PathFromUtf8(FixFilenameSlash(game));
-	std::error_code ec;
+	const auto            path = PathFromUtf8(FixFilenameSlash(game));
+	std::error_code       ec;
 	std::filesystem::path app0;
 	if (std::filesystem::is_directory(path, ec)) {
 		app0 = path;
@@ -1042,10 +1052,11 @@ static int Main(int argc, char* argv[]) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	// KYTY_RADV_TRANSFER_QUEUE=1 (default off; chenxiao07/KytyPS5 1bfdf6ded): asks RADV for its
 	// transfer-only queue family, which it shows only when asked, before the driver loads (Mesa 26
-	// reads RADV_EXPERIMENTAL, older Mesa RADV_PERFTEST; other drivers neither), unless the variable
-	// is set already. The upload DMA (KYTY_UPLOAD_DMA) then has a copy queue of its own on AMD;
-	// chenxiao's readbacks gained 19-27% on an RX 9060 XT / 9070 XT with it.
-	if (const char* ask = std::getenv("KYTY_RADV_TRANSFER_QUEUE"); ask != nullptr && ask[0] == '1') {
+	// reads RADV_EXPERIMENTAL, older Mesa RADV_PERFTEST; other drivers neither), unless the
+	// variable is set already. The upload DMA (KYTY_UPLOAD_DMA) then has a copy queue of its own on
+	// AMD; chenxiao's readbacks gained 19-27% on an RX 9060 XT / 9070 XT with it.
+	if (const char* ask = std::getenv("KYTY_RADV_TRANSFER_QUEUE");
+	    ask != nullptr && ask[0] == '1') {
 		setenv("RADV_EXPERIMENTAL", "transfer_queue", 0);
 		setenv("RADV_PERFTEST", "transfer_queue", 0);
 	}

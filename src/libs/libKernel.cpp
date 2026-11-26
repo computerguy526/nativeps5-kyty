@@ -23,8 +23,8 @@
 #include "libs/network.h"
 #include "loader/elf.h"
 #include "loader/runtimeLinker.h"
-#include "loader/systemContent.h"
 #include "loader/symbolDatabase.h"
+#include "loader/systemContent.h"
 
 #include <algorithm>
 #include <array>
@@ -1343,8 +1343,8 @@ static int KYTY_SYSV_ABI KernelGetOperationMode(int* mode, int* submode) {
 		const char* value = std::getenv("KYTY_POWER_SAVER");
 		return value != nullptr && value[0] == '1';
 	}();
-	*mode    = Loader::SystemContentIsTrinityMode() ? 3 : 2; // PS5 Pro (experimental Pro mode) or Base
-	*submode = power_saver ? 1 : 0;                          // power saver mode (KYTY_POWER_SAVER=1) or none
+	*mode = Loader::SystemContentIsTrinityMode() ? 3 : 2; // PS5 Pro (experimental Pro mode) or Base
+	*submode = power_saver ? 1 : 0; // power saver mode (KYTY_POWER_SAVER=1) or none
 	LOGF("\t mode = %d, submode = %d\n", *mode, *submode);
 	return OK;
 }
@@ -1378,9 +1378,9 @@ static void KYTY_SYSV_ABI KernelRtldSetApplicationHeapAPI(void* api[]) {
 	[[maybe_unused]] auto* heap_posix_memalign = api[6];
 }
 
-// _write to descriptors 0-2: upstream e0c5ae090 sends it through KernelWrite (printed and flushed). That
-// changes what a title that writes a lot to stdout costs, so it is opt-in here: KYTY_GUEST_STDOUT=1;
-// by default the bytes are dropped and reported as written, as before.
+// _write to descriptors 0-2: upstream e0c5ae090 sends it through KernelWrite (printed and flushed).
+// That changes what a title that writes a lot to stdout costs, so it is opt-in here:
+// KYTY_GUEST_STDOUT=1; by default the bytes are dropped and reported as written, as before.
 static bool GuestStdoutEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_GUEST_STDOUT");

@@ -26,8 +26,9 @@ enum class Path : uint32_t {
 [[nodiscard]] bool Enabled();
 
 // vkCreateGraphicsPipelines for one pipeline, counted when Enabled(); otherwise a plain call.
-vk::Result CreateGraphics(vk::Device device, vk::PipelineCache cache, const vk::GraphicsPipelineCreateInfo& info,
-                          vk::Pipeline* pipeline, Path path);
+vk::Result CreateGraphics(vk::Device device, vk::PipelineCache cache,
+                          const vk::GraphicsPipelineCreateInfo& info, vk::Pipeline* pipeline,
+                          Path path);
 
 // A pipeline taken from the adopted (prewarmed) set instead of the driver: no driver call at all.
 void NoteAdopted(Path path);
@@ -55,7 +56,8 @@ void RegisterModule(vk::ShaderModule module, const char* stage, uint64_t hash);
 [[nodiscard]] bool Selected(vk::ShaderModule module);
 // The stages' "<stage> 0x<hash>" names.
 [[nodiscard]] std::string Describe(const vk::PipelineShaderStageCreateInfo* stages, uint32_t count);
-void Print(vk::Device device, vk::Pipeline pipeline, const std::string& what, vk::PipelineCreateFlags flags);
+void                      Print(vk::Device device, vk::Pipeline pipeline, const std::string& what,
+                                vk::PipelineCreateFlags flags);
 
 } // namespace Libs::Graphics::PipelineStats
 
@@ -83,19 +85,20 @@ void Configure(vk::Device device, uint32_t vendor_id);
                             bool rasterizer_discard) noexcept;
 
 struct Storage {
-	vk::GraphicsPipelineCreateInfo                 info {};
+	vk::GraphicsPipelineCreateInfo                   info {};
 	std::array<vk::PipelineShaderStageCreateInfo, 8> stages {};
 };
 // `info`, or a copy of it in `storage` with the empty fragment stage appended when Module() is set
 // and the pipeline is eligible (monolithic, has stages, no fragment stage, rasterization on).
-[[nodiscard]] const vk::GraphicsPipelineCreateInfo& Apply(const vk::GraphicsPipelineCreateInfo& info,
-                                                          Storage& storage) noexcept;
+[[nodiscard]] const vk::GraphicsPipelineCreateInfo&
+Apply(const vk::GraphicsPipelineCreateInfo& info, Storage& storage) noexcept;
 // Graphics pipeline libraries: the stage to use for a fragment shader library without one (null
 // when off).
 [[nodiscard]] const vk::PipelineShaderStageCreateInfo* LibraryStage() noexcept;
 // Pipelines created with the empty stage so far.
 [[nodiscard]] uint64_t AppliedCount() noexcept;
-// Tests: use `module` (an opaque handle, nothing is created) as the empty module; null turns it off.
+// Tests: use `module` (an opaque handle, nothing is created) as the empty module; null turns it
+// off.
 void SetModuleForTest(vk::ShaderModule module) noexcept;
 
 } // namespace Libs::Graphics::EmptyFragment

@@ -72,9 +72,9 @@ struct PipelineStaticParameters {
 	bool                       blend_enable[RENDER_COLOR_ATTACHMENTS_MAX]         = {};
 	// Target 0 blends with logical alpha from the second source (KYTY_BLEND_ALPHA_REMAP).
 	bool                       blend_alpha_source_remap                           = false;
-	// KYTY_AA_MASK_COVERAGE: PA_SC_AA_MASK reduced to the draw's samples when the pixel shader's copy
-	// that applies it is used (aaMaskCoverage.h); all ones otherwise.
-	uint32_t                   aa_mask[2]                                         = {0xffffffffu, 0xffffffffu};
+	// KYTY_AA_MASK_COVERAGE: PA_SC_AA_MASK reduced to the draw's samples when the pixel shader's
+	// copy that applies it is used (aaMaskCoverage.h); all ones otherwise.
+	uint32_t aa_mask[2] = {0xffffffffu, 0xffffffffu};
 
 	bool operator==(const PipelineStaticParameters& other) const noexcept;
 };
@@ -93,12 +93,12 @@ struct PipelineRenderingState {
 	uint32_t                                             color_count    = 0;
 	// KYTY_LAYER_CLAMP: the bound layer count when a vertex-side stage exports the render target
 	// array index (ShaderRecompiler::IR::LayerLimitSpecId), else 0.
-	uint32_t                                             layer_limit    = 0;
+	uint32_t layer_limit = 0;
 	// KYTY_EQAA_MIXED: the colour and depth attachments' sample counts when they differ (mixed
 	// attachment samples; rasterization runs at PipelineStaticParameters::samples); both 0 when
 	// every attachment has the rasterization count.
-	uint32_t                                             color_samples  = 0;
-	uint32_t                                             depth_samples  = 0;
+	uint32_t color_samples = 0;
+	uint32_t depth_samples = 0;
 
 	bool operator==(const PipelineRenderingState&) const = default;
 };
@@ -128,7 +128,7 @@ struct ShaderProgram {
 	vk::ShaderModule module = nullptr;
 	// KYTY_UNNORMALIZED_FIX: this is a hull shader's normalized-LOD copy (pixelRateVariant.h); the
 	// draw binds its samplers with FORCE_UNNORMALIZED cleared.
-	bool             normalized_samplers = false;
+	bool normalized_samplers = false;
 
 	explicit operator bool() const { return id != 0 && module != nullptr; }
 };
@@ -149,12 +149,12 @@ public:
 		vk::DescriptorSetLayout descriptor_set_layout = nullptr;
 		bool                    uses_push_descriptors = false;
 		// Samples bindless images (Senaxx): descriptor set 1 is the bindless table.
-		bool                    uses_bindless         = false;
+		bool uses_bindless = false;
 		// Built by the start-up compute prewarm and not used by a dispatch yet (statistics only).
 		bool                    prewarmed             = false;
 		// KYTY_SKIP_INVALID: the driver could not build this compute pipeline (`pipeline` and its
 		// layout are null); its dispatches are skipped (TryGetComputePipeline returns null).
-		bool                    build_failed          = false;
+		bool build_failed = false;
 	};
 
 	struct GraphicsPrograms {
@@ -197,10 +197,11 @@ public:
 	// KYTY_SPIRV_VARIANT (diagnostic): group `group`'s (1-based) edited copy of `program` (same
 	// bindings and layout, an id of its own), or an empty program when it has none.
 	// VariantsConfigured: any group is set.
-	[[nodiscard]] static ShaderProgram SpirvVariantProgram(const ShaderProgram& program, uint32_t group);
+	[[nodiscard]] static ShaderProgram SpirvVariantProgram(const ShaderProgram& program,
+	                                                       uint32_t             group);
 	[[nodiscard]] static bool          SpirvVariantsConfigured();
 	// KYTY_SPIRV_VARIANT_LIVE (live, default 0): the group draws and dispatches run (0 = none).
-	[[nodiscard]] static uint32_t      SpirvVariantLiveGroup();
+	[[nodiscard]] static uint32_t SpirvVariantLiveGroup();
 
 	GraphicsPrograms
 	GetGraphicsPrograms(const HW::VertexShaderInfo& vertex_regs,
@@ -234,10 +235,11 @@ public:
 	// LS, HS and TES bound in that order, unlinked). vertex_info and vertex_preps are the LS, HS
 	// and TES stages. Ineligible for a set the serial path would skip or end on, a user clip plane
 	// or O15 resource reuse.
-	[[nodiscard]] static bool DrawPrepTessEnabled();
+	[[nodiscard]] static bool       DrawPrepTessEnabled();
 	[[nodiscard]] SpeculativeResult PrepareTessellatedProgramsSpeculative(
 	    const HW::VertexShaderInfo& vertex_regs, const HW::PixelShaderInfo& pixel_regs,
-	    const HW::ShaderRegisters& sh, const HW::Context& context, const HW::UserConfig& user_config,
+	    const HW::ShaderRegisters& sh, const HW::Context& context,
+	    const HW::UserConfig&                               user_config,
 	    std::span<const Prospero::ColorComponentMapping, 8> target_export_mapping,
 	    bool pixel_active, std::array<ShaderVertexInputInfo*, 3> vertex_info,
 	    ShaderPixelInputInfo& pixel_info, std::array<StagePrep*, 3> vertex_preps,
@@ -250,7 +252,7 @@ public:
 	// kernel). A GetComputeProgram of a kernel that is split prepares its first program (R_0) and
 	// leaves the dispatch's run (a CallSplit::Run) for TakeCallSplitRun. A lookup that returns no
 	// program leaves no run: the run belongs to this dispatch, never to a later one.
-	static void SelectCallSplitCode(const void* code);
+	static void                                      SelectCallSplitCode(const void* code);
 	[[nodiscard]] static std::shared_ptr<const void> TakeCallSplitRun();
 	// A dispatch whose program did not come from GetComputeProgram (a draw-prep preparation):
 	// drops any run an earlier lookup of this thread left, so the dispatch cannot take it.
@@ -294,7 +296,7 @@ public:
 	// thread may translate new VS/PS on the workers and report translation_pending instead
 	// (RefreshShaders decides from the draw's registers; GetGraphicsPrograms resets it).
 	[[nodiscard]] static bool AsyncTranslationEnabled() noexcept;
-	static void AllowDeferredTranslation(bool allow) noexcept;
+	static void               AllowDeferredTranslation(bool allow) noexcept;
 	// A shader whose program refuses skipping (DrawRunProgramEligible): its later sources translate
 	// at once.
 	static void NoteAsyncTranslationRefused(uint64_t shader_hash);
@@ -390,12 +392,12 @@ public:
 	// without software BVH instructions get GetComputePipeline's (built on this thread). A
 	// software ray-tracing kernel (program.info.uses_bvh, KYTY_RT_SOFTWARE) builds on a background
 	// thread: its first dispatch waits up to KYTY_RT_KERNEL_WAIT_MS (default 120 s) for it, because
-	// a skipped dispatch can leave lighting that is never recomputed (rtSession.h FirstWaitBudgetMs);
-	// a call-split program never waits and a huge compute program (KYTY_COMPUTE_BACKGROUND_WORDS)
-	// waits up to KYTY_RT_PIPELINE_WAIT_MS (default 250); past the budget every dispatch is skipped
-	// until the pipeline is ready. Null also, for every
-	// RT kernel, once any RT pipeline failed to build (rtSession.h: software RT is then off for the
-	// session, logged once). KYTY_RT_PIPELINE_ASYNC=0 builds in the background but waits for it.
+	// a skipped dispatch can leave lighting that is never recomputed (rtSession.h
+	// FirstWaitBudgetMs); a call-split program never waits and a huge compute program
+	// (KYTY_COMPUTE_BACKGROUND_WORDS) waits up to KYTY_RT_PIPELINE_WAIT_MS (default 250); past the
+	// budget every dispatch is skipped until the pipeline is ready. Null also, for every RT kernel,
+	// once any RT pipeline failed to build (rtSession.h: software RT is then off for the session,
+	// logged once). KYTY_RT_PIPELINE_ASYNC=0 builds in the background but waits for it.
 	[[nodiscard]] Pipeline* TryGetComputePipeline(const ShaderComputeInputInfo& input_info,
 	                                              const ShaderProgram&          compute_program);
 	// The command processor at every guest flip: waits for the RT kernels whose first dispatch this
@@ -451,7 +453,8 @@ public:
 
 private:
 	// GetComputeProgram without the run hygiene (see SelectCallSplitCode).
-	ShaderProgram LookupComputeProgram(const HW::ComputeShaderInfo& regs, const HW::ShaderRegisters& sh,
+	ShaderProgram LookupComputeProgram(const HW::ComputeShaderInfo& regs,
+	                                   const HW::ShaderRegisters&   sh,
 	                                   ShaderComputeInputInfo& input_info, StagePrep& stage_prep);
 	struct ProgramCache;
 	struct PipelineDiagnostics;
@@ -530,19 +533,22 @@ private:
 	std::filesystem::path         m_driver_cache_path;
 	// The driver cache started from a file (not empty).
 	bool                          m_driver_cache_loaded = false;
-	// nps5 v14prep (cacheUpgrade.h): what this start does about the cache's codegen stamp. Warm when no pipeline list is
-	// active, KYTY_CACHE_UPGRADE=0 or the stamp matches; otherwise the launch phase replays the whole list.
-	std::atomic<int>              m_cache_action {1}; // CacheUpgrade::Action, Warm (read by the replay's last worker)
-	std::filesystem::path         m_cache_stamp_path;
-	std::string                   m_cache_identity;
-	std::atomic<bool>             m_cache_replay_complete {false};
-	bool                          m_cache_had_file = false;
-	std::string                   m_cache_note;
-	std::mutex                    m_driver_cache_write_mutex;
-	void                          DecideCacheUpgrade();
-	bool                          RestartDriverCacheEmpty();
-	bool                          WriteCacheStamp(bool prepared);
-	void                          FinishCacheStamp(); // the preparation completed: stamp "prepared", drop the set-aside cache
+	// nps5 v14prep (cacheUpgrade.h): what this start does about the cache's codegen stamp. Warm
+	// when no pipeline list is active, KYTY_CACHE_UPGRADE=0 or the stamp matches; otherwise the
+	// launch phase replays the whole list.
+	std::atomic<int> m_cache_action {
+	    1}; // CacheUpgrade::Action, Warm (read by the replay's last worker)
+	std::filesystem::path m_cache_stamp_path;
+	std::string           m_cache_identity;
+	std::atomic<bool>     m_cache_replay_complete {false};
+	bool                  m_cache_had_file = false;
+	std::string           m_cache_note;
+	std::mutex            m_driver_cache_write_mutex;
+	void                  DecideCacheUpgrade();
+	bool                  RestartDriverCacheEmpty();
+	bool                  WriteCacheStamp(bool prepared);
+	void
+	FinishCacheStamp(); // the preparation completed: stamp "prepared", drop the set-aside cache
 	// Keys of pipelines the driver cache holds (KYTY_PIPELINE_KNOWN, written with the driver cache
 	// file; in memory only when just KYTY_PIPELINE_JOURNAL or KYTY_PIPELINE_LIST is on); null when all
 	// are off.
@@ -583,28 +589,28 @@ private:
 	std::unique_ptr<PrefetchState> m_skip;
 	uint64_t                       m_skip_wait_ns = 0;
 	std::atomic<uint64_t>          m_skip_draws {0}, m_skip_ready_in_wait {0}, m_skip_not_queued {0};
-	// KYTY_PIPELINE_SKIP_FRAME_BUDGET_US (0: off): the skippable draws of one frame wait at most this
-	// long in all for their new pipelines (each still at most KYTY_PIPELINE_SKIP_WAIT_US).
-	uint64_t                       m_skip_frame_budget_ns = 0;
-	uint64_t                       m_skip_frame = 0, m_skip_frame_used = 0;
+	// KYTY_PIPELINE_SKIP_FRAME_BUDGET_US (0: off): the skippable draws of one frame wait at most
+	// this long in all for their new pipelines (each still at most KYTY_PIPELINE_SKIP_WAIT_US).
+	uint64_t m_skip_frame_budget_ns = 0;
+	uint64_t m_skip_frame = 0, m_skip_frame_used = 0;
 	// KYTY_PIPELINE_SKIP_PROBE: a skippable draw's new pipeline is first looked up in the driver
 	// cache alone on this thread (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT).
-	bool                           m_skip_probe = false;
-	std::atomic<uint64_t>          m_skip_probe_hits {0}, m_skip_probe_misses {0}, m_skip_probe_ns {0};
-	// KYTY_PIPELINE_ADOPT=1 (default off; upstream ec8b75b24's boot prewarm, adapted): pipelines the
-	// journal replay built are kept by content key (GraphicsContent::key) instead of destroyed, and a
-	// draw whose create info has that key takes the object instead of calling the driver. At most
-	// KYTY_PIPELINE_ADOPT_MAX (default 12000) wait; the rest are destroyed as before. Guarded by
-	// m_adopt_mutex; the objects not taken are destroyed with the cache.
-	bool                                     m_adopt     = false;
-	uint64_t                                 m_adopt_max = 0;
-	std::mutex                               m_adopt_mutex;
+	bool                  m_skip_probe = false;
+	std::atomic<uint64_t> m_skip_probe_hits {0}, m_skip_probe_misses {0}, m_skip_probe_ns {0};
+	// KYTY_PIPELINE_ADOPT=1 (default off; upstream ec8b75b24's boot prewarm, adapted): pipelines
+	// the journal replay built are kept by content key (GraphicsContent::key) instead of destroyed,
+	// and a draw whose create info has that key takes the object instead of calling the driver. At
+	// most KYTY_PIPELINE_ADOPT_MAX (default 12000) wait; the rest are destroyed as before. Guarded
+	// by m_adopt_mutex; the objects not taken are destroyed with the cache.
+	bool                                       m_adopt     = false;
+	uint64_t                                   m_adopt_max = 0;
+	std::mutex                                 m_adopt_mutex;
 	std::unordered_map<uint64_t, vk::Pipeline> m_adopted;
-	std::atomic<uint64_t>                    m_adopt_offered {0}, m_adopt_taken {0}, m_adopt_refused {0};
+	std::atomic<uint64_t> m_adopt_offered {0}, m_adopt_taken {0}, m_adopt_refused {0};
 	// The adopted pipeline with this content key (removed from the set), or null.
 	[[nodiscard]] vk::Pipeline TakeAdoptedPipeline(uint64_t key);
 	// Keeps a replay-built pipeline for adoption; false (the caller destroys it) when off or full.
-	[[nodiscard]] bool OfferAdoptedPipeline(uint64_t key, vk::Pipeline pipeline);
+	[[nodiscard]] bool        OfferAdoptedPipeline(uint64_t key, vk::Pipeline pipeline);
 	[[nodiscard]] std::string AdoptReport();
 	Pipeline* GetGraphicsPipelineImpl(std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
 	                                  std::span<const ShaderVertexInputInfo> vertex_info,
@@ -708,18 +714,15 @@ void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pi
 // Stops the emulator at a mesh (NGG) draw on a device without mesh shaders, naming the missing
 // extension and the device: such draws have no fallback.
 [[noreturn]] void ExitWithoutMeshShaders(const GraphicContext& graphics);
-void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
-                            const PipelineRenderingState&          rendering,
-                            const PipelineVertexInputState&        vertex_input,
-                            std::span<const ShaderVertexInputInfo> vertex_info,
-                            const ShaderPixelInputInfo*            ps_input_info,
-                            const PipelineCache::GraphicsPrograms& programs,
-                            const PipelineStaticParameters&        static_params,
-                            vk::PipelineCache                      driver_cache,
-                            const GraphicsPipelineCreateHook*      create_hook = nullptr,
-                            // Not null: a failed creation is returned here (and cleaned up)
-                            // instead of stopping the emulator.
-                            vk::Result*                            result_out  = nullptr);
+void              CreatePipelineInternal(
+    GraphicContext& graphics, PipelineCache::Pipeline& pipeline,
+    const PipelineRenderingState& rendering, const PipelineVertexInputState& vertex_input,
+    std::span<const ShaderVertexInputInfo> vertex_info, const ShaderPixelInputInfo* ps_input_info,
+    const PipelineCache::GraphicsPrograms& programs, const PipelineStaticParameters& static_params,
+    vk::PipelineCache driver_cache, const GraphicsPipelineCreateHook* create_hook = nullptr,
+    // Not null: a failed creation is returned here (and cleaned up)
+    // instead of stopping the emulator.
+    vk::Result* result_out = nullptr);
 // Creates a compute pipeline from the complete create info instead of vkCreateComputePipelines
 // (KYTY_PIPELINE_FAST_FIRST). The create info and its chained structures live only for the call.
 using ComputePipelineCreateHook =

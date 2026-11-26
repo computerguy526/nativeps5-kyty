@@ -160,8 +160,8 @@ GraphicsPipelineLibrary::Create(const vk::GraphicsPipelineCreateInfo& info,
 		result.path     = Path::Monolithic;
 		result.fallback = reason;
 		EmptyFragment::Storage storage; // KYTY_EMPTY_FS: the driver's copy only
-		result.result = m_graphics.device.createGraphicsPipelines(driver_cache, 1, &EmptyFragment::Apply(info, storage),
-		                                                          nullptr, &result.pipeline);
+		result.result = m_graphics.device.createGraphicsPipelines(
+		    driver_cache, 1, &EmptyFragment::Apply(info, storage), nullptr, &result.pipeline);
 		result.optimize.reset();
 		return std::move(result);
 	};
@@ -177,8 +177,8 @@ GraphicsPipelineLibrary::Create(const vk::GraphicsPipelineCreateInfo& info,
 		probe.flags           = vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequired;
 		vk::Pipeline           pipeline = nullptr;
 		EmptyFragment::Storage storage; // KYTY_EMPTY_FS: as the monolithic build would make it
-		const auto             probed   = m_graphics.device.createGraphicsPipelines(
-		                driver_cache, 1, &EmptyFragment::Apply(probe, storage), nullptr, &pipeline);
+		const auto             probed = m_graphics.device.createGraphicsPipelines(
+		    driver_cache, 1, &EmptyFragment::Apply(probe, storage), nullptr, &pipeline);
 		if (probed == vk::Result::eSuccess && pipeline != nullptr) {
 			result.path     = Path::CacheHit;
 			result.pipeline = pipeline;

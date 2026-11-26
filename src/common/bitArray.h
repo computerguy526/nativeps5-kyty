@@ -119,11 +119,12 @@ public:
 		                   [this](size_t word, uint64_t mask) { return (Load(word) & mask) != 0; });
 	}
 
-	// Ours: Any() over the whole array, kept next to upstream's Any(start, end) (fe847be96 dropped it).
+	// Ours: Any() over the whole array, kept next to upstream's Any(start, end) (fe847be96 dropped
+	// it).
 	[[nodiscard]] bool Any() const { return !None(); }
 
 	static constexpr size_t Words = WORD_COUNT;
-	[[nodiscard]] uint64_t Word(size_t index) const { return Load(index); }
+	[[nodiscard]] uint64_t  Word(size_t index) const { return Load(index); }
 
 	// Whether any bit of [start, end) is set in the words word_at(i) returns: the value of
 	// BitArray(bits, start, end).Any() without building the masked copy. False for an empty or

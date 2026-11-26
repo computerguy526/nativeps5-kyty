@@ -1,9 +1,10 @@
-// The SDL gamepad sensor event -> Kyty pad (window.cpp ProcessEvent and tests/PadMotionE2ETests.cpp).
+// The SDL gamepad sensor event -> Kyty pad (window.cpp ProcessEvent and
+// tests/PadMotionE2ETests.cpp).
 #pragma once
 
-#include <SDL3/SDL.h>
-
 #include "libs/controller.h"
+
+#include <SDL3/SDL.h>
 
 namespace Libs::Graphics {
 

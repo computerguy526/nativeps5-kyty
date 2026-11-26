@@ -1,32 +1,36 @@
 // KYTY_LANE2_SHARE (adapted from Erlou93/KytyPS5-Yotei spirvEmitterLaneShare.cpp): a wave64 compute
-// program that runs two guest lanes per host invocation (lane_count 2: lanes l and l + 32) emits every
-// IR instruction once per half (EmitBlock). A value that is the same in both halves (scalar state,
-// loop counters, addresses built from user data) then costs two registers and twice the code, and the
-// host compiler cannot merge the two copies of a loop-carried value. This pass proves which values are
-// the same in both halves; the high half reuses the low half's id instead of emitting the instruction.
+// program that runs two guest lanes per host invocation (lane_count 2: lanes l and l + 32) emits
+// every IR instruction once per half (EmitBlock). A value that is the same in both halves (scalar
+// state, loop counters, addresses built from user data) then costs two registers and twice the
+// code, and the host compiler cannot merge the two copies of a loop-carried value. This pass proves
+// which values are the same in both halves; the high half reuses the low half's id instead of
+// emitting the instruction.
 //
 // Both halves run in one instruction stream: every branch decides on one condition for both halves
-// (BranchCondition combines the halves' ballots) and every phi takes the same incoming edge in both. So
-// a value is the same in both halves when the instruction computing it
+// (BranchCondition combines the halves' ballots) and every phi takes the same incoming edge in
+// both. So a value is the same in both halves when the instruction computing it
 //   1. is a pure function of its IR operands (it reads no lane id, half index, per-half variable or
 //      other lane), and
-//   2. has operands that are the same in both halves (constants, user data, workgroup ids, whole-wave
+//   2. has operands that are the same in both halves (constants, user data, workgroup ids,
+//   whole-wave
 //      results, or results of such instructions; phi cycles are solved optimistically).
 // The high half's copy of such an instruction would be the same SPIR-V on the same ids.
 //
 // Not shared, from reading this tree's emitters:
-//   * LaneId, GetBuiltin LocalInvocationId/Index/GlobalInvocationId (EmitSubgroupLocalInvocationId and
+//   * LaneId, GetBuiltin LocalInvocationId/Index/GlobalInvocationId (EmitSubgroupLocalInvocationId
+//   and
 //     EmitLocalInvocationIndex add lane_half * 32).
 //   * Cross-lane operations (DPP, WriteLane, permutes, swizzles, append/consume).
 //   * Buffer loads whose V# adds the lane id (ADD_TID, packed stride bit 20: BufferLane) and every
 //     IndirectBuffer load (the V#, and so ADD_TID, is a run-time value).
-//   * Scratch (scratch_variable[lane_half]), LDS (lane-slot plans, per-lane contents) and FLAT loads
+//   * Scratch (scratch_variable[lane_half]), LDS (lane-slot plans, per-lane contents) and FLAT
+//   loads
 //     (aperture routing to LDS/scratch), image reads and samples, atomics and every store.
 //   * Void instructions, resource handles (they emit nothing) and anything not listed below.
-// Ballot, ReadFirstLane, ReadConstBuffer and scalar-address loads already give both halves one result
-// (EmitDirectInstruction); they count as uniform operands here.
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
+// Ballot, ReadFirstLane, ReadConstBuffer and scalar-address loads already give both halves one
+// result (EmitDirectInstruction); they count as uniform operands here.
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <atomic>
@@ -43,7 +47,8 @@ enum class ShareRule : uint8_t {
 	Pure,     // the same in both halves when every operand is; emitted once
 	Source,   // the same in both halves whatever the operands (user data, workgroup id, undef)
 	Whole,    // the emitters already give both halves one result
-	ReadLane, // the same in both halves when the lane operand is (the value operand may be per lane)
+	ReadLane, // the same in both halves when the lane operand is (the value operand may be per
+	          // lane)
 	Phi,      // the same when every incoming value is
 };
 
@@ -71,7 +76,8 @@ ShareRule MemoryRule(const EmitterState& state, const IR::Inst& inst) {
 		case Op::LoadBufferU32x2:
 		case Op::LoadBufferU32x3:
 		case Op::LoadBufferU32x4:
-			if (mem.kind != IR::ResourceKind::Buffer || mem.resource >= state.program.info.buffers.size()) {
+			if (mem.kind != IR::ResourceKind::Buffer ||
+			    mem.resource >= state.program.info.buffers.size()) {
 				return ShareRule::Never;
 			}
 			return (StorageBufferPackedStride(state, mem) & (1u << 20u)) == 0u ? ShareRule::Pure
@@ -100,7 +106,8 @@ ShareRule RuleFor(const EmitterState& state, const IR::Inst& inst) {
 				return ShareRule::Never;
 			}
 			const auto kind = static_cast<IR::StageInputKind>(inst.Arg(0).U32());
-			return kind == IR::StageInputKind::WorkgroupId || kind == IR::StageInputKind::NumWorkgroups
+			return kind == IR::StageInputKind::WorkgroupId ||
+			               kind == IR::StageInputKind::NumWorkgroups
 			           ? ShareRule::Source
 			           : ShareRule::Never;
 		}
@@ -343,8 +350,9 @@ void LaneShareClassify(EmitterState& state) {
 			candidates.push_back({&inst, rule});
 		}
 	}
-	// Optimistic fixed point: every candidate starts out uniform; one with an operand that is not is
-	// dropped, until nothing changes (a loop phi fed by itself and uniform values stays uniform).
+	// Optimistic fixed point: every candidate starts out uniform; one with an operand that is not
+	// is dropped, until nothing changes (a loop phi fed by itself and uniform values stays
+	// uniform).
 	auto& uniform = share.uniform;
 	uniform.reserve(candidates.size() * 2);
 	for (const auto& candidate: candidates) {
@@ -394,8 +402,8 @@ void LaneShareReport(EmitterState& state) {
 		return value != nullptr && value[0] == '1';
 	}();
 	if (log) {
-		std::printf("LaneShare CS %016" PRIx64 ": %zu instructions, %zu uniform, %zu shared, %" PRIu64
-		            " reused\n",
+		std::printf("LaneShare CS %016" PRIx64
+		            ": %zu instructions, %zu uniform, %zu shared, %" PRIu64 " reused\n",
 		            state.program.shader_hash, share.instructions, share.uniform.size(),
 		            share.shared.size(), share.reused);
 	}

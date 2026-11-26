@@ -54,13 +54,13 @@ struct BindlessHeapUse {
 	uint32_t stride         = 32;
 	uint32_t record_pointer = UINT32_MAX;
 	// Nested heaps (IndirectDescriptor::nested_vsharp): key = record * nested_keys + inner key.
-	uint32_t nested_vsharp  = UINT32_MAX;
-	uint32_t nested_heap    = 0;
-	uint32_t nested_keys    = 0;
+	uint32_t nested_vsharp = UINT32_MAX;
+	uint32_t nested_heap   = 0;
+	uint32_t nested_keys   = 0;
 	// KYTY_RUNTIME_IMAGES: not a guest heap but the runtime image heap of `image`'s binding (the
 	// T#s shaders loaded at run time and requested); nothing to patch, nothing read from guest
 	// memory.
-	bool     runtime        = false;
+	bool runtime = false;
 
 	bool operator==(const BindlessHeapUse&) const = default;
 };
@@ -88,8 +88,8 @@ struct ResourceSnapshot {
 	std::vector<uint32_t>        user_data;
 	UniformFill                 uniform_fill;
 	// Compute refreshes on the command processor only (SrtRuntime::gpu_written).
-	std::vector<SrtGpuFill>      gpu_fills;
-	std::vector<BindlessHeapUse> bindless_heaps;
+	std::vector<SrtGpuFill>             gpu_fills;
+	std::vector<BindlessHeapUse>        bindless_heaps;
 	std::vector<BindlessSamplerHeapUse> bindless_sampler_heaps;
 };
 

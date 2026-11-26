@@ -6,14 +6,15 @@
 #include <cstdint>
 #include <cstdlib>
 
-// nps5 footprint governor (KYTY_FOOTPRINT_GOVERNOR=1, default off). The GPU collectors react to device
-// usage against the planning budget, never to the process footprint, and the self memory limit
-// (StartSelfMemoryLimit, exit code 86) can only end the process. The governor sits between: while the
-// footprint is above a soft mark (KYTY_FOOTPRINT_SOFT_PCT of the self limit, default 86 %) it publishes a
-// budget factor (KYTY_FOOTPRINT_FACTOR_PCT, default 60 %) that GraphicContext::GetTotalMemoryBudget applies,
-// so the image/buffer collectors and the native image pool (which keeps nothing at the mark) run now, and a
-// one-shot pool flush. It never changes the self limit. Pure state machine, header only:
-// tests/FootprintGovernorTests.cpp (work/research/memgrow-2026-11-25.md section 4).
+// nps5 footprint governor (KYTY_FOOTPRINT_GOVERNOR=1, default off). The GPU collectors react to
+// device usage against the planning budget, never to the process footprint, and the self memory
+// limit (StartSelfMemoryLimit, exit code 86) can only end the process. The governor sits between:
+// while the footprint is above a soft mark (KYTY_FOOTPRINT_SOFT_PCT of the self limit, default 86
+// %) it publishes a budget factor (KYTY_FOOTPRINT_FACTOR_PCT, default 60 %) that
+// GraphicContext::GetTotalMemoryBudget applies, so the image/buffer collectors and the native image
+// pool (which keeps nothing at the mark) run now, and a one-shot pool flush. It never changes the
+// self limit. Pure state machine, header only: tests/FootprintGovernorTests.cpp
+// (work/research/memgrow-2026-11-25.md section 4).
 namespace Hybrid {
 
 struct FootprintGovernorConfig {
@@ -33,7 +34,8 @@ public:
 		// The soft mark never sits closer than 512 MiB to the limit.
 		constexpr uint64_t MinHeadroom = 512;
 		if (m_config.limit_mib > MinHeadroom) {
-			m_soft = std::min(m_config.limit_mib * m_config.soft_pct / 100, m_config.limit_mib - MinHeadroom);
+			m_soft = std::min(m_config.limit_mib * m_config.soft_pct / 100,
+			                  m_config.limit_mib - MinHeadroom);
 		} else {
 			m_soft = m_config.limit_mib / 2;
 		}
@@ -51,8 +53,8 @@ public:
 		return Usable() && m_active ? std::min<uint32_t>(m_config.factor_permille, 1000) : 1000;
 	}
 
-	// One footprint sample (MiB) at now_ms (monotonic). Activates at/above the soft mark; deactivates once
-	// the footprint stayed below the leave mark for hold_ms.
+	// One footprint sample (MiB) at now_ms (monotonic). Activates at/above the soft mark;
+	// deactivates once the footprint stayed below the leave mark for hold_ms.
 	Transition Step(uint64_t footprint_mib, uint64_t now_ms) {
 		if (!Usable()) {
 			return Transition::None;
@@ -90,7 +92,8 @@ private:
 	uint64_t                m_below_since = 0;
 };
 
-// budget scaled by permille: never raised, and not below 1 GiB (or the budget itself when that is smaller).
+// budget scaled by permille: never raised, and not below 1 GiB (or the budget itself when that is
+// smaller).
 [[nodiscard]] inline uint64_t ScaledBudget(uint64_t budget, uint32_t permille) {
 	constexpr uint64_t Floor = 1ull << 30u;
 	if (permille >= 1000 || budget == 0) {
@@ -129,18 +132,20 @@ inline std::atomic<bool>     g_footprint_pool_flush {false};
 }
 
 // Env: unset / empty / not a number in [lo, hi] = fallback.
-[[nodiscard]] inline uint32_t FootprintEnvUint(const char* text, uint32_t fallback, uint32_t lo, uint32_t hi) {
+[[nodiscard]] inline uint32_t FootprintEnvUint(const char* text, uint32_t fallback, uint32_t lo,
+                                               uint32_t hi) {
 	if (text == nullptr || text[0] == '\0') {
 		return fallback;
 	}
 	char*      end   = nullptr;
 	const auto value = std::strtoul(text, &end, 10);
-	return end == text || *end != '\0' || value < lo || value > hi ? fallback : static_cast<uint32_t>(value);
+	return end == text || *end != '\0' || value < lo || value > hi ? fallback
+	                                                               : static_cast<uint32_t>(value);
 }
 
-[[nodiscard]] inline FootprintGovernorConfig FootprintConfigFromEnv(const char* gate, const char* soft_pct,
-                                                                    const char* hold_ms, const char* factor_pct,
-                                                                    uint64_t limit_mib) {
+[[nodiscard]] inline FootprintGovernorConfig
+FootprintConfigFromEnv(const char* gate, const char* soft_pct, const char* hold_ms,
+                       const char* factor_pct, uint64_t limit_mib) {
 	FootprintGovernorConfig c;
 	c.enabled         = gate != nullptr && gate[0] == '1' && gate[1] == '\0';
 	c.limit_mib       = limit_mib;

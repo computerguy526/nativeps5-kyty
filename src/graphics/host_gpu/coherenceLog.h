@@ -106,12 +106,13 @@ public:
 		// KYTY_CP_SEQ=1: the sticky GPU-touched pages (gpuTouchedPages.h), set before the
 		// transition becomes observable, for the transitions that can make a range unclean.
 		using GpuTouched::DiagSource;
-		GpuTouched::NoteTransition(range.begin, range.end,
-		                           source == Source::BufferDirtyAdd     ? DiagSource::BufferDirtyAdd
-		                           : source == Source::TrackerGpuMark   ? DiagSource::TrackerGpuMark
-		                           : source == Source::ImageGpuModified ? DiagSource::ImageGpuModified
-		                           : source == Source::PublicationBegin ? DiagSource::PublicationBegin
-		                                                                : DiagSource::Count);
+		GpuTouched::NoteTransition(
+		    range.begin, range.end,
+		    source == Source::BufferDirtyAdd     ? DiagSource::BufferDirtyAdd
+		    : source == Source::TrackerGpuMark   ? DiagSource::TrackerGpuMark
+		    : source == Source::ImageGpuModified ? DiagSource::ImageGpuModified
+		    : source == Source::PublicationBegin ? DiagSource::PublicationBegin
+		                                         : DiagSource::Count);
 		const auto generation = m_generation.fetch_add(1, std::memory_order_seq_cst) + 1u;
 		auto&      entry      = m_entries[generation & (Capacity - 1u)];
 		// Slots are written in turn: the writer of this lap waits until the previous lap's writer
@@ -272,7 +273,8 @@ public:
 			if (range.end > (uint64_t {1} << 48u)) {
 				return false;
 			}
-			for (auto block = range.begin >> BlockShift; block <= (range.end - 1u) >> BlockShift; block++) {
+			for (auto block = range.begin >> BlockShift; block <= (range.end - 1u) >> BlockShift;
+			     block++) {
 				const auto* leaf = m_leaves[block >> (LeafShift - BlockShift)];
 				if (leaf != nullptr && leaf[block & (BlocksPerLeaf - 1u)] > from) {
 					return false;
@@ -312,7 +314,8 @@ private:
 			return;
 		}
 		const auto first = range.begin >> BlockShift;
-		if (range.end > (uint64_t {1} << 48u) || ((range.end - 1u) >> BlockShift) - first >= WideBlocks) {
+		if (range.end > (uint64_t {1} << 48u) ||
+		    ((range.end - 1u) >> BlockShift) - first >= WideBlocks) {
 			m_wide = generation;
 			return;
 		}
@@ -329,12 +332,12 @@ private:
 		}
 	}
 
-	const Log&                                         m_log;
-	bool                                               m_started    = false;
-	uint64_t                                           m_ingested   = 0;
-	uint64_t                                           m_valid_from = 0;
-	uint64_t                                           m_wide       = 0;
-	std::array<uint64_t*, 1u << (48u - LeafShift)>    m_leaves {};
+	const Log&                                     m_log;
+	bool                                           m_started    = false;
+	uint64_t                                       m_ingested   = 0;
+	uint64_t                                       m_valid_from = 0;
+	uint64_t                                       m_wide       = 0;
+	std::array<uint64_t*, 1u << (48u - LeafShift)> m_leaves {};
 };
 
 // The process-wide log (one per coherence domain: the guest GPU).

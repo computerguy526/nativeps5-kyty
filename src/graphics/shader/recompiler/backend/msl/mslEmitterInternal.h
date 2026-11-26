@@ -118,7 +118,8 @@ size_t MovrelChainHeads(const MslCtx& ctx);
 bool MipStatsPlainRequested(); // env KYTY_MSL_MIPSTATS_PLAIN=1: feedback-free twin of a MipStats PS
 std::string KkBdaPrelude();
 std::string KkBdaLayoutComment(const IR::Program& program);
-std::string KkLayoutText(const IR::Program& program); // kyty_msl_dump --kk-layout (kk_spv_lay layout file)
+std::string
+KkLayoutText(const IR::Program& program); // kyty_msl_dump --kk-layout (kk_spv_lay layout file)
 void        KkBdaParams(MslCtx& ctx, const Mem::BindingModel& m, std::vector<std::string>& params);
 void        KkBdaLocals(MslCtx& ctx, const Mem::BindingModel& m);
 // --- M3 graphics stage IO (MslStageIo.cpp) ---

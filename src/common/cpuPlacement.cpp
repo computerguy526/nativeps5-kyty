@@ -66,8 +66,8 @@ CpuLayout ComputeCpuLayout(const std::vector<CpuSetInfo>& sets, CpuReserveMode m
 		return layout;
 	}
 	// KYTY_CPU_RESERVE_SCALE: the budget the rules read, and the fastest efficiency class.
-	const bool scaled      = rules.scaled;
-	const auto budget      = scaled ? ComputeCoreBudget(sets) : CoreBudget {};
+	const bool scaled       = rules.scaled;
+	const auto budget       = scaled ? ComputeCoreBudget(sets) : CoreBudget {};
 	const auto budget_cores = rules.budget_cores != 0 ? rules.budget_cores : budget.cores;
 	const auto budget_lps   = rules.budget_logical != 0 ? rules.budget_logical : budget.logical;
 	// Hybrid: only the fastest class counts for the cache choice and as candidates.
@@ -129,7 +129,7 @@ CpuLayout ComputeCpuLayout(const std::vector<CpuSetInfo>& sets, CpuReserveMode m
 	// KYTY_CPU_RESERVE_SCALE: whole cores only while the budget has enough cores for the game's
 	// threads (cp+recorder and stages need one more each, otherwise they fall back to cp); else one
 	// logical processor for the CP, or nothing.
-	bool one_logical = false;
+	bool        one_logical = false;
 	std::string scale_note;
 	if (scaled) {
 		const auto whole_ok = [&](size_t count) {
@@ -141,9 +141,10 @@ CpuLayout ComputeCpuLayout(const std::vector<CpuSetInfo>& sets, CpuReserveMode m
 		}
 		if (!whole_ok(1)) {
 			if (budget_lps < rules.logical_min) {
-				layout.description = "only " + std::to_string(budget_lps) + " logical processors on " +
-				                     std::to_string(budget_cores) +
-				                     " cores in the budget: nothing reserved (KYTY_CPU_RESERVE_SCALE)";
+				layout.description =
+				    "only " + std::to_string(budget_lps) + " logical processors on " +
+				    std::to_string(budget_cores) +
+				    " cores in the budget: nothing reserved (KYTY_CPU_RESERVE_SCALE)";
 				return layout;
 			}
 			one_logical = true;
@@ -233,14 +234,15 @@ CpuLayout ComputeCpuLayout(const std::vector<CpuSetInfo>& sets, CpuReserveMode m
 				layout.general_mask |= bit;
 			}
 		}
-		layout.reserved    = true;
-		layout.cp_core     = chosen->core;
-		layout.description = "CP on logical " + MaskText(layout.cp_mask) + " alone (core " +
-		                     std::to_string(chosen->core) + ", preference " +
-		                     std::to_string(chosen->scheduling_class) + "; " +
-		                     std::to_string(budget_cores) + " cores / " + std::to_string(budget_lps) +
-		                     " logical in the budget: one logical processor, KYTY_CPU_RESERVE_SCALE)" +
-		                     ", other threads on " + MaskText(layout.general_mask) + scale_note;
+		layout.reserved = true;
+		layout.cp_core  = chosen->core;
+		layout.description =
+		    "CP on logical " + MaskText(layout.cp_mask) + " alone (core " +
+		    std::to_string(chosen->core) + ", preference " +
+		    std::to_string(chosen->scheduling_class) + "; " + std::to_string(budget_cores) +
+		    " cores / " + std::to_string(budget_lps) +
+		    " logical in the budget: one logical processor, KYTY_CPU_RESERVE_SCALE)" +
+		    ", other threads on " + MaskText(layout.general_mask) + scale_note;
 		return layout;
 	}
 	if (forced_cp_logical >= 0) {
@@ -532,7 +534,8 @@ CpuReserveMode GetCpuReserveMode() {
 		bool        valid = true;
 		const auto  mode  = ParseCpuReserveMode(value, &valid);
 		if (!valid) {
-			std::printf("KYTY_CPU_RESERVE must be off, cp, cp+recorder or stages (got '%s'): off\n", value);
+			std::printf("KYTY_CPU_RESERVE must be off, cp, cp+recorder or stages (got '%s'): off\n",
+			            value);
 		}
 		return mode;
 	}();
@@ -542,9 +545,9 @@ CpuReserveMode GetCpuReserveMode() {
 namespace {
 // KYTY_CPU_RESERVE_SCALE (live): a change (or a profile change while it is unset) makes the monitor
 // apply the layout again within a second.
-std::atomic<bool> g_rules_changed {false};
-Live::Switch      g_reserve_scale("KYTY_CPU_RESERVE_SCALE", ParseTriState,
-                                  [](int64_t, int64_t) { g_rules_changed.store(true); });
+std::atomic<bool>           g_rules_changed {false};
+Live::Switch                g_reserve_scale("KYTY_CPU_RESERVE_SCALE", ParseTriState,
+                                            [](int64_t, int64_t) { g_rules_changed.store(true); });
 [[maybe_unused]] const bool g_scale_listener = [] {
 	OnCoreBudgetProfileChange([](bool) { g_rules_changed.store(true); });
 	return true;
@@ -559,7 +562,7 @@ uint32_t EnvRule(const char* name, uint32_t fallback) {
 ReserveRules CurrentReserveRules() {
 	static const uint32_t whole_min   = EnvRule("KYTY_CPU_RESERVE_WHOLE_MIN_CORES", 8);
 	static const uint32_t logical_min = EnvRule("KYTY_CPU_RESERVE_LOGICAL_MIN", 8);
-	ReserveRules rules;
+	ReserveRules          rules;
 	rules.scaled          = EffectiveSwitch(g_reserve_scale.Get());
 	rules.whole_min_cores = whole_min;
 	rules.logical_min     = logical_min;
@@ -700,7 +703,7 @@ std::vector<CpuSetInfo> ReadCpuSets(uint64_t& affinity, const std::vector<ULONG>
 			set.cache            = cpu.LastLevelCacheIndex;
 			set.scheduling_class = cpu.SchedulingClass;
 			set.efficiency_class = cpu.EfficiencyClass;
-			const bool ours     = cpu.Allocated == 0 || cpu.AllocatedToTargetProcess != 0;
+			const bool ours      = cpu.Allocated == 0 || cpu.AllocatedToTargetProcess != 0;
 			const bool in_constraint =
 			    restriction != 0
 			        ? cpu.LogicalProcessorIndex < 64 &&
@@ -777,7 +780,7 @@ struct State {
 #if defined(_WIN32)
 	// The threads placed on reserved cores (their sets are re-applied when the layout changes).
 	std::array<HANDLE, static_cast<size_t>(ThreadRole::Count)> threads {};
-	HANDLE sequencer = nullptr; // PlaceCurrentThreadSequencer (KYTY_CPU_RESERVE=stages)
+	HANDLE sequencer       = nullptr; // PlaceCurrentThreadSequencer (KYTY_CPU_RESERVE=stages)
 	bool applied_default = false; // our process default CPU sets are in effect
 	// The constraint without KYTY_CPU_SETS: the default CPU sets found at startup, replaced by
 	// another process's when it replaces ours (KYTY_CPU_RESERVE_REASSERT). Restored when nothing
@@ -901,8 +904,9 @@ std::string VCacheDecisionLocked(const State& state, CpuLayout* layout) {
 		return decision.reason + ": waiting " + std::to_string(VCacheSettleMs()) +
 		       " ms for an external CPU-set/affinity rule first";
 	}
-	auto computed = ComputeVCacheLayout(state.sets, GetCpuReserveMode(), ForcedCpLogical(),
-	                                    state.topology, kMinGeneralProcessors, CurrentReserveRules());
+	auto computed =
+	    ComputeVCacheLayout(state.sets, GetCpuReserveMode(), ForcedCpLogical(), state.topology,
+	                        kMinGeneralProcessors, CurrentReserveRules());
 	if (!computed.vcache) {
 		return decision.reason + ": not applied, " + computed.description;
 	}
@@ -1054,7 +1058,8 @@ void ApplyLayoutLocked(State& state, const char* why, bool log = true, bool keep
 	                reserved ? state.layout.cp_ids : std::vector<uint32_t> {});
 	ApplyThreadSets(state.threads[static_cast<size_t>(ThreadRole::Recorder)],
 	                reserved ? state.layout.recorder_ids : std::vector<uint32_t> {});
-	ApplyThreadSets(state.sequencer, reserved ? state.layout.sequencer_ids : std::vector<uint32_t> {});
+	ApplyThreadSets(state.sequencer,
+	                reserved ? state.layout.sequencer_ids : std::vector<uint32_t> {});
 	for (size_t role = 0; role < state.threads.size(); role++) {
 		if (role != static_cast<size_t>(ThreadRole::Cp) &&
 		    role != static_cast<size_t>(ThreadRole::Recorder)) {
@@ -1485,7 +1490,7 @@ uint32_t CoreOfLogicalProcessor(uint32_t logical) {
 }
 
 std::vector<CpuSetInfo> ReadProcessCpuSets(uint64_t* affinity) {
-	uint64_t mask = 0;
+	uint64_t                mask = 0;
 	std::vector<CpuSetInfo> sets;
 #if defined(_WIN32)
 	auto& state = GetState();
@@ -1528,7 +1533,8 @@ uint32_t ProcessAffinityProcessorCount() {
 #if defined(_WIN32)
 	DWORD_PTR process_mask = 0;
 	DWORD_PTR system_mask  = 0;
-	if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) != 0 && process_mask != 0) {
+	if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) != 0 &&
+	    process_mask != 0) {
 		return static_cast<uint32_t>(std::popcount(static_cast<uint64_t>(process_mask)));
 	}
 #endif

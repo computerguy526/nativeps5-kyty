@@ -29,8 +29,8 @@ namespace Libs::Graphics {
 // The copy of a fragment shader that writes gl_SampleMask from the AA masks (already reduced to
 // the draw's samples); empty when the shader writes gl_SampleMask itself or has a form the
 // rewrite does not handle.
-[[nodiscard]] std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t mask01,
-                                                    uint32_t mask23);
+[[nodiscard]] std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv,
+                                                    uint32_t mask01, uint32_t mask23);
 // A fragment shader with no outputs but gl_SampleMask from the AA masks.
 [[nodiscard]] std::vector<uint32_t> CoverageOnlyFragmentSpirv(uint32_t mask01, uint32_t mask23);
 

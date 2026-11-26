@@ -1,20 +1,20 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_HAZARDTRACKER_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_HAZARDTRACKER_H_
 
-#include <vulkan/vulkan_core.h>
-
 #include <cstdint>
 #include <span>
 #include <vector>
+#include <vulkan/vulkan_core.h>
 
 // KYTY_GPU_HAZARD (render.h GpuHazardMode): resource-precise hazards between guest dispatches.
 //
 // A "chain" is the dispatches recorded in one command buffer since the last barrier that ordered
 // everything earlier before later compute shader accesses (ChainReset below), with nothing else
 // recorded in between. The tracker holds the byte ranges those dispatches read and wrote. A later
-// dispatch whose ranges have no read-after-write, write-after-read or write-after-write overlap with
-// the chain needs no barrier against it: everything recorded before the chain is ordered against it
-// by the barrier that started the chain, and the chain's dispatches touched none of its memory.
+// dispatch whose ranges have no read-after-write, write-after-read or write-after-write overlap
+// with the chain needs no barrier against it: everything recorded before the chain is ordered
+// against it by the barrier that started the chain, and the chain's dispatches touched none of its
+// memory.
 //
 // Ranges live in "spaces": space 0 is guest addresses (every guest buffer and image binding, so two
 // resources over one guest memory range - a buffer and an image, two images, a joined buffer - are
@@ -116,19 +116,20 @@ constexpr uint64_t SampledRead   = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
 } // namespace Scope
 
 // Second scope reaches compute shader reads and writes (every kind).
-[[nodiscard]] constexpr bool ReachesComputeAccess(uint64_t dst_stages, uint64_t dst_access) noexcept {
+[[nodiscard]] constexpr bool ReachesComputeAccess(uint64_t dst_stages,
+                                                  uint64_t dst_access) noexcept {
 	using namespace Scope;
-	const bool stage = (dst_stages & (AllCommands | ComputeShader)) != 0;
-	const bool reads = (dst_access & (MemoryRead | ShaderRead)) != 0 ||
-	                   ((dst_access & StorageRead) != 0 && (dst_access & SampledRead) != 0);
+	const bool stage  = (dst_stages & (AllCommands | ComputeShader)) != 0;
+	const bool reads  = (dst_access & (MemoryRead | ShaderRead)) != 0 ||
+	                    ((dst_access & StorageRead) != 0 && (dst_access & SampledRead) != 0);
 	const bool writes = (dst_access & (MemoryWrite | ShaderWrite)) != 0;
 	return stage && reads && writes;
 }
 
 enum class Reset : uint8_t { None = 0, Compute = 1, Full = 2 };
 
-[[nodiscard]] constexpr Reset ChainReset(uint64_t src_stages, uint64_t src_access, uint64_t dst_stages,
-                                         uint64_t dst_access) noexcept {
+[[nodiscard]] constexpr Reset ChainReset(uint64_t src_stages, uint64_t src_access,
+                                         uint64_t dst_stages, uint64_t dst_access) noexcept {
 	using namespace Scope;
 	if (!ReachesComputeAccess(dst_stages, dst_access)) {
 		return Reset::None;
@@ -136,7 +137,8 @@ enum class Reset : uint8_t { None = 0, Compute = 1, Full = 2 };
 	if ((src_stages & AllCommands) != 0 && (src_access & MemoryWrite) != 0) {
 		return Reset::Full;
 	}
-	if ((src_stages & (AllCommands | ComputeShader)) != 0 && (src_access & (MemoryWrite | ShaderWrite)) != 0) {
+	if ((src_stages & (AllCommands | ComputeShader)) != 0 &&
+	    (src_access & (MemoryWrite | ShaderWrite)) != 0) {
 		return Reset::Compute;
 	}
 	return Reset::None;
@@ -162,7 +164,8 @@ struct Chain {
 	// dispatch's own bindings (those invalidate the chain unless the memory dependency resets it).
 	void OnFlush(uint64_t foreign, bool has_memory, uint64_t src_stages, uint64_t src_access,
 	             uint64_t dst_stages, uint64_t dst_access, bool side) noexcept {
-		const auto reset = has_memory ? ChainReset(src_stages, src_access, dst_stages, dst_access) : Reset::None;
+		const auto reset =
+		    has_memory ? ChainReset(src_stages, src_access, dst_stages, dst_access) : Reset::None;
 		const bool intact = valid && foreign == serial;
 		if (reset == Reset::Full || (reset == Reset::Compute && intact)) {
 			guest.Reset();
@@ -176,15 +179,18 @@ struct Chain {
 		}
 	}
 	// Whether the chain can be compared against: valid and nothing else recorded since.
-	[[nodiscard]] bool Intact(uint64_t foreign) const noexcept { return valid && foreign == serial; }
+	[[nodiscard]] bool Intact(uint64_t foreign) const noexcept {
+		return valid && foreign == serial;
+	}
 	// A dispatch was recorded as the only command since the chain state at `before` (the `foreign`
 	// value just before the dispatch command, after its batch flush).
 	// An imprecise dispatch (accesses not all known) keeps the chain valid but poisoned: no later
-	// dispatch can pass it, yet a ShaderAccess flush after it (Compute reset) orders it like any chain
-	// dispatch and starts a clean chain.
-	// keep_poisoned false: an imprecise dispatch invalidates the chain instead (KYTY_GPU_HAZARD 1-3).
-	void NoteDispatch(uint64_t before, uint64_t after, bool precise, std::span<const Range> guest_access,
-	                  std::span<const Range> host_access, bool keep_poisoned = true) {
+	// dispatch can pass it, yet a ShaderAccess flush after it (Compute reset) orders it like any
+	// chain dispatch and starts a clean chain. keep_poisoned false: an imprecise dispatch
+	// invalidates the chain instead (KYTY_GPU_HAZARD 1-3).
+	void NoteDispatch(uint64_t before, uint64_t after, bool precise,
+	                  std::span<const Range> guest_access, std::span<const Range> host_access,
+	                  bool keep_poisoned = true) {
 		if (!valid || before != serial || after != before + 1 || (!precise && !keep_poisoned)) {
 			Invalidate();
 			return;

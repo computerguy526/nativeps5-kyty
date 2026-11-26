@@ -55,8 +55,9 @@ void DynamicState::Commit(const GraphicContext& graphics, vk::CommandBuffer cmdb
 	}
 	// Pipelines declare depth bias and the stencil state as dynamic, and Vulkan requires every
 	// dynamic state to be set in the command buffer before a draw even while the bias or the
-	// stencil test is disabled (VUID-vkCmdDraw-None-07848; TheCruZ/KytyPS5-GTA 828e0e19). The values
-	// are unused while disabled. KYTY_DYNAMIC_STATE_ALL=0 sets them only while enabled (before).
+	// stencil test is disabled (VUID-vkCmdDraw-None-07848; TheCruZ/KytyPS5-GTA 828e0e19). The
+	// values are unused while disabled. KYTY_DYNAMIC_STATE_ALL=0 sets them only while enabled
+	// (before).
 	const bool all_dynamic = DynamicStateAllEnabled();
 	if ((depth_bias_enabled || all_dynamic) && dirty_state.depth_bias) {
 		dirty_state.depth_bias = false;

@@ -21,14 +21,17 @@ public:
 	static constexpr size_t Slots = 1024;
 
 	[[nodiscard]] static constexpr size_t SlotOf(uint64_t vaddr, uint64_t size) noexcept {
-		return static_cast<size_t>((((vaddr >> 4u) * 0x9E3779B97F4A7C15ull) >> 54u) ^ (size & 1023u)) &
+		return static_cast<size_t>((((vaddr >> 4u) * 0x9E3779B97F4A7C15ull) >> 54u) ^
+		                           (size & 1023u)) &
 		       (Slots - 1u);
 	}
 
 	// The stream offset of the copy of [vaddr, vaddr + size) made in this tick and epoch, if any.
-	[[nodiscard]] bool Find(uint64_t vaddr, uint64_t size, uint64_t tick, uint64_t& offset) const noexcept {
+	[[nodiscard]] bool Find(uint64_t vaddr, uint64_t size, uint64_t tick,
+	                        uint64_t& offset) const noexcept {
 		const auto& entry = m_entries[SlotOf(vaddr, size)];
-		if (entry.vaddr != vaddr || entry.size != size || entry.tick != tick || entry.epoch != m_epoch) {
+		if (entry.vaddr != vaddr || entry.size != size || entry.tick != tick ||
+		    entry.epoch != m_epoch) {
 			return false;
 		}
 		offset = entry.offset;

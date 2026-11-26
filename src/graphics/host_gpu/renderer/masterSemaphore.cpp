@@ -1,10 +1,10 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
 
 #include "common/assert.h"
+#include "common/debugCounters.h"
 #include "common/hangWatchdog.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
-#include "common/debugCounters.h"
 #include "graphics/host_gpu/faultCost.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
@@ -51,10 +51,10 @@ public:
 	}
 
 	struct Probe {
-		static constexpr uint32_t Frames = 22;
-		void*                     frames[Frames] {};
-		uint16_t                  count  = 0;
-		uint8_t                   reason = 0;
+		static constexpr uint32_t             Frames = 22;
+		void*                                 frames[Frames] {};
+		uint16_t                              count  = 0;
+		uint8_t                               reason = 0;
 		std::chrono::steady_clock::time_point start;
 	};
 
@@ -201,7 +201,7 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	}
 	// KYTY_CP_GAP_STATS (GPU thread only): readback drains, occlusion publication, the rest.
 	const auto      reason = Profiler::CurrentGpuWaitReason();
-	const auto gap_cat = [reason] {
+	const auto      gap_cat = [reason] {
 		switch (reason) {
 			case Profiler::FrameWait::GpuWaitDrain: return CpGaps::Cat::GpuWaitDrain;
 			case Profiler::FrameWait::GpuWaitOcclusion: return CpGaps::Cat::GpuWaitOcclusion;

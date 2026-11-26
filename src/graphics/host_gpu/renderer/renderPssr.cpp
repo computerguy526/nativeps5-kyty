@@ -84,11 +84,11 @@ struct RenderExecutor::PssrState {
 		descriptor_info.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
 		descriptor_info.bindingCount = static_cast<uint32_t>(bindings.size());
 		descriptor_info.pBindings    = bindings.data();
-		RequireVulkanSuccess(device.createDescriptorSetLayout(&descriptor_info, nullptr,
-		                                                      &descriptor_layout),
-		                     "create PSSR descriptor layout");
-		const vk::PushConstantRange push {vk::ShaderStageFlagBits::eCompute, 0,
-		                                  sizeof(PssrParameters)};
+		RequireVulkanSuccess(
+		    device.createDescriptorSetLayout(&descriptor_info, nullptr, &descriptor_layout),
+		    "create PSSR descriptor layout");
+		const vk::PushConstantRange  push {vk::ShaderStageFlagBits::eCompute, 0,
+		                                   sizeof(PssrParameters)};
 		vk::PipelineLayoutCreateInfo layout_info {};
 		layout_info.setLayoutCount         = 1;
 		layout_info.pSetLayouts            = &descriptor_layout;
@@ -197,10 +197,9 @@ void RenderExecutor::ProcessPssr(CommandBuffer& buffer, const Pssr::Request& req
 		SkipRequest("active rectangle larger than the input", request);
 		return;
 	}
-	PssrParameters parameters {
-	    {request.width, request.height},
-	    {output_descriptor.Width5() + 1u, output_descriptor.Height5() + 1u},
-	    {4, 4, 4, 4}};
+	PssrParameters parameters {{request.width, request.height},
+	                           {output_descriptor.Width5() + 1u, output_descriptor.Height5() + 1u},
+	                           {4, 4, 4, 4}};
 	// The output channel c stores the colour component its descriptor swizzle reads it from.
 	for (uint32_t component = 0; component < 3; ++component) {
 		for (uint32_t source = 0; source < 4; ++source) {
@@ -220,14 +219,14 @@ void RenderExecutor::ProcessPssr(CommandBuffer& buffer, const Pssr::Request& req
 		resource.written        = output;
 		ShaderRecompiler::IR::DescriptorValue value {};
 		std::copy_n(words, 8, value.dwords.begin());
-		value.dword_count = 8;
-		auto binding      = ResolveTexture(resource, value);
+		value.dword_count                  = 8;
+		auto binding                       = ResolveTexture(resource, value);
 		binding.desc.view_info.level_count = 1;
 		binding.desc.view_info.min_lod     = 0;
 		return binding;
 	};
-	auto& cache  = m_context.GetTextureCache();
-	auto  input  = resolve(request.input, false);
+	auto& cache = m_context.GetTextureCache();
+	auto  input = resolve(request.input, false);
 	BindImage(input.image_id, false);
 	auto output = resolve(request.output, true);
 	BindImage(output.image_id, true);
@@ -278,7 +277,8 @@ void RenderExecutor::ProcessPssr(CommandBuffer& buffer, const Pssr::Request& req
 	if (source.info.IsDepth() || destination.info.IsDepth() || source.info.samples != 1 ||
 	    destination.info.samples != 1 || input.image_view == nullptr ||
 	    output.image_view == nullptr ||
-	    (input.image_id == output.image_id && source_view.base_level == destination_view.base_level &&
+	    (input.image_id == output.image_id &&
+	     source_view.base_level == destination_view.base_level &&
 	     source_view.base_layer == destination_view.base_layer)) {
 		ResetBindings();
 		SkipRequest("depth, multisampled or self-overlapping images", request);
@@ -294,10 +294,10 @@ void RenderExecutor::ProcessPssr(CommandBuffer& buffer, const Pssr::Request& req
 	source.Transit(vk::ImageLayout::eGeneral, vk::AccessFlagBits2::eShaderRead,
 	               ImageSubresourceRange {source_view.base_level, 1, source_view.base_layer, 1},
 	               identity, true);
-	destination.Transit(vk::ImageLayout::eGeneral, vk::AccessFlagBits2::eShaderWrite,
-	                    ImageSubresourceRange {destination_view.base_level, 1,
-	                                           destination_view.base_layer, 1},
-	                    identity, true);
+	destination.Transit(
+	    vk::ImageLayout::eGeneral, vk::AccessFlagBits2::eShaderWrite,
+	    ImageSubresourceRange {destination_view.base_level, 1, destination_view.base_layer, 1},
+	    identity, true);
 	if (dlss_bindings[0] && dlss_bindings[1]) {
 		const auto range = [](const ImageViewInfo& view) {
 			return ImageSubresourceRange {view.base_level, 1, view.base_layer, 1};

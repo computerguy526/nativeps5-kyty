@@ -50,7 +50,7 @@ struct SrtRuntime {
 	bool (*gpu_written)(uint64_t address) = nullptr;
 	std::vector<SrtGpuFill>* gpu_fills    = nullptr;
 	// Also slots only buffer-store address operands use (gpu_fill_slots 2; KYTY_SRT_GPU_FILL=2).
-	bool gpu_fill_store_offsets           = false;
+	bool gpu_fill_store_offsets = false;
 };
 
 // Addresses no guest or host mapping can contain: the first 64 KiB (never mapped on Windows, Linux
@@ -305,7 +305,7 @@ private:
 	bool ReadRawWord(uint64_t address, uint64_t& result, bool allow_probe = true);
 	[[nodiscard]] bool InPlaceReadable(uint64_t address);
 	void NoteUnmappedRead(uint64_t address) const;
-	void DiagWatchSlots(const std::vector<uint32_t>& flat);
+	void               DiagWatchSlots(const std::vector<uint32_t>& flat);
 	bool EvaluateRawRead(const Inst& inst, uint64_t& result);
 	bool EvaluateFlatRun(uint32_t first, uint32_t end, std::vector<uint32_t>& flat,
 	                     uint32_t& consumed);
@@ -326,10 +326,10 @@ private:
 	uint64_t                        m_mapped_page = UINT64_MAX;
 	// KYTY_SRT_GPU_FILL: while a GPU-fillable flat slot is refreshed, its flat offset (its own
 	// read is the only raw read of its evaluation).
-	bool                            m_fill_active = false;
-	uint32_t                        m_fill_offset = 0;
+	bool     m_fill_active = false;
+	uint32_t m_fill_offset = 0;
 	// KYTY_SRT_GPU_FILL_DIAG: the flat slot being refreshed (UINT32_MAX: none).
-	uint32_t                        m_diag_slot   = UINT32_MAX;
+	uint32_t                        m_diag_slot           = UINT32_MAX;
 	bool                            m_count_recipes = false;
 	uint64_t                        m_compiled_nodes = 0;
 	uint64_t                        m_fallback_nodes = 0;

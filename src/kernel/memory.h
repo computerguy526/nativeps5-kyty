@@ -153,10 +153,10 @@ void                   SetFlexibleMemorySize(uint64_t size);
 int UnmapAmmMemory(uint64_t vaddr, size_t size);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
-// The AMM engine's pending maps (libAmpr.cpp): whether a queued or running AMM map command still has
-// to map the address (the host fault handler waits for it, KYTY_FAULT_AMM_WAIT_MS).
-void                   SetPendingAmmMapHook(bool (*covers)(uint64_t vaddr));
-[[nodiscard]] bool     PendingAmmMapCovers(uint64_t vaddr);
+// The AMM engine's pending maps (libAmpr.cpp): whether a queued or running AMM map command still
+// has to map the address (the host fault handler waits for it, KYTY_FAULT_AMM_WAIT_MS).
+void               SetPendingAmmMapHook(bool (*covers)(uint64_t vaddr));
+[[nodiscard]] bool PendingAmmMapCovers(uint64_t vaddr);
 // TryReadBacking whose destination may hold partial bytes when it fails (the caller discards it
 // then): any size through a per-thread mapping record, without the mapping lock (see
 // GuestBackingStore::TryReadBackingDirect). Any thread.
@@ -210,23 +210,25 @@ bool HashGpuCleanBacking(uint64_t vaddr, uint64_t size, uint64_t& digest,
 // Whether [vaddr, vaddr + size) lies in guest memory mapped for the GPU (the renderer's mapped
 // ranges, the same ones its fault handler resolves). False before InstallGpuResources.
 [[nodiscard]] bool     IsGpuMapped(uint64_t vaddr, uint64_t size);
-// Whether every byte of [vaddr, vaddr + size) is mapped (committed guest ranges, no reservation or gap).
-[[nodiscard]] bool     IsCommittedSpan(uint64_t vaddr, uint64_t size);
+// Whether every byte of [vaddr, vaddr + size) is mapped (committed guest ranges, no reservation or
+// gap).
+[[nodiscard]] bool IsCommittedSpan(uint64_t vaddr, uint64_t size);
 // The unhandled-fault report: what the kernel and the GPU tracker know about an address.
 [[nodiscard]] std::string DescribeAddressForCrash(uint64_t vaddr);
-// The guest virtual range containing vaddr: start, size and the name the guest gave it (diagnostics).
-[[nodiscard]] bool     DescribeVirtualRange(uint64_t vaddr, uint64_t* start, uint64_t* size, char* name,
-                                            uint64_t name_size);
+// The guest virtual range containing vaddr: start, size and the name the guest gave it
+// (diagnostics).
+[[nodiscard]] bool DescribeVirtualRange(uint64_t vaddr, uint64_t* start, uint64_t* size, char* name,
+                                        uint64_t name_size);
 // The committed, non-private, GPU-mapped allocation containing vaddr; false for anything else.
-[[nodiscard]] bool     GetGpuBufferMapping(uint64_t vaddr, uint64_t* start, uint64_t* size);
+[[nodiscard]] bool GetGpuBufferMapping(uint64_t vaddr, uint64_t* start, uint64_t* size);
 // May submit/wait only at GPU preparation boundaries, outside texture-cache/tracker locks.
 bool                   SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size);
-// KYTY_SRT_STALE_IMAGE_READS=1 (default off): a resource-table read on the GPU thread that the clean
-// gate refused only because GPU-modified images overlap the range, none of which is still a source
-// of these guest bytes (TextureCache::IsRegionGpuOwnedForRead: a CPU write superseded it), reads the
-// backing. False otherwise (the caller keeps its normal synchronization path).
-[[nodiscard]] bool     SrtStaleImageReadsEnabled();
-bool                   TryReadGpuBackingOverStaleImages(uint64_t vaddr, void* data, uint64_t size);
+// KYTY_SRT_STALE_IMAGE_READS=1 (default off): a resource-table read on the GPU thread that the
+// clean gate refused only because GPU-modified images overlap the range, none of which is still a
+// source of these guest bytes (TextureCache::IsRegionGpuOwnedForRead: a CPU write superseded it),
+// reads the backing. False otherwise (the caller keeps its normal synchronization path).
+[[nodiscard]] bool SrtStaleImageReadsEnabled();
+bool               TryReadGpuBackingOverStaleImages(uint64_t vaddr, void* data, uint64_t size);
 // Diagnostics: RenderContext::DescribeGpuBackingForRead (GPU thread; "no GPU" without a renderer).
 std::string            DescribeGpuBackingForRead(uint64_t vaddr, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
@@ -265,12 +267,12 @@ void                   InstallGpuResources(Graphics::RenderContext* renderer) no
 // Whether such a fault can be retried (false once the same page keeps faulting).
 [[nodiscard]] bool RetryTransientUnmapFault(uint64_t fault_vaddr, uint64_t window) noexcept;
 void               SetTransientUnmapRetryForTest(bool enabled) noexcept;
-// Store in place (KYTY_STORE_IN_PLACE / KYTY_STORE_CLEAN; RenderContext::TryStoreInPlace): whether a
-// game thread's write fault at fault_vaddr may be completed by writing the store's bytes to both
+// Store in place (KYTY_STORE_IN_PLACE / KYTY_STORE_CLEAN; RenderContext::TryStoreInPlace): whether
+// a game thread's write fault at fault_vaddr may be completed by writing the store's bytes to both
 // copies, and that write (false to decline: the fault then takes the normal path).
 [[nodiscard]] bool IsStoreInPlaceCandidate(uint64_t fault_vaddr) noexcept;
-[[nodiscard]] bool TryStoreInPlace(uint64_t pc, uint64_t fault_vaddr, uint64_t vaddr, const void* data,
-                                   uint64_t size) noexcept;
+[[nodiscard]] bool TryStoreInPlace(uint64_t pc, uint64_t fault_vaddr, uint64_t vaddr,
+                                   const void* data, uint64_t size) noexcept;
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);
@@ -331,7 +333,7 @@ uint64_t AllocateProgramMemory(uint64_t search_addr, uint64_t size,
 // Loaded modules' segments use flexible memory without taking its backing.
 // Charged only with KYTY_UPSTREAM_MEMORY_DEFAULTS=1; returns the size charged (0 otherwise).
 uint64_t ChargeFlexibleMemory(uint64_t size);
-void ReleaseFlexibleMemory(uint64_t size);
+void     ReleaseFlexibleMemory(uint64_t size);
 
 void SetProgramMemoryProtection(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode mode);
 uint64_t AllocateRuntimeMemory(uint64_t search_addr, uint64_t size,
@@ -388,7 +390,7 @@ struct TestClampTotals {
 };
 TestClampTotals TestClampRangeMemoTotals();
 // KYTY_CLAMP_RANGE_BITMAP for the following map changes and lookups.
-void TestSetClampRangeBitmap(bool enabled);
+void     TestSetClampRangeBitmap(bool enabled);
 void     TestSetGpuRangeCallback(void (*callback)(bool mapped, uint64_t addr, size_t size));
 void     TestBeforeNextBackingMap(callback_func_t callback);
 void     TestSetBackingReadCallback(callback_func_t callback);

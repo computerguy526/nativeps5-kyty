@@ -108,8 +108,8 @@ enum class OpKind : uint16_t {
 	// KYTY_CP_SEQ_PREFETCH (P3c, transport): draw-prep window slots a speculative parse published
 	// that the real parse did not adopt; the resolver retires them without drawing.
 	SkipSlots,
-	// sarosbundle (KYTY_BUNDLE_COMPACT): the CPU HLE of the shader-bundle compaction kernel; stands in
-	// for its dispatch.
+	// sarosbundle (KYTY_BUNDLE_COMPACT): the CPU HLE of the shader-bundle compaction kernel; stands
+	// in for its dispatch.
 	BundleCompact,
 	Count,
 };
@@ -446,8 +446,8 @@ static_assert(IsPayload<DrawIndexOp> && IsPayload<DrawAutoOp> && IsPayload<DrawI
               IsPayload<DispatchDirectOp> && IsPayload<DispatchIndirectOp> &&
               IsPayload<EndOfPipeOp> && IsPayload<ReleaseMemOp> && IsPayload<EventWriteOp> &&
               IsPayload<WriteDataOp> && IsPayload<ReferenceClockOp> && IsPayload<DmaDataOp> &&
-              IsPayload<LodStatsOp> && IsPayload<PssrOp> && IsPayload<FlipOp> && IsPayload<WaitRegMemOp> &&
-              IsPayload<WaitFlipDoneOp> && IsPayload<DumpConstRamOp> &&
+              IsPayload<LodStatsOp> && IsPayload<PssrOp> && IsPayload<FlipOp> &&
+              IsPayload<WaitRegMemOp> && IsPayload<WaitFlipDoneOp> && IsPayload<DumpConstRamOp> &&
               IsPayload<PredicationOp> && IsPayload<CondExecOp> && IsPayload<BranchOp> &&
               IsPayload<ReadCheckOp> && IsPayload<StreamBeginOp> && IsPayload<StreamEndOp> &&
               IsPayload<HandoffOp> && IsPayload<LockstepReadOp> && IsPayload<SkipSlotsOp> &&

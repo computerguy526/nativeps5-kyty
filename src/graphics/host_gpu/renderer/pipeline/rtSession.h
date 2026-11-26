@@ -73,7 +73,8 @@ enum class KernelClass : uint8_t {
 // the shader precompile starts them before the level), so the wait costs nothing there. A
 // call-split program never waits: its chain resumes past callees that are not built (another
 // title's reflections: some 200 of them per area, about 3 s each).
-[[nodiscard]] inline uint32_t FirstWaitBudgetMs(KernelClass kind, uint32_t kernel_ms, uint32_t other_ms) {
+[[nodiscard]] inline uint32_t FirstWaitBudgetMs(KernelClass kind, uint32_t kernel_ms,
+                                                uint32_t other_ms) {
 	switch (kind) {
 		case KernelClass::Direct: return kernel_ms;
 		case KernelClass::CallSplit: return 0;
@@ -215,18 +216,19 @@ private:
 	uint64_t m_holds   = 0;
 };
 
-// Probe gate (KYTY_RT_PROBE, default off since kyty-rebase-best): the direct validity check. The only reliable statement
-// about the BVH a RT kernel is about to traverse comes from the kernel itself: lanes that run to
-// KYTY_RT_NODE_BUDGET found cyclic or garbage nodes. The command processor records commands ahead
-// of the GPU, so the budget guard sees that counter rise only after a frame or two of RT dispatches
-// (dozens) are already queued on the bad data; that queue, not one dispatch, is what stalls the
-// GPU. The gate therefore admits exactly ONE RT dispatch (the probe) whenever validity is unknown:
-// at the first RT dispatch of the session, after every load hold, and after every guard trip. Every
-// other RT dispatch is skipped until the GPU has completed the probe (`completed`, the scheduler's
-// tick). Then the counter is exact: no rise = the BVH is valid, RT runs freely; a rise = still
-// invalid, RT stays closed for `retry_ms` (doubling to `max_retry_ms`) and the next dispatch probes
-// again. A probe the GPU has not completed after `timeout_ms` counts as invalid. Timing (the load
-// hold) only decides when to start probing; it no longer decides that the data is good.
+// Probe gate (KYTY_RT_PROBE, default off since kyty-rebase-best): the direct validity check. The
+// only reliable statement about the BVH a RT kernel is about to traverse comes from the kernel
+// itself: lanes that run to KYTY_RT_NODE_BUDGET found cyclic or garbage nodes. The command
+// processor records commands ahead of the GPU, so the budget guard sees that counter rise only
+// after a frame or two of RT dispatches (dozens) are already queued on the bad data; that queue,
+// not one dispatch, is what stalls the GPU. The gate therefore admits exactly ONE RT dispatch (the
+// probe) whenever validity is unknown: at the first RT dispatch of the session, after every load
+// hold, and after every guard trip. Every other RT dispatch is skipped until the GPU has completed
+// the probe (`completed`, the scheduler's tick). Then the counter is exact: no rise = the BVH is
+// valid, RT runs freely; a rise = still invalid, RT stays closed for `retry_ms` (doubling to
+// `max_retry_ms`) and the next dispatch probes again. A probe the GPU has not completed after
+// `timeout_ms` counts as invalid. Timing (the load hold) only decides when to start probing; it no
+// longer decides that the data is good.
 struct ProbeGate {
 	uint32_t trip_lanes   = 1024;
 	uint64_t retry_ms     = 1000;

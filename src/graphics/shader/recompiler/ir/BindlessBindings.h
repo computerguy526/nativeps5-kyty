@@ -16,7 +16,7 @@ inline constexpr uint32_t BindlessFeedback      = 5;
 // KYTY_BINDLESS_SAMPLERS (Senaxx's mirrored sampler heaps): samplers mirrored from guest sampler
 // heaps (S# records); slot 0 is the stand-in sampler (BindlessDefaultSampler). The binding exists
 // only with the switch.
-inline constexpr uint32_t BindlessSamplers      = 6;
+inline constexpr uint32_t BindlessSamplers = 6;
 // The S# of the stand-in sampler: wrap on every axis, trilinear, full LOD range.
 inline constexpr uint32_t BindlessDefaultSampler[4] = {
     0x00000000u,                             // wrap on every axis
@@ -38,7 +38,8 @@ inline constexpr uint32_t RuntimeImageProbes       = 4;
 inline constexpr uint32_t RuntimeImageRequests     = 1024;
 inline constexpr uint32_t RuntimeImageRequestWords = 9;
 inline constexpr uint32_t RuntimeImageBitsOffset   = 16; // words
-inline constexpr uint32_t RuntimeImageRingOffset   = RuntimeImageBitsOffset + RuntimeImageEntries / 32u;
+inline constexpr uint32_t RuntimeImageRingOffset =
+    RuntimeImageBitsOffset + RuntimeImageEntries / 32u;
 inline constexpr uint32_t RuntimeImageRequestBufferWords =
     RuntimeImageRingOffset + RuntimeImageRequests * RuntimeImageRequestWords;
 // The home entry of a T# in the table, as the shader computes it (FNV-1a over the dwords and the
@@ -58,13 +59,15 @@ inline constexpr uint32_t BindlessPending = 0xffffffffu;
 // The placeholder slot pending keys sample (slots 0-2 of each image array are placeholders).
 inline constexpr uint32_t BindlessPendingSlot = 2;
 // Feedback buffer: word 0 (an out-of-range key), then one summary word per chunk of
-// 2^BindlessFeedbackChunkShift entries that a shader set when it raised a flag in that chunk, then the
-// heaps' regions. The host copies and scans only the chunks marked (BindlessTable).
+// 2^BindlessFeedbackChunkShift entries that a shader set when it raised a flag in that chunk, then
+// the heaps' regions. The host copies and scans only the chunks marked (BindlessTable).
 inline constexpr uint32_t BindlessFeedbackSummary    = 1;
 inline constexpr uint32_t BindlessFeedbackChunkShift = 10;
 inline constexpr uint32_t BindlessFeedbackMaxEntries = 32u << 20u; // the largest translation buffer
-inline constexpr uint32_t BindlessFeedbackChunks     = BindlessFeedbackMaxEntries >> BindlessFeedbackChunkShift;
-inline constexpr uint32_t BindlessFeedbackFirstRegion = BindlessFeedbackSummary + BindlessFeedbackChunks;
+inline constexpr uint32_t BindlessFeedbackChunks =
+    BindlessFeedbackMaxEntries >> BindlessFeedbackChunkShift;
+inline constexpr uint32_t BindlessFeedbackFirstRegion =
+    BindlessFeedbackSummary + BindlessFeedbackChunks;
 // KYTY_BINDLESS_3D_AS_ARRAY (CodegenOptions::bindless_3d_as_array): in a 3D binding's region, the
 // key's T# is a 2D or 2D-array texture, held in the 2D-array binding at the slot in the low bits.
 // The hardware addresses by the T# type, not the instruction's dimension, so a 3D sample of it
@@ -76,7 +79,7 @@ inline constexpr uint32_t BindlessSlotFlagMask  = 0xc0000000u;
 // bindless one (instead of skipping the program). The renderer sets it once, before the first
 // shader is compiled, when the device supports descriptor indexing with update-after-bind
 // sampled images and KYTY_BINDLESS is not 0. Off: programs translate as before.
-void SetBindlessImagesEnabled(bool enabled);
+void               SetBindlessImagesEnabled(bool enabled);
 [[nodiscard]] bool BindlessImagesEnabled();
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

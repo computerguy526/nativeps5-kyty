@@ -269,7 +269,7 @@ private:
 		bool                        premultiplied_alpha;
 		uint64_t                    latency_frame; // ASTROHYBRID_LOW_LATENCY frame number
 		// KYTY_HOLD_SKIPPED_DRAWS: the main display keeps the frame it shows (TakeFrameHold).
-		bool hold = false;
+		bool     hold = false;
 		uint64_t ready_tick;  // nps5 frame pacing: QPC when the frame became Ready
 		uint64_t submit_tick; // nps5 autocap: QPC when the request was created
 	};
@@ -472,7 +472,7 @@ static int RegisterVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoO
 		Common::LockGuard event_lock(event_state->mutex);
 		const auto        existing =
 		    std::find_if(queues.begin(), queues.end(),
-			             [eq](const auto& candidate) { return candidate->handle == eq; });
+		                 [eq](const auto& candidate) { return candidate->handle == eq; });
 		if (existing != queues.end()) {
 			registration = *existing;
 		} else {
@@ -588,7 +588,8 @@ Graphics::ImageInfo BufferAttributeGroup::ImageInfo(const VideoOutBuffer& buffer
 		     static_cast<uint32_t>(attribute.width), static_cast<uint32_t>(attribute.height),
 		     static_cast<uint32_t>(attribute.dcc_control),
 		     compression == Graphics::VideoOutCompression::Unsupported ? " (not supported)" : "",
-		     static_cast<uint64_t>(buffer.data_address), static_cast<uint64_t>(buffer.metadata_address));
+		     static_cast<uint64_t>(buffer.data_address),
+		     static_cast<uint64_t>(buffer.metadata_address));
 	}
 	Graphics::VideoOutPixelFormatInfo pixel_format {};
 	if (!Graphics::DecodeVideoOutPixelFormat(attribute.pixel_format, pixel_format)) {
@@ -930,8 +931,8 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 		if (const auto cnt = g_autocap_work_count.exchange(0, std::memory_order_relaxed);
 		    cnt != 0) {
 			const auto ticks = g_autocap_work_ticks.exchange(0, std::memory_order_relaxed);
-			const auto w = static_cast<double>(ticks) / cnt /
-			               static_cast<double>(Common::Timer::QueryPerformanceFrequency());
+			const auto w     = static_cast<double>(ticks) / cnt /
+			                   static_cast<double>(Common::Timer::QueryPerformanceFrequency());
 			r.work.OnWork(w);
 			if (r.promo_on) r.promo.OnWork(now, w);
 		}
@@ -943,16 +944,17 @@ static void AutoCapTick(AutoCapRun& r, bool enabled) {
 			log = r.controller.Changed();
 		}
 	}
-	const auto cap_milli = static_cast<uint32_t>(
-	    (r.promo_on ? r.promo.Cap() : r.controller.Cap()) * 1000.0 + 0.5);
+	const auto cap_milli =
+	    static_cast<uint32_t>((r.promo_on ? r.promo.Cap() : r.controller.Cap()) * 1000.0 + 0.5);
 	st.cap_milli.store(cap_milli, std::memory_order_relaxed);
 	if (log && r.promo_on) {
 		const auto& s = r.controller.Current();
-		std::fprintf(stderr,
-		             "[autocap] %.4g Hz -> %.4g (n=%d, p90 interval %.1f ms, p90 work %.1f ms, screen %s, "
-		             "promotion)\n",
-		             s.refresh_hz, cap_milli / 1000.0, r.promo.N(), r.promo.LastP90Interval() * 1000.0,
-		             r.promo.LastP90Work() * 1000.0, s.name.c_str());
+		std::fprintf(
+		    stderr,
+		    "[autocap] %.4g Hz -> %.4g (n=%d, p90 interval %.1f ms, p90 work %.1f ms, screen %s, "
+		    "promotion)\n",
+		    s.refresh_hz, cap_milli / 1000.0, r.promo.N(), r.promo.LastP90Interval() * 1000.0,
+		    r.promo.LastP90Work() * 1000.0, s.name.c_str());
 	} else if (log) {
 		const auto& s = r.controller.Current();
 		std::fprintf(stderr,
@@ -1051,12 +1053,13 @@ void PaceFrameStart() {
 	next_start.store(start + interval, std::memory_order_relaxed);
 }
 
-// KYTY_PRESENT_READY_FLIPS=1 (live switch, default off; usa-ratt/KytyPS5-GT7's FlipQueue::Flip): guest flips are
-// presented as soon as their GPU work is done, between vblanks, whatever the host present mode (the
-// absolute vblank timeline of KYTY_PRESENT_ABS_VBLANK keeps the guest's vblank events on their clock).
-// A frame that needs 25 ms is then shown at 25 ms instead of at the second vblank (33.3 ms): GT7's title
-// screen and races run at the GPU/CP rate rather than at 60/n fps. Less exact than the console, where a
-// vsync flip waits for the vblank; for titles that pace by flip completion.
+// KYTY_PRESENT_READY_FLIPS=1 (live switch, default off; usa-ratt/KytyPS5-GT7's FlipQueue::Flip):
+// guest flips are presented as soon as their GPU work is done, between vblanks, whatever the host
+// present mode (the absolute vblank timeline of KYTY_PRESENT_ABS_VBLANK keeps the guest's vblank
+// events on their clock). A frame that needs 25 ms is then shown at 25 ms instead of at the second
+// vblank (33.3 ms): GT7's title screen and races run at the GPU/CP rate rather than at 60/n fps.
+// Less exact than the console, where a vsync flip waits for the vblank; for titles that pace by
+// flip completion.
 static Live::Switch g_present_ready_flips("KYTY_PRESENT_READY_FLIPS", Live::ParseDefaultOff);
 
 namespace {
@@ -1268,7 +1271,8 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		}
 		g_pace_interval.store(interval_ticks, std::memory_order_relaxed);
 		g_autocap.estimator.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
-		if (g_autocap.promo_on) g_autocap.promo.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
+		if (g_autocap.promo_on)
+			g_autocap.promo.OnPresent(static_cast<double>(now) / static_cast<double>(frequency));
 		UpdateGameStep(game_step, now, frequency, limit);
 		return true;
 	};
@@ -1296,7 +1300,7 @@ void VideoOutDriver::Impl::PresentThread(std::stop_token token) {
 		                                      ? g_custom_frame_limit.load(std::memory_order_relaxed)
 		                                      : FRAME_LIMITS[choice])
 		                               : 0u;
-		const bool ready_flips = g_present_ready_flips.On();
+		const bool ready_flips   = g_present_ready_flips.On();
 		const bool absolute =
 		    g_present_abs_vblank.On() || ready_flips ||
 		    (limit_enabled && Config::GetPresentMode() == Config::PresentMode::Immediate);
@@ -1599,7 +1603,8 @@ void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	static std::atomic_flag warned = ATOMIC_FLAG_INIT;
 	if (hdr && !m_presenter.IsHdrSupported() && !warned.test_and_set(std::memory_order_relaxed)) {
 		Log::WriteToConsoleAndLog(
-		    "HDR output is unavailable: the game's HDR10 (PQ) video-out frames are converted to SDR "
+		    "HDR output is unavailable: the game's HDR10 (PQ) video-out frames are converted to "
+		    "SDR "
 		    "for display (KYTY_HDR_TO_SDR=0 shows the PQ pixels unchanged).\n");
 	}
 	Graphics::Presenter::Frame* frame = nullptr;
@@ -1693,7 +1698,7 @@ void FlipQueue::Wait(VideoOutConfig& cfg, int index, uint64_t before) {
 
 bool FlipQueue::IsPending(VideoOutConfig& cfg, int index, uint64_t before) {
 	Common::LockGuard lock(m_mutex);
-	auto matches = [&cfg, index, before](const auto& r) {
+	auto              matches = [&cfg, index, before](const auto& r) {
 		return r.cfg == &cfg && r.index == index && r.id < before;
 	};
 	return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
@@ -1709,9 +1714,10 @@ static Live::Switch g_present_unlocked("KYTY_PRESENT_PORT_UNLOCKED", Live::Parse
 // while their pipelines built in the background (KYTY_PIPELINE_SKIP) is released unshown and the
 // frame shown before stays: at most two in a row, then eight shown before the next. A burst of
 // pipeline builds (a race start) otherwise shows a frame with most of the scene missing.
-static Live::Switch g_hold_skipped_draws("KYTY_HOLD_SKIPPED_DRAWS", [](const char* value) -> int64_t {
-	return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 10)) : 0;
-});
+static Live::Switch
+    g_hold_skipped_draws("KYTY_HOLD_SKIPPED_DRAWS", [](const char* value) -> int64_t {
+	    return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 10)) : 0;
+    });
 
 // KYTY_HOLD_COMPILING=1 (live, default off; Sakura 45bc441ec via usa-ratt/KytyPS5-GT7): with
 // KYTY_HOLD_SKIPPED_DRAWS, frames are held in a row (one shown between runs) for up to
@@ -1724,21 +1730,21 @@ static Live::Switch g_hold_max_ms("KYTY_HOLD_MAX_MS", [](const char* value) -> i
 
 // The thread that prepares flips, after the frame's draws: whether this main-display frame is held.
 static bool TakeFrameHold() {
-	const bool      compiling  = g_hold_compiling.On();
-	const uint32_t  MaxInARow  = compiling ? UINT32_MAX : 2u;
-	const uint32_t  ShownAfter = compiling ? 1u : 8u;
-	static uint32_t in_a_row   = 0;
-	static uint32_t shown      = 8;
-	static uint64_t held       = 0;
+	const bool                                   compiling  = g_hold_compiling.On();
+	const uint32_t                               MaxInARow  = compiling ? UINT32_MAX : 2u;
+	const uint32_t                               ShownAfter = compiling ? 1u : 8u;
+	static uint32_t                              in_a_row   = 0;
+	static uint32_t                              shown      = 8;
+	static uint64_t                              held       = 0;
 	static std::chrono::steady_clock::time_point held_since;
 	Graphics::PassCensus::Frame(); // KYTY_TRACE_PASS_CENSUS
 	const uint32_t skips = Graphics::g_frame_pipeline_skips.exchange(0, std::memory_order_relaxed);
 	const auto     threshold = static_cast<uint64_t>(g_hold_skipped_draws.Get());
 	const auto     now       = std::chrono::steady_clock::now();
 	const bool     hold      = threshold != 0 && skips >= threshold && in_a_row < MaxInARow &&
-	                  (in_a_row != 0 || shown >= ShownAfter) &&
-	                  (!compiling || in_a_row == 0 ||
-	                   now - held_since < std::chrono::milliseconds(g_hold_max_ms.Get()));
+	                           (in_a_row != 0 || shown >= ShownAfter) &&
+	                           (!compiling || in_a_row == 0 ||
+	                            now - held_since < std::chrono::milliseconds(g_hold_max_ms.Get()));
 	if (hold) {
 		if (in_a_row == 0) {
 			held_since = now;
@@ -1896,11 +1902,12 @@ bool FlipQueue::Flip() {
 			return value != nullptr && value[0] != '\0' && value[0] != '0';
 		}();
 		if (draw_peek) [[unlikely]] {
-			LOGF("DrawPeekFlip: frame=%d buffer=%d t=%llu\n", m_presenter.Renderer().GetGpu().GetFrameNum(),
-			     requests[0].index,
-			     static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-			                                         std::chrono::steady_clock::now().time_since_epoch())
-			                                         .count()));
+			LOGF("DrawPeekFlip: frame=%d buffer=%d t=%llu\n",
+			     m_presenter.Renderer().GetGpu().GetFrameNum(), requests[0].index,
+			     static_cast<unsigned long long>(
+			         std::chrono::duration_cast<std::chrono::nanoseconds>(
+			             std::chrono::steady_clock::now().time_since_epoch())
+			             .count()));
 		}
 		Controller::OnGuestFlip();
 		// A completed guest flip (one per presented layer group), not the polling iterations of

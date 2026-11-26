@@ -58,8 +58,8 @@ class AjmOpusDecoder final: public AjmDecoder {
 public:
 	AjmOpusDecoder(uint32_t max_channels, AjmSampleEncoding encoding,
 	               bool multistream = AjmOpusMultistreamEnabled())
-	    : AjmDecoder(0, 48000, encoding), m_max_channels(max_channels),
-	      m_multistream(multistream) {}
+	    : AjmDecoder(0, 48000, encoding), m_max_channels(max_channels), m_multistream(multistream) {
+	}
 
 	~AjmOpusDecoder() override { avcodec_free_context(&m_context); }
 
@@ -72,10 +72,11 @@ public:
 			return result;
 		}
 		const auto& params = *static_cast<const AjmDecOpusInitializeParameters*>(parameters);
-		// Families 0 and 1 code 1-2 channels identically (upstream 684e55b48); 255 codes each channel
-		// independently; family 1 with more channels uses our multistream header (multistream decoder).
-		const bool small = (params.mapping_family == 0 || params.mapping_family == 1) &&
-		                   params.channel_num >= 1 && params.channel_num <= 2;
+		// Families 0 and 1 code 1-2 channels identically (upstream 684e55b48); 255 codes each
+		// channel independently; family 1 with more channels uses our multistream header
+		// (multistream decoder).
+		const bool small   = (params.mapping_family == 0 || params.mapping_family == 1) &&
+		                     params.channel_num >= 1 && params.channel_num <= 2;
 		const bool family1 = m_multistream && params.mapping_family == 1 &&
 		                     params.channel_num >= 1 &&
 		                     params.channel_num <= AjmOpusVorbisLayouts.size();

@@ -121,12 +121,12 @@ public:
 	[[nodiscard]] Result GetScratchBuffer(uint64_t size);
 	// Diagnostic (rtimage KYTY_COMPUTE_IMAGE_COPY=verify*; tilerdisp c89d6fc4d): compares the byte
 	// ranges (offset, length from each buffer's offset) of two buffers as recorded now, once the
-	// tick completed; KYTY_TILER_TRACE prints "count verify.<operation> n=<checks> bytes=<mismatching
-	// ranges>".
+	// tick completed; KYTY_TILER_TRACE prints "count verify.<operation> n=<checks>
+	// bytes=<mismatching ranges>".
 	void VerifyRanges(const char* operation, uint64_t guest_address, Result expected, Result actual,
 	                  uint64_t size, std::vector<std::pair<uint64_t, uint64_t>> ranges) {
-		VerifyOnCompletion(operation, guest_address, expected.buffer, expected.offset, actual.buffer,
-		                   actual.offset, size, std::move(ranges));
+		VerifyOnCompletion(operation, guest_address, expected.buffer, expected.offset,
+		                   actual.buffer, actual.offset, size, std::move(ranges));
 	}
 	// KYTY_VRAM_STATS: idle pooled scratch bytes and their limit.
 	[[nodiscard]] std::pair<uint64_t, uint64_t> ScratchPoolBytes();

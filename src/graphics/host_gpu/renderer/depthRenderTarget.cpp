@@ -1,11 +1,11 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
-#include "common/staticOnce.h"
 
 #include "common/assert.h"
 #include "common/common.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/skipInvalid.h"
+#include "common/staticOnce.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "graphics/guest_gpu/gpu_defs.h"
@@ -14,14 +14,14 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
-#include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 #include "graphics/host_gpu/renderer/debug.h"
+#include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 
 #include <algorithm>
 #include <array>
@@ -30,12 +30,12 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <unordered_set>
-#include <limits>
 
 namespace Libs::Graphics {
 
@@ -137,7 +137,8 @@ static vk::StencilOpState ConvertStencilState(
 		                        "compare mask=0x%02" PRIx32 ", write mask=0x%02" PRIx32
 		                        ", operation value=0x%02" PRIx8 ", test value=0x%02" PRIx32
 		                        "): the test compares with the replacement",
-		                        compare, state.compareMask, state.writeMask, op_value, test_value)) {
+		                        compare, state.compareMask, state.writeMask, op_value,
+		                        test_value)) {
 			DepthFatal("unsupported stencil replacement: compare=%u, compare mask=0x%02" PRIx32
 			           ", write mask=0x%02" PRIx32 ", operation value=0x%02" PRIx8
 			           ", test value=0x%02" PRIx32,
@@ -323,12 +324,11 @@ static bool DepthTargetActive(const HW::Context& hw) {
 	const auto& dc          = hw.GetDepthControl();
 	const bool  has_stencil = z.stencil_info.format != Prospero::StencilFormat::kInvalid;
 	// With HTile, DEPTH_COMPRESS_DISABLE expands touched tiles even with depth/stencil tests off
-	// (upstream b64e430b9): a title fast-clears HTile each frame, runs such a pass, then samples the
-	// depth as raw memory; unbound, the clear never lands.
-	const bool depth_active = dc.z_enable || dc.depth_bounds_enable || rc.depth_clear_enable ||
-	                          rc.copy_depth_to_color ||
-	                          (rc.depth_compress_disable && z.z_info.htile_acceleration &&
-	                           DepthCompressDisableBind());
+	// (upstream b64e430b9): a title fast-clears HTile each frame, runs such a pass, then samples
+	// the depth as raw memory; unbound, the clear never lands.
+	const bool depth_active =
+	    dc.z_enable || dc.depth_bounds_enable || rc.depth_clear_enable || rc.copy_depth_to_color ||
+	    (rc.depth_compress_disable && z.z_info.htile_acceleration && DepthCompressDisableBind());
 	const bool stencil_active =
 	    has_stencil && (dc.stencil_enable || rc.stencil_clear_enable || rc.copy_stencil_to_color);
 	return depth_active || stencil_active;
@@ -403,8 +403,8 @@ static void TraceStencilRefState(const HW::Context& hw, const RenderDepthInfo& r
 		return value != nullptr && value[0] != '\0' ? std::atoi(value) : -1;
 	};
 	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(ref_init())>> ref_once;
-	const int& ref = ref_once.Get(ref_init);
-	const auto& sm = hw.GetStencilMask();
+	const int&  ref = ref_once.Get(ref_init);
+	const auto& sm  = hw.GetStencilMask();
 	if (ref < 0 || (sm.stencil_testval != ref && sm.stencil_opval != ref)) {
 		return;
 	}
@@ -414,32 +414,32 @@ static void TraceStencilRefState(const HW::Context& hw, const RenderDepthInfo& r
 	const auto& ro = hw.GetDepthRenderOverride();
 	const auto& z  = hw.GetDepthRenderTarget();
 	const auto& sh = hw.GetShaderRegisters().db_shader_control;
-	char line[1024];
-	std::snprintf(line, sizeof(line),
-	              "StencilRefTrace: dc z=%d zw=%d zfunc=%u bounds=%d st=%d sfunc=%u/%u bf=%d | sc "
-	              "fail=%u zpass=%u zfail=%u bf=%u/%u/%u | sm test=%u mask=0x%02x wmask=0x%02x "
-	              "opval=%u bf test=%u mask=0x%02x wmask=0x%02x opval=%u | rc dclr=%d sclr=%d | ro "
-	              "zv=%d zd=%d sv=%d sd=%d | view zro=%d sro=%d | shctl kill=%d zexp=%d mask=%d "
-	              "zbeh=%u other=0x%08x a2m_dis=%d | host dw=%d dfunc=%d sload=%d",
-	              dc.z_enable, dc.z_write_enable, dc.zfunc, dc.depth_bounds_enable, dc.stencil_enable,
-	              dc.stencilfunc, dc.stencilfunc_bf, dc.backface_enable, sc.stencil_fail,
-	              sc.stencil_zpass, sc.stencil_zfail, sc.stencil_fail_bf, sc.stencil_zpass_bf,
-	              sc.stencil_zfail_bf, sm.stencil_testval, sm.stencil_mask, sm.stencil_writemask,
-	              sm.stencil_opval, sm.stencil_testval_bf, sm.stencil_mask_bf, sm.stencil_writemask_bf,
-	              sm.stencil_opval_bf, rc.depth_clear_enable, rc.stencil_clear_enable,
-	              ro.force_z_valid, ro.force_z_dirty, ro.force_stencil_valid, ro.force_stencil_dirty,
-	              z.depth_view.depth_write_disable, z.depth_view.stencil_write_disable,
-	              sh.shader_kill_enable, sh.shader_z_export_enable, sh.shader_mask_export_enable,
-	              sh.shader_z_behavior, sh.other_bits, sh.alpha_to_mask_disable,
-	              r.depth_write_enable, static_cast<int>(r.depth_compare_op),
-	              r.stencil_load_clear_enable);
+	char        line[1024];
+	std::snprintf(
+	    line, sizeof(line),
+	    "StencilRefTrace: dc z=%d zw=%d zfunc=%u bounds=%d st=%d sfunc=%u/%u bf=%d | sc "
+	    "fail=%u zpass=%u zfail=%u bf=%u/%u/%u | sm test=%u mask=0x%02x wmask=0x%02x "
+	    "opval=%u bf test=%u mask=0x%02x wmask=0x%02x opval=%u | rc dclr=%d sclr=%d | ro "
+	    "zv=%d zd=%d sv=%d sd=%d | view zro=%d sro=%d | shctl kill=%d zexp=%d mask=%d "
+	    "zbeh=%u other=0x%08x a2m_dis=%d | host dw=%d dfunc=%d sload=%d",
+	    dc.z_enable, dc.z_write_enable, dc.zfunc, dc.depth_bounds_enable, dc.stencil_enable,
+	    dc.stencilfunc, dc.stencilfunc_bf, dc.backface_enable, sc.stencil_fail, sc.stencil_zpass,
+	    sc.stencil_zfail, sc.stencil_fail_bf, sc.stencil_zpass_bf, sc.stencil_zfail_bf,
+	    sm.stencil_testval, sm.stencil_mask, sm.stencil_writemask, sm.stencil_opval,
+	    sm.stencil_testval_bf, sm.stencil_mask_bf, sm.stencil_writemask_bf, sm.stencil_opval_bf,
+	    rc.depth_clear_enable, rc.stencil_clear_enable, ro.force_z_valid, ro.force_z_dirty,
+	    ro.force_stencil_valid, ro.force_stencil_dirty, z.depth_view.depth_write_disable,
+	    z.depth_view.stencil_write_disable, sh.shader_kill_enable, sh.shader_z_export_enable,
+	    sh.shader_mask_export_enable, sh.shader_z_behavior, sh.other_bits, sh.alpha_to_mask_disable,
+	    r.depth_write_enable, static_cast<int>(r.depth_compare_op), r.stencil_load_clear_enable);
 	// Colour side of the same draw: blend per MRT 0-3, target and shader masks, colour control
 	// and the export formats.
-	const auto& shr = hw.GetShaderRegisters();
-	const auto& cc  = hw.GetColorControl();
+	const auto& shr  = hw.GetShaderRegisters();
+	const auto& cc   = hw.GetColorControl();
 	auto        used = std::strlen(line);
 	used += static_cast<size_t>(std::snprintf(
-	    line + used, sizeof(line) - used, " | cb tmask=0x%08x smask=0x%08x mode=%u rop=0x%02x fmt=%u/%u/%u/%u",
+	    line + used, sizeof(line) - used,
+	    " | cb tmask=0x%08x smask=0x%08x mode=%u rop=0x%02x fmt=%u/%u/%u/%u",
 	    hw.GetRenderTargetMask(), shr.m_cbShaderMask, cc.mode, cc.op, shr.target_output_mode[0],
 	    shr.target_output_mode[1], shr.target_output_mode[2], shr.target_output_mode[3]));
 	used += static_cast<size_t>(std::snprintf(
@@ -450,14 +450,14 @@ static void TraceStencilRefState(const HW::Context& hw, const RenderDepthInfo& r
 	for (uint32_t slot = 0; slot < 4 && used < sizeof(line); slot++) {
 		const auto& b = hw.GetBlendControl(slot);
 		used += static_cast<size_t>(std::snprintf(
-		    line + used, sizeof(line) - used, " b%u=%d:%u,%u,%u/%u,%u,%u,%d,byp%d,f%u/%u", slot, b.enable,
-		    b.color_srcblend, b.color_comb_fcn, b.color_destblend, b.alpha_srcblend,
+		    line + used, sizeof(line) - used, " b%u=%d:%u,%u,%u/%u,%u,%u,%d,byp%d,f%u/%u", slot,
+		    b.enable, b.color_srcblend, b.color_comb_fcn, b.color_destblend, b.alpha_srcblend,
 		    b.alpha_comb_fcn, b.alpha_destblend, b.separate_alpha_blend,
 		    hw.GetRenderTarget(slot).info.blend_bypass,
 		    static_cast<uint32_t>(hw.GetRenderTarget(slot).info.format),
 		    static_cast<uint32_t>(hw.GetRenderTarget(slot).info.channel_type)));
 	}
-	static std::mutex                     mutex;
+	static std::mutex                      mutex;
 	static std::unordered_set<std::string> seen;
 	std::scoped_lock                       lock {mutex};
 	if (seen.insert(line).second) {
@@ -511,11 +511,13 @@ void RenderExecutor::ResolveRenderDepthTarget(CommandBuffer& buffer, RenderDepth
 		if (!DepthApproximation(
 		        "unsupported depth register state, the draw left out: copy depth %d stencil %d "
 		        "centroid %d sample %u, zfunc %u, depth write %d read 0x%012" PRIx64
-		        " write 0x%012" PRIx64 ", stencil write %d read 0x%012" PRIx64 " write 0x%012" PRIx64,
+		        " write 0x%012" PRIx64 ", stencil write %d read 0x%012" PRIx64
+		        " write 0x%012" PRIx64,
 		        rc.copy_depth_to_color ? 1 : 0, rc.copy_stencil_to_color ? 1 : 0,
 		        rc.copy_centroid ? 1 : 0, static_cast<uint32_t>(rc.copy_sample),
 		        static_cast<uint32_t>(dc.zfunc), z.depth_view.depth_write_disable ? 0 : 1,
-		        static_cast<uint64_t>(z.z_read_base_addr), static_cast<uint64_t>(z.z_write_base_addr),
+		        static_cast<uint64_t>(z.z_read_base_addr),
+		        static_cast<uint64_t>(z.z_write_base_addr),
 		        (has_stencil && !z.depth_view.stencil_write_disable) ? 1 : 0,
 		        static_cast<uint64_t>(z.stencil_read_base_addr),
 		        static_cast<uint64_t>(z.stencil_write_base_addr))) {
@@ -687,14 +689,12 @@ bool RenderExecutor::DepthStencilCopy(CommandBuffer& buffer) {
 bool SameRenderDepthInfo(const RenderDepthInfo& a, const RenderDepthInfo& b) {
 	// Every field, named in declaration order (see ResolveRenderDepthTarget): a new field stops
 	// this compiling until it is compared below.
-	const auto& [a_desc, a_clear, a_load_clear, a_clear_value, a_test, a_write, a_compare,
-	             a_bounds, a_min_bounds, a_max_bounds, a_stencil_clear, a_stencil_load_clear,
-	             a_stencil_clear_value,
-	             a_stencil_test, a_front, a_back, a_image] = a;
-	const auto& [b_desc, b_clear, b_load_clear, b_clear_value, b_test, b_write, b_compare,
-	             b_bounds, b_min_bounds, b_max_bounds, b_stencil_clear, b_stencil_load_clear,
-	             b_stencil_clear_value,
-	             b_stencil_test, b_front, b_back, b_image] = b;
+	const auto& [a_desc, a_clear, a_load_clear, a_clear_value, a_test, a_write, a_compare, a_bounds,
+	             a_min_bounds, a_max_bounds, a_stencil_clear, a_stencil_load_clear,
+	             a_stencil_clear_value, a_stencil_test, a_front, a_back, a_image] = a;
+	const auto& [b_desc, b_clear, b_load_clear, b_clear_value, b_test, b_write, b_compare, b_bounds,
+	             b_min_bounds, b_max_bounds, b_stencil_clear, b_stencil_load_clear,
+	             b_stencil_clear_value, b_stencil_test, b_front, b_back, b_image] = b;
 	const auto same_float = [](float x, float y) {
 		return std::bit_cast<uint32_t>(x) == std::bit_cast<uint32_t>(y);
 	};
@@ -703,9 +703,8 @@ bool SameRenderDepthInfo(const RenderDepthInfo& a, const RenderDepthInfo& b) {
 	       a_compare == b_compare && a_bounds == b_bounds &&
 	       same_float(a_min_bounds, b_min_bounds) && same_float(a_max_bounds, b_max_bounds) &&
 	       a_stencil_clear == b_stencil_clear && a_stencil_load_clear == b_stencil_load_clear &&
-	       a_stencil_clear_value == b_stencil_clear_value &&
-	       a_stencil_test == b_stencil_test && a_front == b_front && a_back == b_back &&
-	       a_image == b_image;
+	       a_stencil_clear_value == b_stencil_clear_value && a_stencil_test == b_stencil_test &&
+	       a_front == b_front && a_back == b_back && a_image == b_image;
 }
 
 vk::ImageAspectFlags RenderDepthInfo::AttachmentWriteAspects() const {

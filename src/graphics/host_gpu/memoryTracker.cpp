@@ -1,30 +1,29 @@
 #include "graphics/host_gpu/memoryTracker.h"
-#include "common/staticOnce.h"
-
-#include <cstdio>
-#include <execinfo.h>
 
 #include "common/alignment.h"
 #include "common/assert.h"
+#include "common/staticOnce.h"
 #include "graphics/host_gpu/watchRange.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <execinfo.h>
 
 namespace Libs::Graphics {
 
 void MemoryTracker::ReportUploadReentry() noexcept {
 	void*     frames[64];
 	const int count = ::backtrace(frames, 64);
-	std::fprintf(stderr, "[memtrk] memory tracker re-entered from upload callback; backtrace (%d frames):\n",
-	             count);
+	std::fprintf(
+	    stderr, "[memtrk] memory tracker re-entered from upload callback; backtrace (%d frames):\n",
+	    count);
 	std::fflush(stderr);
 	::backtrace_symbols_fd(frames, count, 2);
 	EXIT("memory tracker re-entered from upload callback\n");
 	std::abort();
 }
-
 
 static_assert(std::atomic<void*>::is_always_lock_free);
 
@@ -197,7 +196,7 @@ std::pair<uint64_t, uint64_t> MemoryTracker::FaultWindow(uint64_t offset, uint64
 		return {start * TRACKER_PAGE_SIZE, end * TRACKER_PAGE_SIZE};
 	}
 	const uint64_t window_begin = start / ahead * ahead;
-	uint64_t window_end =
+	uint64_t       window_end =
 	    std::min<uint64_t>((end + ahead - 1) / ahead * ahead, TRACKER_REGION_PAGES);
 	if (sequential) {
 		// The forward window [start, start + ahead) of a sequential fill (a superset either way).

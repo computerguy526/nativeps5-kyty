@@ -1,4 +1,3 @@
-#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 
 #include "common/alignment.h"
@@ -10,6 +9,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/tilerTrace.h"
 #include "graphics/host_gpu/vramStats.h"
 
 #include <array>
@@ -17,8 +17,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <fmt/format.h>
-#include <string>
 #include <numeric>
+#include <string>
 #include <vk_mem_alloc.h>
 
 namespace Libs::Graphics {
@@ -192,9 +192,9 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	if (in_host) {
 		static std::atomic<uint32_t> placed {0};
 		if (placed.fetch_add(1, std::memory_order_relaxed) < 16) {
-			Log::WriteToConsoleAndLog(fmt::format(
-			    "Kyty VRAM: a {} MB buffer at guest 0x{:x} placed in system memory (KYTY_HOST_BUFFER_MB)\n",
-			    size >> 20u, cpu_address));
+			Log::WriteToConsoleAndLog(fmt::format("Kyty VRAM: a {} MB buffer at guest 0x{:x} "
+			                                      "placed in system memory (KYTY_HOST_BUFFER_MB)\n",
+			                                      size >> 20u, cpu_address));
 		}
 	}
 	m_buffer = native_buffer;
@@ -229,10 +229,10 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	}
 }
 
-Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, void* host_pointer, uint64_t size,
-               ImportHostTag)
-    : m_graphics(&graphics), m_scheduler(&scheduler), m_usage(MemoryUsage::Stream), m_cpu_address(0),
-      m_size(size) {
+Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, void* host_pointer,
+               uint64_t size, ImportHostTag)
+    : m_graphics(&graphics), m_scheduler(&scheduler), m_usage(MemoryUsage::Stream),
+      m_cpu_address(0), m_size(size) {
 	if (!graphics.external_memory_host_enabled || host_pointer == nullptr || size == 0) {
 		return;
 	}
@@ -251,8 +251,8 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, void* host
 	vk::MemoryRequirements             requirements {};
 	graphics.device.getBufferMemoryRequirements(buffer, &requirements);
 	uint32_t type = UINT32_MAX;
-	if (graphics.device.getMemoryHostPointerPropertiesEXT(handle_type, host_pointer, &pointer_properties) ==
-	    vk::Result::eSuccess) {
+	if (graphics.device.getMemoryHostPointerPropertiesEXT(
+	        handle_type, host_pointer, &pointer_properties) == vk::Result::eSuccess) {
 		const auto memory    = graphics.physical_device.getMemoryProperties();
 		const auto candidate = pointer_properties.memoryTypeBits & requirements.memoryTypeBits;
 		// Prefer host-coherent memory (the probe's choice on NVIDIA: HOST_VISIBLE | HOST_COHERENT).
@@ -278,8 +278,9 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, void* host
 	allocate.pNext           = &flags;
 	allocate.allocationSize  = size;
 	allocate.memoryTypeIndex = type;
-	vk::DeviceMemory memory = nullptr;
-	if (type == UINT32_MAX || graphics.device.allocateMemory(&allocate, nullptr, &memory) != vk::Result::eSuccess ||
+	vk::DeviceMemory memory  = nullptr;
+	if (type == UINT32_MAX ||
+	    graphics.device.allocateMemory(&allocate, nullptr, &memory) != vk::Result::eSuccess ||
 	    graphics.device.bindBufferMemory(buffer, memory, 0) != vk::Result::eSuccess) {
 		if (memory != nullptr) {
 			graphics.device.freeMemory(memory, nullptr);
@@ -349,9 +350,11 @@ void Buffer::Invalidate(uint64_t offset, uint64_t size) {
 	}
 }
 
-bool Buffer::ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&             ranges,
-                            const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const {
-	if (m_buffer == nullptr || m_allocation == nullptr || m_sparse || m_imported_memory != nullptr) {
+bool Buffer::ReadHostRanges(
+    const std::vector<std::pair<uint64_t, uint64_t>>&              ranges,
+    const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const {
+	if (m_buffer == nullptr || m_allocation == nullptr || m_sparse ||
+	    m_imported_memory != nullptr) {
 		return false;
 	}
 	for (const auto& [offset, size]: ranges) {
@@ -412,13 +415,16 @@ vk::BufferMemoryBarrier Buffer::Barrier(uint64_t offset, uint64_t size, vk::Acce
 // scopes; only the number of barrier commands changes.
 static Live::Switch g_dma_barrier_batch("KYTY_DMA_BARRIER_BATCH", Live::ParseDefaultOff);
 
-static vk::BufferMemoryBarrier2 Barrier2(const vk::BufferMemoryBarrier& barrier, vk::PipelineStageFlags2 src_stages,
-                                         vk::PipelineStageFlags2 dst_stages) {
+static vk::BufferMemoryBarrier2 Barrier2(const vk::BufferMemoryBarrier& barrier,
+                                         vk::PipelineStageFlags2        src_stages,
+                                         vk::PipelineStageFlags2        dst_stages) {
 	vk::BufferMemoryBarrier2 out {};
-	out.srcStageMask        = src_stages;
-	out.srcAccessMask       = vk::AccessFlags2(static_cast<VkAccessFlags2>(static_cast<VkAccessFlags>(barrier.srcAccessMask)));
-	out.dstStageMask        = dst_stages;
-	out.dstAccessMask       = vk::AccessFlags2(static_cast<VkAccessFlags2>(static_cast<VkAccessFlags>(barrier.dstAccessMask)));
+	out.srcStageMask  = src_stages;
+	out.srcAccessMask = vk::AccessFlags2(
+	    static_cast<VkAccessFlags2>(static_cast<VkAccessFlags>(barrier.srcAccessMask)));
+	out.dstStageMask  = dst_stages;
+	out.dstAccessMask = vk::AccessFlags2(
+	    static_cast<VkAccessFlags2>(static_cast<VkAccessFlags>(barrier.dstAccessMask)));
 	out.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	out.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	out.buffer              = barrier.buffer;
@@ -428,7 +434,8 @@ static vk::BufferMemoryBarrier2 Barrier2(const vk::BufferMemoryBarrier& barrier,
 }
 
 static vk::PipelineStageFlags2 Stages2(vk::PipelineStageFlags stages) {
-	return vk::PipelineStageFlags2(static_cast<VkPipelineStageFlags2>(static_cast<VkPipelineStageFlags>(stages)));
+	return vk::PipelineStageFlags2(
+	    static_cast<VkPipelineStageFlags2>(static_cast<VkPipelineStageFlags>(stages)));
 }
 
 void Buffer::CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t source_offset,
@@ -461,19 +468,22 @@ void Buffer::CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t sou
 	if (batch && DmaBarrierBatchEnabled()) {
 		// KYTY_DMA_BARRIER_BATCH: the same barriers through the batch (see Fill).
 		for (const auto& barrier: before) {
-			command.RequestBufferBarrier(Barrier2(barrier, Stages2(before_stage), vk::PipelineStageFlagBits2::eTransfer),
-			                             BarrierOrigin::Upload);
+			command.RequestBufferBarrier(
+			    Barrier2(barrier, Stages2(before_stage), vk::PipelineStageFlagBits2::eTransfer),
+			    BarrierOrigin::Upload);
 		}
 		const vk::BufferCopy copy {source_offset, destination_offset, size};
 		command.HelperSink().copyBuffer(source.Handle(), Handle(), 1, &copy);
 		MarkContentWritten();
 		const vk::BufferMemoryBarrier after[] = {
 		    source.Barrier(source_offset, size, vk::AccessFlagBits::eTransferRead, source_after),
-		    Barrier(destination_offset, size, vk::AccessFlagBits::eTransferWrite, destination_after),
+		    Barrier(destination_offset, size, vk::AccessFlagBits::eTransferWrite,
+		            destination_after),
 		};
 		for (const auto& barrier: after) {
-			command.RequestBufferBarrier(Barrier2(barrier, vk::PipelineStageFlagBits2::eTransfer, Stages2(after_stage)),
-			                             BarrierOrigin::Upload);
+			command.RequestBufferBarrier(
+			    Barrier2(barrier, vk::PipelineStageFlagBits2::eTransfer, Stages2(after_stage)),
+			    BarrierOrigin::Upload);
 		}
 		return;
 	}
@@ -491,8 +501,9 @@ void Buffer::CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t sou
 	                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, after, 0, nullptr);
 }
 
-void Buffer::CopyRegionsFrom(CommandBuffer& command, const Buffer& source, std::span<const vk::BufferCopy> regions,
-                             vk::AccessFlags source_before) {
+void Buffer::CopyRegionsFrom(CommandBuffer& command, const Buffer& source,
+                             std::span<const vk::BufferCopy> regions,
+                             vk::AccessFlags                 source_before) {
 	KYTY_GPU_OP_SITE("buffer.copy");
 	if (regions.empty()) {
 		return;
@@ -518,19 +529,22 @@ void Buffer::CopyRegionsFrom(CommandBuffer& command, const Buffer& source, std::
 	    Barrier(dst_lo, dst_hi - dst_lo, any_read_write, vk::AccessFlagBits::eTransferWrite),
 	};
 	auto before_stage = vk::PipelineStageFlags {vk::PipelineStageFlagBits::eAllCommands};
-	if (static_cast<bool>(source_before & (vk::AccessFlagBits::eHostRead | vk::AccessFlagBits::eHostWrite))) {
+	if (static_cast<bool>(source_before &
+	                      (vk::AccessFlagBits::eHostRead | vk::AccessFlagBits::eHostWrite))) {
 		before_stage |= vk::PipelineStageFlagBits::eHost;
 	}
 	const auto native = command.HelperSink();
-	native.pipelineBarrier(before_stage, vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion, 0,
-	                       nullptr, 2, before, 0, nullptr);
-	native.copyBuffer(source.Handle(), Handle(), static_cast<uint32_t>(regions.size()), regions.data());
+	native.pipelineBarrier(before_stage, vk::PipelineStageFlagBits::eTransfer,
+	                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, before, 0, nullptr);
+	native.copyBuffer(source.Handle(), Handle(), static_cast<uint32_t>(regions.size()),
+	                  regions.data());
 	MarkContentWritten();
 	const vk::BufferMemoryBarrier after[] = {
 	    source.Barrier(src_lo, src_hi - src_lo, vk::AccessFlagBits::eTransferRead, any_read_write),
 	    Barrier(dst_lo, dst_hi - dst_lo, vk::AccessFlagBits::eTransferWrite, any_read_write),
 	};
-	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands,
+	native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+	                       vk::PipelineStageFlagBits::eAllCommands,
 	                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, after, 0, nullptr);
 }
 
@@ -546,16 +560,17 @@ void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value, bool batch) {
 	auto& command = Scheduler().Current();
 	command.EndRendering();
 	if (batch && DmaBarrierBatchEnabled()) {
-		const auto before =
-		    Barrier(offset, size, vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-		            vk::AccessFlagBits::eTransferWrite);
+		const auto before = Barrier(
+		    offset, size, vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+		    vk::AccessFlagBits::eTransferWrite);
 		command.RequestBufferBarrier(Barrier2(before, vk::PipelineStageFlagBits2::eAllCommands,
 		                                      vk::PipelineStageFlagBits2::eTransfer),
 		                             BarrierOrigin::Upload);
 		command.HelperSink().fillBuffer(Handle(), offset, size, value);
 		MarkContentWritten();
-		const auto after = Barrier(offset, size, vk::AccessFlagBits::eTransferWrite,
-		                           vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
+		const auto after =
+		    Barrier(offset, size, vk::AccessFlagBits::eTransferWrite,
+		            vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
 		command.RequestBufferBarrier(Barrier2(after, vk::PipelineStageFlagBits2::eTransfer,
 		                                      vk::PipelineStageFlagBits2::eAllCommands),
 		                             BarrierOrigin::Upload);
@@ -569,8 +584,9 @@ void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value, bool batch) {
 	                       vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
 	                       0, nullptr, 1, &before, 0, nullptr);
 	native.fillBuffer(Handle(), offset, size, value);
-	TilerTrace::Count(size <= 64 ? "fill.buffer.le64" : size <= 65536 ? "fill.buffer.le64k"
-	                                                                  : "fill.buffer.gt64k",
+	TilerTrace::Count(size <= 64      ? "fill.buffer.le64"
+	                  : size <= 65536 ? "fill.buffer.le64k"
+	                                  : "fill.buffer.gt64k",
 	                  1, size);
 	MarkContentWritten();
 	const auto after = Barrier(offset, size, vk::AccessFlagBits::eTransferWrite,

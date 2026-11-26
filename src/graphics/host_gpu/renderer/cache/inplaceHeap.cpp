@@ -1,6 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/inplaceHeap.h"
 
-
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -41,7 +40,8 @@ void Say(const std::string& text) {
 bool InplaceHeap::Requested() noexcept {
 	static const bool requested = [] {
 		const auto* value = std::getenv("KYTY_INPLACE");
-		return value != nullptr && (std::strcmp(value, "1") == 0 || std::strcmp(value, "verify") == 0);
+		return value != nullptr &&
+		       (std::strcmp(value, "1") == 0 || std::strcmp(value, "verify") == 0);
 	}();
 	return requested;
 }
@@ -51,13 +51,14 @@ InplaceHeap::Mode InplaceHeap::ConfiguredMode() noexcept {
 		return Mode::Off;
 	}
 	static const Mode mode = [] {
-		const auto* label = std::getenv("KYTY_LABEL_MODE");
-		const bool  label_ok =
-		    label != nullptr && (std::strcmp(label, "split") == 0 || std::strcmp(label, "completion") == 0);
+		const auto* label    = std::getenv("KYTY_LABEL_MODE");
+		const bool  label_ok = label != nullptr && (std::strcmp(label, "split") == 0 ||
+		                                            std::strcmp(label, "completion") == 0);
 		if (!label_ok) {
-			Say(fmt::format("Kyty in-place reads: refused, KYTY_LABEL_MODE is '{}' (needs split or completion: "
-			                "labels must reach the guest only after the GPU read the memory)\n",
-			                label != nullptr ? label : "record (default)"));
+			Say(fmt::format(
+			    "Kyty in-place reads: refused, KYTY_LABEL_MODE is '{}' (needs split or completion: "
+			    "labels must reach the guest only after the GPU read the memory)\n",
+			    label != nullptr ? label : "record (default)"));
 			return Mode::Off;
 		}
 		const auto* value = std::getenv("KYTY_INPLACE");
@@ -68,7 +69,8 @@ InplaceHeap::Mode InplaceHeap::ConfiguredMode() noexcept {
 
 InplaceHeap::InplaceHeap(GraphicContext& graphics, CommandScheduler& scheduler, Mode mode)
     : m_graphics(graphics), m_scheduler(scheduler), m_mode(mode),
-      m_promote_frames(static_cast<uint32_t>(std::clamp<uint64_t>(EnvU64("KYTY_INPLACE_FRAMES", 2), 1, 8))),
+      m_promote_frames(
+          static_cast<uint32_t>(std::clamp<uint64_t>(EnvU64("KYTY_INPLACE_FRAMES", 2), 1, 8))),
       m_window_bytes(std::clamp<uint64_t>(EnvU64("KYTY_INPLACE_WINDOW_MB", 64), 1, 1024) << 20u),
       m_max_bytes(EnvU64("KYTY_INPLACE_MAX_MB", 512) << 20u), m_candidates(m_promote_frames) {
 	// The window size is a power of two so a window index is a shift.
@@ -78,10 +80,11 @@ InplaceHeap::InplaceHeap(GraphicContext& graphics, CommandScheduler& scheduler, 
 	m_backing_base = LibKernel::Memory::GuestBackingBase();
 	m_backing_size = LibKernel::Memory::GuestBackingSize();
 	m_report_start = NowMs();
-	Say(fmt::format("Kyty in-place reads: {} (KYTY_INPLACE), windows {} MiB, cap {} MiB pinned, promote after {} "
+	Say(fmt::format("Kyty in-place reads: {} (KYTY_INPLACE), windows {} MiB, cap {} MiB pinned, "
+	                "promote after {} "
 	                "faulting frames of 8, backing alias 0x{:x} + {} MiB\n",
-	                mode == Mode::Verify ? "verify" : "on", m_window_bytes >> 20u, m_max_bytes >> 20u,
-	                m_promote_frames, m_backing_base, m_backing_size >> 20u));
+	                mode == Mode::Verify ? "verify" : "on", m_window_bytes >> 20u,
+	                m_max_bytes >> 20u, m_promote_frames, m_backing_base, m_backing_size >> 20u));
 }
 
 InplaceHeap::~InplaceHeap() = default;
@@ -99,49 +102,56 @@ void InplaceHeap::Demote(uint64_t vaddr, uint64_t size) noexcept {
 }
 InplaceHeap::Window* InplaceHeap::LookupWindow(uint64_t window_index) {
 	std::scoped_lock lock {m_window_mutex};
-	const auto it = m_windows.find(window_index);
+	const auto       it = m_windows.find(window_index);
 	return it != m_windows.end() ? it->second.get() : nullptr;
 }
 
 InplaceHeap::Window* InplaceHeap::ImportWindow(uint64_t window_index) {
 	std::scoped_lock lock {m_window_mutex};
-	auto& slot = m_windows[window_index];
+	auto&            slot = m_windows[window_index];
 	if (slot != nullptr) {
 		return slot.get();
 	}
-	slot                 = std::make_unique<Window>();
-	auto& window         = *slot;
+	slot                  = std::make_unique<Window>();
+	auto& window          = *slot;
 	window.backing_offset = window_index * m_window_bytes;
 	window.size           = std::min(m_window_bytes, m_backing_size - window.backing_offset);
 	const uint64_t pinned = m_pinned_bytes.load(std::memory_order_relaxed);
 	if (pinned + window.size > m_max_bytes) {
 		window.failed = true;
-		Say(fmt::format("Kyty in-place reads: window at backing offset 0x{:x} not imported: the cap of {} MiB "
-		                "pinned is reached (KYTY_INPLACE_MAX_MB)\n",
-		                window.backing_offset, m_max_bytes >> 20u));
+		Say(fmt::format(
+		    "Kyty in-place reads: window at backing offset 0x{:x} not imported: the cap of {} MiB "
+		    "pinned is reached (KYTY_INPLACE_MAX_MB)\n",
+		    window.backing_offset, m_max_bytes >> 20u));
 		return &window;
 	}
-	const auto start = std::chrono::steady_clock::now();
-	auto       buffer = std::make_unique<Buffer>(m_graphics, m_scheduler,
-	                                       reinterpret_cast<void*>(m_backing_base + window.backing_offset),
-	                                       window.size, ImportHostTag {});
-	const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	const auto start  = std::chrono::steady_clock::now();
+	auto       buffer = std::make_unique<Buffer>(
+	    m_graphics, m_scheduler, reinterpret_cast<void*>(m_backing_base + window.backing_offset),
+	    window.size, ImportHostTag {});
+	const auto ms =
+	    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 	if (!buffer->Handle()) {
 		window.failed = true;
-		Say(fmt::format("Kyty in-place reads: importing the window at backing offset 0x{:x} ({} MiB) failed\n",
-		                window.backing_offset, window.size >> 20u));
+		Say(fmt::format(
+		    "Kyty in-place reads: importing the window at backing offset 0x{:x} ({} MiB) failed\n",
+		    window.backing_offset, window.size >> 20u));
 		return &window;
 	}
 	window.buffer = std::move(buffer);
-	const auto total = m_pinned_bytes.fetch_add(window.size, std::memory_order_relaxed) + window.size;
-	Say(fmt::format("Kyty in-place reads: imported backing window 0x{:x} + {} MiB in {:.1f} ms; pinned now {} MiB "
+	const auto total =
+	    m_pinned_bytes.fetch_add(window.size, std::memory_order_relaxed) + window.size;
+	Say(fmt::format("Kyty in-place reads: imported backing window 0x{:x} + {} MiB in {:.1f} ms; "
+	                "pinned now {} MiB "
 	                "of {} MiB\n",
-	                window.backing_offset, window.size >> 20u, ms, total >> 20u, m_max_bytes >> 20u));
+	                window.backing_offset, window.size >> 20u, ms, total >> 20u,
+	                m_max_bytes >> 20u));
 	return &window;
 }
 
 bool InplaceHeap::Bind(uint64_t vaddr, uint64_t size, Buffer*& buffer, uint64_t& offset) {
-	const auto* host = static_cast<const uint8_t*>(LibKernel::Memory::GuestBackingAlias(vaddr, size));
+	const auto* host =
+	    static_cast<const uint8_t*>(LibKernel::Memory::GuestBackingAlias(vaddr, size));
 	if (host == nullptr) {
 		m_rejects_window.fetch_add(1, std::memory_order_relaxed);
 		return false; // not direct memory, or spans mappings
@@ -173,7 +183,8 @@ bool InplaceHeap::Bind(uint64_t vaddr, uint64_t size, Buffer*& buffer, uint64_t&
 		if (m_verify_batch == nullptr || m_verify_tick != tick) {
 			m_verify_batch = std::make_shared<VerifyBatch>();
 			m_verify_tick  = tick;
-			m_scheduler.DeferPriorityOperation([this, batch = m_verify_batch] { CheckVerifyBatch(*batch); });
+			m_scheduler.DeferPriorityOperation(
+			    [this, batch = m_verify_batch] { CheckVerifyBatch(*batch); });
 		}
 		std::scoped_lock lock {m_verify_batch->mutex};
 		m_verify_batch->entries.push_back({tick, vaddr, size, XXH3_64bits(host, size)});
@@ -189,7 +200,8 @@ void InplaceHeap::CheckVerifyBatch(VerifyBatch& batch) {
 		if (host == nullptr || XXH3_64bits(host, entry.size) != entry.hash) {
 			const auto n = m_verify_mismatches.fetch_add(1, std::memory_order_relaxed);
 			if (n < 32) {
-				Say(fmt::format("Kyty in-place verify: [0x{:x}, +0x{:x}) changed between its binding (tick {}) and "
+				Say(fmt::format("Kyty in-place verify: [0x{:x}, +0x{:x}) changed between its "
+				                "binding (tick {}) and "
 				                "that tick's completion\n",
 				                entry.vaddr, entry.size, entry.tick));
 			}
@@ -204,7 +216,8 @@ void InplaceHeap::BeforeCpWrite(uint64_t vaddr, uint64_t size) {
 	}
 	m_cp_writes.fetch_add(1, std::memory_order_relaxed);
 	(void)m_candidates.Clear(vaddr, size);
-	const auto* host = static_cast<const uint8_t*>(LibKernel::Memory::GuestBackingAlias(vaddr, size));
+	const auto* host =
+	    static_cast<const uint8_t*>(LibKernel::Memory::GuestBackingAlias(vaddr, size));
 	if (host == nullptr) {
 		return;
 	}
@@ -241,18 +254,24 @@ void InplaceHeap::Report(uint32_t /*frame*/) {
 	if (now - m_report_start < 10000) {
 		return;
 	}
-	const double f = std::max<uint32_t>(m_report_frames, 1);
-	auto take = [](std::atomic<uint64_t>& v) { return static_cast<double>(v.exchange(0, std::memory_order_relaxed)); };
+	const double f    = std::max<uint32_t>(m_report_frames, 1);
+	auto         take = [](std::atomic<uint64_t>& v) {
+		return static_cast<double>(v.exchange(0, std::memory_order_relaxed));
+	};
 	const double binds = take(m_binds), bytes = take(m_bind_bytes), rw = take(m_rejects_window),
-	             rc = take(m_rejects_cap), pr = take(m_promotions), dg = take(m_demotions_gpu), cw = take(m_cp_writes),
-	             cwait = take(m_cp_waits), cun = take(m_cp_unordered), vc = take(m_verify_checks);
-	std::printf("Inplace %.0fs: %.0f frames | binds %.0f/f %.2f MB/f | rejects window %.1f/f cap %.1f/f | candidates "
-	            "%" PRIu64 " pages, promoted %.1f/f, demoted by GPU writers %.2f/f | cp writes on candidates %.2f/f, "
-	            "waits %.2f/f, unordered %.2f/f | pinned %" PRIu64 " MiB | verify checks %.0f mismatches %" PRIu64
-	            " (total)\n",
-	            (now - m_report_start) / 1000.0, f, binds / f, bytes / f / 1e6, rw / f, rc / f,
-	            m_candidates.Count(), pr / f, dg / f, cw / f, cwait / f, cun / f,
-	            PinnedBytes() >> 20u, vc, m_verify_mismatches.load(std::memory_order_relaxed));
+	             rc = take(m_rejects_cap), pr = take(m_promotions), dg = take(m_demotions_gpu),
+	             cw = take(m_cp_writes), cwait = take(m_cp_waits), cun = take(m_cp_unordered),
+	             vc = take(m_verify_checks);
+	std::printf(
+	    "Inplace %.0fs: %.0f frames | binds %.0f/f %.2f MB/f | rejects window %.1f/f cap %.1f/f | "
+	    "candidates "
+	    "%" PRIu64
+	    " pages, promoted %.1f/f, demoted by GPU writers %.2f/f | cp writes on candidates %.2f/f, "
+	    "waits %.2f/f, unordered %.2f/f | pinned %" PRIu64
+	    " MiB | verify checks %.0f mismatches %" PRIu64 " (total)\n",
+	    (now - m_report_start) / 1000.0, f, binds / f, bytes / f / 1e6, rw / f, rc / f,
+	    m_candidates.Count(), pr / f, dg / f, cw / f, cwait / f, cun / f, PinnedBytes() >> 20u, vc,
+	    m_verify_mismatches.load(std::memory_order_relaxed));
 	std::fflush(stdout);
 	m_report_frames = 0;
 	m_report_start  = now;

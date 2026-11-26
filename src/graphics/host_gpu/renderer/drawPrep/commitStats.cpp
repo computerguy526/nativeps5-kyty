@@ -1,10 +1,9 @@
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
 
+#include "common/liveSwitch.h"
 #include "graphics/host_gpu/renderer/drawPrep/changeClass.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/drawRun.h"
-
-#include "common/liveSwitch.h"
 
 #include <algorithm>
 #include <array>
@@ -16,7 +15,6 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
-
 #include <xxhash.h>
 
 #if defined(_MSC_VER)
@@ -41,7 +39,7 @@ bool ReadSteps() {
 	return value != nullptr && std::strcmp(value, "steps") == 0;
 }
 static Live::Switch g_steps_live("KYTY_CP_COMMIT_STEPS", Live::ParseDefaultOff);
-bool StepsLive() {
+bool                StepsLive() {
 	return g_steps_live.Get() != 0 && Enabled();
 }
 } // namespace Detail
@@ -79,14 +77,14 @@ struct MaskAggregate {
 constexpr uint32_t KernelOutcomes = 5;
 constexpr uint32_t CandidateCount = static_cast<uint32_t>(CandidateOutcome::Count);
 // DrawRun::KeyDiag::Inelig, in its order (drawRun.h).
-constexpr uint32_t    IneligCount = 22;
-const char* const kIneligNames[IneligCount] = {
-    "none",        "notreached", "notengine",   "notvalidated", "nokey",      "mesh",
-    "indirect",    "vstages",    "writes",      "feedback",     "norendering", "renderstate",
-    "debugdump",   "depthclear", "stencilclear", "colorclear",  "gds",         "program",
-    "texattach",   "storage",    "depthpromo",  "alias"};
-static_assert(IneligCount == static_cast<uint32_t>(DrawRun::KeyDiag::Inelig::Count), "one name per reason");
-
+constexpr uint32_t IneligCount               = 22;
+const char* const  kIneligNames[IneligCount] = {
+    "none",      "notreached", "notengine",    "notvalidated", "nokey",       "mesh",
+    "indirect",  "vstages",    "writes",       "feedback",     "norendering", "renderstate",
+    "debugdump", "depthclear", "stencilclear", "colorclear",   "gds",         "program",
+    "texattach", "storage",    "depthpromo",   "alias"};
+static_assert(IneligCount == static_cast<uint32_t>(DrawRun::KeyDiag::Inelig::Count),
+              "one name per reason");
 
 struct ReasonAggregate {
 	uint64_t                               draws     = 0;
@@ -206,16 +204,17 @@ struct State {
 	std::array<uint64_t, StepCount> pending_gap_steps {};
 	bool                            steps_on = false;
 	// ChangeMasks, and the kernel outcome of recorded draws by the run decision (continued or not).
-	std::array<MaskAggregate, ChangeMaskCount>             masks {};
-	std::array<std::array<uint64_t, KernelOutcomes>, 2>    kernel {};
+	std::array<MaskAggregate, ChangeMaskCount>          masks {};
+	std::array<std::array<uint64_t, KernelOutcomes>, 2> kernel {};
 	// The run candidate's outcome per class.
 	std::array<std::array<uint64_t, CandidateCount>, ReasonCount> candidate {};
 	// Candidates without a record: why the previous draw left none, per class.
 	std::array<std::array<uint64_t, IneligCount>, ReasonCount> norecord {};
-	// Cross-frame per class: the previous frame's draw at the same position had the same complete binding
-	// inputs (pos-bind) / structure inputs (pos-struct); any draw of the previous frame had them (any-bind/-struct).
+	// Cross-frame per class: the previous frame's draw at the same position had the same complete
+	// binding inputs (pos-bind) / structure inputs (pos-struct); any draw of the previous frame had
+	// them (any-bind/-struct).
 	std::array<std::array<uint64_t, 4>, ReasonCount> xpos {};
-	std::vector<uint64_t> prev_frame_bind, prev_frame_struct;
+	std::vector<uint64_t>                            prev_frame_bind, prev_frame_struct;
 	// Interval.
 	uint64_t interval_ns  = 0;
 	uint64_t interval_tsc = 0;
@@ -252,16 +251,16 @@ const char* const kItemNames[ItemCount] = {
     "read-hits",  "read-misses", "log-entries", "cert-ranges"};
 
 const char* const kStepNames[StepCount] = {
-    "g.committail", "g.retire",      "g.opexit",     "g.loop",        "g.ophead",      "g.drawop",
-    "g.head",       "g.commitin",    "bindregs",     "popready",      "debuginfo",     "lock",
-    "beginrun",     "targetops",     "vscheck",      "drawchecks",    "statereset",    "psactive",
-    "takeprepared", "validate",      "apply",        "runcandidate",  "markbindings",  "restart",
-    "exechead",     "prepstages",    "findbuffers",  "bda",           "images",        "rbhead",
-    "rbbindings",   "rbmipstats",    "rbtables",     "rbbatchend",    "vertexacquire", "indexprepare",
-    "latecheck",    "pipelinesel",   "acquire",      "barriersafe",   "drawscope",     "vertexcommit",
-    "cbhead",       "cbtransitions", "cbbuild",      "cbpushconst",   "cbdescriptors", "cbtail",
-    "indexcommit",  "dynamicstate",  "begin",        "bindpipeline",  "drawcmd",       "occlusion",
-    "runrecord",    "resetbindings", "committail",   "kentry",        "calib"};
+    "g.committail", "g.retire",      "g.opexit",    "g.loop",       "g.ophead",      "g.drawop",
+    "g.head",       "g.commitin",    "bindregs",    "popready",     "debuginfo",     "lock",
+    "beginrun",     "targetops",     "vscheck",     "drawchecks",   "statereset",    "psactive",
+    "takeprepared", "validate",      "apply",       "runcandidate", "markbindings",  "restart",
+    "exechead",     "prepstages",    "findbuffers", "bda",          "images",        "rbhead",
+    "rbbindings",   "rbmipstats",    "rbtables",    "rbbatchend",   "vertexacquire", "indexprepare",
+    "latecheck",    "pipelinesel",   "acquire",     "barriersafe",  "drawscope",     "vertexcommit",
+    "cbhead",       "cbtransitions", "cbbuild",     "cbpushconst",  "cbdescriptors", "cbtail",
+    "indexcommit",  "dynamicstate",  "begin",       "bindpipeline", "drawcmd",       "occlusion",
+    "runrecord",    "resetbindings", "committail",  "kentry",       "calib"};
 
 void PrintSteps(State& s, double seconds, double ns_per_tick) {
 	const double frames = static_cast<double>(std::max<uint64_t>(1, s.frames));
@@ -389,21 +388,22 @@ void PrintStartPhases(State& s, double seconds, double ns_per_tick) {
 	s.reasons = {};
 }
 
-// "ChangeMasks <s>s: steps <0|1> | <letters> <draws/f> commit <us/draw> gap <us/draw> ..." for the 16
-// costliest masks (commit time per frame), then the kernel outcomes per frame of continued and
+// "ChangeMasks <s>s: steps <0|1> | <letters> <draws/f> commit <us/draw> gap <us/draw> ..." for the
+// 16 costliest masks (commit time per frame), then the kernel outcomes per frame of continued and
 // started draws.
 void PrintMasks(State& s, double seconds, double ns_per_tick) {
 	const double frames = static_cast<double>(std::max<uint64_t>(1, s.frames));
 	std::string  line;
 	char         text[256];
-	std::snprintf(text, sizeof(text), "ChangeMasks %.0fs: frames %" PRIu64 " steps %d", seconds, s.frames,
-	              StepsEnabled() ? 1 : 0);
+	std::snprintf(text, sizeof(text), "ChangeMasks %.0fs: frames %" PRIu64 " steps %d", seconds,
+	              s.frames, StepsEnabled() ? 1 : 0);
 	line += text;
 	std::array<std::pair<uint64_t, uint32_t>, ChangeMaskCount> order {};
 	for (uint32_t m = 0; m < ChangeMaskCount; m++) {
 		order[m] = {s.masks[m].commit + s.masks[m].gap, m};
 	}
-	std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	std::sort(order.begin(), order.end(),
+	          [](const auto& a, const auto& b) { return a.first > b.first; });
 	for (uint32_t i = 0; i < 16 && order[i].first != 0; i++) {
 		const auto  m = order[i].second;
 		const auto& a = s.masks[m];
@@ -417,14 +417,16 @@ void PrintMasks(State& s, double seconds, double ns_per_tick) {
 		if (n == 0) {
 			letters[n++] = '-';
 		}
-		letters[n]         = '\0';
-		const double scale = ns_per_tick * 1e-3 / static_cast<double>(std::max<uint64_t>(1, a.draws));
+		letters[n] = '\0';
+		const double scale =
+		    ns_per_tick * 1e-3 / static_cast<double>(std::max<uint64_t>(1, a.draws));
 		std::snprintf(text, sizeof(text), " | %s %.1f/f commit %.3f gap %.3f", letters,
 		              static_cast<double>(a.draws) / frames, static_cast<double>(a.commit) * scale,
 		              static_cast<double>(a.gap) * scale);
 		line += text;
 	}
-	static const char* const outcome_names[KernelOutcomes] = {"off", "noentry", "declined", "taken", "left"};
+	static const char* const outcome_names[KernelOutcomes] = {"off", "noentry", "declined", "taken",
+	                                                          "left"};
 	for (uint32_t c = 0; c < 2; c++) {
 		line += c == 0 ? " | kernel/f started:" : " | kernel/f continued:";
 		for (uint32_t k = 0; k < KernelOutcomes; k++) {
@@ -433,9 +435,9 @@ void PrintMasks(State& s, double seconds, double ns_per_tick) {
 			line += text;
 		}
 	}
-	static const char* const candidate_names[CandidateCount] = {"notreached", "norecord", "key",      "activity",
-	                                                            "command",    "instance", "validation", "programs",
-	                                                            "writes",     "swapincompat", "continued"};
+	static const char* const candidate_names[CandidateCount] = {
+	    "notreached", "norecord", "key",    "activity",     "command",  "instance",
+	    "validation", "programs", "writes", "swapincompat", "continued"};
 	line += " | candidate/f";
 	for (uint32_t r = 0; r < ReasonCount; r++) {
 		uint64_t any = 0;
@@ -468,7 +470,8 @@ void PrintMasks(State& s, double seconds, double ns_per_tick) {
 				line += text;
 				named = true;
 			}
-			std::snprintf(text, sizeof(text), " %s %.1f", kIneligNames[k], static_cast<double>(s.norecord[r][k]) / frames);
+			std::snprintf(text, sizeof(text), " %s %.1f", kIneligNames[k],
+			              static_cast<double>(s.norecord[r][k]) / frames);
 			line += text;
 		}
 		if (named) {
@@ -479,9 +482,9 @@ void PrintMasks(State& s, double seconds, double ns_per_tick) {
 	for (uint32_t r = 0; r < ReasonCount; r++) {
 		const auto& x = s.xpos[r];
 		if (x[0] + x[1] + x[2] + x[3] != 0) {
-			std::snprintf(text, sizeof(text), " %s: %.1f %.1f %.1f %.1f;", kReasonNames[r], static_cast<double>(x[0]) / frames,
-			              static_cast<double>(x[1]) / frames, static_cast<double>(x[2]) / frames,
-			              static_cast<double>(x[3]) / frames);
+			std::snprintf(text, sizeof(text), " %s: %.1f %.1f %.1f %.1f;", kReasonNames[r],
+			              static_cast<double>(x[0]) / frames, static_cast<double>(x[1]) / frames,
+			              static_cast<double>(x[2]) / frames, static_cast<double>(x[3]) / frames);
 			line += text;
 		}
 	}
@@ -776,7 +779,7 @@ void EndDraw() {
 			s.why_writes_run += b.run_continued ? 1u : 0u;
 			klass = ClassStart;
 		} else {
-			klass = ClassContinue;
+			klass              = ClassContinue;
 			const bool buffers = a.buffers == b.buffers;
 			const bool push    = a.push == b.push;
 			const bool tables  = a.tables == b.tables;
@@ -846,8 +849,11 @@ void EndDraw() {
 		{
 			const auto pos = s.frame_bind.size();
 			auto&      x   = s.xpos[reason];
-			x[0] += pos < s.prev_frame_bind.size() && s.prev_frame_bind[pos] == b.bind_input ? 1u : 0u;
-			x[1] += pos < s.prev_frame_struct.size() && s.prev_frame_struct[pos] == b.struct_input ? 1u : 0u;
+			x[0] +=
+			    pos < s.prev_frame_bind.size() && s.prev_frame_bind[pos] == b.bind_input ? 1u : 0u;
+			x[1] += pos < s.prev_frame_struct.size() && s.prev_frame_struct[pos] == b.struct_input
+			            ? 1u
+			            : 0u;
 			x[2] += s.bind_1.contains(b.bind_input) ? 1u : 0u;
 			x[3] += s.struct_1.contains(b.struct_input) ? 1u : 0u;
 		}

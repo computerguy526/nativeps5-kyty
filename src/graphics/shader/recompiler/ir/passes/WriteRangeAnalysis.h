@@ -42,13 +42,14 @@ struct WriteRangeSpan {
 // GPU-written); the spans then fail.
 struct DmaReachInputs {
 	bool (*read)(void* user, uint64_t address, std::span<uint32_t> words) = nullptr;
-	void*    user              = nullptr;
-	uint32_t max_table_entries = 4096;
-	uint64_t max_span_bytes    = uint64_t {256} << 20u;
-	// A mesh draw's guest index bytes [begin, end) (DmaReadAccess::Kind::MeshIndex); unknown: fails.
-	bool     mesh_index_known  = false;
-	uint64_t mesh_index_begin  = 0;
-	uint64_t mesh_index_end    = 0;
+	void*    user                                                         = nullptr;
+	uint32_t max_table_entries                                            = 4096;
+	uint64_t max_span_bytes                                               = uint64_t {256} << 20u;
+	// A mesh draw's guest index bytes [begin, end) (DmaReadAccess::Kind::MeshIndex); unknown:
+	// fails.
+	bool     mesh_index_known = false;
+	uint64_t mesh_index_begin = 0;
+	uint64_t mesh_index_end   = 0;
 };
 
 enum class DmaReachFailure : uint8_t {
@@ -77,7 +78,7 @@ public:
 	// when the reach is not known for these inputs: the caller must assume any memory.
 	[[nodiscard]] bool DmaSpans(const WriteRangeProgram& program, const DmaReachInputs& inputs,
 	                            std::vector<std::pair<uint64_t, uint64_t>>& spans,
-	                            DmaReachFailure& why) const;
+	                            DmaReachFailure&                            why) const;
 	// Diagnostics after a failed DmaSpans: the failing access, its nodes' sources and intervals.
 	[[nodiscard]] std::string DescribeDmaFailure(const WriteRangeProgram& program) const;
 
@@ -102,7 +103,7 @@ private:
 	                              WriteRangeSpan& span) const;
 
 	std::vector<Interval> m_values;
-	mutable size_t        m_dma_failed = 0; // DmaSpans: the access that failed
+	mutable size_t           m_dma_failed = 0; // DmaSpans: the access that failed
 	const WriteRangeProgram* m_program = nullptr;
 };
 

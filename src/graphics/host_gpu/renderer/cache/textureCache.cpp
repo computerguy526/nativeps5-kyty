@@ -1,6 +1,4 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
-#include "graphics/host_gpu/renderer/cache/htilePrefixRebind.h"
-#include "graphics/host_gpu/renderer/nanProbe.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -21,6 +19,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/memoryStats.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
+#include "graphics/host_gpu/renderer/cache/htilePrefixRebind.h"
 #include "graphics/host_gpu/renderer/cache/memtrimUtil.h"
 #include "graphics/host_gpu/renderer/cache/texelImageLookup.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
@@ -37,11 +36,12 @@
 #include "graphics/host_gpu/renderer/image/nanScrubber.h"
 #include "graphics/host_gpu/renderer/image/ownedRebuildPlan.h"
 #include "graphics/host_gpu/renderer/image/residentTrim.h"
-#include "graphics/host_gpu/renderer/mipStream.h"
 #include "graphics/host_gpu/renderer/image/stagingCopier.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
 #include "graphics/host_gpu/renderer/image/tilerTrace.h"
+#include "graphics/host_gpu/renderer/mipStream.h"
+#include "graphics/host_gpu/renderer/nanProbe.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/syncEpoch.h"
 #include "graphics/host_gpu/vramBudget.h"
@@ -328,14 +328,14 @@ static bool DccClearKey10Enabled() {
 		return desc.type == TextureCache::BindingType::RenderTarget &&
 		       metadata.dcc_clear_register_valid &&
 		       (ClearRegisterWideEnabled()
-		            ? DecodePackedColorClear64(
-		                  format,
-		                  GuestColorWordToHost(metadata.dcc_clear_word, desc.info.GetColorTransform()),
-		                  metadata.dcc_clear_word1, clear)
-		            : DecodePackedColorClear(
-		                  format,
-		                  GuestColorWordToHost(metadata.dcc_clear_word, desc.info.GetColorTransform()),
-		                  clear));
+		            ? DecodePackedColorClear64(format,
+		                                       GuestColorWordToHost(metadata.dcc_clear_word,
+		                                                            desc.info.GetColorTransform()),
+		                                       metadata.dcc_clear_word1, clear)
+		            : DecodePackedColorClear(format,
+		                                     GuestColorWordToHost(metadata.dcc_clear_word,
+		                                                          desc.info.GetColorTransform()),
+		                                     clear));
 	}
 	clear = {};
 	if (code == 0x00) {
@@ -424,16 +424,15 @@ static bool DccClearKey10Enabled() {
 	return tiles;
 }
 
-
 // DCC/CMASK describe colour surfaces. A lookup of such a description can resolve to an image that
-// holds depth (same memory reused as depth and colour, e.g. Astro Bot's D32S8 targets reused as RG16F
-// DCC targets) or to a stencil plane record. Neither can take a colour clear and the description's
-// metadata is not theirs, so the materialisation does nothing for them (reported a few times).
-// KYTY_CLEAR_TRACE=1 (diagnostic): one stderr line per metadata address and outcome of the DCC/CMASK
-// clear materialisation.
-// 0 off, 1 the aliases no longer refuse the clear (decided from the CMASK bytes as usual), 2 the
-// target is cleared once per GC tick without reading or writing the CMASK bytes (the aliases are
-// live images sharing the memory within the frame; writing the bytes dirties them).
+// holds depth (same memory reused as depth and colour, e.g. Astro Bot's D32S8 targets reused as
+// RG16F DCC targets) or to a stencil plane record. Neither can take a colour clear and the
+// description's metadata is not theirs, so the materialisation does nothing for them (reported a
+// few times). KYTY_CLEAR_TRACE=1 (diagnostic): one stderr line per metadata address and outcome of
+// the DCC/CMASK clear materialisation. 0 off, 1 the aliases no longer refuse the clear (decided
+// from the CMASK bytes as usual), 2 the target is cleared once per GC tick without reading or
+// writing the CMASK bytes (the aliases are live images sharing the memory within the frame; writing
+// the bytes dirties them).
 int CmaskAliasSupersededMode() {
 	static const int mode = [] {
 		const auto* value = std::getenv("KYTY_CMASK_ALIAS_SUPERSEDED");
@@ -476,7 +475,8 @@ void ClearTrace(const char* site, const char* outcome, uint64_t metadata, uint64
 
 // KYTY_WATCH_RANGE: texture-cache operations that write an image overlapping a watched range.
 void ImageWatch(const char* what, const Image& image) {
-	if (WatchRange::Enabled()) WatchRange::Note(what, image.info.data.address, image.info.data.size);
+	if (WatchRange::Enabled())
+		WatchRange::Note(what, image.info.data.address, image.info.data.size);
 }
 
 bool ColourMetadataTargetsDepth(const char* site, ImageId id, const Image& image) {
@@ -506,7 +506,8 @@ bool ImageContainsEnabled() {
 	static constexpr auto on_init = [] {
 		const char* value = std::getenv("KYTY_IMAGE_CONTAINS");
 		if (value == nullptr) {
-			value = std::getenv("KYTY_SUBRES_CONTAINS"); // nps5 release-line name of the same switch (KytyPS5 #2410)
+			value = std::getenv("KYTY_SUBRES_CONTAINS"); // nps5 release-line name of the same
+			                                             // switch (KytyPS5 #2410)
 		}
 		return value != nullptr && value[0] == '1';
 	};
@@ -572,8 +573,7 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
     : m_graphics(graphics), m_scheduler(scheduler), m_page_manager(page_manager),
       m_blit_helper(graphics, scheduler),
       m_tiler(graphics, scheduler, buffer_cache.GetUtilityBuffer(MemoryUsage::Stream)),
-      m_buffer_cache(buffer_cache),
-      m_readback_linear_images(Config::ReadbackLinearImagesEnabled()),
+      m_buffer_cache(buffer_cache), m_readback_linear_images(Config::ReadbackLinearImagesEnabled()),
       m_readback_tiled_images(Config::ReadbackTiledImagesEnabled()),
       m_readback_storage_images(Config::ReadbackStorageImagesEnabled()) {
 	m_image_page_counts = std::make_unique<std::atomic<uint32_t>[]>(
@@ -597,21 +597,27 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 	}
 	if (const auto* partial = std::getenv("KYTY_IMAGE_PARTIAL_GPU_WRITE");
 	    partial != nullptr && *partial != '\0' && std::strcmp(partial, "0") != 0) {
-		m_partial_gpu_write        = 1;
-		m_partial_gpu_write_verify = std::strcmp(partial, "verify") == 0;
-		const auto* stencil        = std::getenv("KYTY_IMAGE_PARTIAL_GPU_WRITE_STENCIL");
+		m_partial_gpu_write              = 1;
+		m_partial_gpu_write_verify       = std::strcmp(partial, "verify") == 0;
+		const auto* stencil              = std::getenv("KYTY_IMAGE_PARTIAL_GPU_WRITE_STENCIL");
 		m_partial_gpu_write_stencil_keep = stencil != nullptr && std::strcmp(stencil, "keep") == 0;
-		std::printf("Image partial GPU-write (KYTY_IMAGE_PARTIAL_GPU_WRITE=%s): a buffer write over "
-		            "part of an image rebuilds only the subresources / block rows over it%s%s%s\n",
-		            partial, m_partial_gpu_write_verify ? ", each checked against a whole rebuild" : "",
-		            m_partial_gpu_write_stencil_keep ? "; stencil records trust depth-target draws" : "",
-		            AliasBytesEnabled() ? "" : " (colour/depth images need KYTY_ALIAS_BYTES: stencil records only)");
+		std::printf(
+		    "Image partial GPU-write (KYTY_IMAGE_PARTIAL_GPU_WRITE=%s): a buffer write over "
+		    "part of an image rebuilds only the subresources / block rows over it%s%s%s\n",
+		    partial, m_partial_gpu_write_verify ? ", each checked against a whole rebuild" : "",
+		    m_partial_gpu_write_stencil_keep ? "; stencil records trust depth-target draws" : "",
+		    AliasBytesEnabled()
+		        ? ""
+		        : " (colour/depth images need KYTY_ALIAS_BYTES: stencil records only)");
 		std::fflush(stdout);
 	}
-	if (const auto* grow = std::getenv("KYTY_DEPTH_GROW_RECREATE"); grow != nullptr && grow[0] == '1') {
+	if (const auto* grow = std::getenv("KYTY_DEPTH_GROW_RECREATE");
+	    grow != nullptr && grow[0] == '1') {
 		m_depth_grow_recreate = true;
-		std::printf("Depth grow recreate (KYTY_DEPTH_GROW_RECREATE=1): a depth target that grows inside "
-		            "its pitch gets a larger image (old depth/stencil copied, the rest from guest memory)\n");
+		std::printf(
+		    "Depth grow recreate (KYTY_DEPTH_GROW_RECREATE=1): a depth target that grows inside "
+		    "its pitch gets a larger image (old depth/stencil copied, the rest from guest "
+		    "memory)\n");
 		std::fflush(stdout);
 	}
 	m_gpu_write_skip  = EnvNotZero("KYTY_GPU_WRITE_IMAGE_SKIP");
@@ -634,22 +640,27 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 			m_dcc_gpu_refresh_verify = std::strcmp(verify, "exit") == 0 ? 2 : 1;
 		}
 	}
-	m_dcc_gpu_wide      = static_cast<uint32_t>(ParseDccGpuWide(std::getenv("KYTY_DCC_GPU_WIDE")));
+	m_dcc_gpu_wide = static_cast<uint32_t>(ParseDccGpuWide(std::getenv("KYTY_DCC_GPU_WIDE")));
 	if (const auto* verify = std::getenv("KYTY_DCC_GPU_WIDE_VERIFY");
 	    verify != nullptr && *verify != '\0' && std::strcmp(verify, "0") != 0) {
 		m_dcc_gpu_wide_verify = std::strcmp(verify, "exit") == 0 ? 2 : 1;
 	}
 	// cphot 1b: KYTY_DCC_KNOWN_FILL_ALIASED=1|verify, KYTY_CMASK_GPU_REFRESH=1 (default off).
 	if (const auto* known = std::getenv("KYTY_DCC_KNOWN_FILL_ALIASED"); known != nullptr) {
-		m_dcc_known_fill_aliased = std::strcmp(known, "1") == 0 ? 1 : std::strcmp(known, "verify") == 0 ? 2 : 0;
+		m_dcc_known_fill_aliased = std::strcmp(known, "1") == 0        ? 1
+		                           : std::strcmp(known, "verify") == 0 ? 2
+		                                                               : 0;
 	}
 	{
 		const auto* cmask_refresh = std::getenv("KYTY_CMASK_GPU_REFRESH");
-		m_cmask_gpu_refresh      = cmask_refresh != nullptr && std::strcmp(cmask_refresh, "1") == 0;
+		m_cmask_gpu_refresh = cmask_refresh != nullptr && std::strcmp(cmask_refresh, "1") == 0;
 	}
 	if (m_dcc_known_fill_aliased != 0 || m_cmask_gpu_refresh) {
-		std::fprintf(stderr, "ClearMeta: KYTY_DCC_KNOWN_FILL_ALIASED=%s KYTY_CMASK_GPU_REFRESH=%d\n",
-		             m_dcc_known_fill_aliased == 1 ? "1" : m_dcc_known_fill_aliased == 2 ? "verify" : "0",
+		std::fprintf(stderr,
+		             "ClearMeta: KYTY_DCC_KNOWN_FILL_ALIASED=%s KYTY_CMASK_GPU_REFRESH=%d\n",
+		             m_dcc_known_fill_aliased == 1   ? "1"
+		             : m_dcc_known_fill_aliased == 2 ? "verify"
+		                                             : "0",
 		             m_cmask_gpu_refresh ? 1 : 0);
 	}
 	if (m_graphics.CanReportMemoryUsage()) {
@@ -809,7 +820,9 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 	if (MipStream::Active()) {
 		const auto& mip_stream = MipStream::Get();
 		if ((mip_stream.auto_on || mip_stream.class_on) && !m_trim_textures) {
-			std::fprintf(stderr, "[mipstream] KYTY_TEX_MIP_AUTO / _CLASS need KYTY_TEXTURE_RESIDENT_TRIM=1: off\n");
+			std::fprintf(
+			    stderr,
+			    "[mipstream] KYTY_TEX_MIP_AUTO / _CLASS need KYTY_TEXTURE_RESIDENT_TRIM=1: off\n");
 		}
 	}
 	if (const auto* idle = std::getenv("KYTY_TEXTURE_RESIDENT_IDLE_FRAMES"); idle != nullptr) {
@@ -949,10 +962,10 @@ bool TextureCache::SafeToDownload(const Image& image) {
 	return !m_buffer_cache.HasGpuDirtyBytes(range.address, range.size);
 }
 
-// KYTY_GC_KEEP_SMALL_RT=1 (default off; TheCruZ/KytyPS5-GTA 23585d0c): the LRU and pressure collectors
-// never evict a render target of at most 1024x1024. Those are the layers a game draws once and
-// samples from then on (glyph atlases, cached UI); evicting one that cannot be downloaded loses its
-// contents (Wolverine's missing letters). Freeing their memory (unmap) still drops them.
+// KYTY_GC_KEEP_SMALL_RT=1 (default off; TheCruZ/KytyPS5-GTA 23585d0c): the LRU and pressure
+// collectors never evict a render target of at most 1024x1024. Those are the layers a game draws
+// once and samples from then on (glyph atlases, cached UI); evicting one that cannot be downloaded
+// loses its contents (Wolverine's missing letters). Freeing their memory (unmap) still drops them.
 static bool KeepSmallRenderTarget(const Image& image) {
 	static const bool enabled = [] {
 		const auto* value = std::getenv("KYTY_GC_KEEP_SMALL_RT");
@@ -1059,7 +1072,10 @@ ImageId TextureCache::InsertImage(const ImageInfo& info, uint32_t resident_first
 	}
 	if (NanProbe::Armed()) [[unlikely]] {
 		auto& inserted = m_slot_images[id];
-		NanProbe::WatchLog("insert", nullptr, inserted.info.data.address, inserted.info.data.size, id.index, id.generation, vk::to_string(inserted.backing.format).c_str(), inserted.info.extent.width, inserted.info.extent.height, inserted.IsGpuModified() ? 1 : 0);
+		NanProbe::WatchLog("insert", nullptr, inserted.info.data.address, inserted.info.data.size,
+		                   id.index, id.generation, vk::to_string(inserted.backing.format).c_str(),
+		                   inserted.info.extent.width, inserted.info.extent.height,
+		                   inserted.IsGpuModified() ? 1 : 0);
 	}
 	return id;
 }
@@ -1273,8 +1289,8 @@ void TextureCache::RetireIdlePartialImages() {
 		if (image == nullptr || !image->registered || image->FullyResident()) {
 			continue;
 		}
-		// KYTY_RESIDENT_IDLE_KEEP_BINDLESS (default on): an image a bindless heap key holds is in use
-		// although no binding touches it (bindless sampling never calls TouchImage); freeing it
+		// KYTY_RESIDENT_IDLE_KEEP_BINDLESS (default on): an image a bindless heap key holds is in
+		// use although no binding touches it (bindless sampling never calls TouchImage); freeing it
 		// repoints its slots to the placeholder and re-resolves every key each time.
 		if (ResidentIdleKeepBindless() && image->bindless_pinned) {
 			m_partial_images[kept++] = id;
@@ -1675,8 +1691,8 @@ void TextureCache::FreeImage(ImageId id, HangTrace::ImageFreeReason reason) {
 	// Bindless-pinned images (a heap key samples them through set 1) are never collected.
 	if (image.bindless_pinned && !m_bindless_evicting &&
 	    (reason == HangTrace::ImageFreeReason::GarbageCollect ||
-	                              reason == HangTrace::ImageFreeReason::PressureCollect ||
-	                              reason == HangTrace::ImageFreeReason::ResidentIdle)) {
+	     reason == HangTrace::ImageFreeReason::PressureCollect ||
+	     reason == HangTrace::ImageFreeReason::ResidentIdle)) {
 		return;
 	}
 	// KYTY_BINDLESS_FREE_LOG=<n> (diagnostic): the first n frees of bindless-pinned images.
@@ -1687,14 +1703,15 @@ void TextureCache::FreeImage(ImageId id, HangTrace::ImageFreeReason reason) {
 		}();
 		static std::atomic<uint32_t> logged = 0;
 		if (limit != 0 && logged.fetch_add(1, std::memory_order_relaxed) < limit) {
-			LOGF("Bindless free: reason %u image %u 0x%" PRIx64 "+0x%" PRIx64 " %ux%u vk%u gpu=%d\n",
-			     static_cast<uint32_t>(reason), id.index, image.info.data.address, image.info.data.size,
-			     image.info.extent.width, image.info.extent.height,
+			LOGF("Bindless free: reason %u image %u 0x%" PRIx64 "+0x%" PRIx64
+			     " %ux%u vk%u gpu=%d\n",
+			     static_cast<uint32_t>(reason), id.index, image.info.data.address,
+			     image.info.data.size, image.info.extent.width, image.info.extent.height,
 			     static_cast<uint32_t>(image.backing.format), image.IsGpuModified() ? 1 : 0);
 		}
 	}
-	// KYTY_BINDLESS_DROP_LOG=<n> (diagnostic): the first n frees of bindless-pinned images, with the
-	// reason (HangTrace::ImageFreeReason) and the image.
+	// KYTY_BINDLESS_DROP_LOG=<n> (diagnostic): the first n frees of bindless-pinned images, with
+	// the reason (HangTrace::ImageFreeReason) and the image.
 	if (image.bindless_pinned && image.registered) {
 		static const uint32_t drop_log = [] {
 			const char* value = std::getenv("KYTY_BINDLESS_DROP_LOG");
@@ -1702,18 +1719,31 @@ void TextureCache::FreeImage(ImageId id, HangTrace::ImageFreeReason reason) {
 		}();
 		static std::atomic<uint32_t> dropped {0};
 		if (drop_log != 0 && dropped.fetch_add(1, std::memory_order_relaxed) < drop_log) {
-			LOGF("Bindless drop: image %u reason %u base 0x%" PRIx64 " %ux%u layers %u vk%u gpu_modified %d\n",
-			     id.index, static_cast<uint32_t>(reason), image.info.data.address, image.info.extent.width,
-			     image.info.extent.height, image.info.resources.layers, static_cast<uint32_t>(image.backing.format),
-			     image.IsGpuModified() ? 1 : 0);
+			LOGF("Bindless drop: image %u reason %u base 0x%" PRIx64
+			     " %ux%u layers %u vk%u gpu_modified %d\n",
+			     id.index, static_cast<uint32_t>(reason), image.info.data.address,
+			     image.info.extent.width, image.info.extent.height, image.info.resources.layers,
+			     static_cast<uint32_t>(image.backing.format), image.IsGpuModified() ? 1 : 0);
 		}
 	}
 	if (NanProbe::Armed()) [[unlikely]] {
-		static constexpr const char* reasons[] = {"other", "depth-association", "depth-recreate", "overlap-layout",
-		                                          "overlap-mip-merge", "overlap-stale", "expand", "smaller-resources",
-		                                          "unmap", "gc", "pressure-gc", "resident-idle"};
-		const auto r = static_cast<uint32_t>(reason);
-		NanProbe::WatchLog("free", r < std::size(reasons) ? reasons[r] : "?", image.info.data.address, image.info.data.size, id.index, id.generation, vk::to_string(image.backing.format).c_str(), image.info.extent.width, image.info.extent.height, image.IsGpuModified() ? 1 : 0);
+		static constexpr const char* reasons[] = {"other",
+		                                          "depth-association",
+		                                          "depth-recreate",
+		                                          "overlap-layout",
+		                                          "overlap-mip-merge",
+		                                          "overlap-stale",
+		                                          "expand",
+		                                          "smaller-resources",
+		                                          "unmap",
+		                                          "gc",
+		                                          "pressure-gc",
+		                                          "resident-idle"};
+		const auto                   r         = static_cast<uint32_t>(reason);
+		NanProbe::WatchLog("free", r < std::size(reasons) ? reasons[r] : "?",
+		                   image.info.data.address, image.info.data.size, id.index, id.generation,
+		                   vk::to_string(image.backing.format).c_str(), image.info.extent.width,
+		                   image.info.extent.height, image.IsGpuModified() ? 1 : 0);
 	}
 	if (VramStats::Enabled() && image.registered) {
 		NoteVramFree(image, reason);
@@ -1763,9 +1793,9 @@ void TextureCache::NoteDiscardedTarget(ImageId id, const Image& image) {
 	    m_download_images.contains(id)) {
 		return;
 	}
-	m_discarded_targets[m_discarded_next] = {image.info.data.address,
-	                                         image.info.data.address + image.info.data.size, Frame()};
-	m_discarded_next                      = (m_discarded_next + 1) % DiscardedTargetCount;
+	m_discarded_targets[m_discarded_next] = {
+	    image.info.data.address, image.info.data.address + image.info.data.size, Frame()};
+	m_discarded_next = (m_discarded_next + 1) % DiscardedTargetCount;
 }
 
 bool TextureCache::WasDiscardedTarget(const Image& image) const {
@@ -1773,9 +1803,11 @@ bool TextureCache::WasDiscardedTarget(const Image& image) const {
 	const auto         begin        = image.info.data.address;
 	const auto         end          = begin + image.info.data.size;
 	const auto         frame        = Frame();
-	return std::any_of(m_discarded_targets.begin(), m_discarded_targets.end(), [&](const DiscardedTarget& target) {
-		return target.end != 0 && target.begin <= begin && end <= target.end && target.frame + MaxAgeFrames >= frame;
-	});
+	return std::any_of(m_discarded_targets.begin(), m_discarded_targets.end(),
+	                   [&](const DiscardedTarget& target) {
+		                   return target.end != 0 && target.begin <= begin && end <= target.end &&
+		                          target.frame + MaxAgeFrames >= frame;
+	                   });
 }
 
 void TextureCache::TouchImage(Image& image) {
@@ -1791,8 +1823,8 @@ void TextureCache::TouchImage(Image& image) {
 	}
 	if (ImgSide::StatsEnabled()) [[unlikely]] {
 		ImgSide::Count(ImgSide::C::Touch);
-		if (image.frame_accessed_last == m_frame.load(std::memory_order_relaxed) && image.registered &&
-		    m_lru_touch_skip && image.lru_tick >= m_gc_tick) {
+		if (image.frame_accessed_last == m_frame.load(std::memory_order_relaxed) &&
+		    image.registered && m_lru_touch_skip && image.lru_tick >= m_gc_tick) {
 			ImgSide::Count(ImgSide::C::TouchSame);
 		}
 	}
@@ -2376,17 +2408,18 @@ void TextureCache::NoteRefreshSync(ImageId id, bool gpu_partial) {
 	image.foreign_since_sync = AliasBytesEnabled() && OtherImagesOwnBytes(image.live, id);
 }
 
-TextureCache::PartialUploadResult TextureCache::UploadGpuWrittenRanges(ImageId id, RefreshIntent intent) {
+TextureCache::PartialUploadResult TextureCache::UploadGpuWrittenRanges(ImageId       id,
+                                                                       RefreshIntent intent) {
 	// Scratch buffers from the tiler stay alive until this operation's last tick (tiler.h).
 	const TileManager::ScratchHold scratch_hold(m_tiler);
-	PartialUploadResult result;
-	auto&               image       = m_slot_images[id];
-	const auto          live        = image.live;
-	const auto          base        = image.info.data.address;
-	const auto&         written     = image.gpu_write.ranges;
-	auto&               destination = image.depth_id ? m_slot_images[image.depth_id] : image;
-	const auto          binding     = image.depth_id ? BindingType::DepthTarget : UploadBinding(image);
-	result.dirty_bytes              = KeptRanges::Bytes(written);
+	PartialUploadResult            result;
+	auto&                          image   = m_slot_images[id];
+	const auto                     live    = image.live;
+	const auto                     base    = image.info.data.address;
+	const auto&                    written = image.gpu_write.ranges;
+	auto&      destination                 = image.depth_id ? m_slot_images[image.depth_id] : image;
+	const auto binding = image.depth_id ? BindingType::DepthTarget : UploadBinding(image);
+	result.dirty_bytes = KeptRanges::Bytes(written);
 
 	// Selection: every subresource (tile) whose tiled bytes intersect a written range; for 2D
 	// tiles outside the mip tail only the runs of block rows that do (see TryPartialUpload).
@@ -2408,47 +2441,52 @@ TextureCache::PartialUploadResult TextureCache::UploadGpuWrittenRanges(ImageId i
 		regions.push_back(region);
 	};
 	const auto select = [&](const std::vector<GpuTileInfo>&         all_tiles,
-	                        const std::vector<vk::BufferImageCopy>& all_regions, uint32_t texel_height) {
+	                        const std::vector<vk::BufferImageCopy>& all_regions,
+	                        uint32_t                                texel_height) {
 		for (size_t index = 0; index < all_tiles.size(); index++) {
 			const auto& tile   = all_tiles[index];
 			const auto& region = all_regions[index];
 			const auto  begin  = base + tile.tiled_offset;
-			if (tile.tiled_size == 0 || !KeptRanges::Intersects(written, begin, begin + tile.tiled_size)) {
+			if (tile.tiled_size == 0 ||
+			    !KeptRanges::Intersects(written, begin, begin + tile.tiled_size)) {
 				continue;
 			}
 			TileBlockLayout block {};
 			const bool      family_bands = tile.family != TileBlockFamily::Standard4KB3D &&
-			                          tile.family != TileBlockFamily::Standard64KB3D &&
-			                          tile.family != TileBlockFamily::Prt64KB3D;
-			const bool bands = family_bands && !tile.tail && tile.depth == 1 &&
-			                   region.imageOffset.y == 0 && region.imageExtent.depth == 1 &&
-			                   region.imageSubresource.layerCount == 1 &&
-			                   TileGetBlockLayout(tile.family, tile.bytes_per_element, block) &&
-			                   block.block_depth == 1 && block.block_width != 0 &&
-			                   block.block_height != 0 && block.block_size != 0;
+			                               tile.family != TileBlockFamily::Standard64KB3D &&
+			                               tile.family != TileBlockFamily::Prt64KB3D;
+			const bool     bands = family_bands && !tile.tail && tile.depth == 1 &&
+			                       region.imageOffset.y == 0 && region.imageExtent.depth == 1 &&
+			                       region.imageSubresource.layerCount == 1 &&
+			                       TileGetBlockLayout(tile.family, tile.bytes_per_element, block) &&
+			                       block.block_depth == 1 && block.block_width != 0 &&
+			                       block.block_height != 0 && block.block_size != 0;
 			const uint32_t tiled_width = tile.tiled_width != 0 ? tile.tiled_width : tile.pitch;
 			const uint64_t row_bytes =
-			    bands ? static_cast<uint64_t>((tiled_width + block.block_width - 1) / block.block_width) *
+			    bands ? static_cast<uint64_t>((tiled_width + block.block_width - 1) /
+			                                  block.block_width) *
 			                block.block_size
 			          : 0;
-			const uint32_t rows = bands ? (tile.height + block.block_height - 1) / block.block_height : 0;
+			const uint32_t rows =
+			    bands ? (tile.height + block.block_height - 1) / block.block_height : 0;
 			if (!bands || row_bytes == 0 || rows <= 1 || rows * row_bytes > tile.tiled_size) {
 				add(tile, region, tile.linear_size);
 				continue;
 			}
 			const uint64_t pitch_bytes = static_cast<uint64_t>(tile.pitch) * tile.bytes_per_element;
-			for (const auto& [row, end_row]: GpuWriteRanges::DirtyRowRuns(written, begin, row_bytes, rows)) {
-				const uint32_t y0   = row * block.block_height;
-				const uint32_t y1   = std::min(end_row * block.block_height, tile.height);
-				GpuTileInfo    band = tile;
-				band.tiled_offset   = tile.tiled_offset + row * row_bytes;
-				band.tiled_size     = (end_row - row) * row_bytes;
-				band.height         = y1 - y0;
-				band.tiled_height   = (end_row - row) * block.block_height;
+			for (const auto& [row, end_row]:
+			     GpuWriteRanges::DirtyRowRuns(written, begin, row_bytes, rows)) {
+				const uint32_t y0          = row * block.block_height;
+				const uint32_t y1          = std::min(end_row * block.block_height, tile.height);
+				GpuTileInfo    band        = tile;
+				band.tiled_offset          = tile.tiled_offset + row * row_bytes;
+				band.tiled_size            = (end_row - row) * row_bytes;
+				band.height                = y1 - y0;
+				band.tiled_height          = (end_row - row) * block.block_height;
 				auto           band_region = region;
 				const uint32_t texel_y0    = y0 * texel_height;
 				const uint32_t texel_y1    = std::min(y1 * texel_height, region.imageExtent.height);
-				band_region.imageOffset.y      = static_cast<int32_t>(texel_y0);
+				band_region.imageOffset.y  = static_cast<int32_t>(texel_y0);
 				band_region.imageExtent.height = texel_y1 - texel_y0;
 				add(band, band_region, static_cast<uint64_t>(band.height) * pitch_bytes);
 			}
@@ -2506,7 +2544,8 @@ TextureCache::PartialUploadResult TextureCache::UploadGpuWrittenRanges(ImageId i
 		// Bytes outside the rebuilt parts that another image owns would come from it in the whole
 		// rebuild (a read takes them, a write leaves the buffer's older bytes there).
 		if (OtherImagesOwnBytes(live, id)) {
-			for (const auto& [begin, end]: GpuWriteRanges::Complement(refreshed, live.address, live.End())) {
+			for (const auto& [begin, end]:
+			     GpuWriteRanges::Complement(refreshed, live.address, live.End())) {
 				if (OtherImagesOwnBytes({begin, end - begin}, id)) {
 					m_pgw_totals.fallback_others++;
 					return result;
@@ -2526,7 +2565,8 @@ TextureCache::PartialUploadResult TextureCache::UploadGpuWrittenRanges(ImageId i
 		}
 	}
 
-	const auto [source, source_offset] = m_buffer_cache.ObtainBufferForImage(live.address, live.size);
+	const auto [source, source_offset] =
+	    m_buffer_cache.ObtainBufferForImage(live.address, live.size);
 	if (source == nullptr) {
 		EXIT("TextureCache: failed to obtain image upload source\n");
 	}
@@ -2535,7 +2575,8 @@ TextureCache::PartialUploadResult TextureCache::UploadGpuWrittenRanges(ImageId i
 		for (auto& region: regions) {
 			region.bufferOffset += source_offset;
 		}
-		destination.Upload(regions, source->Handle(), source_offset, source->Size() - source_offset);
+		destination.Upload(regions, source->Handle(), source_offset,
+		                   source->Size() - source_offset);
 	} else if (binding == BindingType::DepthTarget ||
 	           !m_tiler.DetileToImage(destination, source->Handle(), source_offset, live.size,
 	                                  linear_total, tiles, regions)) {
@@ -2628,7 +2669,7 @@ void TextureCache::VerifyGpuWrittenRanges(ImageId id, RefreshIntent intent) {
 		EXIT("TextureCache: failed to obtain image upload source\n");
 	}
 	UploadImage(image, *source, source_offset);
-	auto whole = readback();
+	auto               whole = readback();
 	vk::MemoryBarrier2 to_host {};
 	to_host.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
 	to_host.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
@@ -2644,58 +2685,63 @@ void TextureCache::VerifyGpuWrittenRanges(ImageId id, RefreshIntent intent) {
 	const auto format  = static_cast<uint32_t>(destination.backing.format);
 	const bool stencil = static_cast<bool>(image.depth_id);
 	const auto ranges  = image.gpu_write.ranges.size();
-	m_scheduler.DeferOperation([partial, whole, size, address, width, height, format, stencil, ranges] {
-		partial->Invalidate(0, size);
-		whole->Invalidate(0, size);
-		g_pgw_verify_checks.fetch_add(1, std::memory_order_relaxed);
-		const auto* a = partial->Mapped().data();
-		const auto* b = whole->Mapped().data();
-		if (std::memcmp(a, b, size) == 0) {
-			return;
-		}
-		uint64_t first = 0;
-		while (first < size && a[first] == b[first]) {
-			first++;
-		}
-		uint64_t differing = 0;
-		for (uint64_t i = first; i < size; i++) {
-			differing += a[i] != b[i] ? 1u : 0u;
-		}
-		const auto count = g_pgw_verify_mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
-		if (count <= 32) {
-			std::printf("Image partial GPU-write verify: MISMATCH image 0x%016" PRIx64
-			            " %ux%u format %u%s, %zu written range(s): %" PRIu64 " of %" PRIu64
-			            " linear bytes differ, first at %" PRIu64 "\n",
-			            address, width, height, format, stencil ? " (stencil plane)" : "", ranges,
-			            differing, size, first);
-			std::fflush(stdout);
-		}
-	});
+	m_scheduler.DeferOperation(
+	    [partial, whole, size, address, width, height, format, stencil, ranges] {
+		    partial->Invalidate(0, size);
+		    whole->Invalidate(0, size);
+		    g_pgw_verify_checks.fetch_add(1, std::memory_order_relaxed);
+		    const auto* a = partial->Mapped().data();
+		    const auto* b = whole->Mapped().data();
+		    if (std::memcmp(a, b, size) == 0) {
+			    return;
+		    }
+		    uint64_t first = 0;
+		    while (first < size && a[first] == b[first]) {
+			    first++;
+		    }
+		    uint64_t differing = 0;
+		    for (uint64_t i = first; i < size; i++) {
+			    differing += a[i] != b[i] ? 1u : 0u;
+		    }
+		    const auto count = g_pgw_verify_mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+		    if (count <= 32) {
+			    std::printf("Image partial GPU-write verify: MISMATCH image 0x%016" PRIx64
+			                " %ux%u format %u%s, %zu written range(s): %" PRIu64 " of %" PRIu64
+			                " linear bytes differ, first at %" PRIu64 "\n",
+			                address, width, height, format, stencil ? " (stencil plane)" : "",
+			                ranges, differing, size, first);
+			    std::fflush(stdout);
+		    }
+	    });
 }
 
 bool TextureCache::DebugDumpImage(uint64_t address, uint32_t want_width, uint32_t want_height,
                                   const std::string& prefix) {
-	std::scoped_lock lock {m_lock};
+	std::scoped_lock     lock {m_lock};
 	ImageId              found {};
 	std::vector<ImageId> exact;
 	std::string          listing;
 	FindImagesInRegion(address, 1, false).ForEach([&](ImageId id) {
 		const auto& image = m_slot_images[id];
-		listing += fmt::format(" [id {} base 0x{:x} {}x{} vk{}{}]", id.index, image.info.data.address,
-		                       image.info.extent.width, image.info.extent.height,
-		                       static_cast<uint32_t>(image.backing.format), image.depth_id ? " depth" : "");
+		listing += fmt::format(
+		    " [id {} base 0x{:x} {}x{} vk{}{}]", id.index, image.info.data.address,
+		    image.info.extent.width, image.info.extent.height,
+		    static_cast<uint32_t>(image.backing.format), image.depth_id ? " depth" : "");
 		if (image.info.data.address != address || image.depth_id) return;
 		if (!found) found = id;
-		if (image.info.extent.width == want_width && image.info.extent.height == want_height) exact.push_back(id);
+		if (image.info.extent.width == want_width && image.info.extent.height == want_height)
+			exact.push_back(id);
 	});
-	LOGF("DebugDumpImage 0x%" PRIx64 " want %ux%u:%s\n", address, want_width, want_height, listing.c_str());
+	LOGF("DebugDumpImage 0x%" PRIx64 " want %ux%u:%s\n", address, want_width, want_height,
+	     listing.c_str());
 	if (exact.empty() && found) exact.push_back(found);
 	if (exact.empty()) {
 		return false;
 	}
 	bool dumped = false;
 	for (const auto id: exact) {
-		dumped |= DebugDumpOne(id, address, exact.size() > 1 ? fmt::format("{}_i{}", prefix, id.index) : prefix);
+		dumped |= DebugDumpOne(id, address,
+		                       exact.size() > 1 ? fmt::format("{}_i{}", prefix, id.index) : prefix);
 	}
 	return dumped;
 }
@@ -2707,7 +2753,8 @@ bool TextureCache::DebugNanScan(uint64_t address, uint32_t want_width, uint32_t 
 	FindImagesInRegion(address, 1, false).ForEach([&](ImageId id) {
 		const auto& image = m_slot_images[id];
 		if (image.info.data.address != address || image.depth_id) return;
-		if (!found || (image.info.extent.width == want_width && image.info.extent.height == want_height)) {
+		if (!found ||
+		    (image.info.extent.width == want_width && image.info.extent.height == want_height)) {
 			found = id;
 		}
 	});
@@ -2721,18 +2768,18 @@ bool TextureCache::DebugNanScan(uint64_t address, uint32_t want_width, uint32_t 
 	const uint32_t comps  = vk::componentCount(format);
 	const bool     packed = format == vk::Format::eB10G11R11UfloatPack32;
 	const bool     sfloat = name.find("Sfloat") != std::string::npos && comps != 0 &&
-	                    (bytes / comps == 2 || bytes / comps == 4);
+	                        (bytes / comps == 2 || bytes / comps == 4);
 	if (image.info.samples != 1 || (!packed && !sfloat) || image.info.IsDepth()) {
 		return false;
 	}
 	const uint32_t width  = image.info.extent.width;
 	const uint32_t height = image.info.extent.height;
 	// Rows 30 %..60 % of the height in 8 bands of 2 rows: the torii, the hat and the village.
-	constexpr uint32_t Bands = 8;
-	constexpr uint32_t Rows  = 2;
-	const uint64_t band_bytes = uint64_t {width} * Rows * bytes;
+	constexpr uint32_t                     Bands      = 8;
+	constexpr uint32_t                     Rows       = 2;
+	const uint64_t                         band_bytes = uint64_t {width} * Rows * bytes;
 	std::array<vk::BufferImageCopy, Bands> copies {};
-	uint32_t count = 0;
+	uint32_t                               count = 0;
 	for (uint32_t b = 0; b < Bands; b++) {
 		const uint32_t y = static_cast<uint32_t>(uint64_t {height} * (30u + b * 4u) / 100u);
 		if (y + Rows > height) continue;
@@ -2746,8 +2793,8 @@ bool TextureCache::DebugNanScan(uint64_t address, uint32_t want_width, uint32_t 
 	if (count == 0) {
 		return false;
 	}
-	const uint64_t size   = band_bytes * count;
-	auto           buffer = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
+	const uint64_t size = band_bytes * count;
+	auto buffer = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
 	                                       vk::BufferUsageFlagBits::eTransferDst,
 	                                       Common::AlignUp(size, uint64_t {4}));
 	image.Download({copies.data(), count}, buffer->Handle(), 0, size);
@@ -2763,11 +2810,11 @@ bool TextureCache::DebugNanScan(uint64_t address, uint32_t want_width, uint32_t 
 	const auto line = fmt::format("{} base 0x{:x} {}x{} {}", label, address, width, height, name);
 	m_scheduler.DeferOperation([buffer, size, line, packed, bytes, comps] {
 		buffer->Invalidate(0, size);
-		const auto* data  = buffer->Mapped().data();
-		uint64_t    nan   = 0;
-		uint64_t    inf   = 0;
+		const auto* data   = buffer->Mapped().data();
+		uint64_t    nan    = 0;
+		uint64_t    inf    = 0;
 		uint64_t    texels = size / bytes;
-		const auto  half = [&](uint16_t v) {
+		const auto  half   = [&](uint16_t v) {
 			if ((v & 0x7c00u) == 0x7c00u) ((v & 0x3ffu) != 0 ? nan : inf)++;
 		};
 		const auto single = [&](uint32_t v) {
@@ -2781,7 +2828,8 @@ bool TextureCache::DebugNanScan(uint64_t address, uint32_t want_width, uint32_t 
 				const uint32_t mant[3]     = {0x3fu, 0x3fu, 0x1fu};
 				const uint32_t shift[3]    = {6u, 6u, 5u};
 				for (int c = 0; c < 3; c++) {
-					if ((channels[c] >> shift[c]) == 0x1fu) ((channels[c] & mant[c]) != 0 ? nan : inf)++;
+					if ((channels[c] >> shift[c]) == 0x1fu)
+						((channels[c] & mant[c]) != 0 ? nan : inf)++;
 				}
 			}
 		} else if (bytes / comps == 2) {
@@ -2818,7 +2866,7 @@ static float PassSampleHalf(uint16_t h) {
 	}
 	uint32_t bits = exp == 31 ? ((sign << 31u) | 0x7f800000u | (man << 13u))
 	                          : ((sign << 31u) | ((exp + 112u) << 23u) | (man << 13u));
-	float f = 0;
+	float    f    = 0;
 	std::memcpy(&f, &bits, 4);
 	return f;
 }
@@ -2827,13 +2875,16 @@ static float PassSampleSmallFloat(uint32_t v, uint32_t man_bits) {
 	const uint32_t exp = v >> man_bits;
 	const uint32_t man = v & ((1u << man_bits) - 1u);
 	if (exp == 0) return std::ldexp(static_cast<float>(man), -14 - static_cast<int>(man_bits));
-	if (exp == 31) return man != 0 ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
-	return std::ldexp(1.0f + static_cast<float>(man) / static_cast<float>(1u << man_bits), static_cast<int>(exp) - 15);
+	if (exp == 31)
+		return man != 0 ? std::numeric_limits<float>::quiet_NaN()
+		                : std::numeric_limits<float>::infinity();
+	return std::ldexp(1.0f + static_cast<float>(man) / static_cast<float>(1u << man_bits),
+	                  static_cast<int>(exp) - 15);
 }
 
 static void PassSampleDecode(vk::Format format, int aspect, const uint8_t* p, float out[4]) {
 	out[0] = out[1] = out[2] = out[3] = 0.0f;
-	uint32_t u32 = 0;
+	uint32_t u32                      = 0;
 	if (aspect == 2) {
 		out[0] = p[0];
 		return;
@@ -2886,9 +2937,10 @@ static void PassSampleDecode(vk::Format format, int aspect, const uint8_t* p, fl
 	if (comps == 0 || bytes % comps != 0) return;
 	const uint32_t width  = bytes / comps;
 	const bool     sfloat = name.find("Sfloat") != std::string::npos;
-	const bool     unorm  = name.find("Unorm") != std::string::npos || name.find("Srgb") != std::string::npos;
-	const bool     snorm  = name.find("Snorm") != std::string::npos;
-	const bool     sint   = name.find("Sint") != std::string::npos;
+	const bool     unorm =
+	    name.find("Unorm") != std::string::npos || name.find("Srgb") != std::string::npos;
+	const bool snorm = name.find("Snorm") != std::string::npos;
+	const bool sint  = name.find("Sint") != std::string::npos;
 	for (uint32_t c = 0; c < comps; c++) {
 		const uint8_t* q = p + c * width;
 		if (width == 1) {
@@ -2902,22 +2954,24 @@ static void PassSampleDecode(vk::Format format, int aspect, const uint8_t* p, fl
 			std::memcpy(&v, q, 2);
 			out[c] = sfloat  ? PassSampleHalf(v)
 			         : unorm ? static_cast<float>(v) / 65535.0f
-			         : snorm ? std::max(-1.0f, static_cast<float>(static_cast<int16_t>(v)) / 32767.0f)
-			         : sint  ? static_cast<float>(static_cast<int16_t>(v))
-			                 : static_cast<float>(v);
+			         : snorm
+			             ? std::max(-1.0f, static_cast<float>(static_cast<int16_t>(v)) / 32767.0f)
+			         : sint ? static_cast<float>(static_cast<int16_t>(v))
+			                : static_cast<float>(v);
 		} else if (width == 4) {
 			std::memcpy(&u32, q, 4);
 			if (sfloat) {
 				std::memcpy(&out[c], &u32, 4);
 			} else {
-				out[c] = sint ? static_cast<float>(static_cast<int32_t>(u32)) : static_cast<float>(u32);
+				out[c] =
+				    sint ? static_cast<float>(static_cast<int32_t>(u32)) : static_cast<float>(u32);
 			}
 		}
 	}
 }
 
-bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32_t want_height, int aspect,
-                                   uint32_t step, const std::string& thumb_path,
+bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32_t want_height,
+                                   int aspect, uint32_t step, const std::string& thumb_path,
                                    std::function<void(std::string)> emit) {
 	std::scoped_lock lock {m_lock};
 	ImageId          found {};
@@ -2925,7 +2979,8 @@ bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32
 		const auto& image = m_slot_images[id];
 		if (image.info.data.address != address || image.depth_id) return;
 		if ((aspect != 0) != image.info.IsDepth()) return;
-		if (!found || (image.info.extent.width == want_width && image.info.extent.height == want_height)) {
+		if (!found ||
+		    (image.info.extent.width == want_width && image.info.extent.height == want_height)) {
 			found = id;
 		}
 	});
@@ -2945,11 +3000,11 @@ bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32
 	if (image.info.samples != 1 || bytes == 0 || block[0] != 1 || block[1] != 1) {
 		return false;
 	}
-	step                     = std::max(step, 1u);
-	const uint32_t width     = image.info.extent.width;
-	const uint32_t height    = image.info.extent.height;
-	const uint32_t rows      = (height + step - 1) / step;
-	const uint64_t row_bytes = uint64_t {width} * bytes;
+	step                                       = std::max(step, 1u);
+	const uint32_t                   width     = image.info.extent.width;
+	const uint32_t                   height    = image.info.extent.height;
+	const uint32_t                   rows      = (height + step - 1) / step;
+	const uint64_t                   row_bytes = uint64_t {width} * bytes;
 	std::vector<vk::BufferImageCopy> copies(rows);
 	const auto aspect_bits = aspect == 0   ? vk::ImageAspectFlagBits::eColor
 	                         : aspect == 1 ? vk::ImageAspectFlagBits::eDepth
@@ -2961,8 +3016,8 @@ bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32
 		copy.imageOffset      = vk::Offset3D {0, static_cast<int32_t>(r * step), 0};
 		copy.imageExtent      = vk::Extent3D {width, 1, 1};
 	}
-	const uint64_t size   = row_bytes * rows;
-	auto           buffer = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
+	const uint64_t size = row_bytes * rows;
+	auto buffer = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0,
 	                                       vk::BufferUsageFlagBits::eTransferDst,
 	                                       Common::AlignUp(size, uint64_t {4}));
 	image.Download(copies, buffer->Handle(), 0, size);
@@ -2975,10 +3030,14 @@ bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32
 	dependency.memoryBarrierCount = 1;
 	dependency.pMemoryBarriers    = &to_host;
 	m_scheduler.Current().HelperSink().pipelineBarrier2(dependency);
-	const auto head = fmt::format("{}x{} vk{} {} img{}", width, height, static_cast<uint32_t>(format),
-	                              aspect == 0 ? "color" : aspect == 1 ? "depth" : "stencil", found.index);
-	m_scheduler.DeferOperation([buffer, size, head, format, aspect, bytes, width, rows, step, thumb_path,
-	                            emit = std::move(emit)] {
+	const auto head =
+	    fmt::format("{}x{} vk{} {} img{}", width, height, static_cast<uint32_t>(format),
+	                aspect == 0   ? "color"
+	                : aspect == 1 ? "depth"
+	                              : "stencil",
+	                found.index);
+	m_scheduler.DeferOperation([buffer, size, head, format, aspect, bytes, width, rows, step,
+	                            thumb_path, emit = std::move(emit)] {
 		buffer->Invalidate(0, size);
 		const auto*    data = buffer->Mapped().data();
 		const uint32_t cols = (width + step - 1) / step;
@@ -2989,17 +3048,20 @@ bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32
 			lo[c] = std::numeric_limits<float>::max();
 			hi[c] = -std::numeric_limits<float>::max();
 		}
-		uint64_t           nan = 0, inf = 0, zero = 0, count = 0;
-		constexpr uint32_t GX = 16, GY = 9;
+		uint64_t                      nan = 0, inf = 0, zero = 0, count = 0;
+		constexpr uint32_t            GX = 16, GY = 9;
 		std::array<double, GX * GY>   grid {};
 		std::array<uint32_t, GX * GY> grid_n {};
 		std::vector<float>            thumb;
 		if (!thumb_path.empty()) thumb.resize(uint64_t {cols} * rows * 4);
-		const uint32_t comps = aspect != 0 ? 1u : std::max(1u, std::min<uint32_t>(vk::componentCount(format), 4));
+		const uint32_t comps =
+		    aspect != 0 ? 1u : std::max(1u, std::min<uint32_t>(vk::componentCount(format), 4));
 		for (uint32_t r = 0; r < rows; r++) {
 			for (uint32_t cx = 0; cx < cols; cx++) {
 				float v[4];
-				PassSampleDecode(format, aspect, data + uint64_t {r} * width * bytes + uint64_t {cx} * step * bytes, v);
+				PassSampleDecode(format, aspect,
+				                 data + uint64_t {r} * width * bytes + uint64_t {cx} * step * bytes,
+				                 v);
 				bool   all_zero = true;
 				double lum      = 0;
 				for (uint32_t c = 0; c < comps; c++) {
@@ -3024,19 +3086,23 @@ bool TextureCache::DebugPassSample(uint64_t address, uint32_t want_width, uint32
 				const uint32_t gy = std::min(GY - 1, r * GY / rows);
 				grid[gy * GX + gx] += lum / std::min(comps, 3u);
 				grid_n[gy * GX + gx]++;
-				if (!thumb.empty()) std::memcpy(&thumb[(uint64_t {r} * cols + cx) * 4], v, sizeof(v));
+				if (!thumb.empty())
+					std::memcpy(&thumb[(uint64_t {r} * cols + cx) * 4], v, sizeof(v));
 			}
 		}
 		std::string line = head;
-		line += fmt::format(" hash={:016x} n={} nan={} inf={} zero={:.4f}", XXH3_64bits(data, size), count, nan, inf,
-		                    count != 0 ? static_cast<double>(zero) / static_cast<double>(count) : 0.0);
+		line += fmt::format(
+		    " hash={:016x} n={} nan={} inf={} zero={:.4f}", XXH3_64bits(data, size), count, nan,
+		    inf, count != 0 ? static_cast<double>(zero) / static_cast<double>(count) : 0.0);
 		for (uint32_t c = 0; c < comps; c++) {
-			line += fmt::format(" c{}={:.5g}/{:.5g}/{:.5g}", c,
-			                    count != 0 ? sum[c] / static_cast<double>(count) : 0.0, lo[c], hi[c]);
+			line +=
+			    fmt::format(" c{}={:.5g}/{:.5g}/{:.5g}", c,
+			                count != 0 ? sum[c] / static_cast<double>(count) : 0.0, lo[c], hi[c]);
 		}
 		line += " grid=";
 		for (uint32_t i = 0; i < GX * GY; i++) {
-			line += fmt::format("{}{:.4g}", i == 0 ? "" : ",", grid_n[i] != 0 ? grid[i] / grid_n[i] : 0.0);
+			line += fmt::format("{}{:.4g}", i == 0 ? "" : ",",
+			                    grid_n[i] != 0 ? grid[i] / grid_n[i] : 0.0);
 		}
 		if (!thumb.empty()) {
 			const auto path = fmt::format("{}_{}x{}.f32", thumb_path, cols, rows);
@@ -3060,9 +3126,9 @@ bool TextureCache::DebugDumpOne(ImageId found, uint64_t address, const std::stri
 	    vk::componentCount(format) == 0) {
 		return false;
 	}
-	const uint32_t width  = image.info.extent.width;
-	const uint32_t height = image.info.extent.height;
-	const uint64_t size   = uint64_t {width} * height * bytes;
+	const uint32_t      width  = image.info.extent.width;
+	const uint32_t      height = image.info.extent.height;
+	const uint64_t      size   = uint64_t {width} * height * bytes;
 	vk::BufferImageCopy copy {};
 	copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
 	copy.imageExtent      = vk::Extent3D {width, height, 1};
@@ -3102,23 +3168,24 @@ void TextureCache::PrintPartialGpuWriteSummary() {
 	if (now - m_pgw_print_ns < 10'000'000'000ull) {
 		return;
 	}
-	const auto& t = m_pgw_totals;
-	const auto& p = m_pgw_printed;
-	const auto  saved =
-	    (t.whole_bytes - p.whole_bytes) - std::min(t.whole_bytes - p.whole_bytes, t.partial_bytes - p.partial_bytes);
-	std::printf("Image partial GPU-write %.0fs: %" PRIu64 " buffer-write refreshes, %" PRIu64
-	            " partial (%.1f MiB rebuilt, %.1f MiB saved), not tracked %" PRIu64 ", stale %" PRIu64
-	            " (foreign %" PRIu64 " serial %" PRIu64 " cpu %" PRIu64 "), whole because: layout %" PRIu64 " most %" PRIu64 " other owners %" PRIu64
-	            " ranges %" PRIu64 "; verify %" PRIu64 " checks %" PRIu64 " mismatches\n",
-	            static_cast<double>(now - m_pgw_print_ns) * 1e-9, t.refreshes - p.refreshes,
-	            t.partial - p.partial,
-	            static_cast<double>(t.partial_bytes - p.partial_bytes) / 1048576.0,
-	            static_cast<double>(saved) / 1048576.0, t.untracked - p.untracked, t.stale - p.stale,
-	            t.stale_foreign - p.stale_foreign, t.stale_serial - p.stale_serial, t.stale_cpu - p.stale_cpu,
-	            t.fallback_layout - p.fallback_layout, t.fallback_most - p.fallback_most,
-	            t.fallback_others - p.fallback_others, t.overflows - p.overflows,
-	            g_pgw_verify_checks.load(std::memory_order_relaxed),
-	            g_pgw_verify_mismatches.load(std::memory_order_relaxed));
+	const auto& t     = m_pgw_totals;
+	const auto& p     = m_pgw_printed;
+	const auto  saved = (t.whole_bytes - p.whole_bytes) -
+	                    std::min(t.whole_bytes - p.whole_bytes, t.partial_bytes - p.partial_bytes);
+	std::printf(
+	    "Image partial GPU-write %.0fs: %" PRIu64 " buffer-write refreshes, %" PRIu64
+	    " partial (%.1f MiB rebuilt, %.1f MiB saved), not tracked %" PRIu64 ", stale %" PRIu64
+	    " (foreign %" PRIu64 " serial %" PRIu64 " cpu %" PRIu64 "), whole because: layout %" PRIu64
+	    " most %" PRIu64 " other owners %" PRIu64 " ranges %" PRIu64 "; verify %" PRIu64
+	    " checks %" PRIu64 " mismatches\n",
+	    static_cast<double>(now - m_pgw_print_ns) * 1e-9, t.refreshes - p.refreshes,
+	    t.partial - p.partial, static_cast<double>(t.partial_bytes - p.partial_bytes) / 1048576.0,
+	    static_cast<double>(saved) / 1048576.0, t.untracked - p.untracked, t.stale - p.stale,
+	    t.stale_foreign - p.stale_foreign, t.stale_serial - p.stale_serial,
+	    t.stale_cpu - p.stale_cpu, t.fallback_layout - p.fallback_layout,
+	    t.fallback_most - p.fallback_most, t.fallback_others - p.fallback_others,
+	    t.overflows - p.overflows, g_pgw_verify_checks.load(std::memory_order_relaxed),
+	    g_pgw_verify_mismatches.load(std::memory_order_relaxed));
 	std::fflush(stdout);
 	m_pgw_printed  = t;
 	m_pgw_print_ns = now;
@@ -3134,7 +3201,7 @@ void TextureCache::UntrackImage(ImageId id) {
 		std::fill(image.chunks.untracked.begin(), image.chunks.untracked.end(), 0);
 		image.chunks.untracked_count = 0;
 		NoteImageStateChange();
-		image.track_addr     = 0;
+		image.track_addr = 0;
 		NoteImageStateChange();
 		image.track_addr_end = 0;
 		NoteImageStateChange();
@@ -3142,9 +3209,9 @@ void TextureCache::UntrackImage(ImageId id) {
 		image.SetPartialValid(false);
 		return;
 	}
-	const auto address   = image.track_addr;
-	const auto size      = image.track_addr_end - image.track_addr;
-	image.track_addr     = 0;
+	const auto address = image.track_addr;
+	const auto size    = image.track_addr_end - image.track_addr;
+	image.track_addr   = 0;
 	NoteImageStateChange();
 	image.track_addr_end = 0;
 	NoteImageStateChange();
@@ -3222,11 +3289,11 @@ static uint64_t SmallLinearReadbackBytes() {
 	return bytes;
 }
 
-// KYTY_READBACK_LINEAR_COPIES=1 (default off; Ghost of Yotei preset): with --readback-linear-images,
-// GPU-written linear depth targets and image copy destinations are read back after each
-// submission too, not only storage images and color targets. Erlou93/KytyPS5-Yotei M118: the
-// game's CPU occlusion test reads its hi-Z pyramid from memory, and that pyramid ends each frame
-// as the D32 copy of an R32 one; a stale pyramid made distant objects vanish.
+// KYTY_READBACK_LINEAR_COPIES=1 (default off; Ghost of Yotei preset): with
+// --readback-linear-images, GPU-written linear depth targets and image copy destinations are read
+// back after each submission too, not only storage images and color targets. Erlou93/KytyPS5-Yotei
+// M118: the game's CPU occlusion test reads its hi-Z pyramid from memory, and that pyramid ends
+// each frame as the D32 copy of an R32 one; a stale pyramid made distant objects vanish.
 static bool ReadbackLinearCopiesEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_READBACK_LINEAR_COPIES");
@@ -3239,13 +3306,14 @@ void TextureCache::TrackImageDownload(ImageId id, Image& image) {
 	// Small tiled targets are written back too: games read GPU results such as reductions and
 	// simulation state from them on the CPU (PPSA04263 keeps the origin of its ocean wave grid
 	// in a 1x1 R32G32 target, and its water physics read it to sample the wave heights).
-	const auto& info   = image.info;
-	const auto  texels = static_cast<uint64_t>(info.extent.width) * info.extent.height *
-	                     info.extent.depth * info.resources.layers;
-	const bool small_linear = SmallLinearReadbackBytes() != 0 && info.samples == 1 &&
-	                          info.data.size <= SmallLinearReadbackBytes();
-	if (!info.data.Empty() && (info.IsTiled() ? m_readback_tiled_images && texels <= SmallTiledReadbackTexels
-	                                         : m_readback_linear_images || small_linear)) {
+	const auto& info         = image.info;
+	const auto  texels       = static_cast<uint64_t>(info.extent.width) * info.extent.height *
+	                           info.extent.depth * info.resources.layers;
+	const bool  small_linear = SmallLinearReadbackBytes() != 0 && info.samples == 1 &&
+	                           info.data.size <= SmallLinearReadbackBytes();
+	if (!info.data.Empty() &&
+	    (info.IsTiled() ? m_readback_tiled_images && texels <= SmallTiledReadbackTexels
+	                    : m_readback_linear_images || small_linear)) {
 		if (!image.IsGpuModified()) {
 			EXIT("TextureCache: cannot enroll a non-GPU-owned image for download\n");
 		}
@@ -3267,26 +3335,27 @@ TextureCache::ImageIds TextureCache::FindImagesInRegion(uint64_t address, uint64
 	}
 
 	ImageIds result;
-	TexelImageLookup::ForEachOwnerList(m_image_page_table, address, size, [&](const ImageIds& owners) {
-		owners.ForEach([&](ImageId id) {
-			auto* image = m_slot_images.try_get(id);
-			if (image == nullptr) {
-				return;
-			}
-			if (image->query_epoch == query_epoch) {
-				return;
-			}
-			image->query_epoch = query_epoch;
-			if (image->Overlaps(address, size, page_overlap)) {
-				result.push_back(id);
-			}
-		});
-	});
+	TexelImageLookup::ForEachOwnerList(m_image_page_table, address, size,
+	                                   [&](const ImageIds& owners) {
+		                                   owners.ForEach([&](ImageId id) {
+			                                   auto* image = m_slot_images.try_get(id);
+			                                   if (image == nullptr) {
+				                                   return;
+			                                   }
+			                                   if (image->query_epoch == query_epoch) {
+				                                   return;
+			                                   }
+			                                   image->query_epoch = query_epoch;
+			                                   if (image->Overlaps(address, size, page_overlap)) {
+				                                   result.push_back(id);
+			                                   }
+		                                   });
+	                                   });
 	return result;
 }
 
 ImageId TextureCache::FindImageWithSameBacking(const ImageInfo& requested,
-                                               bool exact_format) const {
+                                               bool             exact_format) const {
 	ImagePageTable::PageRange pages {};
 	if (!ImagePageTable::TryGetPageRange(requested.data.address, requested.data.size, pages)) {
 		return {};
@@ -3422,10 +3491,12 @@ bool SwapsStencilPlanes(const Image& depth) {
 	return depth.info.IsDepth() && depth.info.HasStencil() && depth.backing.image != nullptr &&
 	       depth.backing.samples == 1 && depth.info.samples == 1 &&
 	       depth.info.resources.layers == 1 && depth.backing.layers == 1 &&
-	       !depth.info.metadata.stencil_compressed && depth.info.type == Prospero::ImageType::kColor2D;
+	       !depth.info.metadata.stencil_compressed &&
+	       depth.info.type == Prospero::ImageType::kColor2D;
 }
 
-vk::BufferImageCopy StencilPlaneCopy(uint32_t width, uint32_t height, vk::ImageAspectFlagBits aspect) {
+vk::BufferImageCopy StencilPlaneCopy(uint32_t width, uint32_t height,
+                                     vk::ImageAspectFlagBits aspect) {
 	vk::BufferImageCopy copy {};
 	copy.imageSubresource = {aspect, 0, 0, 1};
 	copy.imageExtent      = vk::Extent3D {width, height, 1};
@@ -3444,7 +3515,8 @@ bool TextureCache::StencilReadDepthEnabled() {
 		const char* value = std::getenv("KYTY_STENCIL_READ_DEPTH");
 		const bool  on    = value != nullptr && value[0] == '1';
 		if (on) {
-			LOGF("Stencil planes: sampled reads bind the depth image's stencil (KYTY_STENCIL_READ_DEPTH=1)\n");
+			LOGF("Stencil planes: sampled reads bind the depth image's stencil "
+			     "(KYTY_STENCIL_READ_DEPTH=1)\n");
 		}
 		return on;
 	}();
@@ -3464,8 +3536,9 @@ bool TextureCache::StencilReadHeldEnabled() {
 		const char* value = std::getenv("KYTY_STENCIL_READ_HELD");
 		const bool  on    = value == nullptr || value[0] != '0';
 		if (on && StencilReadDepthEnabled() && PreserveStencilEnabled()) {
-			LOGF("Stencil planes: a plane the depth image does not hold is read from its saved copy "
-			     "(KYTY_STENCIL_READ_HELD=1)\n");
+			LOGF(
+			    "Stencil planes: a plane the depth image does not hold is read from its saved copy "
+			    "(KYTY_STENCIL_READ_HELD=1)\n");
 		}
 		return on;
 	}();
@@ -3479,27 +3552,29 @@ ImageId TextureCache::StencilPlaneDepth(uint64_t plane_address) {
 		return {};
 	}
 	const auto* depth = m_slot_images.try_get(found->second);
-	if (depth == nullptr || !depth->registered || !depth->info.IsDepth() || !depth->info.HasStencil() ||
-	    !SwapsStencilPlanes(*depth) || depth->backing.samples != 1u) {
+	if (depth == nullptr || !depth->registered || !depth->info.IsDepth() ||
+	    !depth->info.HasStencil() || !SwapsStencilPlanes(*depth) || depth->backing.samples != 1u) {
 		return {};
 	}
 	return found->second;
 }
 
-// KYTY_STENCIL_READ_PARTNER=1 (default off; Erlou93/KytyPS5-Yotei parity): with KYTY_STENCIL_READ_DEPTH,
-// a sampled read of a plane T# that resolves to a plain 1-byte image (no stencil association) binds
-// the plane its depth image swapped away from when it took this one in, instead of this plane.
-// Ghost of Yotei's Deferred wetness 84f5a0d3 reads plane B (0x50615a0000, the z-fail volume
-// counts, ro[1.1]) and plane A (0x5004850000, the G-buffer classes, ro[1.2]); Erlou swaps plane A
-// back into the D32S8 before the dispatch and binds the D32S8 for both, so its wetness mask is set
-// on every classed pixel that has no G-buffer wetness (zero 0.795 vs ours 0.982 at the torii).
-// Whether the PS5 reads the volume counts there is not known; this switch reproduces Erlou.
+// KYTY_STENCIL_READ_PARTNER=1 (default off; Erlou93/KytyPS5-Yotei parity): with
+// KYTY_STENCIL_READ_DEPTH, a sampled read of a plane T# that resolves to a plain 1-byte image (no
+// stencil association) binds the plane its depth image swapped away from when it took this one in,
+// instead of this plane. Ghost of Yotei's Deferred wetness 84f5a0d3 reads plane B (0x50615a0000,
+// the z-fail volume counts, ro[1.1]) and plane A (0x5004850000, the G-buffer classes, ro[1.2]);
+// Erlou swaps plane A back into the D32S8 before the dispatch and binds the D32S8 for both, so its
+// wetness mask is set on every classed pixel that has no G-buffer wetness (zero 0.795 vs ours 0.982
+// at the torii). Whether the PS5 reads the volume counts there is not known; this switch reproduces
+// Erlou.
 bool TextureCache::StencilReadPartnerEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_STENCIL_READ_PARTNER");
 		const bool  on    = value != nullptr && value[0] == '1';
 		if (on) {
-			LOGF("Stencil planes: a redirected plane read binds the partner plane (KYTY_STENCIL_READ_PARTNER=1)\n");
+			LOGF("Stencil planes: a redirected plane read binds the partner plane "
+			     "(KYTY_STENCIL_READ_PARTNER=1)\n");
 		}
 		return on;
 	}();
@@ -3544,8 +3619,8 @@ bool TextureCache::SwapStencilPlane(ImageId depth_id, uint64_t next_plane) {
 	const auto bytes  = uint64_t {width} * height;
 	const auto copy   = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eStencil);
 	// KYTY_STENCIL_READ_DEPTH: both planes are known to belong to this depth image.
-	m_stencil_plane_depth[previous]   = depth_id;
-	m_stencil_plane_depth[next_plane] = depth_id;
+	m_stencil_plane_depth[previous]     = depth_id;
+	m_stencil_plane_depth[next_plane]   = depth_id;
 	m_stencil_plane_partner[next_plane] = previous;
 	// The stencil aspect is saved as it is: a pending refresh of the held plane's record from guest
 	// memory stays pending (its record is not held after the swap, so the refresh is applied when
@@ -3556,7 +3631,8 @@ bool TextureCache::SwapStencilPlane(ImageId depth_id, uint64_t next_plane) {
 			NoteStructureChange(*record);
 		}
 	}
-	auto& held = m_stencil_planes[StencilPlaneKey(depth.info.data.address, previous, width, height)];
+	auto& held =
+	    m_stencil_planes[StencilPlaneKey(depth.info.data.address, previous, width, height)];
 	if (!held.buffer || held.buffer->Size() < bytes) {
 		if (held.buffer) {
 			m_scheduler.DeferOperation([old = held.buffer] { (void)old; });
@@ -3571,29 +3647,36 @@ bool TextureCache::SwapStencilPlane(ImageId depth_id, uint64_t next_plane) {
 	held.content_serial = Image::NextContentSerial();
 	m_slot_images[depth_id].Download({&copy, 1}, held.buffer->Handle(), 0, bytes);
 	const auto key   = StencilPlaneKey(depth.info.data.address, next_plane, width, height);
-	const bool trace = MetaTraceAddress() != 0 && (MetaTraceAddress() == next_plane || MetaTraceAddress() == previous);
+	const bool trace = MetaTraceAddress() != 0 &&
+	                   (MetaTraceAddress() == next_plane || MetaTraceAddress() == previous);
 	// KYTY_STENCIL_PLANE_SYNC=2: a 1-byte colour image at the incoming plane's address, of this
 	// extent, written by a shader or a clear after the plane's saved copy holds the plane now.
 	const char* loaded = nullptr;
 	if (StencilPlaneSyncLevel() >= 2 || trace) {
-		const auto  saved_it     = m_stencil_planes.find(key);
-		const auto  saved_serial = saved_it != m_stencil_planes.end() ? saved_it->second.content_serial : 0u;
-		ImageId     newer_id {};
-		uint64_t    newer_serial = 0;
+		const auto saved_it = m_stencil_planes.find(key);
+		const auto saved_serial =
+		    saved_it != m_stencil_planes.end() ? saved_it->second.content_serial : 0u;
+		ImageId  newer_id {};
+		uint64_t newer_serial = 0;
 		for (const auto id: FindImagesInRegion(next_plane, 1, false)) {
 			const auto* image = m_slot_images.try_get(id);
 			if (image == nullptr) continue;
 			if (trace && MetaTraceLine()) {
-				LOGF("MetaTrace: swap-in 0x%" PRIx64 " sees image 0x%" PRIx64 "+0x%" PRIx64 " %ux%u bpb %u depth %d record %d "
+				LOGF("MetaTrace: swap-in 0x%" PRIx64 " sees image 0x%" PRIx64 "+0x%" PRIx64
+				     " %ux%u bpb %u depth %d record %d "
 				     "samples %u write %" PRIu64 " saved %" PRIu64 "\n",
-				     next_plane, image->info.data.address, image->info.data.size, image->backing.extent.width,
-				     image->backing.extent.height, image->info.bytes_per_block, image->info.IsDepth() ? 1 : 0,
-				     image->depth_id ? 1 : 0, image->backing.samples, image->shader_write_serial, saved_serial);
+				     next_plane, image->info.data.address, image->info.data.size,
+				     image->backing.extent.width, image->backing.extent.height,
+				     image->info.bytes_per_block, image->info.IsDepth() ? 1 : 0,
+				     image->depth_id ? 1 : 0, image->backing.samples, image->shader_write_serial,
+				     saved_serial);
 			}
-			if (image->depth_id || image->info.IsDepth() || image->info.data.address != next_plane ||
-			    image->info.bytes_per_block != 1u || image->backing.image == nullptr || image->backing.samples != 1u ||
+			if (image->depth_id || image->info.IsDepth() ||
+			    image->info.data.address != next_plane || image->info.bytes_per_block != 1u ||
+			    image->backing.image == nullptr || image->backing.samples != 1u ||
 			    image->backing.extent.width != width || image->backing.extent.height != height ||
-			    image->shader_write_serial <= saved_serial || image->shader_write_serial <= newer_serial) {
+			    image->shader_write_serial <= saved_serial ||
+			    image->shader_write_serial <= newer_serial) {
 				continue;
 			}
 			newer_id     = id;
@@ -3607,7 +3690,8 @@ bool TextureCache::SwapStencilPlane(ImageId depth_id, uint64_t next_plane) {
 				}
 				saved.buffer = std::make_shared<Buffer>(
 				    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
-				    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst, bytes);
+				    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
+				    bytes);
 			}
 			saved.width          = width;
 			saved.height         = height;
@@ -3618,10 +3702,9 @@ bool TextureCache::SwapStencilPlane(ImageId depth_id, uint64_t next_plane) {
 			loaded = "loaded from a shader-written 1-byte image";
 		}
 	}
-	const auto found = m_stencil_planes.find(key);
-	const bool restored =
-	    found != m_stencil_planes.end() && found->second.buffer && found->second.width == width &&
-	    found->second.height == height;
+	const auto found    = m_stencil_planes.find(key);
+	const bool restored = found != m_stencil_planes.end() && found->second.buffer &&
+	                      found->second.width == width && found->second.height == height;
 	if (restored) {
 		m_slot_images[depth_id].Upload({&copy, 1}, found->second.buffer->Handle(), 0, bytes);
 	}
@@ -3633,37 +3716,43 @@ bool TextureCache::SwapStencilPlane(ImageId depth_id, uint64_t next_plane) {
 	}
 	NoteImageStateChange();
 	static std::atomic<uint32_t> swaps {0};
-	const auto n = swaps.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = swaps.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 8u || std::has_single_bit(n) || (trace && MetaTraceLine())) {
 		LOGF("Stencil plane swap #%u (KYTY_PRESERVE_STENCIL): depth 0x%012" PRIx64
 		     " %ux%u plane 0x%012" PRIx64 " -> 0x%012" PRIx64 " %s\n",
 		     n, depth.info.data.address, width, height, previous, next_plane,
-		     loaded != nullptr ? loaded : restored ? "restored" : "first use (guest bytes)");
+		     loaded != nullptr ? loaded
+		     : restored        ? "restored"
+		                       : "first use (guest bytes)");
 	}
 	if (loaded != nullptr) {
 		static std::atomic<uint32_t> loads {0};
-		const auto l = loads.fetch_add(1, std::memory_order_relaxed) + 1u;
+		const auto                   l = loads.fetch_add(1, std::memory_order_relaxed) + 1u;
 		if (l <= 8u || std::has_single_bit(l)) {
-			LOGF("Stencil plane sync #%u (KYTY_STENCIL_PLANE_SYNC=2): plane 0x%012" PRIx64 " of depth 0x%012" PRIx64
-			     " %ux%u %s\n",
+			LOGF("Stencil plane sync #%u (KYTY_STENCIL_PLANE_SYNC=2): plane 0x%012" PRIx64
+			     " of depth 0x%012" PRIx64 " %ux%u %s\n",
 			     l, next_plane, depth.info.data.address, width, height, loaded);
 		}
 	}
 	return restored || loaded != nullptr;
 }
 
-// KYTY_STENCIL_PLANE_SYNC (default 2; based on Erlou93/KytyPS5-Yotei WORKAROUND_STENCIL_PLANE_SYNC):
-// 2 = at swap-in, a 1-byte colour image at the incoming plane's address and the depth image's extent
-// that a storage binding or a colour clear wrote after the plane's saved copy is loaded as the plane
-// (Ghost of Yotei's z-fail volume plane 0x50615a0000: Erlou loads it from the R8 image the game clears
-// every frame, 0 before the volume draws; ours restored the last frame's counts). 0 or 1: off (our
-// StencilPlaneReader already covers Erlou's level 1, shader reads of a plane).
+// KYTY_STENCIL_PLANE_SYNC (default 2; based on Erlou93/KytyPS5-Yotei
+// WORKAROUND_STENCIL_PLANE_SYNC): 2 = at swap-in, a 1-byte colour image at the incoming plane's
+// address and the depth image's extent that a storage binding or a colour clear wrote after the
+// plane's saved copy is loaded as the plane (Ghost of Yotei's z-fail volume plane 0x50615a0000:
+// Erlou loads it from the R8 image the game clears every frame, 0 before the volume draws; ours
+// restored the last frame's counts). 0 or 1: off (our StencilPlaneReader already covers Erlou's
+// level 1, shader reads of a plane).
 int TextureCache::StencilPlaneSyncLevel() {
 	static constexpr auto level_init = [] {
 		const char* value = std::getenv("KYTY_STENCIL_PLANE_SYNC");
-		const int   on    = value == nullptr || value[0] == '\0' ? 2 : (value[0] >= '0' && value[0] <= '9' ? value[0] - '0' : 2);
+		const int   on    = value == nullptr || value[0] == '\0'
+		                        ? 2
+		                        : (value[0] >= '0' && value[0] <= '9' ? value[0] - '0' : 2);
 		if (on >= 2 && PreserveStencilEnabled()) {
-			LOGF("Stencil planes: a plane written as a 1-byte image is loaded at swap-in (KYTY_STENCIL_PLANE_SYNC=%d)\n",
+			LOGF("Stencil planes: a plane written as a 1-byte image is loaded at swap-in "
+			     "(KYTY_STENCIL_PLANE_SYNC=%d)\n",
 			     on);
 		}
 		return on;
@@ -3673,9 +3762,10 @@ int TextureCache::StencilPlaneSyncLevel() {
 	return level;
 }
 
-// KYTY_STENCIL_PLANE_FILL_SAVED (default on; based on Erlou93/KytyPS5-Yotei KYTY_FIX_STENCIL_PLANE_WRITES,
-// its fill part). =0: a fill of a stencil plane record clears the depth image's stencil aspect whatever
-// plane it holds, as before. Not seen to fire in Ghost of Yotei gameplay (2 boots).
+// KYTY_STENCIL_PLANE_FILL_SAVED (default on; based on Erlou93/KytyPS5-Yotei
+// KYTY_FIX_STENCIL_PLANE_WRITES, its fill part). =0: a fill of a stencil plane record clears the
+// depth image's stencil aspect whatever plane it holds, as before. Not seen to fire in Ghost of
+// Yotei gameplay (2 boots).
 bool TextureCache::StencilPlaneFillSavedEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_STENCIL_PLANE_FILL_SAVED");
@@ -3684,20 +3774,23 @@ bool TextureCache::StencilPlaneFillSavedEnabled() {
 	return enabled;
 }
 
-// KYTY_STENCIL_PLANE_FILL_SAVED: a fill of the stencil plane `record_id` of `depth_id` while the depth
-// image holds another plane goes into the plane's saved copy (the next swap-in restores it). False
-// (nothing done) when the depth image holds this plane or the shapes differ. Caller holds m_lock.
-bool TextureCache::FillStencilPlaneSaved(CommandBuffer& command, ImageId depth_id, ImageId record_id, uint8_t value,
-                                         const char* what) {
+// KYTY_STENCIL_PLANE_FILL_SAVED: a fill of the stencil plane `record_id` of `depth_id` while the
+// depth image holds another plane goes into the plane's saved copy (the next swap-in restores it).
+// False (nothing done) when the depth image holds this plane or the shapes differ. Caller holds
+// m_lock.
+bool TextureCache::FillStencilPlaneSaved(CommandBuffer& command, ImageId depth_id,
+                                         ImageId record_id, uint8_t value, const char* what) {
 	auto* depth  = m_slot_images.try_get(depth_id);
 	auto* record = m_slot_images.try_get(record_id);
-	if (depth == nullptr || record == nullptr || record->depth_id != depth_id || !SwapsStencilPlanes(*depth)) {
+	if (depth == nullptr || record == nullptr || record->depth_id != depth_id ||
+	    !SwapsStencilPlanes(*depth)) {
 		return false;
 	}
 	const auto width  = depth->backing.extent.width;
 	const auto height = depth->backing.extent.height;
 	const auto bytes  = uint64_t {width} * height;
-	if (depth->info.stencil.address == 0 || depth->info.stencil.address == record->info.data.address ||
+	if (depth->info.stencil.address == 0 ||
+	    depth->info.stencil.address == record->info.data.address ||
 	    record->info.extent.width != width || record->info.extent.height != height ||
 	    record->stencil_subresources.base_layer != 0 || bytes % 4u != 0u) {
 		return false;
@@ -3705,15 +3798,14 @@ bool TextureCache::FillStencilPlaneSaved(CommandBuffer& command, ImageId depth_i
 	const auto depth_address = depth->info.data.address;
 	const auto held_address  = depth->info.stencil.address;
 	const auto plane_address = record->info.data.address;
-	auto&      held          = m_stencil_planes[StencilPlaneKey(depth_address, plane_address, width, height)];
+	auto& held = m_stencil_planes[StencilPlaneKey(depth_address, plane_address, width, height)];
 	if (!held.buffer || held.buffer->Size() < bytes) {
 		if (held.buffer) {
 			m_scheduler.DeferOperation([old = held.buffer] { (void)old; });
 		}
-		held.buffer = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
-		                                       vk::BufferUsageFlagBits::eTransferSrc |
-		                                           vk::BufferUsageFlagBits::eTransferDst,
-		                                       bytes);
+		held.buffer = std::make_shared<Buffer>(
+		    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+		    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst, bytes);
 	}
 	held.width          = width;
 	held.height         = height;
@@ -3733,11 +3825,13 @@ bool TextureCache::FillStencilPlaneSaved(CommandBuffer& command, ImageId depth_i
 	native.fillBuffer(held.buffer->Handle(), 0, bytes, uint32_t {value} * 0x01010101u);
 	native.pipelineBarrier2(dependency);
 	static std::atomic<uint32_t> fills {0};
-	const auto n = fills.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = fills.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 8u || std::has_single_bit(n)) {
-		LOGF("Stencil plane fill #%u (KYTY_STENCIL_PLANE_FILL_SAVED, %s): plane 0x%012" PRIx64 " of depth 0x%012" PRIx64
-		     " (holding 0x%012" PRIx64 ") %ux%u value %u into its saved copy\n",
-		     n, what, plane_address, depth_address, held_address, width, height, static_cast<unsigned>(value));
+		LOGF("Stencil plane fill #%u (KYTY_STENCIL_PLANE_FILL_SAVED, %s): plane 0x%012" PRIx64
+		     " of depth 0x%012" PRIx64 " (holding 0x%012" PRIx64
+		     ") %ux%u value %u into its saved copy\n",
+		     n, what, plane_address, depth_address, held_address, width, height,
+		     static_cast<unsigned>(value));
 	}
 	return true;
 }
@@ -3776,10 +3870,10 @@ void TextureCache::SaveRecreatedStencil(Image& depth) {
 	m_recreate_stencil_height  = height;
 	m_recreate_stencil_valid   = true;
 	static std::atomic<uint32_t> saves {0};
-	const auto n = saves.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = saves.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 4u || std::has_single_bit(n)) {
-		LOGF("Stencil save #%u (KYTY_PRESERVE_STENCIL_RECREATE): depth 0x%012" PRIx64 " %ux%u plane 0x%012" PRIx64
-		     " replaced by a colour image\n",
+		LOGF("Stencil save #%u (KYTY_PRESERVE_STENCIL_RECREATE): depth 0x%012" PRIx64
+		     " %ux%u plane 0x%012" PRIx64 " replaced by a colour image\n",
 		     n, depth.info.data.address, width, height, depth.info.stencil.address);
 	}
 }
@@ -3790,12 +3884,13 @@ bool TextureCache::RestoreRecreatedStencil(Image& depth) {
 	if (!m_recreate_stencil_valid || m_recreate_stencil_address != depth.info.data.address ||
 	    m_recreate_stencil_width != width || m_recreate_stencil_height != height) {
 		static std::atomic<uint32_t> misses {0};
-		const auto n = misses.fetch_add(1, std::memory_order_relaxed) + 1u;
+		const auto                   n = misses.fetch_add(1, std::memory_order_relaxed) + 1u;
 		if (n <= 4u || std::has_single_bit(n)) {
 			LOGF("Stencil restore miss #%u (KYTY_PRESERVE_STENCIL_RECREATE): depth 0x%012" PRIx64
 			     " %ux%u, saved %s 0x%012" PRIx64 " %ux%u\n",
-			     n, depth.info.data.address, width, height, m_recreate_stencil_valid ? "valid" : "none",
-			     m_recreate_stencil_address, m_recreate_stencil_width, m_recreate_stencil_height);
+			     n, depth.info.data.address, width, height,
+			     m_recreate_stencil_valid ? "valid" : "none", m_recreate_stencil_address,
+			     m_recreate_stencil_width, m_recreate_stencil_height);
 		}
 		return false;
 	}
@@ -3809,10 +3904,10 @@ bool TextureCache::RestoreRecreatedStencil(Image& depth) {
 		depth.info.stencil.address = m_recreate_stencil_plane;
 	}
 	static std::atomic<uint32_t> restores {0};
-	const auto n = restores.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = restores.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 4u || std::has_single_bit(n)) {
-		LOGF("Stencil restore #%u (KYTY_PRESERVE_STENCIL_RECREATE): depth 0x%012" PRIx64 " %ux%u plane 0x%012" PRIx64
-		     "\n",
+		LOGF("Stencil restore #%u (KYTY_PRESERVE_STENCIL_RECREATE): depth 0x%012" PRIx64
+		     " %ux%u plane 0x%012" PRIx64 "\n",
 		     n, depth.info.data.address, width, height, m_recreate_stencil_plane);
 	}
 	return true;
@@ -3876,14 +3971,15 @@ bool TextureCache::CopyStencilPlaneToAlias(ImageId target_id) {
 			    vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst,
 			    std::max<uint64_t>(bytes, uint64_t {1920} * 1080));
 		}
-		auto stencil_copy            = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eStencil);
+		auto stencil_copy = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eStencil);
 		stencil_copy.bufferRowLength = width;
-		m_slot_images[depth_id].Download({&stencil_copy, 1}, m_stencil_alias_staging->Handle(), 0, bytes);
+		m_slot_images[depth_id].Download({&stencil_copy, 1}, m_stencil_alias_staging->Handle(), 0,
+		                                 bytes);
 		source_buffer = m_stencil_alias_staging->Handle();
 		source_row    = width;
 	} else {
-		const auto found = m_stencil_planes.find(
-		    StencilPlaneKey(m_slot_images[depth_id].info.data.address, address, depth_width, depth_height));
+		const auto found = m_stencil_planes.find(StencilPlaneKey(
+		    m_slot_images[depth_id].info.data.address, address, depth_width, depth_height));
 		if (found == m_stencil_planes.end() || !found->second.buffer) {
 			return false;
 		}
@@ -3894,16 +3990,15 @@ bool TextureCache::CopyStencilPlaneToAlias(ImageId target_id) {
 	auto color_copy            = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eColor);
 	color_copy.bufferRowLength = source_row;
 	auto& alias                = m_slot_images[target_id];
-	alias.Upload({&color_copy, 1}, source_buffer,
-	             0, uint64_t {source_row} * (height - 1u) + width);
+	alias.Upload({&color_copy, 1}, source_buffer, 0, uint64_t {source_row} * (height - 1u) + width);
 	MarkImageGpuModified(alias);
 	static std::atomic<uint32_t> logged {0};
-	const auto n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 8u || std::has_single_bit(n)) {
 		LOGF("Stencil alias copy #%u (KYTY_STENCIL_ALIAS_COPY, approximation): plane 0x%012" PRIx64
 		     " depth %ux%u -> alias %ux%u%s\n",
-		     n, address, depth_width, depth_height, alias.backing.extent.width, alias.backing.extent.height,
-		     from_saved ? " from the saved plane" : "");
+		     n, address, depth_width, depth_height, alias.backing.extent.width,
+		     alias.backing.extent.height, from_saved ? " from the saved plane" : "");
 	}
 	return true;
 }
@@ -3919,7 +4014,7 @@ bool TextureCache::StencilStorageShadowEnabled() {
 ImageId TextureCache::StencilStorageShadow(ImageId record_id, bool& shadow) {
 	shadow = false;
 	std::scoped_lock lock {m_lock};
-	const auto* record = m_slot_images.try_get(record_id);
+	const auto*      record = m_slot_images.try_get(record_id);
 	if (record == nullptr || !record->depth_id) {
 		return record_id;
 	}
@@ -3937,24 +4032,26 @@ ImageId TextureCache::StencilStorageShadow(ImageId record_id, bool& shadow) {
 			return pending_shadow;
 		}
 	}
-	auto  found     = m_stencil_shadows.find(depth_id);
-	auto* shadow_im = found != m_stencil_shadows.end() ? m_slot_images.try_get(found->second) : nullptr;
-	if (shadow_im == nullptr || shadow_im->info.extent.width != width || shadow_im->info.extent.height != height) {
+	auto  found = m_stencil_shadows.find(depth_id);
+	auto* shadow_im =
+	    found != m_stencil_shadows.end() ? m_slot_images.try_get(found->second) : nullptr;
+	if (shadow_im == nullptr || shadow_im->info.extent.width != width ||
+	    shadow_im->info.extent.height != height) {
 		if (shadow_im != nullptr) {
 			ReleaseUnregisteredImage(found->second);
 		}
 		ImageInfo info {};
-		info.pixel_format    = vk::Format::eR8Uint;
-		info.guest_format    = Prospero::BufferFormat::k8UInt;
-		info.type            = Prospero::ImageType::kColor2D;
-		info.extent          = {width, height, 1};
-		info.resources       = {1, 1};
-		info.pitch           = width;
-		info.bytes_per_block = 1;
-		info.samples         = 1;
-		info.tile_mode       = Prospero::TileMode::kLinear;
-		info.mip_layout[0]   = {0, bytes, width, height};
-		const auto shadow_id = InsertImage(info);
+		info.pixel_format           = vk::Format::eR8Uint;
+		info.guest_format           = Prospero::BufferFormat::k8UInt;
+		info.type                   = Prospero::ImageType::kColor2D;
+		info.extent                 = {width, height, 1};
+		info.resources              = {1, 1};
+		info.pitch                  = width;
+		info.bytes_per_block        = 1;
+		info.samples                = 1;
+		info.tile_mode              = Prospero::TileMode::kLinear;
+		info.mip_layout[0]          = {0, bytes, width, height};
+		const auto shadow_id        = InsertImage(info);
 		m_stencil_shadows[depth_id] = shadow_id;
 	}
 	const auto shadow_id = m_stencil_shadows[depth_id];
@@ -3969,19 +4066,20 @@ ImageId TextureCache::StencilStorageShadow(ImageId record_id, bool& shadow) {
 	}
 	const auto stencil_copy = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eStencil);
 	const auto color_copy   = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eColor);
-	m_slot_images[depth_id].Download({&stencil_copy, 1}, m_stencil_alias_staging->Handle(), 0, bytes);
+	m_slot_images[depth_id].Download({&stencil_copy, 1}, m_stencil_alias_staging->Handle(), 0,
+	                                 bytes);
 	auto& target               = m_slot_images[shadow_id];
 	target.tick_accessed_last  = m_scheduler.CurrentTick();
 	target.frame_accessed_last = m_frame.load(std::memory_order_relaxed);
 	target.Upload({&color_copy, 1}, m_stencil_alias_staging->Handle(), 0, bytes);
 	m_pending_stencil_shadows.emplace_back(shadow_id, depth_id);
 	static std::atomic<uint32_t> logged {0};
-	const auto n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 8u || std::has_single_bit(n)) {
 		LOGF("Stencil storage shadow #%u (KYTY_STENCIL_STORAGE_SHADOW): plane 0x%012" PRIx64
 		     " of depth 0x%012" PRIx64 " %ux%u\n",
-		     n, m_slot_images[record_id].info.data.address, m_slot_images[depth_id].info.data.address, width,
-		     height);
+		     n, m_slot_images[record_id].info.data.address,
+		     m_slot_images[depth_id].info.data.address, width, height);
 	}
 	shadow = true;
 	return shadow_id;
@@ -3992,18 +4090,21 @@ void TextureCache::FlushStencilStorageShadows() {
 	for (const auto& [shadow_id, depth_id]: m_pending_stencil_shadows) {
 		auto* shadow = m_slot_images.try_get(shadow_id);
 		auto* depth  = m_slot_images.try_get(depth_id);
-		if (shadow == nullptr || depth == nullptr || !depth->registered || !SwapsStencilPlanes(*depth) ||
+		if (shadow == nullptr || depth == nullptr || !depth->registered ||
+		    !SwapsStencilPlanes(*depth) ||
 		    depth->backing.extent.width != shadow->info.extent.width ||
 		    depth->backing.extent.height != shadow->info.extent.height) {
 			continue;
 		}
-		const auto width        = shadow->info.extent.width;
-		const auto height       = shadow->info.extent.height;
-		const auto bytes        = uint64_t {width} * height;
-		const auto stencil_copy = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eStencil);
-		const auto color_copy   = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eColor);
+		const auto width  = shadow->info.extent.width;
+		const auto height = shadow->info.extent.height;
+		const auto bytes  = uint64_t {width} * height;
+		const auto stencil_copy =
+		    StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eStencil);
+		const auto color_copy = StencilPlaneCopy(width, height, vk::ImageAspectFlagBits::eColor);
 		shadow->Download({&color_copy, 1}, m_stencil_alias_staging->Handle(), 0, bytes);
-		m_slot_images[depth_id].Upload({&stencil_copy, 1}, m_stencil_alias_staging->Handle(), 0, bytes);
+		m_slot_images[depth_id].Upload({&stencil_copy, 1}, m_stencil_alias_staging->Handle(), 0,
+		                               bytes);
 		MarkImageGpuModified(m_slot_images[depth_id]);
 	}
 	m_pending_stencil_shadows.clear();
@@ -4013,7 +4114,7 @@ void TextureCache::FlushStencilStorageShadows() {
 ImageId TextureCache::StencilPlaneReader(ImageId record_id, bool& copy) {
 	copy = false;
 	std::scoped_lock lock {m_lock};
-	const auto* record = m_slot_images.try_get(record_id);
+	const auto*      record = m_slot_images.try_get(record_id);
 	if (record == nullptr || !record->depth_id) {
 		return record_id;
 	}
@@ -4024,15 +4125,16 @@ ImageId TextureCache::StencilPlaneReader(ImageId record_id, bool& copy) {
 	const auto& depth  = m_slot_images[depth_id];
 	const auto  width  = depth.backing.extent.width;
 	const auto  height = depth.backing.extent.height;
-	const auto  found =
-	    m_stencil_planes.find(StencilPlaneKey(depth.info.data.address, record->info.data.address, width, height));
+	const auto  found  = m_stencil_planes.find(
+	    StencilPlaneKey(depth.info.data.address, record->info.data.address, width, height));
 	if (found == m_stencil_planes.end() || !found->second.buffer || found->second.width != width ||
 	    found->second.height != height) {
 		return depth_id; // never saved: the held plane, as without the switch
 	}
 	auto& saved  = found->second;
 	auto* reader = saved.reader ? m_slot_images.try_get(saved.reader) : nullptr;
-	if (reader == nullptr || reader->info.extent.width != width || reader->info.extent.height != height) {
+	if (reader == nullptr || reader->info.extent.width != width ||
+	    reader->info.extent.height != height) {
 		if (reader != nullptr) {
 			ReleaseUnregisteredImage(saved.reader);
 		}
@@ -4053,8 +4155,8 @@ ImageId TextureCache::StencilPlaneReader(ImageId record_id, bool& copy) {
 		fresh.reader        = reader_id;
 		fresh.reader_serial = 0;
 	}
-	auto& entry  = m_stencil_planes[found->first];
-	auto& target = m_slot_images[entry.reader];
+	auto& entry                = m_stencil_planes[found->first];
+	auto& target               = m_slot_images[entry.reader];
 	target.tick_accessed_last  = m_scheduler.CurrentTick();
 	target.frame_accessed_last = m_frame.load(std::memory_order_relaxed);
 	if (entry.reader_serial != entry.serial) {
@@ -4062,12 +4164,12 @@ ImageId TextureCache::StencilPlaneReader(ImageId record_id, bool& copy) {
 		target.Upload({&plane_copy, 1}, entry.buffer->Handle(), 0, uint64_t {width} * height);
 		entry.reader_serial = entry.serial;
 		static std::atomic<uint32_t> reads {0};
-		const auto n = reads.fetch_add(1, std::memory_order_relaxed) + 1u;
+		const auto                   n = reads.fetch_add(1, std::memory_order_relaxed) + 1u;
 		if (n <= 8u || std::has_single_bit(n)) {
 			LOGF("Stencil plane read #%u (KYTY_PRESERVE_STENCIL): plane 0x%012" PRIx64
 			     " of depth 0x%012" PRIx64 " %ux%u from its saved copy\n",
-			     n, m_slot_images[record_id].info.data.address, m_slot_images[depth_id].info.data.address,
-			     width, height);
+			     n, m_slot_images[record_id].info.data.address,
+			     m_slot_images[depth_id].info.data.address, width, height);
 		}
 	}
 	copy = true;
@@ -4082,8 +4184,8 @@ ImageId TextureCache::SingleSampleCopyOf(ImageId id, bool stencil) {
 	const auto*      source = m_slot_images.try_get(id);
 	const auto       format = source != nullptr ? source->backing.format : vk::Format::eUndefined;
 	const bool       has_stencil = format == vk::Format::eD16UnormS8Uint ||
-	                         format == vk::Format::eD24UnormS8Uint ||
-	                         format == vk::Format::eD32SfloatS8Uint;
+	                               format == vk::Format::eD24UnormS8Uint ||
+	                               format == vk::Format::eD32SfloatS8Uint;
 	if (source == nullptr || !source->registered || source->binding.needs_rebind ||
 	    source->backing.samples <= 1 || !source->info.IsDepth() || (stencil && !has_stencil) ||
 	    source->backing.image == nullptr || source->backing.image_type != vk::ImageType::e2D ||
@@ -4122,8 +4224,8 @@ ImageId TextureCache::SingleSampleCopyOf(ImageId id, bool stencil) {
 	const auto layers = source->info.resources.layers;
 	auto&      entry  = (stencil ? m_single_sample_stencils : m_single_sample_depths)[id];
 	auto*      copy   = entry.copy ? m_slot_images.try_get(entry.copy) : nullptr;
-	if (copy == nullptr || copy->info.extent.width != width ||
-	    copy->info.extent.height != height || copy->info.resources.layers != layers) {
+	if (copy == nullptr || copy->info.extent.width != width || copy->info.extent.height != height ||
+	    copy->info.resources.layers != layers) {
 		if (copy != nullptr) {
 			ReleaseUnregisteredImage(entry.copy);
 		}
@@ -4153,8 +4255,8 @@ ImageId TextureCache::SingleSampleCopyOf(ImageId id, bool stencil) {
 			     stencil ? "the stencil of " : "", guest, width, height, layers, samples);
 		}
 	}
-	auto& current = (stencil ? m_single_sample_stencils : m_single_sample_depths)[id];
-	auto& target  = m_slot_images[current.copy];
+	auto& current              = (stencil ? m_single_sample_stencils : m_single_sample_depths)[id];
+	auto& target               = m_slot_images[current.copy];
 	target.tick_accessed_last  = m_scheduler.CurrentTick();
 	target.frame_accessed_last = m_frame.load(std::memory_order_relaxed);
 	if (current.serial != serial) {
@@ -4286,7 +4388,7 @@ void TextureCache::ProbeLightGrid(const ImageInfo& info, uint64_t shader_hash) {
 	if (!LightGridFormat(info)) {
 		return;
 	}
-	const auto range = info.data;
+	const auto                        range = info.data;
 	thread_local std::vector<uint8_t> guest;
 	guest.resize(static_cast<size_t>(range.size));
 	if (!LibKernel::Memory::TryReadBacking(range.address, guest.data(), range.size)) {
@@ -4297,13 +4399,14 @@ void TextureCache::ProbeLightGrid(const ImageInfo& info, uint64_t shader_hash) {
 	const auto garbage = ScanLightGrid(guest.data(), range.size, info.extent.width,
 	                                   info.extent.height, layers, row, false);
 	// Largest count and the sum of counts (low 16 bits of each cell's second word).
-	uint32_t       most = 0;
-	uint64_t       sum  = 0;
+	uint32_t       most        = 0;
+	uint64_t       sum         = 0;
 	const uint64_t layer_bytes = layers != 0 ? range.size / layers : 0;
 	for (uint32_t l = 0; l < layers; l++) {
 		for (uint32_t y = 0; y < info.extent.height; y++) {
 			for (uint32_t x = 0; x < info.extent.width; x++) {
-				const uint64_t at = l * layer_bytes + (static_cast<uint64_t>(y) * row + x) * 8u + 4u;
+				const uint64_t at =
+				    l * layer_bytes + (static_cast<uint64_t>(y) * row + x) * 8u + 4u;
 				if (at + 4u > guest.size()) continue;
 				uint32_t packed = 0;
 				std::memcpy(&packed, guest.data() + at, sizeof(packed));
@@ -4314,9 +4417,9 @@ void TextureCache::ProbeLightGrid(const ImageInfo& info, uint64_t shader_hash) {
 	}
 	static std::atomic<uint64_t> probes {0};
 	static std::atomic<uint64_t> bad {0};
-	const auto n = probes.fetch_add(1, std::memory_order_relaxed) + 1;
-	const auto b = garbage != 0 ? bad.fetch_add(1, std::memory_order_relaxed) + 1
-	                            : bad.load(std::memory_order_relaxed);
+	const auto                   n = probes.fetch_add(1, std::memory_order_relaxed) + 1;
+	const auto                   b = garbage != 0 ? bad.fetch_add(1, std::memory_order_relaxed) + 1
+	                                              : bad.load(std::memory_order_relaxed);
 	if ((garbage != 0 && (b <= 64 || b % 256 == 0)) || n <= 16 || n % 4096 == 0) {
 		LOGF("LightGridProbe: ps 0x%016" PRIx64 " grid 0x%012" PRIx64 "+0x%" PRIx64
 		     " (%ux%u, %u layers, pitch %u): guest bytes %u cells > %u lights, max %u, sum %" PRIu64
@@ -4330,7 +4433,8 @@ void TextureCache::RepairLightGridUpload(const Image& image, Buffer& source,
                                          uint64_t source_offset) {
 	const auto& info  = image.info;
 	const auto  range = info.data;
-	if (source.Mapped().size() < source_offset || source.Mapped().size() - source_offset < range.size) {
+	if (source.Mapped().size() < source_offset ||
+	    source.Mapped().size() - source_offset < range.size) {
 		return;
 	}
 	// The guest bytes, read again into cached memory (the staging copy is write-combined, slow to
@@ -4340,13 +4444,14 @@ void TextureCache::RepairLightGridUpload(const Image& image, Buffer& source,
 	if (!LibKernel::Memory::TryReadBacking(range.address, guest.data(), range.size)) {
 		return;
 	}
-	const auto row = std::max(info.pitch, info.extent.width);
+	const auto row     = std::max(info.pitch, info.extent.width);
 	const auto garbage = ScanLightGrid(guest.data(), range.size, info.extent.width,
 	                                   info.extent.height, info.resources.layers, row, true);
 	if (garbage == 0) {
 		return;
 	}
-	std::memcpy(source.Mapped().data() + source_offset, guest.data(), static_cast<size_t>(range.size));
+	std::memcpy(source.Mapped().data() + source_offset, guest.data(),
+	            static_cast<size_t>(range.size));
 	source.Flush(source_offset, range.size);
 	static std::atomic<uint64_t> found {0};
 	const auto                   n = found.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -4452,10 +4557,10 @@ ImageId TextureCache::SubExtentCopy(ImageId id, const ImageInfo& requested) {
 			     guest, source_width, source_height, width, height);
 		}
 	}
-	auto& entry             = (*copies)[index];
-	auto& copy              = m_slot_images[entry.copy];
-	entry.used              = tick;
-	copy.tick_accessed_last = tick;
+	auto& entry              = (*copies)[index];
+	auto& copy               = m_slot_images[entry.copy];
+	entry.used               = tick;
+	copy.tick_accessed_last  = tick;
 	copy.frame_accessed_last = m_frame.load(std::memory_order_relaxed);
 	if (entry.serial != m_slot_images[id].ContentSerial()) {
 		// Within both images: the corner of the source the copy's extent covers.
@@ -4472,14 +4577,15 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	                      ? desc.info.type
 	                      : Prospero::ImageType::kColor2D;
 	// KYTY_NULL_COMPARE_DEPTH: the D16 null image of a depth-compare binding holds 0.0 or 1.0.
-	const bool compare_depth = NullCompareDepthEnabled() && desc.info.pixel_format == vk::Format::eD16Unorm &&
+	const bool compare_depth = NullCompareDepthEnabled() &&
+	                           desc.info.pixel_format == vk::Format::eD16Unorm &&
 	                           desc.view_info.aspect == vk::ImageAspectFlagBits::eDepth;
 	bool       compare_one   = false;
 	if (compare_depth) {
-		// Erlou NullCompareBinding: the depth that fails the S#'s comparison (reference OP texel; D16
-		// clamps the reference to [0, 1]). 0.0 for NEVER/LESS/EQUAL/LEQUAL, 1.0 for GREATER/GEQUAL.
-		// NOTEQUAL/ALWAYS (or both families) pass for some reference whatever the depth: Erlou exits,
-		// ours logs once and keeps 0.0.
+		// Erlou NullCompareBinding: the depth that fails the S#'s comparison (reference OP texel;
+		// D16 clamps the reference to [0, 1]). 0.0 for NEVER/LESS/EQUAL/LEQUAL, 1.0 for
+		// GREATER/GEQUAL. NOTEQUAL/ALWAYS (or both families) pass for some reference whatever the
+		// depth: Erlou exits, ours logs once and keeps 0.0.
 		constexpr uint32_t FailAtZero = (1u << 0u) | (1u << 1u) | (1u << 2u) | (1u << 3u);
 		constexpr uint32_t FailAtOne  = (1u << 0u) | (1u << 4u) | (1u << 6u);
 		const uint32_t     funcs      = t_null_compare_funcs;
@@ -4487,10 +4593,11 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 		if (!compare_one && (funcs & ~FailAtZero) != 0u) {
 			static std::atomic_bool logged {false};
 			if (!logged.exchange(true)) {
-				std::printf("Warning: KYTY_NULL_COMPARE_DEPTH: null image on a depth-compare binding with "
-				            "compare functions 0x%02x (NOTEQUAL/ALWAYS or both families): bound as 0.0 "
-				            "(logged once)\n",
-				            funcs);
+				std::printf(
+				    "Warning: KYTY_NULL_COMPARE_DEPTH: null image on a depth-compare binding with "
+				    "compare functions 0x%02x (NOTEQUAL/ALWAYS or both families): bound as 0.0 "
+				    "(logged once)\n",
+				    funcs);
 			}
 		}
 	}
@@ -4513,8 +4620,8 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 	info.mip_layout[0]   = {0, info.bytes_per_block, 1, 1};
 	const auto id        = InsertImage(info);
 	m_null_images.emplace(format, id);
-	const bool depth_format = info.pixel_format == vk::Format::eD16Unorm ||
-	                          info.pixel_format == vk::Format::eD32Sfloat;
+	const bool depth_format =
+	    info.pixel_format == vk::Format::eD16Unorm || info.pixel_format == vk::Format::eD32Sfloat;
 	if ((compare_depth || (NullTextureZeroEnabled() && !depth_format)) &&
 	    info.pixel_format != vk::Format::eUndefined) {
 		// Before, the texel was never written: an R32F null read (x, 0, 0, 1) with x undefined.
@@ -4532,8 +4639,8 @@ ImageId TextureCache::GetNullImage(const ImageDesc& desc) {
 		} else {
 			const vk::ClearColorValue       zero {std::array<float, 4> {}};
 			const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-			sink.clearColorImage(image.backing.image, vk::ImageLayout::eTransferDstOptimal, &zero, 1,
-			                     &range);
+			sink.clearColorImage(image.backing.image, vk::ImageLayout::eTransferDstOptimal, &zero,
+			                     1, &range);
 		}
 		image.NoteContentWrite();
 		static std::atomic_bool logged {false};
@@ -4589,18 +4696,19 @@ bool TextureCache::CopyD16(Image& destination, Image& source) {
 	const TileManager::ScratchHold scratch_hold(m_tiler);
 	// Converts guest D16 between a four-byte host depth aspect (D24/D32, stenciled) and two-byte
 	// color or native D16 depth (upstream 0685bffb2: D16 <-> D24/D32 depth copies exited).
-	const auto pair = CopyResolvePlan::ClassifyD16Pair(DepthAspectTransferBytes(source.backing.format),
-	                                                   DepthAspectTransferBytes(destination.backing.format));
+	const auto pair =
+	    CopyResolvePlan::ClassifyD16Pair(DepthAspectTransferBytes(source.backing.format),
+	                                     DepthAspectTransferBytes(destination.backing.format));
 	if (!pair.convert) {
 		return false;
 	}
-	const bool source_wide = pair.source_wide;
+	const bool source_wide    = pair.source_wide;
 	const bool source_depth   = source_wide;
 	auto&      depth          = source_wide ? source : destination;
 	auto&      color          = source_wide ? destination : source;
 	const auto transfer_bytes = sizeof(uint32_t);
-	const auto narrow_aspect  = color.info.IsDepth() ? vk::ImageAspectFlagBits::eDepth
-	                                                 : vk::ImageAspectFlagBits::eColor;
+	const auto narrow_aspect =
+	    color.info.IsDepth() ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor;
 	if (depth.info.bytes_per_block != sizeof(uint16_t) ||
 	    color.info.bytes_per_block != sizeof(uint16_t)) {
 		return false;
@@ -4702,7 +4810,8 @@ const char* TextureCache::TryDirectReinterpret(Image& destination, Image& source
 }
 
 bool TextureCache::CopyImage(ImageId destination_id, ImageId source_id, const char* context) {
-	ImageWatch(context != nullptr ? context : "image copy destination", m_slot_images[destination_id]);
+	ImageWatch(context != nullptr ? context : "image copy destination",
+	           m_slot_images[destination_id]);
 	RefreshCopySource(source_id);
 	// Levels the copy does not write must stay valid, and the result is GPU-owned.
 	RequireFullResidency(destination_id);
@@ -4755,26 +4864,28 @@ bool TextureCache::CopyImage(ImageId destination_id, ImageId source_id, const ch
 		if (source.backing.samples != 1 || destination.backing.samples != 1) {
 			EXIT("TextureCache: cross-format multisample image copy is unsupported\n");
 		}
-		if (!destination.CopyViaBufferSupported(source) && AliasBytesEnabled() &&
-		    !source_depth && !dest_depth && !source.depth_id && !destination.depth_id &&
-		    !source.info.HasStencil() && !destination.info.HasStencil()) [[unlikely]] {
+		if (!destination.CopyViaBufferSupported(source) && AliasBytesEnabled() && !source_depth &&
+		    !dest_depth && !source.depth_id && !destination.depth_id && !source.info.HasStencil() &&
+		    !destination.info.HasStencil()) [[unlikely]] {
 			// nps5 memtrk: texels of different sizes (e.g. SAROS's R64 Nanite visibility buffer and
-			// a 32-bit view of the same memory) have no texel-for-texel copy: the guest reinterprets
-			// the memory. As a GPU reading the other view would, the source's owned bytes are tiled
-			// out into the buffer in its guest layout and the destination is rebuilt from there in
-			// its own layout (the path a buffer-owned source takes above). Before this, Kyty EXITed
-			// in Image::CopyImageWithBuffer here, so no copy that ran before takes this branch.
+			// a 32-bit view of the same memory) have no texel-for-texel copy: the guest
+			// reinterprets the memory. As a GPU reading the other view would, the source's owned
+			// bytes are tiled out into the buffer in its guest layout and the destination is
+			// rebuilt from there in its own layout (the path a buffer-owned source takes above).
+			// Before this, Kyty EXITed in Image::CopyImageWithBuffer here, so no copy that ran
+			// before takes this branch.
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
-				destination.DescribeCopyMismatch(source, "TextureCache::CopyImage (rebuilt through memory)");
+				destination.DescribeCopyMismatch(
+				    source, "TextureCache::CopyImage (rebuilt through memory)");
 			}
-			const auto moved = MaterializeOwnedBytes(destination.info.data, source_id, {}, "copy-reinterpret");
+			const auto moved =
+			    MaterializeOwnedBytes(destination.info.data, source_id, {}, "copy-reinterpret");
 			destination.MarkBufferModified();
-			HangTrace::RecordTransfer(HangTrace::TransferKind::ImageCopy, "reinterpret-via-memory",
-			                          context, destination.info.data.address,
-			                          static_cast<uint32_t>(destination.backing.format),
-			                          destination.info.extent.width, destination.info.extent.height,
-			                          moved, 0);
+			HangTrace::RecordTransfer(
+			    HangTrace::TransferKind::ImageCopy, "reinterpret-via-memory", context,
+			    destination.info.data.address, static_cast<uint32_t>(destination.backing.format),
+			    destination.info.extent.width, destination.info.extent.height, moved, 0);
 			return false;
 		}
 		auto& copy_buffer = m_buffer_cache.GetUtilityBuffer(MemoryUsage::DeviceLocal);
@@ -4840,15 +4951,17 @@ static Live::Switch g_depth_extent_recreate("KYTY_DEPTH_EXTENT_RECREATE", Live::
 
 // How often ResolveDepthOverlap met a depth target asked for larger than the cached image: logged
 // the first 8 times and then at every power of two, with the switch's answer.
-static void NoteDepthExtentGrowth(const ImageInfo& requested, const ImageInfo& cached, bool recreated) {
+static void NoteDepthExtentGrowth(const ImageInfo& requested, const ImageInfo& cached,
+                                  bool recreated) {
 	static std::atomic<uint64_t> count {0};
 	const auto                   n = count.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (n <= 8 || (n & (n - 1)) == 0) {
-		std::printf("DepthExtent: depth target 0x%016" PRIx64 " asked %ux%u over a cached %ux%u (pitch %u, "
-		            "levels %u, layers %u): %s (%" PRIu64 " so far, KYTY_DEPTH_EXTENT_RECREATE)\n",
-		            requested.data.address, requested.extent.width, requested.extent.height,
-		            cached.extent.width, cached.extent.height, requested.pitch, requested.resources.levels,
-		            requested.resources.layers, recreated ? "re-created" : "kept", n);
+		std::printf(
+		    "DepthExtent: depth target 0x%016" PRIx64 " asked %ux%u over a cached %ux%u (pitch %u, "
+		    "levels %u, layers %u): %s (%" PRIu64 " so far, KYTY_DEPTH_EXTENT_RECREATE)\n",
+		    requested.data.address, requested.extent.width, requested.extent.height,
+		    cached.extent.width, cached.extent.height, requested.pitch, requested.resources.levels,
+		    requested.resources.layers, recreated ? "re-created" : "kept", n);
 		std::fflush(stdout);
 	}
 }
@@ -4865,13 +4978,15 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	// PPSA04264, PPSA04288
 	// A depth or storage view can cover a prefix of the same array. HTile describes the
 	// depth view separately from the texel layout preserved in either direction.
-	// KYTY_HTILE_PREFIX_REBIND (default off, v1.4 review M6): PrefixLayoutGuard keeps the v1.3.1 address / bytes-per-block /
-	// cached-layers / no-metadata checks unless the gate is on (htilePrefixRebind.h).
+	// KYTY_HTILE_PREFIX_REBIND (default off, v1.4 review M6): PrefixLayoutGuard keeps the v1.3.1
+	// address / bytes-per-block / cached-layers / no-metadata checks unless the gate is on
+	// (htilePrefixRebind.h).
 	const bool retain_cached_layout =
 	    requested.samples == 1 && cached.info.samples == 1 && cached.backing.samples == 1 &&
-	    PrefixLayoutGuard(HtilePrefixRebindEnabled(), requested.bytes_per_block == cached.info.bytes_per_block,
-	                      requested.data.address == cached.info.data.address, cached.info.resources.layers != 0,
-	                      !requested.HasMetadata(), requested.metadata.kind == ImageMetadataKind::Htile) &&
+	    PrefixLayoutGuard(
+	        HtilePrefixRebindEnabled(), requested.bytes_per_block == cached.info.bytes_per_block,
+	        requested.data.address == cached.info.data.address, cached.info.resources.layers != 0,
+	        !requested.HasMetadata(), requested.metadata.kind == ImageMetadataKind::Htile) &&
 	    requested.data.size < cached.info.data.size && requested.extent == cached.info.extent &&
 	    requested.resources.levels == 1 && cached.info.resources.levels == 1 &&
 	    requested.resources.layers != 0 &&
@@ -4899,9 +5014,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	    !IsSupportedSampledDepthFormat(cached.info.pixel_format, requested.pixel_format);
 	// KYTY_IMAGE_CONTAINS=1 (Erlou93/KytyPS5-Yotei): capacity = levels AND layers, not the
 	// lexicographic compare (which reused 7 levels x 9 layers for a 1 level x 12 layers request).
-	const bool too_small = ImageContainsEnabled() ? !cached.info.resources.Contains(requested.resources)
-	                                              : cached.info.resources < requested.resources;
-	bool recreate = too_small || requested.IsVolume() != cached.info.IsVolume();
+	const bool too_small = ImageContainsEnabled()
+	                           ? !cached.info.resources.Contains(requested.resources)
+	                           : cached.info.resources < requested.resources;
+	bool       recreate  = too_small || requested.IsVolume() != cached.info.IsVolume();
 	switch (binding) {
 		case BindingType::Texture:
 			recreate |= requested.IsDepth() && !cached.info.IsDepth();
@@ -4924,8 +5040,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 	}
 	// KYTY_DEPTH_EXTENT_RECREATE (based on Senaxx/KytyPS5 4b7fb3274): a depth target asked for
 	// wider than the cached depth image at the same address, pitch and height (the caller compared
-	// BlockExtent) was given the narrower image, while the render area follows the requested extent:
-	// the pass would render past the image's end. Counted whatever the switch says.
+	// BlockExtent) was given the narrower image, while the render area follows the requested
+	// extent: the pass would render past the image's end. Counted whatever the switch says.
 	const bool depth_extent_grows = binding == BindingType::DepthTarget && !recreate &&
 	                                cached.info.IsDepth() &&
 	                                (requested.extent.width > cached.info.extent.width ||
@@ -4936,7 +5052,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		if (enabled) {
 			if (IsDepthGrowth(requested, cached.info) && cached.registered && !cached.depth_id &&
 			    cached.backing.samples == 1) {
-				// One level and layer: the grown image keeps depth and stencil (KYTY_DEPTH_GROW_RECREATE's copy).
+				// One level and layer: the grown image keeps depth and stencil
+				// (KYTY_DEPTH_GROW_RECREATE's copy).
 				m_depth_path = DepthPath::Recreate;
 				return GrowDepthTarget(requested, cached_id);
 			}
@@ -4944,8 +5061,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		}
 	}
 	if (!recreate) {
-		// A function of the two infos and the start-up switches; a growth the live switch left alone
-		// is not replayable (not Same: NoteDepthOverlap marks the lookup impure).
+		// A function of the two infos and the start-up switches; a growth the live switch left
+		// alone is not replayable (not Same: NoteDepthOverlap marks the lookup impure).
 		m_depth_path = depth_extent_grows ? DepthPath::Recreate : DepthPath::Same;
 		return cached_id;
 	}
@@ -4998,7 +5115,8 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		     ImageViewOps::FormatsCompatible(cached.backing.format, replacement.backing.format));
 		if (copy_supported) {
 			// KYTY_PRESERVE_STENCIL_RECREATE: a copy never includes the stencil aspect.
-			const bool recreate_stencil = PreserveStencilRecreateEnabled() && cached.backing.samples == 1;
+			const bool recreate_stencil =
+			    PreserveStencilRecreateEnabled() && cached.backing.samples == 1;
 			if (recreate_stencil && cached.info.IsDepth() && cached.info.HasStencil() &&
 			    !replacement.info.IsDepth() && SwapsStencilPlanes(cached)) {
 				SaveRecreatedStencil(cached);
@@ -5091,7 +5209,8 @@ ImageId TextureCache::GrowDepthTarget(const ImageInfo& requested, ImageId cached
 	RefreshCopySource(cached_id);
 	bool stencil_gpu = false;
 	for (const auto record: std::vector<ImageId>(m_slot_images[cached_id].stencil_ids)) {
-		if (const auto* plane = m_slot_images.try_get(record); plane != nullptr && plane->registered) {
+		if (const auto* plane = m_slot_images.try_get(record);
+		    plane != nullptr && plane->registered) {
 			RefreshImage(record);
 			stencil_gpu |= m_slot_images[record].IsGpuModified();
 		}
@@ -5150,7 +5269,8 @@ ImageId TextureCache::GrowDepthTarget(const ImageInfo& requested, ImageId cached
 		TrackImage(record_id);
 		CommitGpuWrite(m_slot_images[record_id]);
 	}
-	if (static std::atomic<uint32_t> logged {0}; logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+	if (static std::atomic<uint32_t> logged {0};
+	    logged.fetch_add(1, std::memory_order_relaxed) < 16) {
 		LOGF("TextureCache: depth target 0x%016" PRIx64 " grew %ux%u -> %ux%u (pitch %u%s%s)\n",
 		     requested.data.address, cached.info.extent.width, cached.info.extent.height,
 		     requested.extent.width, requested.extent.height, requested.pitch,
@@ -5175,7 +5295,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	const auto note_timed = [&] {
 		auto& lookup = m_last_overlap;
 		if (safe_to_delete || lookup.timed_count >= OverlapLookup::MaxTimed) {
-			NoteOverlapImpure(safe_to_delete ? OverlapLookup::WhyTimedTaken : OverlapLookup::WhyTimedMany);
+			NoteOverlapImpure(safe_to_delete ? OverlapLookup::WhyTimedTaken
+			                                 : OverlapLookup::WhyTimedMany);
 		} else {
 			lookup.timed[lookup.timed_count++] = cached_id;
 		}
@@ -5194,7 +5315,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			}
 			return {GrowDepthTarget(requested, cached_id)};
 		}
-		if (static std::atomic<uint64_t> logged {0}; logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+		if (static std::atomic<uint64_t> logged {0};
+		    logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 			LOGF("TextureCache: depth target 0x%016" PRIx64 " grows %ux%u -> %ux%u (pitch %u); "
 			     "KYTY_DEPTH_GROW_RECREATE is off, the smaller image is kept\n",
 			     requested.data.address, cached.info.extent.width, cached.info.extent.height,
@@ -5202,7 +5324,8 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		}
 		// On the console too, counted (the LOGF above goes to the emulator log only).
 		static std::atomic<uint64_t> grows {0};
-		if (const auto n = grows.fetch_add(1, std::memory_order_relaxed) + 1; n <= 8 || (n & (n - 1)) == 0) {
+		if (const auto n = grows.fetch_add(1, std::memory_order_relaxed) + 1;
+		    n <= 8 || (n & (n - 1)) == 0) {
 			std::printf("DepthGrow: depth target 0x%016" PRIx64 " grows %ux%u -> %ux%u (pitch %u), "
 			            "KYTY_DEPTH_GROW_RECREATE off (%" PRIu64 " so far)\n",
 			            requested.data.address, cached.info.extent.width, cached.info.extent.height,
@@ -5267,8 +5390,7 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		    requested.type == cached.info.type && requested.resources > cached.info.resources &&
 		    (requested.data.size > cached.info.data.size ||
 		     (requested.data.size == cached.info.data.size &&
-		      requested.extent == cached.info.extent &&
-		      cached.info.resources.levels > 1 &&
+		      requested.extent == cached.info.extent && cached.info.resources.levels > 1 &&
 		      requested.resources.layers == cached.info.resources.layers))) {
 			NoteOverlapImpure(OverlapLookup::WhyExpand);
 			return {ExpandImage(requested, cached_id)};
@@ -5332,11 +5454,13 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 
 void TextureCache::NoteDepthOverlap(ImageId cached_id) {
 	// KYTY_IMG_DEPTHALIAS: which ResolveDepthOverlap answers keep the lookup replayable.
-	//  Same: the outcome is a function of the request, the cached image's fixed fields (info, backing
+	//  Same: the outcome is a function of the request, the cached image's fixed fields (info,
+	//  backing
 	//    sample count) and start-up switches; no effect.
 	//  Alias: additionally of the inner region scan (FindImagesInRegion over the request's range:
-	//    owner lists, registered flags, stencil associations - all of which move the pages' structure
-	//    versions - and the found image's fixed fields); its one effect is listed for the replay.
+	//    owner lists, registered flags, stencil associations - all of which move the pages'
+	//    structure versions - and the found image's fixed fields); its one effect is listed for the
+	//    replay.
 	//  Recreate: inserts, copies, frees: impure.
 	auto& lookup = m_last_overlap;
 	if (m_depth_path == DepthPath::Same) {
@@ -5375,9 +5499,11 @@ void TextureCache::NoteOverlapImpure(uint8_t why) {
 bool TextureCache::OverlapSafeToDelete(const Image& cached) const {
 	const auto current_tick  = m_scheduler.CurrentTick();
 	const auto current_frame = m_frame.load(std::memory_order_relaxed);
-	return current_tick - std::min(current_tick, cached.tick_accessed_last) > NumFramesBeforeRemoval &&
-	       (!AliasAgeByFrames() || current_frame - std::min(current_frame, cached.frame_accessed_last) >
-	                                   AliasFramesBeforeRemoval);
+	return current_tick - std::min(current_tick, cached.tick_accessed_last) >
+	           NumFramesBeforeRemoval &&
+	       (!AliasAgeByFrames() ||
+	        current_frame - std::min(current_frame, cached.frame_accessed_last) >
+	            AliasFramesBeforeRemoval);
 }
 
 bool TextureCache::KeepOverlappedImage(const Image& cached, uint64_t current_frame) const {
@@ -5482,19 +5608,19 @@ TextureCache::TextureTransfer TextureCache::BuildTextureTransfer(const ImageInfo
 		}
 	}
 
-	// nps5 mipclamp: the guest layout (slice stride) follows the declared level count; the copies of
-	// levels the host image does not have are dropped below.
+	// nps5 mipclamp: the guest layout (slice stride) follows the declared level count; the copies
+	// of levels the host image does not have are dropped below.
 	const uint32_t layout_levels = info.GuestLevels();
-	if (!upload && !TextureUploadLayoutSupported(format, info.extent.width, info.extent.height,
-	                                             layout_levels, layers, info.tile_mode,
-	                                             allow_depth_tile, volume)) {
+	if (!upload &&
+	    !TextureUploadLayoutSupported(format, info.extent.width, info.extent.height, layout_levels,
+	                                  layers, info.tile_mode, allow_depth_tile, volume)) {
 		// Not downloadable (e.g. a colour view of depth-tiled memory): report an invalid transfer
 		// so callers keep their exact fallback instead of stopping the emulator.
 		return transfer;
 	}
-	transfer.layout  = TextureCalcUploadLayout(format, info.extent.width, info.extent.height,
-	                                       layout_levels, layers, info.tile_mode,
-	                                       info.data.size, allow_depth_tile, volume, owner);
+	transfer.layout = TextureCalcUploadLayout(format, info.extent.width, info.extent.height,
+	                                          layout_levels, layers, info.tile_mode, info.data.size,
+	                                          allow_depth_tile, volume, owner);
 	transfer.regions = TextureBuildImageCopies(transfer.layout);
 	if (layout_levels > info.resources.levels) {
 		TextureDropLevels(transfer.regions, info.resources.levels);
@@ -5612,7 +5738,8 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 	// emulator in the tiler.
 	if (const uint64_t slice_bytes =
 	        static_cast<uint64_t>(info.pitch) * info.extent.height * info.bytes_per_block;
-	    (info.extent.height == 0 || slice_bytes > full_slice_size) && Common::SkipInvalidEnabled()) {
+	    (info.extent.height == 0 || slice_bytes > full_slice_size) &&
+	    Common::SkipInvalidEnabled()) {
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 			LOGF("TextureCache: depth %s 0x%012" PRIx64 "+0x%" PRIx64
@@ -5689,8 +5816,9 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
 	// KYTY_DISCARDED_TARGET_SKIP: a new target over a just-discarded GPU-written target holds
 	// nothing the game wrote.
-	if (upload && DiscardedTargetSkipEnabled() && !image.IsBufferModified() && !image.WasEverUploaded() &&
-	    IsTargetImage(image) && !m_buffer_cache.IsRegionGpuModified(image.info.data.address, image.info.data.size) &&
+	if (upload && DiscardedTargetSkipEnabled() && !image.IsBufferModified() &&
+	    !image.WasEverUploaded() && IsTargetImage(image) &&
+	    !m_buffer_cache.IsRegionGpuModified(image.info.data.address, image.info.data.size) &&
 	    WasDiscardedTarget(image)) {
 		Profiler::CountFrameEvent(Profiler::FrameEvent::TextureDiscardedTargetSkips);
 		image.RefreshComplete();
@@ -5771,14 +5899,15 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 		// resident): the bytes of levels no view can sample are neither read nor uploaded.
 		const auto live = image.live;
 		// KYTY_LIGHT_GRID_CAP: a light grid is uploaded here, from bytes it can repair.
-		const bool light_grid = LightGridCapEnabled() && image.FullyResident() &&
-		                        IsLightGridShape(image.info);
+		const bool light_grid =
+		    LightGridCapEnabled() && image.FullyResident() && IsLightGridShape(image.info);
 		// KYTY_GUEST_HASH_IMAGES_KB: the guest bytes are hashed before they are staged (a CPU write
-		// between the two leaves the hash older than the upload, so the next comparison uploads once
-		// more rather than missing it), and the upload takes them whatever buffer covers them.
-		uint64_t   guest_hash = 0;
-		const bool hash_guest = !partial.done && image.FullyResident() && ChecksGuestContent(image) &&
-		                        HashGuestBytes(live.address, live.size, guest_hash);
+		// between the two leaves the hash older than the upload, so the next comparison uploads
+		// once more rather than missing it), and the upload takes them whatever buffer covers them.
+		uint64_t   guest_hash    = 0;
+		const bool hash_guest    = !partial.done && image.FullyResident() &&
+		                           ChecksGuestContent(image) &&
+		                           HashGuestBytes(live.address, live.size, guest_hash);
 		image.content_hash_valid = false;
 		if (!partial.done && (light_grid || hash_guest || !TryAsyncFullUpload(image))) {
 			const bool cached_source = m_buffer_cache.IsRegionRegistered(live.address, live.size) ||
@@ -5832,7 +5961,11 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 		image.NoteUpload();
 		image.ClearDirtySpan();
 		if (NanProbe::Armed()) [[unlikely]] {
-			NanProbe::WatchLog("upload", partial.done ? "cpu-write-partial" : reason, image.info.data.address, image.info.data.size, id.index, id.generation, vk::to_string(image.backing.format).c_str(), image.info.extent.width, image.info.extent.height, image.IsGpuModified() ? 1 : 0);
+			NanProbe::WatchLog("upload", partial.done ? "cpu-write-partial" : reason,
+			                   image.info.data.address, image.info.data.size, id.index,
+			                   id.generation, vk::to_string(image.backing.format).c_str(),
+			                   image.info.extent.width, image.info.extent.height,
+			                   image.IsGpuModified() ? 1 : 0);
 		}
 		FlightRec::Rec(FlightRec::EvTexUpload, image.info.data.address, uploaded,
 		               partial.done ? FlightRec::TexUploadPartial : FlightRec::TexUpload,
@@ -5855,10 +5988,10 @@ void TextureCache::InitializeImage(ImageId id, RefreshIntent intent) {
 			                          gpu_partial    ? "gpu-buffer-partial"
 			                          : partial.done ? "cpu-write-partial"
 			                                         : reason,
-			                          writer != nullptr          ? writer
-			                          : image.depth_id           ? "stencil-plane"
-			                          : !image.FullyResident()   ? "texture-resident"
-			                                                     : UploadBindingName(binding),
+			                          writer != nullptr        ? writer
+			                          : image.depth_id         ? "stencil-plane"
+			                          : !image.FullyResident() ? "texture-resident"
+			                                                   : UploadBindingName(binding),
 			                          image.info.data.address,
 			                          static_cast<uint32_t>(image.backing.format),
 			                          image.info.extent.width, image.info.extent.height, uploaded,
@@ -5905,17 +6038,18 @@ bool TextureCache::AliasRebuildPartialEnabled() {
 	return enabled;
 }
 
-// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1 (opt-in, default off; needs KYTY_ALIAS_REBUILD_PARTIAL=1): the
-// partial rebuild moves this image's owned bytes inside its segments to the buffer by tiling only
-// the blocks that hold owned bytes (OwnedRebuild::PreserveSegments), not every whole segment that
-// holds one. The bytes that reach the buffer are the same; the tile pass is smaller.
+// KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1 (opt-in, default off; needs KYTY_ALIAS_REBUILD_PARTIAL=1):
+// the partial rebuild moves this image's owned bytes inside its segments to the buffer by tiling
+// only the blocks that hold owned bytes (OwnedRebuild::PreserveSegments), not every whole segment
+// that holds one. The bytes that reach the buffer are the same; the tile pass is smaller.
 static bool AliasRebuildPreserveTightEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_ALIAS_REBUILD_PRESERVE_TIGHT");
 		const bool  on    = value != nullptr && std::strcmp(value, "1") == 0;
 		if (on) {
-			std::fprintf(stderr, "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1: partial rebuilds "
-			                     "tile out only the blocks that hold owned bytes\n");
+			std::fprintf(stderr,
+			             "[tilerdisp] KYTY_ALIAS_REBUILD_PRESERVE_TIGHT=1: partial rebuilds "
+			             "tile out only the blocks that hold owned bytes\n");
 		}
 		return on;
 	}();
@@ -6002,13 +6136,13 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 			    return OwnedRebuild::BlockState::Owned;
 		    }
 		    if (image.coherence.CoveredWith(image.OwnedSet(), image.OwnsAllBytes(), address,
-			                                size)) {
+		                                    size)) {
 			    blocks_coherent++;
 			    return OwnedRebuild::BlockState::Owned;
 		    }
 		    blocks_stale++;
 		    return image.OwnsBytesIn(address, size) ? OwnedRebuild::BlockState::Mixed
-			                                        : OwnedRebuild::BlockState::NotOwned;
+		                                            : OwnedRebuild::BlockState::NotOwned;
 	    },
 	    plan, OwnedRebuild::RowAlign(tile0.bytes_per_element),
 	    OwnedRebuild::ColumnAlign(tile0.bytes_per_element));
@@ -6105,7 +6239,9 @@ TextureCache::PartialUploadResult TextureCache::TryOwnedPartialRebuild(ImageId  
 				parts.clear();
 				OwnedRebuild::PreserveSegments(
 				    surface, segment,
-				    [&](uint64_t address, uint64_t size) { return image.OwnsBytesIn(address, size); },
+				    [&](uint64_t address, uint64_t size) {
+					    return image.OwnsBytesIn(address, size);
+				    },
 				    OwnedRebuild::RowAlign(tile0.bytes_per_element),
 				    OwnedRebuild::ColumnAlign(tile0.bytes_per_element), parts);
 				for (const auto& part: parts) {
@@ -6358,7 +6494,7 @@ TextureCache::PartialUploadResult TextureCache::TryPartialUpload(Image& image) {
 				if (!LibKernel::Memory::TryReadBacking(base + range.offset, mapped + range.packed,
 				                                       range.size) &&
 				    !LibKernel::Memory::TryReadSparseBacking(base + range.offset,
-				                                          mapped + range.packed, range.size) &&
+				                                             mapped + range.packed, range.size) &&
 				    !ReadPartlyUnmappedImageBacking(base + range.offset, mapped + range.packed,
 				                                    range.size)) {
 					EXIT("TextureCache: failed to read mapped guest image backing\n");
@@ -6507,9 +6643,9 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuDccClear(ImageId id, const I
 	// other (its keys decide). KYTY_DCC_GPU_WIDE 8 (with 4): a DCC-compressed video-out surface
 	// (GT7's flips) is inspected too. The fallback decides it from the same bytes and the same way
 	// (first key a decodable clear code and every byte equal to it), whatever the compression.
-	const bool compressed_flip = video_out_any_kind ||
-	                             (keep_keys && (DccGpuWide() & 8u) != 0 &&
-	                              desc.info.metadata.compression != VideoOutCompression::Unsupported);
+	const bool compressed_flip =
+	    video_out_any_kind || (keep_keys && (DccGpuWide() & 8u) != 0 &&
+	                           desc.info.metadata.compression != VideoOutCompression::Unsupported);
 	if (desc.info.metadata.compression != VideoOutCompression::Uncompressed && !compressed_flip) {
 		return Event::DccFallbackShape;
 	}
@@ -6527,18 +6663,18 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuDccClear(ImageId id, const I
 	                                      metadata_base_layer, values, decodable, false, keep_keys);
 }
 
-// KYTY_DCC_GPU_ALIASED=1|2 (default off, read once): images registered over a target's metadata bytes
-// no longer send the metadata inspection to the CPU fallback (a download that drains the GPU: GT7
-// races, ~3.6 a frame at 1-5 ms each, metadata written by a compute dispatch of the same frame) as
-// long as none of them is GPU-modified (its newest bytes would be in the image, not in the buffer
-// the inspection reads) and none is the target itself. The inspection reads and rewrites the
+// KYTY_DCC_GPU_ALIASED=1|2 (default off, read once): images registered over a target's metadata
+// bytes no longer send the metadata inspection to the CPU fallback (a download that drains the GPU:
+// GT7 races, ~3.6 a frame at 1-5 ms each, metadata written by a compute dispatch of the same frame)
+// as long as none of them is GPU-modified (its newest bytes would be in the image, not in the
+// buffer the inspection reads) and none is the target itself. The inspection reads and rewrites the
 // metadata through the canonical buffer as a GPU write (ObtainBuffer), which invalidates the images
 // over those bytes as any buffer write does. Other images keep the old path.
 // =2 also accepts GPU-modified images over the metadata (not the target itself), as usa-ratt's GPU
-// clear check does (no aliasing test): GT7 registers an 8.4 MiB image 0x60000 past a 2048x1024 target
-// whose range covers that target's DCC bytes; it is GPU-modified, so =1 keeps that inspection on the
-// CPU (a drain per bind). Accuracy cost: bytes of the metadata such an image wrote and has not
-// written back would be missed by the inspection (the buffer copy is read).
+// clear check does (no aliasing test): GT7 registers an 8.4 MiB image 0x60000 past a 2048x1024
+// target whose range covers that target's DCC bytes; it is GPU-modified, so =1 keeps that
+// inspection on the CPU (a drain per bind). Accuracy cost: bytes of the metadata such an image
+// wrote and has not written back would be missed by the inspection (the buffer copy is read).
 bool TextureCache::MetadataAliasBlocks(ImageId id, GuestRange range, bool* aliased) {
 	const auto images = FindImagesInRegion(range.address, range.size, false);
 	if (images.size() == 0) {
@@ -6559,11 +6695,15 @@ bool TextureCache::MetadataAliasBlocks(ImageId id, GuestRange range, bool* alias
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 				std::fprintf(stderr,
-				             "DCC aliased metadata 0x%016" PRIx64 "+0x%" PRIx64 " kept on the CPU path: image "
+				             "DCC aliased metadata 0x%016" PRIx64 "+0x%" PRIx64
+				             " kept on the CPU path: image "
 				             "data 0x%016" PRIx64 "+0x%" PRIx64 " %s\n",
-				             range.address, range.size, image != nullptr ? image->info.data.address : 0,
+				             range.address, range.size,
+				             image != nullptr ? image->info.data.address : 0,
 				             image != nullptr ? image->info.data.size : 0,
-				             other == id ? "is the target" : image == nullptr ? "gone" : "is GPU-modified");
+				             other == id        ? "is the target"
+				             : image == nullptr ? "gone"
+				                                : "is GPU-modified");
 			}
 			return true;
 		}
@@ -6577,10 +6717,11 @@ bool TextureCache::MetadataAliasBlocks(ImageId id, GuestRange range, bool* alias
 		const auto* image = m_slot_images.try_get(*images.begin());
 		std::fprintf(stderr,
 		             "DCC aliased metadata inspected on the GPU (KYTY_DCC_GPU_ALIASED): %" PRIu64
-		             " times; e.g. metadata 0x%016" PRIx64 "+0x%" PRIx64 " under image data 0x%016" PRIx64
-		             "+0x%" PRIx64 " %ux%u\n",
+		             " times; e.g. metadata 0x%016" PRIx64 "+0x%" PRIx64
+		             " under image data 0x%016" PRIx64 "+0x%" PRIx64 " %ux%u\n",
 		             n, range.address, range.size, image != nullptr ? image->info.data.address : 0,
-		             image != nullptr ? image->info.data.size : 0, image != nullptr ? image->info.extent.width : 0,
+		             image != nullptr ? image->info.data.size : 0,
+		             image != nullptr ? image->info.extent.width : 0,
 		             image != nullptr ? image->info.extent.height : 0);
 	}
 	return false;
@@ -6593,9 +6734,9 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 	using Event = Profiler::FrameEvent;
 	using Support = DccClearHelper::Support;
 	// KYTY_DCC_GPU_WIDE (textureCache.h): what this inspection was accepted through.
-	bool wide_aliased  = false;
-	bool wide_mismatch = false;
-	bool watch_reused  = false; // reused only through the metadata watch (KYTY_DCC_GPU_WIDE)
+	bool        wide_aliased  = false;
+	bool        wide_mismatch = false;
+	bool        watch_reused  = false; // reused only through the metadata watch (KYTY_DCC_GPU_WIDE)
 	const auto& view = desc.view_info;
 	if (!helper.Available()) {
 		return Event::DccFallbackDisabled;
@@ -6639,11 +6780,12 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 			const auto metadata = slice_range(slice);
 			const auto revision = m_buffer_cache.GetContentRevision(metadata.address, metadata.size);
 			const auto found    = m_gpu_dcc_inspections.find(metadata.address);
-			const bool same     = found != m_gpu_dcc_inspections.end() && found->second.metadata == metadata &&
-			                  (decodable & ~found->second.decodable_mask) == 0;
+			const bool same     = found != m_gpu_dcc_inspections.end() &&
+			                      found->second.metadata == metadata &&
+			                      (decodable & ~found->second.decodable_mask) == 0;
 			const bool by_revision = same && revision && found->second.revision == *revision;
-			const bool by_watch =
-			    same && !by_revision && watched && m_buffer_cache.MetadataUnwritten(metadata.address, metadata.size);
+			const bool by_watch = same && !by_revision && watched &&
+			                      m_buffer_cache.MetadataUnwritten(metadata.address, metadata.size);
 			watch_reused |= by_watch;
 			reusable = by_revision || by_watch;
 		}
@@ -6664,16 +6806,21 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 		uint32_t             wrong = 0;
 		bool                 all   = true;
 		for (uint32_t slice = 0; slice < count; ++slice) {
-			if (!LibKernel::Memory::TryReadBacking(slice_range(slice).address, bytes.data(), bytes.size())) {
+			if (!LibKernel::Memory::TryReadBacking(slice_range(slice).address, bytes.data(),
+			                                       bytes.size())) {
 				all = false;
 				break;
 			}
 			uint32_t index = 0;
-			while (index < DccClearHelper::ClearCodes.size() && DccClearHelper::ClearCodes[index] != bytes[0]) {
+			while (index < DccClearHelper::ClearCodes.size() &&
+			       DccClearHelper::ClearCodes[index] != bytes[0]) {
 				index++;
 			}
-			wrong += index < DccClearHelper::ClearCodes.size() && (decodable & (1u << index)) != 0 &&
-			                 std::all_of(bytes.begin(), bytes.end(), [&](uint8_t byte) { return byte == bytes[0]; })
+			wrong += index < DccClearHelper::ClearCodes.size() &&
+			                 (decodable & (1u << index)) != 0 &&
+			                 std::all_of(
+			                     bytes.begin(), bytes.end(),
+			                     [&](uint8_t byte) { return byte == bytes[0]; })
 			             ? 1u
 			             : 0u;
 		}
@@ -6714,12 +6861,12 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 	const auto eligible = [&]() -> std::optional<Event> {
 		const auto* image = m_slot_images.try_get(id);
 		const bool  exact = image != nullptr && image->info.data == desc.info.data &&
-		                   image->info.extent == desc.info.extent;
+		                    image->info.extent == desc.info.extent;
 		// KYTY_DCC_GPU_WIDE 2: the image found for the binding, whatever its range and extent; its
 		// whole layer is inspected, as the CPU fallback's ClearImage(id) clears it.
 		wide_mismatch = !exact && (DccGpuWide() & 2u) != 0;
-		const bool  matches = image != nullptr && image->registered && !image->depth_id &&
-		                     (exact || wide_mismatch);
+		const bool matches =
+		    image != nullptr && image->registered && !image->depth_id && (exact || wide_mismatch);
 		if (!matches ||
 		    (!SafeToDownload(*image) && !(refresh_allowed && image->FullyResident()))) {
 			// Which condition refused it (DccImageState* counters, MaterializeDccClear). The
@@ -6800,22 +6947,26 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 		wide_expected.resize(count);
 		std::vector<uint8_t> bytes(slice_size);
 		for (uint32_t slice = 0; slice < count; ++slice) {
-			if (!LibKernel::Memory::TryReadBacking(slice_range(slice).address, bytes.data(), bytes.size())) {
+			if (!LibKernel::Memory::TryReadBacking(slice_range(slice).address, bytes.data(),
+			                                       bytes.size())) {
 				EXIT("TextureCache: failed to read colour metadata for the wide verification\n");
 			}
 			uint32_t index = 0;
-			while (index < DccClearHelper::ClearCodes.size() && DccClearHelper::ClearCodes[index] != bytes[0]) {
+			while (index < DccClearHelper::ClearCodes.size() &&
+			       DccClearHelper::ClearCodes[index] != bytes[0]) {
 				index++;
 			}
 			wide_expected[slice] =
 			    index < DccClearHelper::ClearCodes.size() && (decodable & (1u << index)) != 0 &&
-			    std::all_of(bytes.begin(), bytes.end(), [&](uint8_t byte) { return byte == bytes[0]; });
+			    std::all_of(
+			        bytes.begin(), bytes.end(), [&](uint8_t byte) { return byte == bytes[0]; });
 		}
 	}
 	// Use the canonical buffer and its normal GPU-write tracking. No CPU shadow of the
 	// clear value is trusted. Acquiring it may upload/submit, so hold no texture lock.
 	// Kept keys are only read.
-	auto [buffer, offset] = m_buffer_cache.ObtainBuffer(range.address, range.size, !keep_keys, false);
+	auto [buffer, offset] =
+	    m_buffer_cache.ObtainBuffer(range.address, range.size, !keep_keys, false);
 	if (buffer == nullptr) {
 		return Event::DccFallbackUnsupported;
 	}
@@ -6910,11 +7061,11 @@ Profiler::FrameEvent TextureCache::TryMaterializeGpuMetadataClear(
 	return Event::DccGpuRecords;
 }
 
-// KYTY_DCC_GPU_WIDE (textureCache.h) is also a live switch (common/liveSwitch.h): the mask used is the
-// startup value (read when the cache is created) or'ed with the live value, so live control (A/B) turns
-// bits on and off when the run starts with 0. Every inspection decides with the current mask, and both
-// paths leave the metadata in a state the other reads the same way, so a change between two
-// inspections is safe.
+// KYTY_DCC_GPU_WIDE (textureCache.h) is also a live switch (common/liveSwitch.h): the mask used is
+// the startup value (read when the cache is created) or'ed with the live value, so live control
+// (A/B) turns bits on and off when the run starts with 0. Every inspection decides with the current
+// mask, and both paths leave the metadata in a state the other reads the same way, so a change
+// between two inspections is safe.
 int64_t TextureCache::ParseDccGpuWide(const char* value) {
 	return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 0) & 15u) : 0;
 }
@@ -6930,44 +7081,47 @@ void TextureCache::ReportDccWide() {
 	const auto flips    = m_dcc_wide_totals.video_out.load(std::memory_order_relaxed);
 	const auto n        = aliased + mismatch + flips;
 	if (n != 0 && (n & (n - 1)) == 0) {
-		std::fprintf(stderr,
-		             "DCC wide (KYTY_DCC_GPU_WIDE=%u): %" PRIu64 " slices inspected on the GPU instead of a "
-		             "drain: %" PRIu64 " under aliasing images, %" PRIu64 " of a differing image, %" PRIu64
-		             " video-out; verify %" PRIu64 " checks, %" PRIu64 " mismatches\n",
-		             DccGpuWide(), n, aliased, mismatch, flips,
-		             m_dcc_wide_totals.verify_checks.load(std::memory_order_relaxed),
-		             m_dcc_wide_totals.verify_mismatches.load(std::memory_order_relaxed));
+		std::fprintf(
+		    stderr,
+		    "DCC wide (KYTY_DCC_GPU_WIDE=%u): %" PRIu64 " slices inspected on the GPU instead of a "
+		    "drain: %" PRIu64 " under aliasing images, %" PRIu64 " of a differing image, %" PRIu64
+		    " video-out; verify %" PRIu64 " checks, %" PRIu64 " mismatches\n",
+		    DccGpuWide(), n, aliased, mismatch, flips,
+		    m_dcc_wide_totals.verify_checks.load(std::memory_order_relaxed),
+		    m_dcc_wide_totals.verify_mismatches.load(std::memory_order_relaxed));
 	}
 }
 
 void TextureCache::RecordDccWideVerify(const uint8_t* decisions, uint64_t download_offset,
-                                       std::vector<uint8_t> expected, GuestRange range, uint32_t type) {
+                                       std::vector<uint8_t> expected, GuestRange range,
+                                       uint32_t type) {
 	auto& download = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download);
-	m_scheduler.DeferOperation([this, &download, decisions, download_offset,
-	                            expected = std::move(expected), range, type] {
-		download.Invalidate(download_offset, uint64_t {16} * expected.size());
-		uint32_t wrong = 0;
-		for (size_t slice = 0; slice < expected.size(); ++slice) {
-			uint32_t groups = 0;
-			std::memcpy(&groups, decisions + 16 * slice, sizeof(groups));
-			wrong += (groups != 0) != (expected[slice] != 0) ? 1u : 0u;
-		}
-		m_dcc_wide_totals.verify_checks.fetch_add(expected.size(), std::memory_order_relaxed);
-		if (wrong == 0) {
-			return;
-		}
-		m_dcc_wide_totals.verify_mismatches.fetch_add(wrong, std::memory_order_relaxed);
-		static std::atomic<uint32_t> logged {0};
-		if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-			std::fprintf(stderr,
-			             "DCC wide verify: %u of %zu slice(s) of metadata 0x%016" PRIx64 " size=0x%" PRIx64
-			             " (binding type %u) decided differently from the CPU fallback\n",
-			             wrong, expected.size(), range.address, range.size, type);
-		}
-		if (m_dcc_gpu_wide_verify == 2) {
-			EXIT("DCC wide verify: an inspection differs from the CPU fallback\n");
-		}
-	});
+	m_scheduler.DeferOperation(
+	    [this, &download, decisions, download_offset, expected = std::move(expected), range, type] {
+		    download.Invalidate(download_offset, uint64_t {16} * expected.size());
+		    uint32_t wrong = 0;
+		    for (size_t slice = 0; slice < expected.size(); ++slice) {
+			    uint32_t groups = 0;
+			    std::memcpy(&groups, decisions + 16 * slice, sizeof(groups));
+			    wrong += (groups != 0) != (expected[slice] != 0) ? 1u : 0u;
+		    }
+		    m_dcc_wide_totals.verify_checks.fetch_add(expected.size(), std::memory_order_relaxed);
+		    if (wrong == 0) {
+			    return;
+		    }
+		    m_dcc_wide_totals.verify_mismatches.fetch_add(wrong, std::memory_order_relaxed);
+		    static std::atomic<uint32_t> logged {0};
+		    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+			    std::fprintf(stderr,
+			                 "DCC wide verify: %u of %zu slice(s) of metadata 0x%016" PRIx64
+			                 " size=0x%" PRIx64
+			                 " (binding type %u) decided differently from the CPU fallback\n",
+			                 wrong, expected.size(), range.address, range.size, type);
+		    }
+		    if (m_dcc_gpu_wide_verify == 2) {
+			    EXIT("DCC wide verify: an inspection differs from the CPU fallback\n");
+		    }
+	    });
 }
 
 void TextureCache::RecordDccRefreshVerify(Buffer& metadata, uint64_t offset, uint64_t slice_size,
@@ -7045,41 +7199,44 @@ void TextureCache::RecordDccRefreshVerify(Buffer& metadata, uint64_t offset, uin
 namespace {
 // cphot 1b: counters of the clear-metadata decisions (printed every 10 s while a switch is on).
 struct ClearMetaStats {
-	std::atomic<uint64_t> known_aliased {0};   // aliased-range decisions taken from the recorded fill (=1)
-	std::atomic<uint64_t> verify_checks {0};   // slices compared against the recorded fill (=verify)
+	std::atomic<uint64_t> known_aliased {
+	    0}; // aliased-range decisions taken from the recorded fill (=1)
+	std::atomic<uint64_t> verify_checks {0}; // slices compared against the recorded fill (=verify)
 	std::atomic<uint64_t> verify_mismatch {0};
 	std::atomic<uint64_t> dcc_readbacks {0};
 	std::atomic<uint64_t> dcc_readback_ns {0};
 	std::atomic<int64_t>  last_print_ns {0};
 };
 ClearMetaStats g_clear_meta;
-void ClearMetaMaybePrint(bool force_on) {
+void           ClearMetaMaybePrint(bool force_on) {
 	if (!force_on) {
 		return;
 	}
-	const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
-	                        std::chrono::steady_clock::now().time_since_epoch()).count();
-	int64_t last = g_clear_meta.last_print_ns.load(std::memory_order_relaxed);
+	const int64_t now  = std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                         std::chrono::steady_clock::now().time_since_epoch())
+	                         .count();
+	int64_t       last = g_clear_meta.last_print_ns.load(std::memory_order_relaxed);
 	if (last == 0) {
 		g_clear_meta.last_print_ns.compare_exchange_strong(last, now);
 		return;
 	}
-	if (now - last < 10'000'000'000ll || !g_clear_meta.last_print_ns.compare_exchange_strong(last, now)) {
+	if (now - last < 10'000'000'000ll ||
+	    !g_clear_meta.last_print_ns.compare_exchange_strong(last, now)) {
 		return;
 	}
 	std::fprintf(stderr,
-	             "ClearMeta 10s totals: dcc known-aliased %" PRIu64 " | dcc readbacks %" PRIu64 " wait_ms %" PRIu64
-	             " | verify checks %" PRIu64 " mismatches %" PRIu64 "\n",
+	             "ClearMeta 10s totals: dcc known-aliased %" PRIu64 " | dcc readbacks %" PRIu64
+	             " wait_ms %" PRIu64 " | verify checks %" PRIu64 " mismatches %" PRIu64 "\n",
 	             g_clear_meta.known_aliased.load(), g_clear_meta.dcc_readbacks.load(),
-	             g_clear_meta.dcc_readback_ns.load() / 1'000'000ull, g_clear_meta.verify_checks.load(),
-	             g_clear_meta.verify_mismatch.load());
+	             g_clear_meta.dcc_readback_ns.load() / 1'000'000ull,
+	             g_clear_meta.verify_checks.load(), g_clear_meta.verify_mismatch.load());
 	std::fflush(stderr);
 }
 } // namespace
 
 // KYTY_CLEAR_TRACE=2: once per metadata address, the images aliasing a recorded-fill DCC range.
-void TextureCache::DccKnownAliasedDiag(const GuestRange& range, const ImageDesc& desc, uint32_t known_byte,
-                                       bool uniform) {
+void TextureCache::DccKnownAliasedDiag(const GuestRange& range, const ImageDesc& desc,
+                                       uint32_t known_byte, bool uniform) {
 	static const bool enabled = [] {
 		const auto* value = std::getenv("KYTY_CLEAR_TRACE");
 		return value != nullptr && std::strcmp(value, "2") == 0;
@@ -7097,16 +7254,19 @@ void TextureCache::DccKnownAliasedDiag(const GuestRange& range, const ImageDesc&
 	}
 	std::scoped_lock lock {m_lock};
 	const auto       ids = FindImagesInRegion(range.address, range.size, false);
-	std::fprintf(stderr, "ClearMeta alias: meta=0x%" PRIx64 "+0x%" PRIx64 " known=0x%02x uniform=%d target=%ux%u data=0x%" PRIx64 " aliases=%zu\n",
+	std::fprintf(stderr,
+	             "ClearMeta alias: meta=0x%" PRIx64 "+0x%" PRIx64
+	             " known=0x%02x uniform=%d target=%ux%u data=0x%" PRIx64 " aliases=%zu\n",
 	             range.address, range.size, known_byte, uniform ? 1 : 0, desc.info.extent.width,
 	             desc.info.extent.height, desc.info.data.address, static_cast<size_t>(ids.size()));
-	for (const auto iid : ids) {
+	for (const auto iid: ids) {
 		const auto* image = m_slot_images.try_get(iid);
 		if (image == nullptr) {
 			continue;
 		}
 		std::fprintf(stderr,
-		             "ClearMeta alias:   data=0x%" PRIx64 "+0x%" PRIx64 " %ux%u fmt=%u gpu_mod=%d cpu_dirty=%d buf_mod=%d same_target=%d\n",
+		             "ClearMeta alias:   data=0x%" PRIx64 "+0x%" PRIx64
+		             " %ux%u fmt=%u gpu_mod=%d cpu_dirty=%d buf_mod=%d same_target=%d\n",
 		             image->info.data.address, image->info.data.size, image->info.extent.width,
 		             image->info.extent.height, static_cast<uint32_t>(image->backing.format),
 		             image->IsGpuModified() ? 1 : 0, image->IsCpuDirty() ? 1 : 0,
@@ -7147,8 +7307,9 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 						text += fmt::format(" {:02x}:{}", value, histogram[value]);
 					}
 				}
-				WatchRange::Note(fmt::format("DCC keys meta 0x{:x}+0x{:x} {}x{} type {}:{}", range.address,
-				                             range.size, desc.info.extent.width, desc.info.extent.height,
+				WatchRange::Note(fmt::format("DCC keys meta 0x{:x}+0x{:x} {}x{} type {}:{}",
+				                             range.address, range.size, desc.info.extent.width,
+				                             desc.info.extent.height,
 				                             static_cast<uint32_t>(desc.type), text)
 				                     .c_str(),
 				                 desc.info.data.address, desc.info.data.size);
@@ -7199,8 +7360,8 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 	// Why this decision is not a provable no-op (instrumentation; the paths below refine it).
 	m_dcc_noop_refusal = Profiler::FrameEvent::TargetRecordDccGuest;
 	const bool gpu_written = m_buffer_cache.IsRegionGpuModified(range.address, range.size);
-	// KYTY_DCC_KNOWN_FILL_ALIASED=verify: the recorded fill of an aliased range, checked against the
-	// bytes the CPU fallback reads back (every slice must hold the known byte).
+	// KYTY_DCC_KNOWN_FILL_ALIASED=verify: the recorded fill of an aliased range, checked against
+	// the bytes the CPU fallback reads back (every slice must hold the known byte).
 	std::optional<uint8_t> verify_known;
 	ClearMetaMaybePrint(m_dcc_known_fill_aliased != 0);
 	if (gpu_written) {
@@ -7217,7 +7378,7 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 			unaliased = FindImagesInRegion(range.address, range.size, false).empty();
 			pages     = noop != nullptr && CaptureMetadataPages(range, decided);
 		}
-		const uint32_t known_byte = known ? (*known & 0xffu) : 0u;
+		const uint32_t known_byte    = known ? (*known & 0xffu) : 0u;
 		const bool     uniform_known = known && *known == known_byte * 0x01010101u;
 		// KYTY_DCC_KNOWN_FILL_ALIASED=1: a uniform recorded fill decides the clear even when images
 		// alias the metadata bytes (the CPU fallback would read back exactly this fill).
@@ -7413,7 +7574,8 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 				g_clear_meta.dcc_readbacks.fetch_add(1, std::memory_order_relaxed);
 				g_clear_meta.dcc_readback_ns.fetch_add(
 				    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-				                              std::chrono::steady_clock::now() - rb_start).count()),
+				                              std::chrono::steady_clock::now() - rb_start)
+				                              .count()),
 				    std::memory_order_relaxed);
 			}
 		}
@@ -7456,13 +7618,15 @@ void TextureCache::MaterializeDccClear(ImageId id, const ImageDesc& desc,
 			if (match) {
 				std::vector<uint8_t> check(slice_size);
 				match = LibKernel::Memory::TryReadBacking(address, check.data(), check.size()) &&
-				        std::all_of(check.begin(), check.end(), [&](uint8_t b) { return b == *verify_known; });
+				        std::all_of(check.begin(), check.end(),
+				                    [&](uint8_t b) { return b == *verify_known; });
 			}
 			g_clear_meta.verify_checks.fetch_add(1, std::memory_order_relaxed);
 			if (!match) {
 				if (g_clear_meta.verify_mismatch.fetch_add(1, std::memory_order_relaxed) < 16) {
 					std::fprintf(stderr,
-					             "ClearMeta VERIFY MISMATCH: meta=0x%" PRIx64 " slice=%u known=0x%02x read=0x%02x\n",
+					             "ClearMeta VERIFY MISMATCH: meta=0x%" PRIx64
+					             " slice=%u known=0x%02x read=0x%02x\n",
 					             address, first + slice, unsigned(*verify_known), unsigned(code));
 				}
 			}
@@ -7602,10 +7766,10 @@ void TextureCache::MaterializeCmaskClear(ImageId id, const ImageDesc& desc,
 		return;
 	}
 	vk::ClearValue clear {};
-	if (!DecodePackedColorClear64(view.format,
-	                              GuestColorWordToHost(desc.cmask.clear_word0,
-	                                                   desc.info.GetColorTransform()),
-	                              desc.cmask.clear_word1, clear.color)) {
+	if (!DecodePackedColorClear64(
+	        view.format,
+	        GuestColorWordToHost(desc.cmask.clear_word0, desc.info.GetColorTransform()),
+	        desc.cmask.clear_word1, clear.color)) {
 		Profiler::CountFrameEvent(Event::CmaskFastClearFormat);
 		description_noop();
 		return;
@@ -7631,24 +7795,27 @@ void TextureCache::MaterializeCmaskClear(ImageId id, const ImageDesc& desc,
 		{
 			std::scoped_lock lock {m_lock};
 			// Bytes some image also covers are not proven to be this surface's CMASK.
-			const auto aliases = FindImagesInRegion(metadata.address, metadata.size, false);
+			const auto aliases         = FindImagesInRegion(metadata.address, metadata.size, false);
 			bool       superseded_only = false;
-			// KYTY_CMASK_ALIAS_SUPERSEDED=1 (default off; on in the GT7 preset): an image that covers
-			// this target's own data as well as its CMASK is an older surface of the same reused
-			// memory (GT7's course-map preview over a stale 1920x1080 target), not an owner of the
-			// CMASK bytes; it no longer refuses the clear (the trails of the course-map markers).
+			// KYTY_CMASK_ALIAS_SUPERSEDED=1 (default off; on in the GT7 preset): an image that
+			// covers this target's own data as well as its CMASK is an older surface of the same
+			// reused memory (GT7's course-map preview over a stale 1920x1080 target), not an owner
+			// of the CMASK bytes; it no longer refuses the clear (the trails of the course-map
+			// markers).
 			if (CmaskAliasSupersededEnabled()) {
 				const auto data_begin = desc.info.data.address;
 				const auto data_end   = data_begin + desc.info.data.size;
-				superseded_only = true;
+				superseded_only       = true;
 				for (const auto alias: aliases) {
 					const auto& other = m_slot_images[alias].info.data;
-					superseded_only &= other.address < data_end && data_begin < other.address + other.size;
+					superseded_only &=
+					    other.address < data_end && data_begin < other.address + other.size;
 				}
 			}
 			{
-				// KYTY_CLEAR_TRACE: the images covering the CMASK bytes with their LRU ticks against the
-				// target's and the GC tick (first 60 decisions), to tell stale aliases from live ones.
+				// KYTY_CLEAR_TRACE: the images covering the CMASK bytes with their LRU ticks
+				// against the target's and the GC tick (first 60 decisions), to tell stale aliases
+				// from live ones.
 				static const bool trace = [] {
 					const auto* value = std::getenv("KYTY_CLEAR_TRACE");
 					return value != nullptr && value[0] != '\0' && value[0] != '0';
@@ -7656,33 +7823,39 @@ void TextureCache::MaterializeCmaskClear(ImageId id, const ImageDesc& desc,
 				static uint32_t traced = 0;
 				if (trace && !aliases.empty() && traced < 60) {
 					traced++;
-					std::fprintf(stderr, "ClearTrace: CMASK alias meta=0x%llx target tick %llu gc tick %llu superseded_only %d\n",
+					std::fprintf(stderr,
+					             "ClearTrace: CMASK alias meta=0x%llx target tick %llu gc tick "
+					             "%llu superseded_only %d\n",
 					             static_cast<unsigned long long>(metadata.address),
 					             static_cast<unsigned long long>(m_slot_images[id].lru_tick),
-					             static_cast<unsigned long long>(m_gc_tick), superseded_only ? 1 : 0);
+					             static_cast<unsigned long long>(m_gc_tick),
+					             superseded_only ? 1 : 0);
 					for (const auto alias: aliases) {
 						const auto& image = m_slot_images[alias];
 						const auto& other = image.info;
 						std::fprintf(stderr,
-						             "ClearTrace:   covered by image 0x%llx+0x%llx %ux%u samples %u tick %llu\n",
+						             "ClearTrace:   covered by image 0x%llx+0x%llx %ux%u samples "
+						             "%u tick %llu\n",
 						             static_cast<unsigned long long>(other.data.address),
-						             static_cast<unsigned long long>(other.data.size), other.extent.width,
-						             other.extent.height, static_cast<unsigned>(other.samples),
+						             static_cast<unsigned long long>(other.data.size),
+						             other.extent.width, other.extent.height,
+						             static_cast<unsigned>(other.samples),
 						             static_cast<unsigned long long>(image.lru_tick));
 					}
 				}
 			}
 			if (!aliases.empty() && superseded_only && CmaskAliasSupersededMode() == 2) {
 				static std::unordered_map<uint64_t, uint64_t> cleared_at;
-				auto& tick = cleared_at[metadata.address];
+				auto&                                         tick = cleared_at[metadata.address];
 				if (tick != m_gc_tick + 1u) {
 					tick = m_gc_tick + 1u;
 					ClearImage(m_scheduler.Current(), id, view.format,
 					           {vk::ImageAspectFlagBits::eColor, view.base_level, view.level_count,
 					            view.base_layer + slice, 1},
 					           clear, "cmask-alias-frame-clear");
-					ClearTrace("CMASK", "alias-frame-clear", metadata.address, metadata.size, desc.info.data.address,
-					           desc.info.data.size, desc.info.extent.width, desc.info.extent.height, slice);
+					ClearTrace("CMASK", "alias-frame-clear", metadata.address, metadata.size,
+					           desc.info.data.address, desc.info.data.size, desc.info.extent.width,
+					           desc.info.extent.height, slice);
 				}
 				continue;
 			}
@@ -7774,7 +7947,8 @@ void TextureCache::MaterializeCmaskClear(ImageId id, const ImageDesc& desc,
 		const auto* value = std::getenv("KYTY_CMASK_NATIVE");
 		return value == nullptr || std::strcmp(value, "0") != 0;
 	};
-	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(native_enabled_init())>> native_enabled_once;
+	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(native_enabled_init())>>
+	            native_enabled_once;
 	const bool& native_enabled = native_enabled_once.Get(native_enabled_init);
 	static_assert(DccClearHelper::ClearCodes[0] == 0x00);
 	if (native_enabled && m_dcc_clear == nullptr && m_cmask_clear == nullptr) {
@@ -7788,11 +7962,14 @@ void TextureCache::MaterializeCmaskClear(ImageId id, const ImageDesc& desc,
 	                                                          metadata_base_layer, values, 1u, true)
 	                         : Event::DccFallbackDisabled;
 	ClearTrace("CMASK", "clear-word0", range.address, range.size, desc.info.data.address,
-	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height, desc.cmask.clear_word0);
+	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height,
+	           desc.cmask.clear_word0);
 	ClearTrace("CMASK", "clear-word1", range.address, range.size, desc.info.data.address,
-	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height, desc.cmask.clear_word1);
+	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height,
+	           desc.cmask.clear_word1);
 	ClearTrace("CMASK", "view-format", range.address, range.size, desc.info.data.address,
-	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height, static_cast<uint32_t>(view.format));
+	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height,
+	           static_cast<uint32_t>(view.format));
 	ClearTrace("CMASK", "native-outcome", range.address, range.size, desc.info.data.address,
 	           desc.info.data.size, desc.info.extent.width, desc.info.extent.height,
 	           static_cast<uint32_t>(outcome));
@@ -7926,7 +8103,8 @@ bool TextureCache::ClearFromKnownFill(ImageId id) {
 	static std::atomic<uint64_t> cleared {0};
 	if (const auto count = cleared.fetch_add(1, std::memory_order_relaxed) + 1;
 	    count <= 32 || std::has_single_bit(count)) {
-		LOGF("TextureCache: %s 0x%012" PRIx64 "+0x%" PRIx64 " %ux%u layers %u mips %u created inside "
+		LOGF("TextureCache: %s 0x%012" PRIx64 "+0x%" PRIx64
+		     " %ux%u layers %u mips %u created inside "
 		     "a GPU fill with 0x%08x: starts as the fill, not as its memory (%" PRIu64
 		     " so far; KYTY_PENDING_FILLS)\n",
 		     info.IsDepth() ? "depth target" : "render target", info.data.address, info.data.size,
@@ -7965,21 +8143,25 @@ static uint64_t NanScrubMaxBytes() {
 // The scrub's packing of an image's host format and its bytes per texel; nullopt for others.
 static std::optional<std::pair<NanScrubber::Packing, uint32_t>> NanScrubFormat(vk::Format format) {
 	switch (format) {
-		case vk::Format::eB10G11R11UfloatPack32: return std::pair {NanScrubber::Packing::B10G11R11, 4u};
+		case vk::Format::eB10G11R11UfloatPack32:
+			return std::pair {NanScrubber::Packing::B10G11R11, 4u};
 		case vk::Format::eR16G16Sfloat: return std::pair {NanScrubber::Packing::TwoHalves, 4u};
-		case vk::Format::eR16G16B16A16Sfloat: return std::pair {NanScrubber::Packing::TwoHalves, 8u};
+		case vk::Format::eR16G16B16A16Sfloat:
+			return std::pair {NanScrubber::Packing::TwoHalves, 8u};
 		default: return std::nullopt;
 	}
 }
 
 // The bytes of every mip of `image`, tightly packed (0 when it is not eligible for the scrub).
 static uint64_t NanScrubBytes(const Image& image) {
-	const auto&    backing      = image.backing;
-	const auto     format       = NanScrubFormat(backing.format);
-	constexpr auto TransferBoth = vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+	const auto&    backing = image.backing;
+	const auto     format  = NanScrubFormat(backing.format);
+	constexpr auto TransferBoth =
+	    vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 	if (!format || backing.image == nullptr || backing.layers < 6u ||
 	    backing.image_type != vk::ImageType::e2D || backing.samples != 1 || image.depth_id ||
-	    image.info.IsDepth() || !image.FullyResident() || (backing.usage & TransferBoth) != TransferBoth) {
+	    image.info.IsDepth() || !image.FullyResident() ||
+	    (backing.usage & TransferBoth) != TransferBoth) {
 		return 0;
 	}
 	uint64_t total = 0;
@@ -7995,8 +8177,9 @@ void TextureCache::NoteNanScrubCandidate(const Image& image) {
 		return;
 	}
 	const auto address = image.info.data.address;
-	if (std::ranges::any_of(m_nan_candidates,
-	                        [address](const NanScrubCandidate& c) { return c.address == address; })) {
+	if (std::ranges::any_of(m_nan_candidates, [address](const NanScrubCandidate& c) {
+		    return c.address == address;
+	    })) {
 		return;
 	}
 	if (m_nan_candidates.size() >= 256) {
@@ -8022,20 +8205,21 @@ void TextureCache::RunNanScrub() {
 		return;
 	}
 	for (size_t tries = 0; tries < m_nan_candidates.size();) {
-		m_nan_next      = (m_nan_next + 1) % m_nan_candidates.size();
-		auto& candidate = m_nan_candidates[m_nan_next];
-		Image* image    = nullptr;
+		m_nan_next       = (m_nan_next + 1) % m_nan_candidates.size();
+		auto&  candidate = m_nan_candidates[m_nan_next];
+		Image* image     = nullptr;
 		for (const auto id: FindImagesInRegion(candidate.address, candidate.size, false)) {
 			auto* found = m_slot_images.try_get(id);
-			if (found != nullptr && found->registered && found->info.data.address == candidate.address &&
-			    NanScrubBytes(*found) != 0) {
+			if (found != nullptr && found->registered &&
+			    found->info.data.address == candidate.address && NanScrubBytes(*found) != 0) {
 				image = found;
 				break;
 			}
 		}
 		if (image == nullptr) {
 			// Gone: forget it.
-			m_nan_candidates.erase(m_nan_candidates.begin() + static_cast<std::ptrdiff_t>(m_nan_next));
+			m_nan_candidates.erase(m_nan_candidates.begin() +
+			                       static_cast<std::ptrdiff_t>(m_nan_next));
 			if (m_nan_candidates.empty()) {
 				return;
 			}
@@ -8047,9 +8231,9 @@ void TextureCache::RunNanScrub() {
 		    image->ContentSerial() == candidate.serial) {
 			continue;
 		}
-		const auto  total   = NanScrubBytes(*image);
-		const auto  format  = NanScrubFormat(image->backing.format);
-		const auto& backing = image->backing;
+		const auto                       total   = NanScrubBytes(*image);
+		const auto                       format  = NanScrubFormat(image->backing.format);
+		const auto&                      backing = image->backing;
 		std::vector<vk::BufferImageCopy> regions;
 		uint64_t                         offset = 0;
 		for (uint32_t mip = 0; mip < std::max(backing.mip_levels, 1u); mip++) {
@@ -8064,11 +8248,13 @@ void TextureCache::RunNanScrub() {
 		}
 		if (m_nan_scratch == nullptr || m_nan_scratch->Size() < total) {
 			// The previous one stays alive in the deferred release of the scrub that used it.
-			m_nan_scratch = std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
-			                                         AllFlags, Common::AlignUp(total, uint64_t {4} << 20u));
+			m_nan_scratch =
+			    std::make_shared<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+			                             AllFlags, Common::AlignUp(total, uint64_t {4} << 20u));
 		}
 		image->Download(regions, m_nan_scratch->Handle(), 0, total);
-		m_nan_scrubber->Scrub(m_scheduler.Current(), m_nan_scratch->Handle(), 0, total, format->first);
+		m_nan_scrubber->Scrub(m_scheduler.Current(), m_nan_scratch->Handle(), 0, total,
+		                      format->first);
 		image->Upload(regions, m_nan_scratch->Handle(), 0, total);
 		m_scheduler.DeferOperation([scratch = m_nan_scratch] {});
 		candidate.serial = image->ContentSerial();
@@ -8100,17 +8286,17 @@ bool TextureCache::LightGridGuestApplies(const Image& image) {
 }
 
 bool TextureCache::ChecksGuestContent(const Image& image) {
-	const auto& info  = image.info;
+	const auto& info = image.info;
 	// KYTY_LIGHT_GRID_GUEST: a light grid is checked against (and uploaded from) its guest bytes
 	// even where GPU writes to other data shared its memory.
 	if (LightGridGuestApplies(image)) {
 		return true;
 	}
-	const auto  limit = info.IsTiled() ? GuestHashTiledBytes() : GuestHashImageBytes();
-	return limit != 0 && !info.data.Empty() && info.data.size <= limit &&
-	       info.samples == 1 && !image.depth_id && !info.IsDepth() &&
-	       info.metadata.compression == VideoOutCompression::Uncompressed && image.FullyResident() &&
-	       !image.IsGpuModified() && !image.IsBufferModified() &&
+	const auto limit = info.IsTiled() ? GuestHashTiledBytes() : GuestHashImageBytes();
+	return limit != 0 && !info.data.Empty() && info.data.size <= limit && info.samples == 1 &&
+	       !image.depth_id && !info.IsDepth() &&
+	       info.metadata.compression == VideoOutCompression::Uncompressed &&
+	       image.FullyResident() && !image.IsGpuModified() && !image.IsBufferModified() &&
 	       !m_buffer_cache.IsRegionGpuModified(info.data.address, info.data.size);
 }
 
@@ -8144,11 +8330,12 @@ void TextureCache::RefreshByContent(ImageId id, RefreshIntent intent) {
 		if (const auto count = unseen.fetch_add(1, std::memory_order_relaxed) + 1;
 		    count <= 16 || count % 1000 == 0) {
 			LOGF("TextureCache: guest bytes of 0x%012" PRIx64 "+0x%" PRIx64
-			     " (%ux%u, %u layers) changed unseen by the page tracking%s: uploaded again (%" PRIu64
-			     " so far; KYTY_GUEST_HASH_IMAGES_KB)\n",
+			     " (%ux%u, %u layers) changed unseen by the page tracking%s: uploaded again "
+			     "(%" PRIu64 " so far; KYTY_GUEST_HASH_IMAGES_KB)\n",
 			     range.address, range.size, image.info.extent.width, image.info.extent.height,
 			     image.info.resources.layers,
-			     image.IsMaybeCpuDirty() ? " (a neighbour's write marked it maybe-dirty)" : "", count);
+			     image.IsMaybeCpuDirty() ? " (a neighbour's write marked it maybe-dirty)" : "",
+			     count);
 		}
 	}
 	image.MarkResidencyDirty();
@@ -8322,24 +8509,29 @@ void TextureCache::PlaceBindingView(const ImageDesc& desc, ImageId& result, bool
 		view_mip   = loop_mip;
 		view_layer = loop_layer;
 	}
-	const bool fits = view_mip >= 0 && view_layer >= 0 &&
-	                  static_cast<uint64_t>(view_mip) + desc.view_info.base_level + desc.view_info.level_count <=
-	                      found.resources.levels &&
-	                  static_cast<uint64_t>(view_layer) + desc.view_info.base_layer + desc.view_info.layer_count <=
-	                      found.resources.layers;
+	const bool fits =
+	    view_mip >= 0 && view_layer >= 0 &&
+	    static_cast<uint64_t>(view_mip) + desc.view_info.base_level + desc.view_info.level_count <=
+	        found.resources.levels &&
+	    static_cast<uint64_t>(view_layer) + desc.view_info.base_layer +
+	            desc.view_info.layer_count <=
+	        found.resources.layers;
 	if (fits) {
 		return;
 	}
 	static std::atomic<uint64_t> unplaced {0};
 	const auto                   count = unplaced.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (count <= 16u || (count & (count - 1u)) == 0u) {
-		LOGF("TextureCache: 0x%012" PRIx64 " (%ux%u, mips %u, layers %u, view mips %u+%u layers %u+%u) lies "
-		     "in 0x%012" PRIx64 " (%ux%u, mips %u, layers %u) at mip %d layer %d, where its view does not "
+		LOGF("TextureCache: 0x%012" PRIx64
+		     " (%ux%u, mips %u, layers %u, view mips %u+%u layers %u+%u) lies "
+		     "in 0x%012" PRIx64
+		     " (%ux%u, mips %u, layers %u) at mip %d layer %d, where its view does not "
 		     "fit: given an image of its own (%" PRIu64 " so far, KYTY_VIEW_PLACEMENT)\n",
-		     desc.info.data.address, desc.info.extent.width, desc.info.extent.height, desc.info.resources.levels,
-		     desc.info.resources.layers, desc.view_info.base_level, desc.view_info.level_count,
-		     desc.view_info.base_layer, desc.view_info.layer_count, found.data.address, found.extent.width,
-		     found.extent.height, found.resources.levels, found.resources.layers, view_mip, view_layer, count);
+		     desc.info.data.address, desc.info.extent.width, desc.info.extent.height,
+		     desc.info.resources.levels, desc.info.resources.layers, desc.view_info.base_level,
+		     desc.view_info.level_count, desc.view_info.base_layer, desc.view_info.layer_count,
+		     found.data.address, found.extent.width, found.extent.height, found.resources.levels,
+		     found.resources.layers, view_mip, view_layer, count);
 	}
 	view_mip   = -1;
 	view_layer = -1;
@@ -8399,14 +8591,14 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, RepeatLookup
 
 		int32_t view_mip   = -1;
 		int32_t view_layer = -1;
-		// KYTY_IMG_STATS / KYTY_IMG_OVERLAP: whether the overlap loop below takes only branches that
-		// are pure functions of the region's owner lists and the images' fixed fields.
+		// KYTY_IMG_STATS / KYTY_IMG_OVERLAP: whether the overlap loop below takes only branches
+		// that are pure functions of the region's owner lists and the images' fixed fields.
 		m_overlap_impure = false;
 		m_last_overlap   = {};
 		if (ImgSide::StatsEnabled()) [[unlikely]] {
 			m_last_overlap.requested = desc.info; // KYTY_IMG_STATS (backing split)
 		}
-		bool inserted    = false;
+		bool inserted = false;
 		// Levels this lookup can sample. A new image registers only their prefix, and images that
 		// overlap only levels it cannot sample are neither merge candidates nor retired by it.
 		const auto wanted_first    = RequestedFirstLevel(desc, desc.info.resources.levels);
@@ -8425,8 +8617,9 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, RepeatLookup
 			if (!use_legacy) {
 				m_last_overlap.overlap        = true;
 				m_last_overlap.region_address = desc.info.data.address;
-				m_last_overlap.region_size    = wanted_prefix != 0 ? wanted_prefix : desc.info.data.size;
-				m_last_overlap.candidates     = static_cast<uint32_t>(candidates.size());
+				m_last_overlap.region_size =
+				    wanted_prefix != 0 ? wanted_prefix : desc.info.data.size;
+				m_last_overlap.candidates = static_cast<uint32_t>(candidates.size());
 			}
 			const bool placement  = ViewPlacementEnabled();
 			ImageId    placed_in  = {};
@@ -8445,12 +8638,13 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, RepeatLookup
 						view_mip   = overlap.mip;
 						view_layer = overlap.layer;
 					}
-					placed_in  = overlap.mip >= 0 || overlap.layer >= 0 ? overlap.image : ImageId {};
+					placed_in = overlap.mip >= 0 || overlap.layer >= 0 ? overlap.image : ImageId {};
 					placed_raw = direct;
 				}
 			}
 			if (result && placement) {
-				PlaceBindingView(desc, result, placed_in == result && placed_raw, view_mip, view_layer);
+				PlaceBindingView(desc, result, placed_in == result && placed_raw, view_mip,
+				                 view_layer);
 			}
 		}
 
@@ -8458,8 +8652,9 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, RepeatLookup
 			auto& resolved = m_slot_images[result];
 			if (exact_format && resolved.info.pixel_format != desc.info.pixel_format) {
 				result = {};
-			} else if (ImageContainsEnabled() ? !resolved.info.resources.Contains(desc.info.resources)
-			                                  : resolved.info.resources < desc.info.resources) {
+			} else if (ImageContainsEnabled()
+			               ? !resolved.info.resources.Contains(desc.info.resources)
+			               : resolved.info.resources < desc.info.resources) {
 				NoteOverlapImpure(OverlapLookup::WhyContains);
 				FreeImage(result, HangTrace::ImageFreeReason::SmallerResources);
 				result = {};
@@ -8477,7 +8672,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, RepeatLookup
 			result = InsertImage(desc.info,
 			                     prefix_computed && wanted_prefix == 0 ? 0u : wanted_first,
 			                     wanted_prefix);
-			inserted = true;
+			inserted       = true;
 			auto& inserted = m_slot_images[result];
 			if (m_buffer_cache.HasGpuDirtyBytes(inserted.live.address, inserted.live.size) ||
 			    (AliasBytesEnabled() && OtherImagesOwnBytes(inserted.live, result))) {
@@ -8661,8 +8856,9 @@ bool TextureCache::TryRepeatLookup(const ImageDesc& desc, bool exact_format,
 	if (m_image_lookup_mode != ImageLookupMode::FirstPage || image == nullptr ||
 	    !image->registered || PageVersion(record.page) != record.page_version ||
 	    record.requested_first < image->resident_first ||
-	    (record.has_partner && !SyncAliasReturnsAtOnce(*image)) || !image->block_subwrites.empty() ||
-	    !MetadataPagesHold(record.dcc) || !MetadataPagesHold(record.cmask)) {
+	    (record.has_partner && !SyncAliasReturnsAtOnce(*image)) ||
+	    !image->block_subwrites.empty() || !MetadataPagesHold(record.dcc) ||
+	    !MetadataPagesHold(record.cmask)) {
 		return false;
 	}
 	if (!apply) {
@@ -8881,9 +9077,9 @@ static void ImageLayerDiag(const ImageInfo& info) {
 	if (layers == 0 || info.resources.layers != layers || info.data.Empty()) {
 		return;
 	}
-	static std::mutex                                                     mutex;
+	static std::mutex                                                          mutex;
 	static std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> last;
-	const auto                                                            now = std::chrono::steady_clock::now();
+	const auto now = std::chrono::steady_clock::now();
 	{
 		std::scoped_lock lock {mutex};
 		auto [it, inserted] = last.try_emplace(info.data.address, now);
@@ -8938,13 +9134,13 @@ vk::ImageView TextureCache::FindTexture(ImageId id, const ImageDesc& desc) {
 	// writeback. GPU data in the buffer cache over the whole image is not a CPU write. Read before
 	// the image is marked GPU-written and before RefreshImage uploads the CPU write.
 	const bool first_write =
-	    m_readback_storage_images && desc.type == BindingType::Storage && !image.info.data.Empty() &&
-	    (!image.IsGpuModified() || image.IsDefinitelyCpuDirty()) &&
+	    m_readback_storage_images && desc.type == BindingType::Storage &&
+	    !image.info.data.Empty() && (!image.IsGpuModified() || image.IsDefinitelyCpuDirty()) &&
 	    !m_buffer_cache.HasOnlyGpuDirtyBytes(image.info.data.address, image.info.data.size);
 	if (desc.type == BindingType::Storage) {
 		m_bind_mark = true;
 		MarkImageGpuModified(image);
-		m_bind_mark = false;
+		m_bind_mark               = false;
 		image.shader_write_serial = Image::NextContentSerial(); // KYTY_STENCIL_PLANE_SYNC
 		ExpandMetaForStorageWriteLocked(image);
 	}
@@ -8992,7 +9188,7 @@ vk::ImageView TextureCache::FindRenderTarget(ImageId id, const ImageDesc& desc,
 	TouchImage(image);
 	m_bind_mark = true;
 	MarkImageGpuModified(image, true); // the scissor claim below covers the written bytes
-	m_bind_mark = false;
+	m_bind_mark               = false;
 	image.usage.render_target = true;
 	RefreshImage(id, RefreshIntent::Write);
 	// KYTY_ALIAS_BYTES: the draw can write only inside its scissor. The target owns the 64 KiB
@@ -9035,15 +9231,15 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	}
 	RequireFullResidency(id);
 	TouchImage(image);
-	// KYTY_IMAGE_PARTIAL_GPU_WRITE: this binding's draws mark its stencil records below, after their
-	// refresh (the draws come after it).
+	// KYTY_IMAGE_PARTIAL_GPU_WRITE: this binding's draws mark its stencil records below, after
+	// their refresh (the draws come after it).
 	m_stencil_draw_suppressed = true;
 	m_bind_mark               = true;
 	MarkImageGpuModified(image);
 	m_bind_mark               = false;
 	m_stencil_draw_suppressed = false;
 	image.usage.depth_target = true;
-	bool stencil_swapped_in  = false; // KYTY_STENCIL_RESTORE_GUARD
+	bool stencil_swapped_in   = false; // KYTY_STENCIL_RESTORE_GUARD
 	if (desc.info.HasStencil()) {
 		const auto layers = image.info.resources.layers;
 		EXIT_IF(layers == 0 || image.info.data.size % layers != 0 ||
@@ -9073,7 +9269,7 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 				metadata->second.clear_mask.set();
 			}
 		}
-		metadata->second.size = std::max(metadata->second.size, desc.info.metadata.range.size);
+		metadata->second.size  = std::max(metadata->second.size, desc.info.metadata.range.size);
 		metadata->second.owner = id;
 		// The only insertion into m_surface_metas (EraseSurfaceMeta). Every draw with this target
 		// asks again; only an added entry is a change (KYTY_META_CLEAR_MEMO's generation).
@@ -9102,10 +9298,11 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	if (desc.info.HasStencil()) {
 		const auto association = AssociateStencil(id, desc.info.stencil);
 		if (stencil_swapped_in && StencilRestoreGuardEnabled()) {
-			// KYTY_STENCIL_RESTORE_GUARD=1 (Erlou93/KytyPS5-Yotei FindDepthTarget swap-in rule): the
-			// restored plane is newer than guest memory, so only a GPU buffer write to the plane's
-			// memory made while it was not held (the game's fill before drawing into it) is uploaded
-			// over it; a CPU-dirty mark alone is not (a new plane record starts CPU-dirty).
+			// KYTY_STENCIL_RESTORE_GUARD=1 (Erlou93/KytyPS5-Yotei FindDepthTarget swap-in rule):
+			// the restored plane is newer than guest memory, so only a GPU buffer write to the
+			// plane's memory made while it was not held (the game's fill before drawing into it) is
+			// uploaded over it; a CPU-dirty mark alone is not (a new plane record starts
+			// CPU-dirty).
 			if (m_slot_images[association].IsBufferModified()) {
 				RefreshImage(association, RefreshIntent::Write);
 			}
@@ -9158,8 +9355,9 @@ static bool BlockSubresourceWritesEnabled() {
 		const auto* value = std::getenv("KYTY_BLOCK_SUBRESOURCE_WRITES");
 		const bool  on    = value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 		if (on) {
-			std::printf("KYTY_BLOCK_SUBRESOURCE_WRITES: uncompressed block views written by the GPU "
-			            "are copied into their block-compressed image\n");
+			std::printf(
+			    "KYTY_BLOCK_SUBRESOURCE_WRITES: uncompressed block views written by the GPU "
+			    "are copied into their block-compressed image\n");
 		}
 		return on;
 	};
@@ -9174,9 +9372,10 @@ static std::pair<int32_t, int32_t> BlockSubresourceOf(const ImageInfo& child,
                                                       const ImageInfo& container) {
 	constexpr std::pair<int32_t, int32_t> none {-1, -1};
 	if (!container.IsBlock() || child.IsBlock() || child.IsVolume() || container.IsVolume() ||
-	    child.bytes_per_block != container.bytes_per_block || child.tile_mode != container.tile_mode ||
-	    child.samples != 1 || container.samples != 1 || child.resources.levels != 1 ||
-	    child.resources.layers != 1 || container.resources.layers == 0 ||
+	    child.bytes_per_block != container.bytes_per_block ||
+	    child.tile_mode != container.tile_mode || child.samples != 1 || container.samples != 1 ||
+	    child.resources.levels != 1 || child.resources.layers != 1 ||
+	    container.resources.layers == 0 ||
 	    container.resources.levels > container.mip_layout.size() || !child.data.Valid() ||
 	    !container.data.Valid() || child.data.address < container.data.address ||
 	    child.data.address >= container.data.End() || child.HasStencil() ||
@@ -9207,9 +9406,11 @@ static std::pair<int32_t, int32_t> BlockSubresourceOf(const ImageInfo& child,
 		}
 		bool shared = false;
 		for (uint32_t other = 0; other < container.resources.levels; other++) {
-			shared = shared || (other != level && container.mip_layout[other].offset == layout.offset);
+			shared =
+			    shared || (other != level && container.mip_layout[other].offset == layout.offset);
 		}
-		const bool tail = level > 0 && shared && layout.offset <= in_slice && in_slice < next_larger;
+		const bool tail =
+		    level > 0 && shared && layout.offset <= in_slice && in_slice < next_larger;
 		if (layout.offset != in_slice && !tail) {
 			return none;
 		}
@@ -9236,18 +9437,18 @@ void TextureCache::NoteBlockSubwrite(ImageId self) {
 		const auto [mip, layer] = BlockSubresourceOf(image.info, other->info);
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 24) {
-			std::printf("KYTY_BLOCK_SUBRESOURCE_WRITES: 0x%" PRIx64 " %ux%u tile %u in block image "
-			            "0x%" PRIx64 " %ux%u levels %u layers %u tile %u (offsets of levels 2-5: 0x%" PRIx64
-			            " 0x%" PRIx64 " 0x%" PRIx64 " 0x%" PRIx64 ") -> mip %d layer %d\n",
-			            image.info.data.address, image.info.extent.width, image.info.extent.height,
-			            static_cast<uint32_t>(image.info.tile_mode), other->info.data.address,
-			            other->info.extent.width, other->info.extent.height,
-			            other->info.resources.levels, other->info.resources.layers,
-			            static_cast<uint32_t>(other->info.tile_mode),
-			            static_cast<uint64_t>(other->info.mip_layout[2].offset),
-			            static_cast<uint64_t>(other->info.mip_layout[3].offset),
-			            static_cast<uint64_t>(other->info.mip_layout[4].offset),
-			            static_cast<uint64_t>(other->info.mip_layout[5].offset), mip, layer);
+			std::printf(
+			    "KYTY_BLOCK_SUBRESOURCE_WRITES: 0x%" PRIx64 " %ux%u tile %u in block image "
+			    "0x%" PRIx64 " %ux%u levels %u layers %u tile %u (offsets of levels 2-5: 0x%" PRIx64
+			    " 0x%" PRIx64 " 0x%" PRIx64 " 0x%" PRIx64 ") -> mip %d layer %d\n",
+			    image.info.data.address, image.info.extent.width, image.info.extent.height,
+			    static_cast<uint32_t>(image.info.tile_mode), other->info.data.address,
+			    other->info.extent.width, other->info.extent.height, other->info.resources.levels,
+			    other->info.resources.layers, static_cast<uint32_t>(other->info.tile_mode),
+			    static_cast<uint64_t>(other->info.mip_layout[2].offset),
+			    static_cast<uint64_t>(other->info.mip_layout[3].offset),
+			    static_cast<uint64_t>(other->info.mip_layout[4].offset),
+			    static_cast<uint64_t>(other->info.mip_layout[5].offset), mip, layer);
 		}
 		if (mip < 0 || static_cast<uint32_t>(mip) >= other->backing.mip_levels ||
 		    static_cast<uint32_t>(layer) >= other->backing.layers) {
@@ -9291,7 +9492,8 @@ void TextureCache::ApplyBlockSubwrites(ImageId id) {
 
 bool TextureCache::SyncAliasReturnsAtOnce(const Image& image) {
 	return !AliasAgeByFrames() || image.alias_owner || image.depth_id || image.info.data.Empty() ||
-	       (image.info.HasStencil() && !StencilDepthAliasEnabled()) || image.backing.image == nullptr;
+	       (image.info.HasStencil() && !StencilDepthAliasEnabled()) ||
+	       image.backing.image == nullptr;
 }
 
 // Whether two images at the same guest range are interpretations of the same texel grid. Same
@@ -9343,11 +9545,13 @@ void TextureCache::SyncAliasFromOwner(ImageId id) {
 	ImageWatch("image alias sync", image);
 	// TextureCache::SyncAliasReturnsAtOnce mirrors this condition.
 	if (!AliasAgeByFrames() || image.alias_owner || image.depth_id || image.info.data.Empty() ||
-	    (image.info.HasStencil() && !StencilDepthAliasEnabled()) || image.backing.image == nullptr) {
+	    (image.info.HasStencil() && !StencilDepthAliasEnabled()) ||
+	    image.backing.image == nullptr) {
 		return;
 	}
 	if (WatchRange::Enabled()) {
-		WatchRange::Note(fmt::format("image alias sync check {} {}x{}", vk::to_string(image.backing.format),
+		WatchRange::Note(fmt::format("image alias sync check {} {}x{}",
+		                             vk::to_string(image.backing.format),
 		                             image.backing.extent.width, image.backing.extent.height)
 		                     .c_str(),
 		                 image.info.data.address, image.info.data.size);
@@ -9402,13 +9606,14 @@ void TextureCache::SyncAliasFromOwner(ImageId id) {
 		if (WatchRange::Enabled()) {
 			// Diagnostic: why the copy was not skipped (serials, dirty and buffer-owned flags).
 			const auto& owner = m_slot_images[other_id];
-			WatchRange::Note(fmt::format("alias sync copy: alias serial {} owner serial {} alias cpu_dirty {} "
-			                             "alias buffer_mod {} owner buffer_mod {} owner definite {}",
-			                             image.ContentSerial(), owner.ContentSerial(), image.IsCpuDirty(),
-			                             image.IsBufferModified(), owner.IsBufferModified(),
-			                             owner.DefiniteWrites())
-			                     .c_str(),
-			                 image.info.data.address, image.info.data.size);
+			WatchRange::Note(
+			    fmt::format("alias sync copy: alias serial {} owner serial {} alias cpu_dirty {} "
+			                "alias buffer_mod {} owner buffer_mod {} owner definite {}",
+			                image.ContentSerial(), owner.ContentSerial(), image.IsCpuDirty(),
+			                image.IsBufferModified(), owner.IsBufferModified(),
+			                owner.DefiniteWrites())
+			        .c_str(),
+			    image.info.data.address, image.info.data.size);
 		}
 		const bool lossless = CopyImage(id, other_id, "alias-sync");
 		// CopyImage marks the alias buffer-owned instead of copying when the owner's bytes are
@@ -9538,7 +9743,11 @@ void TextureCache::CommitGpuWrite(Image& image, const WriteClaim& claim) {
 			other->alias_owner = false;
 			other->foreign_since_sync = true;
 			if (NanProbe::Armed()) [[unlikely]] {
-				NanProbe::WatchLog("disowned", other->IsGpuModified() ? "was-gpu-modified" : "clean", (*other).info.data.address, (*other).info.data.size, id.index, id.generation, vk::to_string((*other).backing.format).c_str(), (*other).info.extent.width, (*other).info.extent.height, (*other).IsGpuModified() ? 1 : 0);
+				NanProbe::WatchLog(
+				    "disowned", other->IsGpuModified() ? "was-gpu-modified" : "clean",
+				    (*other).info.data.address, (*other).info.data.size, id.index, id.generation,
+				    vk::to_string((*other).backing.format).c_str(), (*other).info.extent.width,
+				    (*other).info.extent.height, (*other).IsGpuModified() ? 1 : 0);
 			}
 			if (other->IsGpuModified()) {
 				other->ClearGpuModified();
@@ -9576,13 +9785,13 @@ void TextureCache::ResetUnmappedDepth(ImageId id, float empty) {
 	if (found == nullptr || found->sparse_checked_serial == found->ContentSerial()) {
 		return;
 	}
-	auto&       image           = *found;
-	const auto& info            = image.info;
-	image.sparse_checked_serial = image.ContentSerial();
-	const auto     format       = image.backing.format;
-	const uint32_t bytes        = format == vk::Format::eD16Unorm    ? 2u
-	                              : format == vk::Format::eD32Sfloat ? 4u
-	                                                                 : 0u;
+	auto&       image             = *found;
+	const auto& info              = image.info;
+	image.sparse_checked_serial   = image.ContentSerial();
+	const auto         format     = image.backing.format;
+	const uint32_t     bytes      = format == vk::Format::eD16Unorm    ? 2u
+	                                : format == vk::Format::eD32Sfloat ? 4u
+	                                                                   : 0u;
 	constexpr uint64_t BlockBytes = 0x10000u;
 	if (bytes == 0 || image.backing.image == nullptr || image.depth_id || info.data.Empty() ||
 	    info.tile_mode != Prospero::TileMode::kDepth || info.HasStencil() || info.IsVolume() ||
@@ -9622,7 +9831,7 @@ void TextureCache::ResetUnmappedDepth(ImageId id, float empty) {
 	for (const auto& [start, size]: spans) {
 		const uint64_t first = (start - info.data.address) / BlockBytes;
 		const uint64_t end   = std::min<uint64_t>(
-            (start + size - info.data.address + BlockBytes - 1u) / BlockBytes, blocks);
+		    (start + size - info.data.address + BlockBytes - 1u) / BlockBytes, blocks);
 		for (uint64_t b = first; b < end; b++) {
 			mapped[b] = true;
 		}
@@ -9645,11 +9854,11 @@ void TextureCache::ResetUnmappedDepth(ImageId id, float empty) {
 			const uint32_t      y = row * block.block_height;
 			vk::BufferImageCopy region {};
 			region.imageSubresource = {vk::ImageAspectFlagBits::eDepth, 0, 0, 1};
-			region.imageOffset      = vk::Offset3D {static_cast<int32_t>(x), static_cast<int32_t>(y), 0};
-			region.imageExtent      = vk::Extent3D {std::min(end * block.block_width, width) - x,
-                                               std::min(block.block_height, height - y), 1};
-			largest = std::max<uint64_t>(largest, uint64_t {region.imageExtent.width} *
-			                                          region.imageExtent.height * bytes);
+			region.imageOffset = vk::Offset3D {static_cast<int32_t>(x), static_cast<int32_t>(y), 0};
+			region.imageExtent = vk::Extent3D {std::min(end * block.block_width, width) - x,
+			                                   std::min(block.block_height, height - y), 1};
+			largest            = std::max<uint64_t>(largest, uint64_t {region.imageExtent.width} *
+			                                                     region.imageExtent.height * bytes);
 			regions.push_back(region);
 			column = end;
 		}
@@ -9660,8 +9869,8 @@ void TextureCache::ResetUnmappedDepth(ImageId id, float empty) {
 	// One passing-depth source for every region (each reads it from its start).
 	const uint64_t source_size = Common::AlignUp(largest, uint64_t {4});
 	auto           source      = std::make_shared<Buffer>(
-        m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
-        vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eTransferSrc, source_size);
+	    m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+	    vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eTransferSrc, source_size);
 	const uint32_t empty_word =
 	    bytes == 2u ? (empty >= 1.0f ? 0xffffffffu : 0u) : std::bit_cast<uint32_t>(empty);
 	source->Fill(0, source_size, empty_word);
@@ -9692,21 +9901,23 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 	ImageId               stencil_id {};
 	vk::ImageAspectFlags  aspect {};
 	ImageSubresourceRange subresources;
-	const bool trace_images = address == MetaTraceAddress() && MetaTraceLine();
+	const bool            trace_images = address == MetaTraceAddress() && MetaTraceLine();
 	// KYTY_STENCIL_PLANE_SYNC=2: a fill that matches a stencil plane record and other images (an R8
 	// colour alias) goes into the plane's saved copy when its depth image holds another plane
 	// (Erlou93/KytyPS5-Yotei clears the alias and loads it into the plane at swap-in).
-	const bool plane_fill_first = StencilPlaneSyncLevel() >= 2 && PreserveStencilEnabled() &&
-	                              StencilPlaneFillSavedEnabled();
+	const bool plane_fill_first =
+	    StencilPlaneSyncLevel() >= 2 && PreserveStencilEnabled() && StencilPlaneFillSavedEnabled();
 	std::vector<std::pair<ImageId, ImageId>> plane_records; // (depth, record)
 	bool                                     conflict = false;
 	for (const auto id: FindImagesInRegion(address, size, false)) {
 		auto owner = m_slot_images.try_get(id);
 		if (trace_images && owner != nullptr) {
-			LOGF("MetaTrace: clear-from-buffer 0x%" PRIx64 " sees image data 0x%" PRIx64 "+0x%" PRIx64 " stencil 0x%" PRIx64
-			     "+0x%" PRIx64 " depth %d depth_id %d has_stencil %d\n",
-			     address, owner->info.data.address, owner->info.data.size, owner->info.stencil.address,
-			     owner->info.stencil.size, owner->info.IsDepth() ? 1 : 0, owner->depth_id ? 1 : 0,
+			LOGF("MetaTrace: clear-from-buffer 0x%" PRIx64 " sees image data 0x%" PRIx64
+			     "+0x%" PRIx64 " stencil 0x%" PRIx64 "+0x%" PRIx64
+			     " depth %d depth_id %d has_stencil %d\n",
+			     address, owner->info.data.address, owner->info.data.size,
+			     owner->info.stencil.address, owner->info.stencil.size,
+			     owner->info.IsDepth() ? 1 : 0, owner->depth_id ? 1 : 0,
 			     owner->info.HasStencil() ? 1 : 0);
 		}
 		if (owner == nullptr) {
@@ -9732,14 +9943,16 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 		} else if (StencilPlaneFillClearEnabled() && !owner->depth_id && owner->info.IsDepth() &&
 		           owner->info.HasStencil() && owner->backing.image != nullptr &&
 		           owner->info.stencil.address == address && owner->info.stencil.size == size) {
-			// KYTY_STENCIL_PLANE_FILL_CLEAR: a fill of exactly a depth target's stencil plane clears its
-			// stencil aspect (GT7's course-map preview: CS 0xfdc68063b0791828 every frame).
+			// KYTY_STENCIL_PLANE_FILL_CLEAR: a fill of exactly a depth target's stencil plane
+			// clears its stencil aspect (GT7's course-map preview: CS 0xfdc68063b0791828 every
+			// frame).
 			candidate = vk::ImageAspectFlagBits::eStencil;
 		}
 		if (!candidate) {
 			continue;
 		}
-		if (plane_fill_first && candidate == vk::ImageAspectFlagBits::eStencil && candidate_id != id) {
+		if (plane_fill_first && candidate == vk::ImageAspectFlagBits::eStencil &&
+		    candidate_id != id) {
 			plane_records.emplace_back(candidate_id, id);
 		}
 		if (selected && (selected != candidate_id || subresources != candidate_subresources)) {
@@ -9764,24 +9977,26 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 				TrackImage(record_id);
 				CommitGpuWrite(m_slot_images[record_id]);
 				if (trace_images) {
-					LOGF("MetaTrace: clear-from-buffer 0x%" PRIx64 " size 0x%" PRIx64 ": plane saved copy %u\n", address,
-					     size, static_cast<unsigned>(value));
+					LOGF("MetaTrace: clear-from-buffer 0x%" PRIx64 " size 0x%" PRIx64
+					     ": plane saved copy %u\n",
+					     address, size, static_cast<unsigned>(value));
 				}
 				return true;
 			}
 		}
 		return false;
 	}
-	// KYTY_STENCIL_PLANE_FILL_CLEAR: a depth image's stencil plane is not on its registered pages; look
-	// for depth images up to 64 MiB below the fill whose stencil plane is exactly the filled range.
+	// KYTY_STENCIL_PLANE_FILL_CLEAR: a depth image's stencil plane is not on its registered pages;
+	// look for depth images up to 64 MiB below the fill whose stencil plane is exactly the filled
+	// range.
 	if (!selected && StencilPlaneFillClearEnabled() && address > 0x10000u) {
 		constexpr uint64_t Window = uint64_t {64} << 20u;
 		const uint64_t     begin  = address > Window ? address - Window : 0x10000u;
 		for (const auto id: FindImagesInRegion(begin, address - begin, false)) {
 			const auto* owner = m_slot_images.try_get(id);
-			if (owner == nullptr || owner->depth_id || !owner->info.IsDepth() || !owner->info.HasStencil() ||
-			    owner->backing.image == nullptr || owner->info.stencil.address != address ||
-			    owner->info.stencil.size != size) {
+			if (owner == nullptr || owner->depth_id || !owner->info.IsDepth() ||
+			    !owner->info.HasStencil() || owner->backing.image == nullptr ||
+			    owner->info.stencil.address != address || owner->info.stencil.size != size) {
 				continue;
 			}
 			const ImageSubresourceRange candidate_subresources {0, owner->info.resources.levels, 0,
@@ -9801,15 +10016,16 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 	auto&          image = m_slot_images[selected];
 	vk::ClearValue clear {};
 	if (aspect == vk::ImageAspectFlagBits::eColor) {
-		// KYTY_WIDE_FILL_CLEAR (default off, live): a fill of an image with 64- or 128-bit texels is a clear
-		// too; otherwise only a zero RGBA16F fill and the 32-bit formats are.
-		// KYTY_WIDE_FILL_CLEAR=2 (GT7 fork 83707d403): the fill words of more formats (DecodeFillWord).
+		// KYTY_WIDE_FILL_CLEAR (default off, live): a fill of an image with 64- or 128-bit texels
+		// is a clear too; otherwise only a zero RGBA16F fill and the 32-bit formats are.
+		// KYTY_WIDE_FILL_CLEAR=2 (GT7 fork 83707d403): the fill words of more formats
+		// (DecodeFillWord).
 		const auto wide_fill = g_wide_fill_clear.Get();
 		// KYTY_10_11_11_RED: the fill word is in the guest's layout.
 		const auto host_clear = GuestColorWordToHost(packed_clear, image.info.GetColorTransform());
-		// KYTY_STENCIL_PLANE_SYNC=2: a uniform byte fill of an R8 image is its clear (Ghost of Yotei's CS
-		// 2bd3cd12 zero-fills the R8 image at its z-fail volume plane 0x50615a0000 every frame; Erlou93/
-		// KytyPS5-Yotei clears that image and loads it into the plane at swap-in).
+		// KYTY_STENCIL_PLANE_SYNC=2: a uniform byte fill of an R8 image is its clear (Ghost of
+		// Yotei's CS 2bd3cd12 zero-fills the R8 image at its z-fail volume plane 0x50615a0000 every
+		// frame; Erlou93/ KytyPS5-Yotei clears that image and loads it into the plane at swap-in).
 		const uint8_t byte      = static_cast<uint8_t>(packed_clear & 0xffu);
 		const bool    byte_fill = packed_clear == uint32_t {byte} * 0x01010101u;
 		const auto    r8        = image.backing.format;
@@ -9818,15 +10034,20 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 			if (r8 == vk::Format::eR8Uint) {
 				clear.color.uint32 = std::array<uint32_t, 4> {byte, 0u, 0u, 0u};
 			} else {
-				clear.color.float32 = std::array<float, 4> {static_cast<float>(byte) / 255.0f, 0.0f, 0.0f, 0.0f};
+				clear.color.float32 =
+				    std::array<float, 4> {static_cast<float>(byte) / 255.0f, 0.0f, 0.0f, 0.0f};
 			}
 			if (trace_images) {
-				LOGF("MetaTrace: clear-from-buffer 0x%" PRIx64 " size 0x%" PRIx64 ": R8 byte clear %u\n", address, size,
-				     static_cast<unsigned>(byte));
+				LOGF("MetaTrace: clear-from-buffer 0x%" PRIx64 " size 0x%" PRIx64
+				     ": R8 byte clear %u\n",
+				     address, size, static_cast<unsigned>(byte));
 			}
-		} else if (!(wide_fill == 2   ? DecodeFillWord(image.info.pixel_format, host_clear, clear.color)
-		             : wide_fill == 1 ? DecodeFilledColorClear(image.info.pixel_format, host_clear, clear.color)
-		                              : DecodeColorDwordFill(image.info.pixel_format, host_clear, clear.color))) {
+		} else if (!(wide_fill == 2
+		                 ? DecodeFillWord(image.info.pixel_format, host_clear, clear.color)
+		             : wide_fill == 1
+		                 ? DecodeFilledColorClear(image.info.pixel_format, host_clear, clear.color)
+		                 : DecodeColorDwordFill(image.info.pixel_format, host_clear,
+		                                        clear.color))) {
 			return false;
 		}
 	} else {
@@ -9841,8 +10062,8 @@ bool TextureCache::ClearImageFromBuffer(CommandBuffer& command, uint64_t address
 	}
 	// KYTY_STENCIL_PLANE_FILL_SAVED (default on, acts with KYTY_PRESERVE_STENCIL; based on
 	// Erlou93/KytyPS5-Yotei KYTY_FIX_STENCIL_PLANE_WRITES): a fill of a stencil plane record whose
-	// depth image holds another plane fills that plane's saved copy, which the next swap-in restores,
-	// instead of clearing the depth image's stencil aspect (the plane it holds).
+	// depth image holds another plane fills that plane's saved copy, which the next swap-in
+	// restores, instead of clearing the depth image's stencil aspect (the plane it holds).
 	if (stencil_id && aspect == vk::ImageAspectFlagBits::eStencil && PreserveStencilEnabled() &&
 	    StencilPlaneFillSavedEnabled() &&
 	    FillStencilPlaneSaved(command, selected, stencil_id, clear.depthStencil.stencil, "fill")) {
@@ -10524,8 +10745,8 @@ uint64_t TexelSyncNowNs() {
 }
 
 void ReportTexelImageSync() {
-	auto&      s   = g_texel_image_sync;
-	const auto now = static_cast<int64_t>(TexelSyncNowNs() / 1000000u);
+	auto&      s    = g_texel_image_sync;
+	const auto now  = static_cast<int64_t>(TexelSyncNowNs() / 1000000u);
 	auto       last = s.last_ms.load(std::memory_order_relaxed);
 	if (last == 0) {
 		s.last_ms.store(now, std::memory_order_relaxed);
@@ -10536,13 +10757,16 @@ void ReportTexelImageSync() {
 	}
 	std::printf("TexelImageSync %.0fs: %" PRIu64 " calls (%" PRIu64 " off the GPU thread), %.1f ms "
 	            "(lookup %.1f, owner sync %.1f, alias %.1f); %" PRIu64 " images found, %" PRIu64
-	            " downloads %.1f MiB, %" PRIu64 " unchanged skips; %" PRIu64 " alias scans moved %.1f MiB\n",
-	            static_cast<double>(now - last) / 1000.0, s.calls.exchange(0), s.other_thread.exchange(0),
-	            static_cast<double>(s.ns.exchange(0)) / 1e6, static_cast<double>(s.lookup_ns.exchange(0)) / 1e6,
+	            " downloads %.1f MiB, %" PRIu64 " unchanged skips; %" PRIu64
+	            " alias scans moved %.1f MiB\n",
+	            static_cast<double>(now - last) / 1000.0, s.calls.exchange(0),
+	            s.other_thread.exchange(0), static_cast<double>(s.ns.exchange(0)) / 1e6,
+	            static_cast<double>(s.lookup_ns.exchange(0)) / 1e6,
 	            static_cast<double>(s.owner_ns.exchange(0)) / 1e6,
 	            static_cast<double>(s.alias_ns.exchange(0)) / 1e6, s.found.exchange(0),
-	            s.downloads.exchange(0), static_cast<double>(s.download_bytes.exchange(0)) / 1048576.0,
-	            s.skips.exchange(0), s.alias_scans.exchange(0),
+	            s.downloads.exchange(0),
+	            static_cast<double>(s.download_bytes.exchange(0)) / 1048576.0, s.skips.exchange(0),
+	            s.alias_scans.exchange(0),
 	            static_cast<double>(s.alias_bytes.exchange(0)) / 1048576.0);
 	std::fflush(stdout);
 }
@@ -10551,14 +10775,15 @@ void ReportTexelImageSync() {
 
 namespace {
 
-// KYTY_TEXEL_SYNC_MEMO (live, default off in this line, on in the Insomniac title presets; =0 off; =2 verify): a texel read whose range had no
-// image starting at its address and no image page overlapping it (so it synchronized nothing:
-// no image download, no alias-byte scan) is remembered with the image registration epoch
-// (TextureCache::RegistrationEpoch, bumped on every image register/unregister and GPU-modified
-// transition). The same range, buffer and epoch again returns at once: nothing it looked at can
-// have changed. Miles Morales binds about 190,000 heap-wide (~1 GB) texel buffers a second on the
-// command processor, every one of them finding nothing after a walk of ~1,000 image page counts.
-// =2 runs the full synchronization on a memo hit too and reports a hit that would have synced.
+// KYTY_TEXEL_SYNC_MEMO (live, default off in this line, on in the Insomniac title presets; =0 off;
+// =2 verify): a texel read whose range had no image starting at its address and no image page
+// overlapping it (so it synchronized nothing: no image download, no alias-byte scan) is remembered
+// with the image registration epoch (TextureCache::RegistrationEpoch, bumped on every image
+// register/unregister and GPU-modified transition). The same range, buffer and epoch again returns
+// at once: nothing it looked at can have changed. Miles Morales binds about 190,000 heap-wide (~1
+// GB) texel buffers a second on the command processor, every one of them finding nothing after a
+// walk of ~1,000 image page counts. =2 runs the full synchronization on a memo hit too and reports
+// a hit that would have synced.
 Live::Switch g_texel_sync_memo("KYTY_TEXEL_SYNC_MEMO", [](const char* value) -> int64_t {
 	if (value == nullptr || value[0] == '\0') {
 		return 0;
@@ -10575,7 +10800,7 @@ struct TexelSyncMemoEntry {
 	uint64_t      epoch  = 0;
 	const Buffer* buffer = nullptr;
 };
-constexpr size_t TexelSyncMemoSlots = 4096;
+constexpr size_t      TexelSyncMemoSlots = 4096;
 std::atomic<uint64_t> g_texel_sync_memo_hits {0}, g_texel_sync_memo_stores {0},
     g_texel_sync_memo_mismatches {0};
 std::atomic<int64_t> g_texel_sync_memo_last_ms {0};
@@ -10605,9 +10830,9 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 		const auto epoch = m_texture_cache.RegistrationEpoch();
 		if (epoch != 0) {
 			thread_local std::vector<TexelSyncMemoEntry> memo(TexelSyncMemoSlots);
-			auto& entry = memo[((vaddr >> 6u) ^ (vaddr >> 20u) ^ size) % TexelSyncMemoSlots];
-			const bool hit = entry.vaddr == vaddr && entry.size == size && entry.epoch == epoch &&
-			                 entry.buffer == &buffer;
+			auto&      entry = memo[((vaddr >> 6u) ^ (vaddr >> 20u) ^ size) % TexelSyncMemoSlots];
+			const bool hit   = entry.vaddr == vaddr && entry.size == size && entry.epoch == epoch &&
+			                   entry.buffer == &buffer;
 			if (hit && memo_mode == 1) {
 				g_texel_sync_memo_hits.fetch_add(1, std::memory_order_relaxed);
 				ReportTexelSyncMemo();
@@ -10618,11 +10843,13 @@ bool BufferCache::SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uin
 			if (hit) {
 				g_texel_sync_memo_hits.fetch_add(1, std::memory_order_relaxed);
 				if (synced || !nothing) {
-					const auto count = g_texel_sync_memo_mismatches.fetch_add(1, std::memory_order_relaxed);
+					const auto count =
+					    g_texel_sync_memo_mismatches.fetch_add(1, std::memory_order_relaxed);
 					if (count < 16) {
 						std::printf("TexelSyncMemo verify: 0x%" PRIx64 "+0x%" PRIx64
 						            " would have been skipped but %s\n",
-						            vaddr, size, synced ? "synchronized" : "was not provably empty");
+						            vaddr, size,
+						            synced ? "synchronized" : "was not provably empty");
 						std::fflush(stdout);
 					}
 				}
@@ -10663,9 +10890,9 @@ bool BufferCache::SyncRawReadFromWrittenImage(Buffer& buffer, uint64_t vaddr, ui
 	if (!selected) {
 		return false;
 	}
-	uint32_t width = 0, height = 0, format = 0;
-	uint64_t serial = 0;
-	static const bool once = [] {
+	uint32_t          width = 0, height = 0, format = 0;
+	uint64_t          serial = 0;
+	static const bool once   = [] {
 		const auto* value = std::getenv("KYTY_RAW_READ_IMAGE_SYNC_ONCE");
 		return value != nullptr && value[0] == '1';
 	}();
@@ -10680,8 +10907,8 @@ bool BufferCache::SyncRawReadFromWrittenImage(Buffer& buffer, uint64_t vaddr, ui
 		}
 		serial = image->ContentSerial();
 		// KYTY_RAW_READ_IMAGE_SYNC_ONCE: this buffer already holds these contents of the range.
-		if (once && serial != 0 && image->raw_sync_serial == serial && image->raw_sync_buffer == &buffer &&
-		    size <= image->raw_sync_size) {
+		if (once && serial != 0 && image->raw_sync_serial == serial &&
+		    image->raw_sync_buffer == &buffer && size <= image->raw_sync_size) {
 			skipped_once.fetch_add(1, std::memory_order_relaxed);
 			return false;
 		}
@@ -10704,10 +10931,12 @@ bool BufferCache::SyncRawReadFromWrittenImage(Buffer& buffer, uint64_t vaddr, ui
 		const auto n = syncs.fetch_add(1, std::memory_order_relaxed) + 1;
 		// The first 16, then at powers of two: how often raw reads take image contents.
 		if (n <= 16 || (n & (n - 1)) == 0) {
-			std::printf("KYTY_RAW_READ_IMAGE_SYNC: #%" PRIu64 " raw read 0x%016" PRIx64 "+0x%" PRIx64
+			std::printf("KYTY_RAW_READ_IMAGE_SYNC: #%" PRIu64 " raw read 0x%016" PRIx64
+			            "+0x%" PRIx64
 			            " took a GPU-written image's contents (%ux%u, vk format %u; %" PRIu64
 			            " repeated reads skipped)\n",
-			            n, vaddr, size, width, height, format, skipped_once.load(std::memory_order_relaxed));
+			            n, vaddr, size, width, height, format,
+			            skipped_once.load(std::memory_order_relaxed));
 			std::fflush(stdout);
 		}
 	}
@@ -10721,7 +10950,8 @@ void BufferCache::PrepareReadRange(uint64_t vaddr, uint64_t size) {
 	};
 	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(obtains_init())>> obtains_once;
 	const bool& obtains = obtains_once.Get(obtains_init);
-	if (!obtains || size == 0 || !RawReadImageSyncEnabled() || !m_texture_cache.MayOverlapImages(vaddr, size)) {
+	if (!obtains || size == 0 || !RawReadImageSyncEnabled() ||
+	    !m_texture_cache.MayOverlapImages(vaddr, size)) {
 		return;
 	}
 	if (auto [buffer, offset] = ObtainBuffer(vaddr, size, false); buffer != nullptr) {
@@ -10755,13 +10985,15 @@ bool BufferCache::SynchronizeBufferFromImageImpl(Buffer& buffer, uint64_t vaddr,
 	const auto lookup_begin = stats ? TexelSyncNowNs() : 0;
 	const auto selected = m_texture_cache.FindImageFromRange(vaddr, size, true, true);
 	if (stats) {
-		g_texel_image_sync.lookup_ns.fetch_add(TexelSyncNowNs() - lookup_begin, std::memory_order_relaxed);
+		g_texel_image_sync.lookup_ns.fetch_add(TexelSyncNowNs() - lookup_begin,
+		                                       std::memory_order_relaxed);
 		g_texel_image_sync.found.fetch_add(selected ? 1 : 0, std::memory_order_relaxed);
 	}
 	const auto owner_begin = stats && selected ? TexelSyncNowNs() : 0;
 	const bool synced   = selected && SynchronizeBufferFromOwner(buffer, selected);
 	if (owner_begin != 0) {
-		g_texel_image_sync.owner_ns.fetch_add(TexelSyncNowNs() - owner_begin, std::memory_order_relaxed);
+		g_texel_image_sync.owner_ns.fetch_add(TexelSyncNowNs() - owner_begin,
+		                                      std::memory_order_relaxed);
 	}
 	// KYTY_ALIAS_BYTES: every other byte of the range that an image owns (an owner that does not
 	// start at vaddr, owns only part of its bytes, or lies past the image synchronized above) is
@@ -10785,14 +11017,15 @@ bool BufferCache::SynchronizeBufferFromImageImpl(Buffer& buffer, uint64_t vaddr,
 		return synced;
 	}
 	Profiler::CountFrameEvent(Profiler::FrameEvent::AliasBytesTexelScans);
-	const auto alias_begin = stats ? TexelSyncNowNs() : 0;
+	const auto       alias_begin = stats ? TexelSyncNowNs() : 0;
 	std::scoped_lock lock {m_texture_cache.m_lock};
 	const auto       moved = m_texture_cache.MaterializeOwnedBytes(
         {vaddr, size}, {}, synced ? selected : ImageId {}, "texel-read", &buffer);
 	if (stats) {
 		g_texel_image_sync.alias_scans.fetch_add(1, std::memory_order_relaxed);
 		g_texel_image_sync.alias_bytes.fetch_add(moved, std::memory_order_relaxed);
-		g_texel_image_sync.alias_ns.fetch_add(TexelSyncNowNs() - alias_begin, std::memory_order_relaxed);
+		g_texel_image_sync.alias_ns.fetch_add(TexelSyncNowNs() - alias_begin,
+		                                      std::memory_order_relaxed);
 	}
 	return synced || moved != 0;
 }
@@ -11135,41 +11368,41 @@ bool TextureCache::DownloadImageMemory(ImageId id, std::shared_ptr<std::atomic_b
 		// operation (upstream f47da249b relies on queue order and drops the defaulted ==, which
 		// broke the MSVC STL 14.51 build).
 		std::scoped_lock write_back_lock {m_storage_write_back_mutex};
-		const auto found = std::find_if(
-		    m_storage_write_backs.begin(), m_storage_write_backs.end(), [&](const StorageWriteBack& entry) {
-			    return entry.tick == storage_write_back.tick &&
-			           entry.range.address == storage_write_back.range.address &&
-			           entry.range.size == storage_write_back.range.size;
-		    });
+		const auto       found =
+		    std::find_if(m_storage_write_backs.begin(), m_storage_write_backs.end(),
+		                 [&](const StorageWriteBack& entry) {
+			                 return entry.tick == storage_write_back.tick &&
+			                        entry.range.address == storage_write_back.range.address &&
+			                        entry.range.size == storage_write_back.range.size;
+		                 });
 		if (found != m_storage_write_backs.end()) {
 			m_storage_write_backs.erase(found);
 		}
 	};
 	if (oversized != nullptr) {
-		m_scheduler.DeferPriorityOperation(
-		    [this, owner = std::move(oversized), range, mapped, publication, pending, done,
-		     release_trap]() mutable {
-			    owner->Invalidate(0, range.size);
-			    WriteBackImageBytes(range, mapped, pending);
-			    release_trap();
-			    m_buffer_cache.EndBackingPublication(publication);
-			    owner.reset();
-			    if (done != nullptr) {
-				    done->store(true, std::memory_order_release);
-			    }
-		    });
+		m_scheduler.DeferPriorityOperation([this, owner = std::move(oversized), range, mapped,
+		                                    publication, pending, done, release_trap]() mutable {
+			owner->Invalidate(0, range.size);
+			WriteBackImageBytes(range, mapped, pending);
+			release_trap();
+			m_buffer_cache.EndBackingPublication(publication);
+			owner.reset();
+			if (done != nullptr) {
+				done->store(true, std::memory_order_release);
+			}
+		});
 		return true;
 	}
-	m_scheduler.DeferPriorityOperation([this, &download, range, mapped, offset, publication, pending, done,
-	                                    release_trap] {
-		download.Invalidate(offset, range.size);
-		WriteBackImageBytes(range, mapped, pending);
-		release_trap();
-		m_buffer_cache.EndBackingPublication(publication);
-		if (done != nullptr) {
-			done->store(true, std::memory_order_release);
-		}
-	});
+	m_scheduler.DeferPriorityOperation(
+	    [this, &download, range, mapped, offset, publication, pending, done, release_trap] {
+		    download.Invalidate(offset, range.size);
+		    WriteBackImageBytes(range, mapped, pending);
+		    release_trap();
+		    m_buffer_cache.EndBackingPublication(publication);
+		    if (done != nullptr) {
+			    done->store(true, std::memory_order_release);
+		    }
+	    });
 	return true;
 }
 
@@ -11370,9 +11603,10 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 			continue;
 		}
 		// KYTY_IMAGE_PARTIAL_GPU_WRITE: decided before the write takes the bytes.
-		const bool first_write  = !image.IsBufferModified();
-		const bool track_ranges = m_partial_gpu_write != 0 &&
-		                          (first_write ? GpuWriteTrackEligible(image) : image.gpu_write.active);
+		const bool first_write = !image.IsBufferModified();
+		const bool track_ranges =
+		    m_partial_gpu_write != 0 &&
+		    (first_write ? GpuWriteTrackEligible(image) : image.gpu_write.active);
 		if (TilerTrace::Enabled() && !image.coherence.Empty()) {
 			TilerTrace::EventWithReason("coh.gpuwrite", image, size);
 		}
@@ -11441,7 +11675,8 @@ bool TextureCache::GpuWriteTrackEligible(const Image& image) const {
 		       depth->backing.samples == 1 && !depth->info.metadata.stencil_compressed;
 	}
 	// The whole rebuild moves owned bytes through the buffer (KYTY_ALIAS_BYTES); without per-byte
-	// ownership it would not keep the image's own bytes either. Colour transforms do not round-trip.
+	// ownership it would not keep the image's own bytes either. Colour transforms do not
+	// round-trip.
 	return AliasBytesEnabled() && image.backing.image != nullptr && image.backing.samples == 1 &&
 	       info.GetColorTransform() == ColorTransform::None;
 }
@@ -11579,8 +11814,8 @@ void TextureCache::MarkImageGpuModified(Image& image, bool keep_coherence) {
 	const auto serial_before = image.ContentSerial();
 	image.NotePossibleWrite();
 	if (m_bind_mark && image.gpu_write.active && image.gpu_write.serial == serial_before) {
-		// KYTY_IMAGE_PARTIAL_GPU_WRITE: a binding marks its image before refreshing it (RefreshImage
-		// right after); nothing has written the native contents in between.
+		// KYTY_IMAGE_PARTIAL_GPU_WRITE: a binding marks its image before refreshing it
+		// (RefreshImage right after); nothing has written the native contents in between.
 		image.gpu_write.serial = image.ContentSerial();
 	}
 }
@@ -11600,11 +11835,12 @@ void TextureCache::RestoreContentIfUnwritten(ImageId id, const ContentMark& mark
 	auto*            image = m_slot_images.try_get(id);
 	// Only bind-time possible writes happened since the mark: no upload, copy or clear.
 	if (image != nullptr && WatchRange::Enabled()) {
-		WatchRange::Note(fmt::format("depth restore-if-unwritten: mark serial {} now {} definite {} -> {}",
-		                             mark.serial, image->ContentSerial(), mark.definite_writes,
-		                             image->DefiniteWrites())
-		                     .c_str(),
-		                 image->info.data.address, image->info.data.size);
+		WatchRange::Note(
+		    fmt::format("depth restore-if-unwritten: mark serial {} now {} definite {} -> {}",
+		                mark.serial, image->ContentSerial(), mark.definite_writes,
+		                image->DefiniteWrites())
+		        .c_str(),
+		    image->info.data.address, image->info.data.size);
 	}
 	if (image != nullptr && image->DefiniteWrites() == mark.definite_writes) {
 		image->AdoptContentSerial(mark.serial);
@@ -11630,16 +11866,17 @@ std::string TextureCache::DescribeGpuModifiedImages(uint64_t address, uint64_t s
 		if (!text.empty()) {
 			text += "; ";
 		}
-		text += fmt::format("image 0x{:x}+0x{:x} {} {}x{} type {} alias_owner {} owns {} all {} cpu_dirty {}/{} "
-		                    "span 0x{:x}+0x{:x} buffer_mod {} registered {} resident {} live 0x{:x}+0x{:x}",
-		                    image.info.data.address, image.info.data.size, vk::to_string(image.backing.format),
-		                    image.backing.extent.width, image.backing.extent.height,
-		                    static_cast<uint32_t>(image.info.type), image.alias_owner ? 1 : 0,
-		                    image.OwnsBytesIn(address, size) ? 1 : 0, image.OwnsAllBytes() ? 1 : 0,
-		                    image.IsDefinitelyCpuDirty() ? 1 : 0, image.IsMaybeCpuDirty() ? 1 : 0,
-		                    image.DirtySpanBegin(), image.DirtySpanBytes(), image.IsBufferModified() ? 1 : 0,
-		                    image.registered ? 1 : 0, image.FullyResident() ? 1 : 0, image.live.address,
-		                    image.live.size);
+		text += fmt::format(
+		    "image 0x{:x}+0x{:x} {} {}x{} type {} alias_owner {} owns {} all {} cpu_dirty {}/{} "
+		    "span 0x{:x}+0x{:x} buffer_mod {} registered {} resident {} live 0x{:x}+0x{:x}",
+		    image.info.data.address, image.info.data.size, vk::to_string(image.backing.format),
+		    image.backing.extent.width, image.backing.extent.height,
+		    static_cast<uint32_t>(image.info.type), image.alias_owner ? 1 : 0,
+		    image.OwnsBytesIn(address, size) ? 1 : 0, image.OwnsAllBytes() ? 1 : 0,
+		    image.IsDefinitelyCpuDirty() ? 1 : 0, image.IsMaybeCpuDirty() ? 1 : 0,
+		    image.DirtySpanBegin(), image.DirtySpanBytes(), image.IsBufferModified() ? 1 : 0,
+		    image.registered ? 1 : 0, image.FullyResident() ? 1 : 0, image.live.address,
+		    image.live.size);
 	}
 	return text;
 }
@@ -11885,7 +12122,7 @@ bool TextureCache::HtileSizeRuleEnabled() {
 
 bool TextureCache::OversizedMetaWrite(uint64_t address, uint64_t size) {
 	std::scoped_lock lock {m_lock};
-	const auto found = m_surface_metas.find(address);
+	const auto       found = m_surface_metas.find(address);
 	if (found == m_surface_metas.end() || found->second.type != MetaDataInfo::Type::HTile ||
 	    found->second.size == 0 || size <= found->second.size) {
 		return false;
@@ -11893,7 +12130,7 @@ bool TextureCache::OversizedMetaWrite(uint64_t address, uint64_t size) {
 	// Ghost of Yotei: the UI depth target's HTILE (0xa0000 bytes) lies at the start of the contact
 	// shadow mask (0x870000 bytes R8); its per-frame fill was taken as an HTILE clear and dropped.
 	static std::atomic<uint32_t> logged {0};
-	const auto n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
+	const auto                   n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
 	if (n <= 8u || std::has_single_bit(n)) {
 		LOGF("KYTY_HTILE_SIZE_RULE #%u: write 0x%012" PRIx64 " size 0x%" PRIx64
 		     " larger than its HTILE (0x%" PRIx64 "): ordinary write, entry erased\n",
@@ -11907,13 +12144,14 @@ bool TextureCache::ClearMetaRange(uint64_t address, uint64_t size) {
 	if (!HtileSliceClearEnabled()) {
 		return ClearMeta(address);
 	}
-	std::scoped_lock lock {m_lock};
+	std::scoped_lock             lock {m_lock};
 	static std::atomic<uint32_t> logged {0};
-	const auto note = [&](const char* kind, uint64_t base, uint32_t first, uint32_t count, uint32_t layers) {
+	const auto note = [&](const char* kind, uint64_t base, uint32_t first, uint32_t count,
+	                      uint32_t layers) {
 		const auto n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
 		if (n <= 16u || std::has_single_bit(n)) {
-			LOGF("HTILE slice clear #%u (KYTY_HTILE_SLICE_CLEAR): %s htile 0x%012" PRIx64 " at 0x%012" PRIx64
-			     " size 0x%" PRIx64 " layers %u..%u of %u\n",
+			LOGF("HTILE slice clear #%u (KYTY_HTILE_SLICE_CLEAR): %s htile 0x%012" PRIx64
+			     " at 0x%012" PRIx64 " size 0x%" PRIx64 " layers %u..%u of %u\n",
 			     n, kind, base, address, size, first, first + count - 1u, layers);
 		}
 	};
@@ -11940,12 +12178,14 @@ bool TextureCache::ClearMetaRange(uint64_t address, uint64_t size) {
 	--inside;
 	auto&      meta = inside->second;
 	const auto ss   = meta.slice_size;
-	if (meta.type != MetaDataInfo::Type::HTile || ss == 0 || meta.layers <= 1 || address <= inside->first) {
+	if (meta.type != MetaDataInfo::Type::HTile || ss == 0 || meta.layers <= 1 ||
+	    address <= inside->first) {
 		return false;
 	}
 	const auto offset = address - inside->first;
 	const auto total  = ss * meta.layers;
-	if (offset >= total || offset % ss != 0 || size == 0 || size % ss != 0 || size > total - offset) {
+	if (offset >= total || offset % ss != 0 || size == 0 || size % ss != 0 ||
+	    size > total - offset) {
 		return false;
 	}
 	const auto first = static_cast<uint32_t>(offset / ss);
@@ -11974,8 +12214,8 @@ uint32_t TextureCache::ClearMetaCovered(uint64_t address, uint64_t size) {
 	if (size == 0 || size > UINT64_MAX - address) return 0;
 	std::scoped_lock lock {m_lock};
 	uint32_t         cleared = 0;
-	for (auto it = m_surface_metas.upper_bound(address); it != m_surface_metas.end() && it->first < address + size;
-	     ++it) {
+	for (auto it = m_surface_metas.upper_bound(address);
+	     it != m_surface_metas.end() && it->first < address + size; ++it) {
 		it->second.clear_mask.set();
 		cleared++;
 	}
@@ -11983,9 +12223,9 @@ uint32_t TextureCache::ClearMetaCovered(uint64_t address, uint64_t size) {
 	return cleared;
 }
 
-// KYTY_META_TRACE=<hex address> (diagnostic): logs every compute buffer write and CP fill whose range
-// holds that metadata address, and the result. With KYTY_META_TRACE=auto, KYTY_DRAW_TRACE_TARGET
-// sets it to the HTile of the traced target's depth buffer.
+// KYTY_META_TRACE=<hex address> (diagnostic): logs every compute buffer write and CP fill whose
+// range holds that metadata address, and the result. With KYTY_META_TRACE=auto,
+// KYTY_DRAW_TRACE_TARGET sets it to the HTile of the traced target's depth buffer.
 static std::atomic<uint64_t> g_meta_trace_address {[] {
 	const auto* value = std::getenv("KYTY_META_TRACE");
 	if (value == nullptr || std::strcmp(value, "auto") == 0) return uint64_t {0};
@@ -12050,23 +12290,28 @@ void TextureCache::ExpandMetaForStorageWriteLocked(const Image& image) {
 		NoteSurfaceMetaChange();
 		if (meta_log && logged.fetch_add(1, std::memory_order_relaxed) < 64) {
 			std::fprintf(stderr,
-			             "[memtrk] storage write %s: image 0x%llx +0x%llx (%ux%u fmt %u) -> HTILE 0x%llx of surface "
+			             "[memtrk] storage write %s: image 0x%llx +0x%llx (%ux%u fmt %u) -> HTILE "
+			             "0x%llx of surface "
 			             "0x%llx no longer clear\n",
 			             how, static_cast<unsigned long long>(image.info.data.address),
-			             static_cast<unsigned long long>(image.info.data.size), image.info.extent.width,
-			             image.info.extent.height, static_cast<unsigned>(image.info.guest_format),
-			             static_cast<unsigned long long>(meta_address), static_cast<unsigned long long>(surface));
+			             static_cast<unsigned long long>(image.info.data.size),
+			             image.info.extent.width, image.info.extent.height,
+			             static_cast<unsigned>(image.info.guest_format),
+			             static_cast<unsigned long long>(meta_address),
+			             static_cast<unsigned long long>(surface));
 		}
 	};
 	// The HTILE memory itself, written through an image view.
 	expand(image.info.data.address, 0, "to HTILE memory");
 	// A depth surface with HTILE that this write overlaps.
-	for (const auto other_id: FindImagesInRegion(image.info.data.address, image.info.data.size, false)) {
+	for (const auto other_id:
+	     FindImagesInRegion(image.info.data.address, image.info.data.size, false)) {
 		const auto* other = m_slot_images.try_get(other_id);
 		if (other == nullptr || other->info.metadata.kind != ImageMetadataKind::Htile) {
 			continue;
 		}
-		expand(other->info.metadata.range.address, other->info.data.address, "over a depth surface");
+		expand(other->info.metadata.range.address, other->info.data.address,
+		       "over a depth surface");
 	}
 }
 
@@ -12114,7 +12359,8 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 	// The map is ordered by base address: erase the entries with a base in [address, address +
 	// size) by range instead of walking the whole map on every unmap (as upstream does; based on
 	// Senaxx/KytyPS5 089bebdc2). GuestRange::Valid above rules out an overflowing end.
-	m_surface_metas.erase(m_surface_metas.lower_bound(address), m_surface_metas.lower_bound(address + size));
+	m_surface_metas.erase(m_surface_metas.lower_bound(address),
+	                      m_surface_metas.lower_bound(address + size));
 	NoteSurfaceMetaChange();
 	auto images = FindImagesInRegion(address, size, false);
 	for (const auto id: images) {
@@ -12148,21 +12394,21 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 }
 
 // KYTY_VRAM_GC_FIX=1 (live, default off; adapted from Erlou93/KytyPS5-Yotei's collector of the same
-// name): with KYTY_VRAM_GC_BUDGET, when freeing clean images (RetireUnusedImages) does not bring the
-// usage back to the trigger, GPU-written colour images unused for the same age are downloaded into
-// guest memory (the tiler writes tiled images back) and freed at a later collection, once the
+// name): with KYTY_VRAM_GC_BUDGET, when freeing clean images (RetireUnusedImages) does not bring
+// the usage back to the trigger, GPU-written colour images unused for the same age are downloaded
+// into guest memory (the tiler writes tiled images back) and freed at a later collection, once the
 // write-back has published the bytes and only when the image was neither written (content serial)
-// nor used (frame) since: a later use re-creates it from those bytes, as for any image that left the
-// cache. Without it, GPU-written images stay however long they go unused (IdleRetirable). Never a
-// depth/stencil image (HTILE and stencil planes are not in the bytes a download writes back), a
-// stencil association, a multisampled, sparse, bound, target, presentation or bindless-pinned image,
-// or one whose download would not be exact (SafeToDownload: CPU-dirty, buffer-modified, partly
-// resident or with GPU-dirty buffer bytes in its range). At most 128 MiB of downloads are recorded
-// per frame (256 MiB above the critical mark).
-// KYTY_VRAM_GC_FIX_VERIFY=1 (live, diagnostic, stalls the GPU thread): before each free, an image is
-// rebuilt from the published guest bytes and its native texels are compared with the original's; a
-// mismatch keeps the image (logged, counted). KYTY_VRAM_GC_FIX_LOG=<frames> (default 600, 0 = off):
-// a stats line while the switch is on.
+// nor used (frame) since: a later use re-creates it from those bytes, as for any image that left
+// the cache. Without it, GPU-written images stay however long they go unused (IdleRetirable). Never
+// a depth/stencil image (HTILE and stencil planes are not in the bytes a download writes back), a
+// stencil association, a multisampled, sparse, bound, target, presentation or bindless-pinned
+// image, or one whose download would not be exact (SafeToDownload: CPU-dirty, buffer-modified,
+// partly resident or with GPU-dirty buffer bytes in its range). At most 128 MiB of downloads are
+// recorded per frame (256 MiB above the critical mark). KYTY_VRAM_GC_FIX_VERIFY=1 (live,
+// diagnostic, stalls the GPU thread): before each free, an image is rebuilt from the published
+// guest bytes and its native texels are compared with the original's; a mismatch keeps the image
+// (logged, counted). KYTY_VRAM_GC_FIX_LOG=<frames> (default 600, 0 = off): a stats line while the
+// switch is on.
 static Live::Switch g_vram_gc_fix("KYTY_VRAM_GC_FIX", Live::ParseDefaultOff);
 static Live::Switch g_vram_gc_fix_verify("KYTY_VRAM_GC_FIX_VERIFY", Live::ParseDefaultOff);
 
@@ -12171,23 +12417,25 @@ uint64_t TextureCache::LimitTickForAge(uint64_t frame, uint64_t min_age) const {
 		return 0;
 	}
 	const auto limit_frame = frame - min_age;
-	const auto newer       = std::upper_bound(m_frame_ticks.begin(), m_frame_ticks.end(), limit_frame,
-	                                          [](uint64_t value, const auto& entry) { return value < entry.first; });
+	const auto newer =
+	    std::upper_bound(m_frame_ticks.begin(), m_frame_ticks.end(), limit_frame,
+	                     [](uint64_t value, const auto& entry) { return value < entry.first; });
 	return newer == m_frame_ticks.begin() ? 0 : std::prev(newer)->second;
 }
 
 bool TextureCache::GcFixEligible(const Image& image, uint64_t frame, uint64_t min_age) {
 	if (!image.registered || !image.IsGpuModified() || image.depth_id || image.info.IsDepth() ||
 	    image.info.HasStencil() || image.usage.video_out || image.usage.depth_target ||
-	    image.bindless_pinned || image.binding.is_bound || image.binding.is_target || image.info.samples != 1 ||
-	    image.backing.samples != 1 || image.backing.image == nullptr || image.backing.sparse ||
-	    frame - std::min(frame, image.frame_accessed_last) <= min_age) {
+	    image.bindless_pinned || image.binding.is_bound || image.binding.is_target ||
+	    image.info.samples != 1 || image.backing.samples != 1 || image.backing.image == nullptr ||
+	    image.backing.sparse || frame - std::min(frame, image.frame_accessed_last) <= min_age) {
 		return false;
 	}
 	return SafeToDownload(image) && BuildDownload(image).valid;
 }
 
-uint64_t TextureCache::CollectGpuWrittenImages(uint64_t frame, uint64_t min_age, uint64_t enough, bool critical) {
+uint64_t TextureCache::CollectGpuWrittenImages(uint64_t frame, uint64_t min_age, uint64_t enough,
+                                               bool critical) {
 	const auto limit_tick = LimitTickForAge(frame, min_age);
 	if (limit_tick == 0 || enough == 0) {
 		return 0;
@@ -12201,7 +12449,8 @@ uint64_t TextureCache::CollectGpuWrittenImages(uint64_t frame, uint64_t min_age,
 			return true;
 		}
 		const auto* image = m_slot_images.try_get(id);
-		if (image == nullptr || m_gc_fix_pending_ids.contains(id.index) || !GcFixEligible(*image, frame, min_age)) {
+		if (image == nullptr || m_gc_fix_pending_ids.contains(id.index) ||
+		    !GcFixEligible(*image, frame, min_age)) {
 			return false;
 		}
 		const auto bytes = image->AccountedSize();
@@ -12238,7 +12487,8 @@ void TextureCache::FinishGcFixEvictions(uint64_t frame) {
 	for (size_t i = 0; i < m_gc_fix_pending.size(); i++) {
 		auto& pending = m_gc_fix_pending[i];
 		auto* image   = m_slot_images.try_get(pending.id);
-		if (image != nullptr && image->registered && !pending.done->load(std::memory_order_acquire)) {
+		if (image != nullptr && image->registered &&
+		    !pending.done->load(std::memory_order_acquire)) {
 			if (kept != i) {
 				m_gc_fix_pending[kept] = std::move(pending);
 			}
@@ -12249,11 +12499,12 @@ void TextureCache::FinishGcFixEvictions(uint64_t frame) {
 		if (image == nullptr || !image->registered) {
 			continue; // freed meanwhile (unmap, overlap)
 		}
-		// Written or used since the download was recorded: it stays (guest memory holds an older copy,
-		// as after any download). Also when the switch went off meanwhile.
-		if (!g_vram_gc_fix.On() || image->ContentSerial() != pending.serial || !image->IsGpuModified() ||
-		    image->frame_accessed_last > pending.frame || image->bindless_pinned || image->binding.is_bound ||
-		    image->binding.is_target || !SafeToDownload(*image)) {
+		// Written or used since the download was recorded: it stays (guest memory holds an older
+		// copy, as after any download). Also when the switch went off meanwhile.
+		if (!g_vram_gc_fix.On() || image->ContentSerial() != pending.serial ||
+		    !image->IsGpuModified() || image->frame_accessed_last > pending.frame ||
+		    image->bindless_pinned || image->binding.is_bound || image->binding.is_target ||
+		    !SafeToDownload(*image)) {
 			m_gc_fix_stats.cancelled++;
 			continue;
 		}
@@ -12284,12 +12535,13 @@ void TextureCache::FinishGcFixEvictions(uint64_t frame) {
 	if (log_frames != 0 && g_vram_gc_fix.On() && frame >= m_gc_fix_log_frame + log_frames) {
 		m_gc_fix_log_frame = frame;
 		const auto& s      = m_gc_fix_stats;
-		LOGF("VramGcFix: frame=%" PRIu64 " downloads=%" PRIu64 " (%" PRIu64 " MiB) freed=%" PRIu64 " (%" PRIu64
-		     " MiB) cancelled=%" PRIu64 " failed=%" PRIu64 " over_frame_budget=%" PRIu64
-		     " pending=%zu verify exact=%" PRIu64 " mismatch=%" PRIu64 " unchecked=%" PRIu64 " usage=%" PRIu64 " MiB\n",
-		     frame, s.downloads, s.download_bytes >> 20u, s.freed, s.freed_bytes >> 20u, s.cancelled, s.failed,
-		     s.skip_budget, m_gc_fix_pending.size(), s.verify_exact, s.verify_mismatch, s.verify_skipped,
-		     m_total_used_memory >> 20u);
+		LOGF("VramGcFix: frame=%" PRIu64 " downloads=%" PRIu64 " (%" PRIu64 " MiB) freed=%" PRIu64
+		     " (%" PRIu64 " MiB) cancelled=%" PRIu64 " failed=%" PRIu64
+		     " over_frame_budget=%" PRIu64 " pending=%zu verify exact=%" PRIu64 " mismatch=%" PRIu64
+		     " unchecked=%" PRIu64 " usage=%" PRIu64 " MiB\n",
+		     frame, s.downloads, s.download_bytes >> 20u, s.freed, s.freed_bytes >> 20u,
+		     s.cancelled, s.failed, s.skip_budget, m_gc_fix_pending.size(), s.verify_exact,
+		     s.verify_mismatch, s.verify_skipped, m_total_used_memory >> 20u);
 	}
 }
 
@@ -12303,20 +12555,24 @@ int TextureCache::VerifyGcFixRoundTrip(ImageId id) {
 	}
 	// Native texels of both images, in the transfer's linear layout (before tiling and colour
 	// transforms): the original, and an image rebuilt from the guest bytes the download published.
-	const uint64_t linear_size = transfer.texture.tiles.empty() ? range.size : transfer.texture.LinearSize();
+	const uint64_t linear_size =
+	    transfer.texture.tiles.empty() ? range.size : transfer.texture.LinearSize();
 	if (linear_size == 0) {
 		return -1;
 	}
-	auto upload = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0, AllFlags, range.size);
+	auto upload = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0,
+	                                       AllFlags, range.size);
 	if (!LibKernel::Memory::TryReadBacking(range.address, upload->Mapped().data(), range.size)) {
 		return -1;
 	}
 	upload->Flush(0, range.size);
-	const auto copy = m_slot_images.insert(m_graphics, m_scheduler, info, 0u);
+	const auto copy           = m_slot_images.insert(m_graphics, m_scheduler, info, 0u);
 	m_slot_images[copy].usage = usage;
 	UploadImage(m_slot_images[copy], *upload, 0);
-	auto a = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags, linear_size);
-	auto b = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags, linear_size);
+	auto a = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags,
+	                                  linear_size);
+	auto b = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags,
+	                                  linear_size);
 	std::memset(a->Mapped().data(), 0, linear_size);
 	std::memset(b->Mapped().data(), 0, linear_size);
 	a->Flush(0, linear_size);
@@ -12338,13 +12594,17 @@ int TextureCache::VerifyGcFixRoundTrip(ImageId id) {
 		}
 	}
 	ReleaseUnregisteredImage(copy);
-	// The GPU is done with the buffers (FlushAndWait), but they are released like the download path's.
-	m_scheduler.DeferOperation([up = std::shared_ptr<Buffer>(std::move(upload)), da = std::shared_ptr<Buffer>(std::move(a)),
+	// The GPU is done with the buffers (FlushAndWait), but they are released like the download
+	// path's.
+	m_scheduler.DeferOperation([up = std::shared_ptr<Buffer>(std::move(upload)),
+	                            da = std::shared_ptr<Buffer>(std::move(a)),
 	                            db = std::shared_ptr<Buffer>(std::move(b))] {});
 	static std::atomic<uint32_t> reports {0};
 	if (differ != 0 && reports.fetch_add(1, std::memory_order_relaxed) < 32) {
-		LOGF("VramGcFix verify: MISMATCH image 0x%" PRIx64 "+0x%" PRIx64 " %ux%ux%u levels=%u layers=%u vkfmt=%d "
-		     "guest_fmt=%u tile=%u tiled=%d: %" PRIu64 " of %" PRIu64 " linear bytes differ, first at %" PRIu64 "\n",
+		LOGF("VramGcFix verify: MISMATCH image 0x%" PRIx64 "+0x%" PRIx64
+		     " %ux%ux%u levels=%u layers=%u vkfmt=%d "
+		     "guest_fmt=%u tile=%u tiled=%d: %" PRIu64 " of %" PRIu64
+		     " linear bytes differ, first at %" PRIu64 "\n",
 		     range.address, range.size, info.extent.width, info.extent.height, info.extent.depth,
 		     info.resources.levels, info.resources.layers, static_cast<int>(info.pixel_format),
 		     static_cast<uint32_t>(info.guest_format), static_cast<uint32_t>(info.tile_mode),
@@ -12363,9 +12623,9 @@ bool TextureCache::IdleRetirable(const Image& image, uint64_t frame, uint64_t mi
 	// move the bytes into a cache buffer of the same size). An age says nothing about a later read:
 	// a probe or impostor rendered once and sampled minutes later would come back as stale guest
 	// bytes. Freeing them needs a download into guest memory first, not an age.
-	return image.registered && !image.depth_id && !image.IsGpuModified() && !image.bindless_pinned &&
-	       !image.binding.is_bound && !image.binding.is_target && !image.usage.video_out &&
-	       frame - std::min(frame, image.frame_accessed_last) > min_age;
+	return image.registered && !image.depth_id && !image.IsGpuModified() &&
+	       !image.bindless_pinned && !image.binding.is_bound && !image.binding.is_target &&
+	       !image.usage.video_out && frame - std::min(frame, image.frame_accessed_last) > min_age;
 }
 
 bool TextureCache::RunBudgetGarbageCollector(uint64_t frame) {
@@ -12501,9 +12761,10 @@ uint64_t TextureCache::RetireUnusedImages(uint64_t frame, uint64_t min_age, size
 // pinned again by a heap key) go. The guest drops entries and takes the same texture back
 // shortly after: a short grace frees and recreates textures (the fork's jungle slash stalled
 // 13 s with 3 frames).
-static Live::Switch g_guest_drop_frames("KYTY_BINDLESS_GUEST_DROP_FRAMES", [](const char* value) -> int64_t {
-	return value != nullptr ? static_cast<int64_t>(std::strtoull(value, nullptr, 10)) : 0;
-});
+static Live::Switch
+    g_guest_drop_frames("KYTY_BINDLESS_GUEST_DROP_FRAMES", [](const char* value) -> int64_t {
+	    return value != nullptr ? static_cast<int64_t>(std::strtoull(value, nullptr, 10)) : 0;
+    });
 
 void TextureCache::ReleaseDroppedByGuest(ImageId id) {
 	if (g_guest_drop_frames.Get() == 0) {
@@ -12622,9 +12883,10 @@ void TextureCache::GrowMipStream() {
 	std::vector<Grow> grows;
 	m_slot_images.ForEach([&](ImageId id, const Image& image) {
 		if (image.resident_first == 0 || !image.registered || image.backing.image == nullptr ||
-		    image.info.IsDepth() || image.usage.depth_target || image.usage.render_target || image.usage.storage ||
-		    image.usage.video_out || image.IsGpuModified() || image.info.type != Prospero::ImageType::kColor2D ||
-		    image.info.resources.layers != 1 || image.info.samples != 1) {
+		    image.info.IsDepth() || image.usage.depth_target || image.usage.render_target ||
+		    image.usage.storage || image.usage.video_out || image.IsGpuModified() ||
+		    image.info.type != Prospero::ImageType::kColor2D || image.info.resources.layers != 1 ||
+		    image.info.samples != 1) {
 			return;
 		}
 		const auto v = MipStream::Read(image.info.data.address);
@@ -12634,15 +12896,16 @@ void TextureCache::GrowMipStream() {
 		const auto& info   = image.info;
 		const auto  levels = info.resources.levels;
 		const auto  game   = static_cast<uint32_t>((v >> MipStream::GameShift) & 0xfu);
-		const auto  skip   = ResidentTrim::MipSkipLevels(MipStream::PolicySkip(info.data.address), g_mip_skip_min,
-		                                                 info.extent.width, info.extent.height, levels,
-		                                                 info.bytes_per_block, info.IsBlock());
-		const auto  wanted = std::min(std::max(game, skip), levels - 1u);
+		const auto  skip   = ResidentTrim::MipSkipLevels(
+		    MipStream::PolicySkip(info.data.address), g_mip_skip_min, info.extent.width,
+		    info.extent.height, levels, info.bytes_per_block, info.IsBlock());
+		const auto wanted = std::min(std::max(game, skip), levels - 1u);
 		if (wanted < image.resident_first) {
 			grows.push_back({id, wanted, info.data.size});
 		}
 	});
-	static const uint64_t budget = uint64_t {MipStream::EnvU32("KYTY_TEX_MIP_AUTO_GROW_MB", 128)} << 20u;
+	static const uint64_t budget = uint64_t {MipStream::EnvU32("KYTY_TEX_MIP_AUTO_GROW_MB", 128)}
+	                               << 20u;
 	uint64_t              spent  = 0;
 	for (const auto& grow: grows) {
 		if (budget != 0 && spent != 0 && spent + grow.bytes > budget) {
@@ -12818,8 +13081,9 @@ void TextureCache::RunGarbageCollector() {
 				return false;
 			}
 			// Under pressure a GPU-written image is downloaded and freed, tiled or not (upstream
-			// 16a7bbe3c). Unlike upstream, depth/stencil images are not kept: ours retires them with a
-			// deferred download (UnifiedTextureCacheFlow "depth/stencil deferred pressure retirement").
+			// 16a7bbe3c). Unlike upstream, depth/stencil images are not kept: ours retires them
+			// with a deferred download (UnifiedTextureCacheFlow "depth/stencil deferred pressure
+			// retirement").
 			const bool safe = SafeToDownload(*owner);
 			return safe && !pressured;
 		};
@@ -12838,7 +13102,8 @@ void TextureCache::RunGarbageCollector() {
 				break;
 			}
 			auto owner = m_slot_images.try_get(id);
-			if (owner == nullptr || !owner->registered || owner->depth_id || KeepSmallRenderTarget(*owner)) {
+			if (owner == nullptr || !owner->registered || owner->depth_id ||
+			    KeepSmallRenderTarget(*owner)) {
 				continue;
 			}
 			if (owner->IsGpuModified() && SafeToDownload(*owner) &&
@@ -12890,7 +13155,8 @@ void TextureCache::RunPressureGarbageCollector(uint64_t tick) {
 			break;
 		}
 		auto* owner = m_slot_images.try_get(id);
-		if (owner == nullptr || !owner->registered || owner->depth_id || KeepSmallRenderTarget(*owner)) {
+		if (owner == nullptr || !owner->registered || owner->depth_id ||
+		    KeepSmallRenderTarget(*owner)) {
 			continue;
 		}
 		// Retain resources still in use whenever pressure leaves room to do so.
@@ -12936,13 +13202,13 @@ void TextureCache::CensusMipStream() {
 		uint64_t count = 0;
 	};
 	enum : size_t { Measured, Proxy, StreamedOnly, Static, Unseen, Ineligible, ClassCount };
-	static constexpr std::array<const char*, ClassCount> names {"measured", "proxy-measured", "streamed-unmeasured",
-	                                                           "static", "unseen", "small/other"};
-	std::array<Sum, ClassCount> sums {};
-	std::array<uint64_t, 16>    finest_hist {};
+	static constexpr std::array<const char*, ClassCount> names {
+	    "measured", "proxy-measured", "streamed-unmeasured", "static", "unseen", "small/other"};
+	std::array<Sum, ClassCount>                 sums {};
+	std::array<uint64_t, 16>                    finest_hist {};
 	std::vector<std::pair<double, std::string>> statics;
-	const auto& c   = MipStream::Get();
-	const auto  now = MipStream::Now();
+	const auto&                                 c   = MipStream::Get();
+	const auto                                  now = MipStream::Now();
 	m_slot_images.ForEach([&](ImageId, const Image& image) {
 		if (image.backing.image == nullptr || image.info.IsDepth() || image.usage.depth_target ||
 		    image.usage.render_target || image.usage.storage || image.usage.video_out ||
@@ -12954,23 +13220,28 @@ void TextureCache::CensusMipStream() {
 		const auto  bytes  = static_cast<double>(m_graphics.NativeImageBytes(image.backing));
 		const auto  levels = info.resources.levels;
 		const auto  kept   = [&](uint32_t first) {
-            return ResidentTrim::KeptFraction(info.extent.width, info.extent.height, levels, first);
+			return ResidentTrim::KeptFraction(info.extent.width, info.extent.height, levels, first);
 		};
-		const double full  = bytes / kept(image.native_first);
-		const auto   v     = MipStream::Read(info.data.address);
-		const auto   skip  = [&](uint32_t request) {
-            return ResidentTrim::MipSkipLevels(request, g_mip_skip_min, info.extent.width, info.extent.height,
-			                                      levels, info.bytes_per_block, info.IsBlock());
+		const double full = bytes / kept(image.native_first);
+		const auto   v    = MipStream::Read(info.data.address);
+		const auto   skip = [&](uint32_t request) {
+			return ResidentTrim::MipSkipLevels(request, g_mip_skip_min, info.extent.width,
+			                                   info.extent.height, levels, info.bytes_per_block,
+			                                   info.IsBlock());
 		};
-		const uint32_t game  = (v & MipStream::SeenBit) != 0 ? static_cast<uint32_t>((v >> MipStream::GameShift) & 0xfu) : 0u;
-		const auto     at    = [&](uint32_t s) { return full * kept(std::min(std::max(game, s), levels - 1u)); };
-		size_t         cls   = Unseen;
-		const bool     eligible = skip(3) != 0;
-		uint32_t       auto_skip = 0;
+		const uint32_t game = (v & MipStream::SeenBit) != 0
+		                          ? static_cast<uint32_t>((v >> MipStream::GameShift) & 0xfu)
+		                          : 0u;
+		const auto     at   = [&](uint32_t s) {
+			return full * kept(std::min(std::max(game, s), levels - 1u));
+		};
+		size_t     cls       = Unseen;
+		const bool eligible  = skip(3) != 0;
+		uint32_t   auto_skip = 0;
 		if (!eligible) {
 			cls = Ineligible;
 		} else if ((v & MipStream::MeasuredBit) != 0) {
-			cls = (v & MipStream::StreamedBit) != 0 ? Measured : Proxy;
+			cls               = (v & MipStream::StreamedBit) != 0 ? Measured : Proxy;
 			const auto finest = static_cast<uint32_t>(v & MipStream::FinestMask);
 			finest_hist[finest]++;
 			auto_skip = std::min(finest > c.auto_bias ? finest - c.auto_bias : 0u, c.auto_max);
@@ -12979,8 +13250,8 @@ void TextureCache::CensusMipStream() {
 			auto_skip = c.auto_start;
 		} else if ((v & MipStream::SeenBit) != 0) {
 			cls       = Static;
-			auto_skip = MipStream::Age(now, static_cast<uint32_t>((v >> MipStream::SeenShift) & 0xffffffu)) >
-			                    c.static_frames
+			auto_skip = MipStream::Age(now, static_cast<uint32_t>((v >> MipStream::SeenShift) &
+			                                                      0xffffffu)) > c.static_frames
 			                ? c.class_static
 			                : c.auto_start;
 		}
@@ -13001,8 +13272,9 @@ void TextureCache::CensusMipStream() {
 		if (cls == Static && full >= 4.0 * 1024 * 1024) {
 			char line[160];
 			std::snprintf(line, sizeof(line), "%ux%u L%u bpb%u%s fmt%d now%.1f", info.extent.width,
-			              info.extent.height, levels, info.bytes_per_block, info.IsBlock() ? "bc" : "",
-			              static_cast<int>(info.pixel_format), ToMiB(static_cast<uint64_t>(bytes)));
+			              info.extent.height, levels, info.bytes_per_block,
+			              info.IsBlock() ? "bc" : "", static_cast<int>(info.pixel_format),
+			              ToMiB(static_cast<uint64_t>(bytes)));
 			statics.emplace_back(full, line);
 		}
 	});
@@ -13018,31 +13290,39 @@ void TextureCache::CensusMipStream() {
 		total.s3 += s.s3;
 		total.autop += s.autop;
 		total.cls += s.cls;
-		VramStats::Line("mipstream %-19s %5llu tex: now %.1f MiB | full %.1f game %.1f skip1 %.1f skip2 %.1f "
-		                "skip3 %.1f auto %.1f class(s2,st0) %.1f MiB",
-		                names[i], static_cast<unsigned long long>(s.count), s.now / 1048576.0, s.full / 1048576.0,
-		                s.game / 1048576.0, s.s1 / 1048576.0, s.s2 / 1048576.0, s.s3 / 1048576.0,
-		                s.autop / 1048576.0, s.cls / 1048576.0);
+		VramStats::Line(
+		    "mipstream %-19s %5llu tex: now %.1f MiB | full %.1f game %.1f skip1 %.1f skip2 %.1f "
+		    "skip3 %.1f auto %.1f class(s2,st0) %.1f MiB",
+		    names[i], static_cast<unsigned long long>(s.count), s.now / 1048576.0,
+		    s.full / 1048576.0, s.game / 1048576.0, s.s1 / 1048576.0, s.s2 / 1048576.0,
+		    s.s3 / 1048576.0, s.autop / 1048576.0, s.cls / 1048576.0);
 	}
-	VramStats::Line("mipstream TOTAL               %5llu tex: now %.1f MiB | full %.1f game %.1f skip1 %.1f skip2 %.1f "
-	                "skip3 %.1f auto %.1f class(s2,st0) %.1f MiB | measurements %llu finer %llu coarser %llu | "
-	                "finest L0..5: %llu %llu %llu %llu %llu %llu | policy grows %llu (%.1f MiB chains)",
-	                static_cast<unsigned long long>(total.count), total.now / 1048576.0, total.full / 1048576.0,
-	                total.game / 1048576.0, total.s1 / 1048576.0, total.s2 / 1048576.0, total.s3 / 1048576.0,
-	                total.autop / 1048576.0, total.cls / 1048576.0,
-	                static_cast<unsigned long long>(MipStream::g_measurements.load()),
-	                static_cast<unsigned long long>(MipStream::g_finer.load()),
-	                static_cast<unsigned long long>(MipStream::g_coarser.load()),
-	                static_cast<unsigned long long>(finest_hist[0]), static_cast<unsigned long long>(finest_hist[1]),
-	                static_cast<unsigned long long>(finest_hist[2]), static_cast<unsigned long long>(finest_hist[3]),
-	                static_cast<unsigned long long>(finest_hist[4]), static_cast<unsigned long long>(finest_hist[5]),
-	                static_cast<unsigned long long>(MipStream::g_grows.load()),
-	                static_cast<double>(MipStream::g_grow_bytes.load()) / 1048576.0);
-	std::sort(statics.begin(), statics.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	VramStats::Line(
+	    "mipstream TOTAL               %5llu tex: now %.1f MiB | full %.1f game %.1f skip1 %.1f "
+	    "skip2 %.1f "
+	    "skip3 %.1f auto %.1f class(s2,st0) %.1f MiB | measurements %llu finer %llu coarser %llu | "
+	    "finest L0..5: %llu %llu %llu %llu %llu %llu | policy grows %llu (%.1f MiB chains)",
+	    static_cast<unsigned long long>(total.count), total.now / 1048576.0, total.full / 1048576.0,
+	    total.game / 1048576.0, total.s1 / 1048576.0, total.s2 / 1048576.0, total.s3 / 1048576.0,
+	    total.autop / 1048576.0, total.cls / 1048576.0,
+	    static_cast<unsigned long long>(MipStream::g_measurements.load()),
+	    static_cast<unsigned long long>(MipStream::g_finer.load()),
+	    static_cast<unsigned long long>(MipStream::g_coarser.load()),
+	    static_cast<unsigned long long>(finest_hist[0]),
+	    static_cast<unsigned long long>(finest_hist[1]),
+	    static_cast<unsigned long long>(finest_hist[2]),
+	    static_cast<unsigned long long>(finest_hist[3]),
+	    static_cast<unsigned long long>(finest_hist[4]),
+	    static_cast<unsigned long long>(finest_hist[5]),
+	    static_cast<unsigned long long>(MipStream::g_grows.load()),
+	    static_cast<double>(MipStream::g_grow_bytes.load()) / 1048576.0);
+	std::sort(statics.begin(), statics.end(),
+	          [](const auto& a, const auto& b) { return a.first > b.first; });
 	std::string top;
 	for (size_t i = 0; i < std::min<size_t>(statics.size(), 16); i++) {
 		char part[200];
-		std::snprintf(part, sizeof(part), " [%.0fMiB %s]", statics[i].first / 1048576.0, statics[i].second.c_str());
+		std::snprintf(part, sizeof(part), " [%.0fMiB %s]", statics[i].first / 1048576.0,
+		              statics[i].second.c_str());
 		top += part;
 	}
 	VramStats::Line("mipstream static top (whole chain):%s", top.c_str());
@@ -13324,8 +13604,9 @@ void TextureCache::ProcessDownloadImages() {
 		return;
 	}
 	std::scoped_lock lock {m_lock};
-	// KYTY_READBACK_LOG=<n> (diagnostic, default off): the first n images enrolled for a readback here, with the
-	// result (downloaded, refused, not GPU-owned), and one count line every 1024 calls.
+	// KYTY_READBACK_LOG=<n> (diagnostic, default off): the first n images enrolled for a readback
+	// here, with the result (downloaded, refused, not GPU-owned), and one count line every 1024
+	// calls.
 	static const uint32_t log_limit = [] {
 		const char* value = std::getenv("KYTY_READBACK_LOG");
 		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
@@ -13342,16 +13623,20 @@ void TextureCache::ProcessDownloadImages() {
 		(ok ? done : owned ? refused : skipped)++;
 		if (logged < log_limit && owner != nullptr) {
 			logged++;
-			std::printf("KYTY_READBACK_LOG: frame %" PRIu64 " image 0x%012" PRIx64 " size 0x%" PRIx64
-			            " %ux%ux%u fmt %u tile %u depth %d %s\n",
-			            m_frame.load(std::memory_order_relaxed), owner->info.data.address, owner->info.data.size,
-			            owner->info.extent.width, owner->info.extent.height, owner->info.extent.depth,
-			            static_cast<uint32_t>(owner->info.pixel_format), static_cast<uint32_t>(owner->info.tile_mode),
-			            owner->info.IsDepth() ? 1 : 0, ok ? "downloaded" : owned ? "refused" : "not GPU-owned");
+			std::printf("KYTY_READBACK_LOG: frame %" PRIu64 " image 0x%012" PRIx64
+			            " size 0x%" PRIx64 " %ux%ux%u fmt %u tile %u depth %d %s\n",
+			            m_frame.load(std::memory_order_relaxed), owner->info.data.address,
+			            owner->info.data.size, owner->info.extent.width, owner->info.extent.height,
+			            owner->info.extent.depth, static_cast<uint32_t>(owner->info.pixel_format),
+			            static_cast<uint32_t>(owner->info.tile_mode), owner->info.IsDepth() ? 1 : 0,
+			            ok      ? "downloaded"
+			            : owned ? "refused"
+			                    : "not GPU-owned");
 		}
 	}
 	if (log_limit != 0 && (++calls & 1023u) == 0) {
-		std::printf("KYTY_READBACK_LOG: frame %" PRIu64 " downloads %" PRIu64 " refused %" PRIu64 " skipped %" PRIu64 "\n",
+		std::printf("KYTY_READBACK_LOG: frame %" PRIu64 " downloads %" PRIu64 " refused %" PRIu64
+		            " skipped %" PRIu64 "\n",
 		            m_frame.load(std::memory_order_relaxed), done, refused, skipped);
 	}
 	m_download_images.clear();
@@ -13427,7 +13712,8 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		const auto& source = m_slot_images[source_id];
 		const auto& info   = source.info;
 		if (source.depth_id || info.data.address != source_address || info.data.size != size ||
-		    !source.registered || source.backing.image == nullptr || !SafeToSyncIntoBuffer(source)) {
+		    !source.registered || source.backing.image == nullptr ||
+		    !SafeToSyncIntoBuffer(source)) {
 			return reject("imgcopy.reject.source-range");
 		}
 		// A colour surface with DCC metadata is allowed: the native image always holds the
@@ -13453,25 +13739,25 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		for (const auto id: FindImagesInRegion(destination_address, size, false)) {
 			const auto* other = m_slot_images.try_get(id);
 			if (other == nullptr || id == source_id || other->depth_id || !other->registered ||
-			    other->backing.image == nullptr || other->info.data.address != destination_address ||
-			    other->info.data.size != size) {
+			    other->backing.image == nullptr ||
+			    other->info.data.address != destination_address || other->info.data.size != size) {
 				continue;
 			}
 			const auto& a = source.info;
 			const auto& b = other->info;
-			bool same = a.guest_format == b.guest_format && a.pixel_format == b.pixel_format &&
-			            a.type == b.type && a.extent == b.extent && a.pitch == b.pitch &&
-			            a.bytes_per_block == b.bytes_per_block && a.samples == b.samples &&
-			            a.tile_mode == b.tile_mode && a.bgra16 == b.bgra16 &&
-			            a.resources.levels == b.resources.levels &&
-			            a.resources.layers == b.resources.layers && !b.HasStencil() &&
-			            b.metadata.kind != ImageMetadataKind::Htile &&
-			            source.backing.format == other->backing.format &&
-			            source.backing.mip_levels == other->backing.mip_levels &&
-			            source.backing.layers == other->backing.layers &&
-			            source.backing.extent == other->backing.extent &&
-			            source.backing.image_type == other->backing.image_type &&
-			            other->backing.samples == 1;
+			bool same     = a.guest_format == b.guest_format && a.pixel_format == b.pixel_format &&
+			                a.type == b.type && a.extent == b.extent && a.pitch == b.pitch &&
+			                a.bytes_per_block == b.bytes_per_block && a.samples == b.samples &&
+			                a.tile_mode == b.tile_mode && a.bgra16 == b.bgra16 &&
+			                a.resources.levels == b.resources.levels &&
+			                a.resources.layers == b.resources.layers && !b.HasStencil() &&
+			                b.metadata.kind != ImageMetadataKind::Htile &&
+			                source.backing.format == other->backing.format &&
+			                source.backing.mip_levels == other->backing.mip_levels &&
+			                source.backing.layers == other->backing.layers &&
+			                source.backing.extent == other->backing.extent &&
+			                source.backing.image_type == other->backing.image_type &&
+			                other->backing.samples == 1;
 			for (uint32_t level = 0; same && level < a.resources.levels; ++level) {
 				same = a.mip_layout[level] == b.mip_layout[level];
 			}
@@ -13507,13 +13793,15 @@ bool TextureCache::CopyImageFromBuffers(CommandBuffer& command, uint64_t source_
 		const auto                   n = ordinal.fetch_add(1, std::memory_order_relaxed);
 		if (n < 64 || n % 16 == 0) {
 			const TileManager::ScratchHold scratch_hold(m_tiler);
-			const auto expected = m_tiler.GetScratchBuffer(size);
-			const auto actual   = m_tiler.GetScratchBuffer(size);
+			const auto                     expected = m_tiler.GetScratchBuffer(size);
+			const auto                     actual   = m_tiler.GetScratchBuffer(size);
 			m_scheduler.EndRendering();
 			{
 				const auto sink = m_scheduler.Current().HelperSink();
-				sink.fillBuffer(expected.buffer, expected.offset, Common::AlignUp(size, uint64_t {4}), 0);
-				sink.fillBuffer(actual.buffer, actual.offset, Common::AlignUp(size, uint64_t {4}), 0);
+				sink.fillBuffer(expected.buffer, expected.offset,
+				                Common::AlignUp(size, uint64_t {4}), 0);
+				sink.fillBuffer(actual.buffer, actual.offset, Common::AlignUp(size, uint64_t {4}),
+				                0);
 			}
 			const TilerTrace::Reason tiler_reason("download.verify-imgcopy");
 			DownloadImageTo(source, expected.buffer, expected.offset, expected.size, size,
@@ -13535,10 +13823,10 @@ namespace Libs::Graphics {
 void TextureCache::RtImageProbe(uint64_t shader_hash, uint32_t stage, uint32_t slot, bool read,
                                 bool written, bool formatted, uint32_t format, uint32_t stride,
                                 uint64_t address, uint64_t size) {
-	static std::mutex                                 mutex;
-	static std::map<std::string, uint64_t>            counts;
-	static std::chrono::steady_clock::time_point      last = std::chrono::steady_clock::now();
-	std::vector<std::string>                          keys;
+	static std::mutex                            mutex;
+	static std::map<std::string, uint64_t>       counts;
+	static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	std::vector<std::string>                     keys;
 	{
 		std::scoped_lock lock {m_lock};
 		for (const auto id: FindImagesInRegion(address, size, false)) {
@@ -13549,12 +13837,13 @@ void TextureCache::RtImageProbe(uint64_t shader_hash, uint32_t stage, uint32_t s
 			const auto& info  = image->info;
 			const auto  ia    = info.data.address;
 			const auto  is    = info.data.size;
-			const char* cover = (address == ia && size == is)                    ? "exact"
-			                    : (address >= ia && address + size <= ia + is)   ? "inside"
-			                    : (address <= ia && address + size >= ia + is)   ? "covers"
-			                                                                    : "partial";
+			const char* cover = (address == ia && size == is)                  ? "exact"
+			                    : (address >= ia && address + size <= ia + is) ? "inside"
+			                    : (address <= ia && address + size >= ia + is) ? "covers"
+			                                                                   : "partial";
 			keys.push_back(fmt::format(
-			    "sh={:016x} st={} slot={} acc={}{}{} bfmt={} stride={} bsize={} cover={} doff={} | img "
+			    "sh={:016x} st={} slot={} acc={}{}{} bfmt={} stride={} bsize={} cover={} doff={} | "
+			    "img "
 			    "fmt={} tile={} {}x{} mips={} layers={} isize={} bpb={} flags={}{}{}{}",
 			    shader_hash, stage, slot, read ? "R" : "", written ? "W" : "", formatted ? "F" : "",
 			    format, stride, size, cover,

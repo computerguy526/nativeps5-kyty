@@ -44,7 +44,8 @@ public:
 	// Draws level `level` (extent `source`, at most twice `target` on each axis) of `source_view`
 	// over all of `target_view`. The source view is in eShaderReadOnlyOptimal; the target is in
 	// eColorAttachmentOptimal.
-	// pq_to_sdr: the source holds HDR10 (PQ) and the target is SDR (KYTY_HDR_TO_SDR, swapchain.cpp).
+	// pq_to_sdr: the source holds HDR10 (PQ) and the target is SDR (KYTY_HDR_TO_SDR,
+	// swapchain.cpp).
 	void Record(vk::Device device, vk::CommandBuffer command, vk::ImageView source_view,
 	            uint32_t level, vk::Extent2D source, vk::ImageView target_view,
 	            vk::Format target_format, vk::Extent2D target, bool pq_to_sdr = false);

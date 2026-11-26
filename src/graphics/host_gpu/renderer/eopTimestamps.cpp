@@ -119,7 +119,7 @@ uint64_t VerifyMismatches() {
 EopTimestampRing::EopTimestampRing(GraphicContext& graphics, uint32_t capacity)
     : m_graphics(graphics), m_ring(capacity) {
 	m_verify = EopTimestamps::GetMode() == EopTimestamps::Mode::GpuVerify;
-	m_busy   = EopTimestamps::GetMode() == EopTimestamps::Mode::Busy;
+	m_busy                = EopTimestamps::GetMode() == EopTimestamps::Mode::Busy;
 	uint32_t family_count = 0;
 	graphics.physical_device.getQueueFamilyProperties(&family_count, nullptr);
 	std::vector<vk::QueueFamilyProperties> families(family_count);

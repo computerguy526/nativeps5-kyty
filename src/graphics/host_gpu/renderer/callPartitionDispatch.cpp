@@ -33,7 +33,8 @@ constexpr uint64_t ReportBytes = uint64_t {ShaderRecompiler::IR::CallPartitionRe
 uint32_t ReadbackInterval() {
 	static const uint32_t value = [] {
 		const char* text = std::getenv("KYTY_CALL_PARTITION_READBACK");
-		return std::max(text != nullptr ? static_cast<uint32_t>(std::strtoul(text, nullptr, 0)) : 4u, 1u);
+		return std::max(
+		    text != nullptr ? static_cast<uint32_t>(std::strtoul(text, nullptr, 0)) : 4u, 1u);
 	}();
 	return value;
 }
@@ -75,22 +76,23 @@ struct RenderExecutor::CallPartitionState {
 				return found;
 			}
 		}
-		return std::make_shared<Buffer>(context.GetGraphics(), context.GetCommandScheduler(), MemoryUsage::Download,
-		                                0, AllFlags, ReportBytes);
+		return std::make_shared<Buffer>(context.GetGraphics(), context.GetCommandScheduler(),
+		                                MemoryUsage::Download, 0, AllFlags, ReportBytes);
 	}
 	void ReturnReadback(std::shared_ptr<Buffer> readback) {
 		std::scoped_lock lock(readback_mutex);
 		free_readbacks.push_back(std::move(readback));
 	}
 
-	RenderContext&                                                                     context;
-	std::unordered_map<uint64_t, Program>                                              programs;
+	RenderContext&                                                                   context;
+	std::unordered_map<uint64_t, Program>                                            programs;
 	std::unordered_map<uint64_t, std::unique_ptr<ShaderRecompiler::CallSplit::Code>> codes;
-	std::mutex                                                                         readback_mutex;
-	std::vector<std::shared_ptr<Buffer>>                                               free_readbacks;
+	std::mutex                                                                       readback_mutex;
+	std::vector<std::shared_ptr<Buffer>>                                             free_readbacks;
 };
 
-void RenderExecutor::DispatchPartitions(CommandBuffer& buffer, const std::shared_ptr<const void>& run_pointer,
+void RenderExecutor::DispatchPartitions(CommandBuffer&                     buffer,
+                                        const std::shared_ptr<const void>& run_pointer,
                                         const std::function<void(const PartitionStep&)>& dispatch) {
 	const auto& run = *static_cast<const ShaderRecompiler::CallPartitionRun*>(run_pointer.get());
 	if (m_call_partition == nullptr) {
@@ -100,24 +102,27 @@ void RenderExecutor::DispatchPartitions(CommandBuffer& buffer, const std::shared
 	auto& program = state.programs[run.program];
 	buffer.EndRendering();
 	if (program.report == nullptr) {
-		program.report = std::make_unique<Buffer>(m_context.GetGraphics(), m_context.GetCommandScheduler(),
-		                                          MemoryUsage::DeviceLocal, 0,
-		                                          AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress,
-		                                          ReportBytes);
-		SetVulkanObjectNameF(m_context.GetGraphics().device, program.report->Handle(), "Kyty.CallPartitionReport");
-		buffer.RequestMemoryBarrier(vk::PipelineStageFlagBits2::eComputeShader,
-		                            vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
-		                            vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eTransferWrite,
-		                            BarrierOrigin::IndirectArgs);
+		program.report = std::make_unique<Buffer>(
+		    m_context.GetGraphics(), m_context.GetCommandScheduler(), MemoryUsage::DeviceLocal, 0,
+		    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, ReportBytes);
+		SetVulkanObjectNameF(m_context.GetGraphics().device, program.report->Handle(),
+		                     "Kyty.CallPartitionReport");
+		buffer.RequestMemoryBarrier(
+		    vk::PipelineStageFlagBits2::eComputeShader,
+		    vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+		    vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eTransferWrite,
+		    BarrierOrigin::IndirectArgs);
 		buffer.BeginEmission();
 		buffer.Sink().fillBuffer(program.report->Handle(), 0, ReportBytes, 0);
-		buffer.RequestMemoryBarrier(vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eTransferWrite,
-		                            vk::PipelineStageFlagBits2::eComputeShader,
-		                            vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
-		                            BarrierOrigin::IndirectArgs);
-		Log::WriteToConsoleAndLog(fmt::format("KYTY_CALL_PARTITIONS: CS shader 0x{:016x}: program 0x{:016x} is "
-		                                      "partitioned ({} partition(s) at its first dispatch).\n",
-		                                      run.shader_hash, run.program, run.parts.size()));
+		buffer.RequestMemoryBarrier(
+		    vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eTransferWrite,
+		    vk::PipelineStageFlagBits2::eComputeShader,
+		    vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite,
+		    BarrierOrigin::IndirectArgs);
+		Log::WriteToConsoleAndLog(
+		    fmt::format("KYTY_CALL_PARTITIONS: CS shader 0x{:016x}: program 0x{:016x} is "
+		                "partitioned ({} partition(s) at its first dispatch).\n",
+		                run.shader_hash, run.program, run.parts.size()));
 	}
 	const auto report = program.report->BufferDeviceAddress();
 	bool       probe  = false;
@@ -136,9 +141,10 @@ void RenderExecutor::DispatchPartitions(CommandBuffer& buffer, const std::shared
 	if (probe || program.dispatches++ % ReadbackInterval() == 0) {
 		auto readback = state.TakeReadback();
 		buffer.EndRendering();
-		buffer.RequestMemoryBarrier(vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderStorageWrite,
-		                            vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead,
-		                            BarrierOrigin::IndirectArgs);
+		buffer.RequestMemoryBarrier(
+		    vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderStorageWrite,
+		    vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead,
+		    BarrierOrigin::IndirectArgs);
 		buffer.BeginEmission();
 		const vk::BufferCopy region {0, 0, ReportBytes};
 		buffer.Sink().copyBuffer(program.report->Handle(), readback->Handle(), 1, &region);
@@ -146,7 +152,7 @@ void RenderExecutor::DispatchPartitions(CommandBuffer& buffer, const std::shared
 		const uint64_t key   = run.program;
 		m_context.GetCommandScheduler().DeferOperation([owner, readback, key]() mutable {
 			if (!readback->IsCoherent()) readback->Invalidate(0, readback->Size());
-			const auto bytes = readback->Mapped();
+			const auto            bytes = readback->Mapped();
 			std::vector<uint32_t> keys(ShaderRecompiler::IR::CallPartitionReportSlots);
 			std::memcpy(keys.data(), bytes.data(), ReportBytes);
 			PipelineCache::ReportPartitionKeys(key, keys);
@@ -154,13 +160,14 @@ void RenderExecutor::DispatchPartitions(CommandBuffer& buffer, const std::shared
 		});
 	}
 	const auto now  = std::chrono::duration_cast<std::chrono::seconds>(
-                         std::chrono::steady_clock::now().time_since_epoch())
-	                     .count();
+	                      std::chrono::steady_clock::now().time_since_epoch())
+	                      .count();
 	auto       last = g_totals.logged_at.load(std::memory_order_relaxed);
 	if (now - last >= 10 && g_totals.logged_at.compare_exchange_strong(last, now)) {
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "KYTY_CALL_PARTITIONS: totals: {} partitioned dispatches, {} partition dispatches, {} with the probe\n",
-		    g_totals.dispatches.load(), g_totals.parts.load(), g_totals.probes.load()));
+		Log::WriteToConsoleAndLog(
+		    fmt::format("KYTY_CALL_PARTITIONS: totals: {} partitioned dispatches, {} partition "
+		                "dispatches, {} with the probe\n",
+		                g_totals.dispatches.load(), g_totals.parts.load(), g_totals.probes.load()));
 	}
 }
 

@@ -37,8 +37,8 @@ public:
 	// As a click on the Precompile button of the game in this folder or archive (the launcher's
 	// --precompile argument); false when the list has no such game.
 	bool PressPrecompile(const QString& game);
-	// Selects the row of the game in this folder or archive (the launcher's --export-list argument);
-	// null when the list has no such game.
+	// Selects the row of the game in this folder or archive (the launcher's --export-list
+	// argument); null when the list has no such game.
 	ConfigurationItem* SelectGame(const QString& game);
 	// Whether a row of this title runs (its folder and its archive are two rows).
 	[[nodiscard]] bool IsTitleRunning(const QString& title_id) const;

@@ -36,9 +36,9 @@ const char* UnaryName(UnaryOp op) {
 
 const char* CompareName(CompareOp op) {
 	static constexpr const char* names[CompareOps] = {
-	    "OpFOrdEqual",           "OpFUnordEqual",           "OpFOrdNotEqual",
-	    "OpFUnordNotEqual",      "OpFOrdLessThan",          "OpFUnordLessThan",
-	    "OpFOrdGreaterThan",     "OpFUnordGreaterThan",     "OpFOrdLessThanEqual",
+	    "OpFOrdEqual",           "OpFUnordEqual",          "OpFOrdNotEqual",
+	    "OpFUnordNotEqual",      "OpFOrdLessThan",         "OpFUnordLessThan",
+	    "OpFOrdGreaterThan",     "OpFUnordGreaterThan",    "OpFOrdLessThanEqual",
 	    "OpFUnordLessThanEqual", "OpFOrdGreaterThanEqual", "OpFUnordGreaterThanEqual",
 	};
 	const auto index = static_cast<uint32_t>(op);
@@ -153,8 +153,8 @@ namespace {
 
 // Compares one result plane per op against `expected` (a plane or the model).
 template <typename ExpectedUnaryFn, typename ExpectedMaskFn>
-Verdict ClassifyAgainst(std::span<const uint32_t> buffer, bool actual_side, ExpectedUnaryFn expected_unary,
-                        ExpectedMaskFn expected_mask) {
+Verdict ClassifyAgainst(std::span<const uint32_t> buffer, bool actual_side,
+                        ExpectedUnaryFn expected_unary, ExpectedMaskFn expected_mask) {
 	Verdict verdict;
 	if (buffer.size() < BufferWords) {
 		verdict.mismatches = 1;
@@ -172,13 +172,14 @@ Verdict ClassifyAgainst(std::span<const uint32_t> buffer, bool actual_side, Expe
 		const auto unary = static_cast<UnaryOp>(op);
 		for (uint32_t i = 0; i < InputCount; i++) {
 			const auto input    = buffer[InputBase + i];
-			const auto got      = buffer[PlaneWord(actual_side ? UnaryActualPlane(unary) : UnaryExpectedPlane(unary), i)];
+			const auto got      = buffer[PlaneWord(
+			    actual_side ? UnaryActualPlane(unary) : UnaryExpectedPlane(unary), i)];
 			const auto expected = expected_unary(unary, i);
 			verdict.checked++;
 			if (!ResultsEqual(got, expected)) {
 				note(op, [&] {
-					return std::string(UnaryName(unary)) + "(" + Hex(input) + ") = " + Hex(got) + ", expected " +
-					       Hex(expected);
+					return std::string(UnaryName(unary)) + "(" + Hex(input) + ") = " + Hex(got) +
+					       ", expected " + Hex(expected);
 				});
 			}
 		}
@@ -187,10 +188,11 @@ Verdict ClassifyAgainst(std::span<const uint32_t> buffer, bool actual_side, Expe
 		const auto compare = static_cast<CompareOp>(op);
 		for (uint32_t order = 0; order < 2; order++) {
 			for (uint32_t i = 0; i < InputCount; i++) {
-				const auto got      = buffer[PlaneWord(ComparePlane(compare, order, !actual_side), i)];
+				const auto got = buffer[PlaneWord(ComparePlane(compare, order, !actual_side), i)];
 				const auto expected = expected_mask(compare, order, i);
 				verdict.checked += OperandCount;
-				auto differ = (got ^ expected) & ((OperandCount == 32u ? 0u : (1u << OperandCount)) - 1u);
+				auto differ =
+				    (got ^ expected) & ((OperandCount == 32u ? 0u : (1u << OperandCount)) - 1u);
 				if (differ == 0u) {
 					continue;
 				}
@@ -198,14 +200,15 @@ Verdict ClassifyAgainst(std::span<const uint32_t> buffer, bool actual_side, Expe
 					if ((differ & (1u << j)) == 0u) {
 						continue;
 					}
-					const auto x       = buffer[InputBase + i];
-					const auto y       = buffer[OperandBase + j];
-					const auto lhs     = order == 0 ? x : y;
-					const auto rhs     = order == 0 ? y : x;
-					const bool result  = (got & (1u << j)) != 0u;
+					const auto x      = buffer[InputBase + i];
+					const auto y      = buffer[OperandBase + j];
+					const auto lhs    = order == 0 ? x : y;
+					const auto rhs    = order == 0 ? y : x;
+					const bool result = (got & (1u << j)) != 0u;
 					note(UnaryOps + op, [&] {
-						return std::string(CompareName(compare)) + "(" + Hex(lhs) + ", " + Hex(rhs) + ") = " +
-						       (result ? "true" : "false") + ", expected " + (result ? "false" : "true");
+						return std::string(CompareName(compare)) + "(" + Hex(lhs) + ", " +
+						       Hex(rhs) + ") = " + (result ? "true" : "false") + ", expected " +
+						       (result ? "false" : "true");
 					});
 				}
 			}
@@ -276,7 +279,8 @@ Verdict Classify(std::span<const uint32_t> buffer) {
 
 Verdict ClassifyReference(std::span<const uint32_t> buffer) {
 	return ClassifyAgainst(
-	    buffer, false, [&](UnaryOp op, uint32_t i) { return ExpectedUnary(op, buffer[InputBase + i]); },
+	    buffer, false,
+	    [&](UnaryOp op, uint32_t i) { return ExpectedUnary(op, buffer[InputBase + i]); },
 	    [&](CompareOp op, uint32_t order, uint32_t i) {
 		    uint32_t   mask = 0;
 		    const auto x    = buffer[InputBase + i];
@@ -353,12 +357,12 @@ std::vector<uint32_t> F16InitialBuffer() {
 	std::vector<uint32_t> buffer(F16BufferWords, 0u);
 	// Unpack: word k holds denormal k+1 of one sign in the low half and of the other in the high.
 	for (uint32_t k = 0; k < F16Words; k++) {
-		const uint32_t m    = (k % 1023u) + 1u;
-		const uint32_t flip = k < 1023u ? 0u : 0x8000u;
+		const uint32_t m          = (k % 1023u) + 1u;
+		const uint32_t flip       = k < 1023u ? 0u : 0x8000u;
 		buffer[F16UnpackBase + k] = (m | flip) | ((m | (flip ^ 0x8000u)) << 16u);
 	}
 	// Pack: exact f16 denormals and the ties above them, both signs, then f32 denormals.
-	uint32_t n   = 0;
+	uint32_t   n      = 0;
 	const auto f32_of = [](double v) {
 		const auto f = static_cast<float>(v);
 		uint32_t   b = 0;
@@ -366,14 +370,15 @@ std::vector<uint32_t> F16InitialBuffer() {
 		return b;
 	};
 	for (uint32_t m = 1; m < 1024u && n + 4u <= F16PackValues; m++) {
-		const auto exact = f32_of(static_cast<double>(m) * 0x1p-24);
-		const auto tie   = f32_of((static_cast<double>(m) + 0.5) * 0x1p-24);
+		const auto exact          = f32_of(static_cast<double>(m) * 0x1p-24);
+		const auto tie            = f32_of((static_cast<double>(m) + 0.5) * 0x1p-24);
 		buffer[F16PackBase + n++] = exact;
 		buffer[F16PackBase + n++] = exact | 0x80000000u;
 		buffer[F16PackBase + n++] = tie;
 		buffer[F16PackBase + n++] = tie | 0x80000000u;
 	}
-	const uint32_t extra[] = {0x33000000u, 0xb3000000u, 0x00000001u, 0x80400000u}; // 2^-25 ties to 0
+	const uint32_t extra[] = {0x33000000u, 0xb3000000u, 0x00000001u,
+	                          0x80400000u}; // 2^-25 ties to 0
 	for (uint32_t i = 0; n < F16PackValues; i++) {
 		buffer[F16PackBase + n++] = extra[i % 4u];
 	}
@@ -401,7 +406,10 @@ Verdict ClassifyF16(std::span<const uint32_t> buffer) {
 			const auto expected = F16ToF32Bits(half);
 			verdict.checked++;
 			if (got != expected) {
-				note(0, [&] { return "UnpackHalf2x16(" + Hex(half) + ") = " + Hex(got) + ", expected " + Hex(expected); });
+				note(0, [&] {
+					return "UnpackHalf2x16(" + Hex(half) + ") = " + Hex(got) + ", expected " +
+					       Hex(expected);
+				});
 			}
 		}
 	}
@@ -413,7 +421,8 @@ Verdict ClassifyF16(std::span<const uint32_t> buffer) {
 		verdict.checked += 2;
 		if (got != expected) {
 			note(1, [&] {
-				return "PackHalf2x16(" + Hex(x) + ", " + Hex(y) + ") = " + Hex(got) + ", expected " + Hex(expected);
+				return "PackHalf2x16(" + Hex(x) + ", " + Hex(y) + ") = " + Hex(got) +
+				       ", expected " + Hex(expected);
 			});
 		}
 	}
@@ -424,8 +433,8 @@ bool StageBWanted(const DecisionInput& in) {
 	if (in.force == Force::StageB) {
 		return true;
 	}
-	return in.force != Force::StageA && (in.stage_a_classes & ClassAll) != ClassAll && in.preserve16_declared &&
-	       !in.native_f16_active;
+	return in.force != Force::StageA && (in.stage_a_classes & ClassAll) != ClassAll &&
+	       in.preserve16_declared && !in.native_f16_active;
 }
 
 Outcome Decide(const DecisionInput& in) {
@@ -436,7 +445,8 @@ Outcome Decide(const DecisionInput& in) {
 	if (in.force == Force::StageA || a_all) {
 		return a_all ? Outcome::AllDeclared : Outcome::PerClass;
 	}
-	if (StageBWanted(in) && in.stage_b_ran && (in.stage_b_classes & ClassAll) == ClassAll && in.f16_passed) {
+	if (StageBWanted(in) && in.stage_b_ran && (in.stage_b_classes & ClassAll) == ClassAll &&
+	    in.f16_passed) {
 		return Outcome::NoPreserve16;
 	}
 	return Outcome::PerClass;

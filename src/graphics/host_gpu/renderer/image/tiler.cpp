@@ -222,43 +222,47 @@ TileManager::Scratch TileManager::AllocateScratch(uint64_t size) {
 		}
 		if (result != VK_SUCCESS) {
 			// Issue #57 (RX 6900 XT, about 6.5 GB of 16 GB in use): the stderr line above is not in
-			// the log, so the fatal message carries the size and the device limits that can refuse a
-			// single buffer whatever the free VRAM (VMA has tried every memory type by now).
+			// the log, so the fatal message carries the size and the device limits that can refuse
+			// a single buffer whatever the free VRAM (VMA has tried every memory type by now).
 			vk::PhysicalDeviceMaintenance4Properties maintenance4 {};
 			vk::PhysicalDeviceMaintenance3Properties maintenance3 {};
 			maintenance3.pNext = &maintenance4;
 			vk::PhysicalDeviceProperties2 properties {};
 			properties.pNext = &maintenance3;
 			m_graphics.physical_device.getProperties2(&properties);
-			// Device-memory objects (a driver limit, maxMemoryAllocationCount) and the VRAM heaps' use.
-			const auto&  memory_properties = m_graphics.physical_device_memory_properties;
-			VmaBudget    budgets[VK_MAX_MEMORY_HEAPS] {};
+			// Device-memory objects (a driver limit, maxMemoryAllocationCount) and the VRAM heaps'
+			// use.
+			const auto& memory_properties = m_graphics.physical_device_memory_properties;
+			VmaBudget   budgets[VK_MAX_MEMORY_HEAPS] {};
 			vmaGetHeapBudgets(m_graphics.allocator, budgets);
-			uint64_t blocks = 0;
-			uint64_t vram_usage = 0;
+			uint64_t blocks      = 0;
+			uint64_t vram_usage  = 0;
 			uint64_t vram_budget = 0;
 			for (uint32_t heap = 0; heap < memory_properties.memoryHeapCount; heap++) {
 				blocks += budgets[heap].statistics.blockCount;
-				if (memory_properties.memoryHeaps[heap].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+				if (memory_properties.memoryHeaps[heap].flags &
+				    vk::MemoryHeapFlagBits::eDeviceLocal) {
 					vram_usage += budgets[heap].usage;
 					vram_budget += budgets[heap].budget;
 				}
 			}
 			static char operation[512];
-			std::snprintf(operation, sizeof(operation),
-			              "allocate TileManager scratch buffer (%llu bytes for a %llu-byte detile; %llu idle "
-			              "pooled bytes freed; device maxMemoryAllocationSize %llu, maxBufferSize %llu, "
-			              "maxStorageBufferRange %u; %llu device-memory objects, maxMemoryAllocationCount %u; "
-			              "VRAM heaps %llu MiB used of a %llu MiB budget)",
-			              static_cast<unsigned long long>(capacity), static_cast<unsigned long long>(size),
-			              static_cast<unsigned long long>(freed),
-			              static_cast<unsigned long long>(maintenance3.maxMemoryAllocationSize),
-			              static_cast<unsigned long long>(maintenance4.maxBufferSize),
-			              properties.properties.limits.maxStorageBufferRange,
-			              static_cast<unsigned long long>(blocks),
-			              properties.properties.limits.maxMemoryAllocationCount,
-			              static_cast<unsigned long long>(vram_usage >> 20u),
-			              static_cast<unsigned long long>(vram_budget >> 20u));
+			std::snprintf(
+			    operation, sizeof(operation),
+			    "allocate TileManager scratch buffer (%llu bytes for a %llu-byte detile; %llu idle "
+			    "pooled bytes freed; device maxMemoryAllocationSize %llu, maxBufferSize %llu, "
+			    "maxStorageBufferRange %u; %llu device-memory objects, maxMemoryAllocationCount "
+			    "%u; "
+			    "VRAM heaps %llu MiB used of a %llu MiB budget)",
+			    static_cast<unsigned long long>(capacity), static_cast<unsigned long long>(size),
+			    static_cast<unsigned long long>(freed),
+			    static_cast<unsigned long long>(maintenance3.maxMemoryAllocationSize),
+			    static_cast<unsigned long long>(maintenance4.maxBufferSize),
+			    properties.properties.limits.maxStorageBufferRange,
+			    static_cast<unsigned long long>(blocks),
+			    properties.properties.limits.maxMemoryAllocationCount,
+			    static_cast<unsigned long long>(vram_usage >> 20u),
+			    static_cast<unsigned long long>(vram_budget >> 20u));
 			RequireVulkanSuccess(static_cast<vk::Result>(result), operation);
 		}
 	}
@@ -540,8 +544,7 @@ vk::Pipeline TileManager::GetPipeline(uint32_t slot) {
 	const uint32_t                                   element_index = slot % BytesPerElementCount;
 	const uint32_t                   direction_index = slot / (FamilyCount * BytesPerElementCount);
 	const uint32_t                   family_index    = (slot / BytesPerElementCount) % FamilyCount;
-	const uint32_t                   values[] {1u << element_index, direction_index,
-                                               SubwordCas() ? 1u : 0u};
+	const uint32_t values[] {1u << element_index, direction_index, SubwordCas() ? 1u : 0u};
 	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
 	const vk::SpecializationInfo     specialization {3, entries, sizeof(values), values};
 	const auto module =
@@ -1099,8 +1102,7 @@ vk::Pipeline TileManager::GetImagePipeline(bool load, TileBlockFamily family,
 			break;
 		default: EXIT("TileManager: no image variant for tile family %u\n", family_index);
 	}
-	const uint32_t                   values[] {bytes_per_element, load ? 1u : 0u,
-                                               SubwordCas() ? 1u : 0u};
+	const uint32_t values[] {bytes_per_element, load ? 1u : 0u, SubwordCas() ? 1u : 0u};
 	const vk::SpecializationMapEntry entries[] {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
 	const vk::SpecializationInfo     specialization {3, entries, sizeof(values), values};
 	const auto module = CompileSPV({shader.code, shader.words}, m_graphics.device);
@@ -1239,7 +1241,8 @@ void TileManager::RecordImage(Image& image, bool load, vk::Buffer tiled, uint64_
 		command.dispatch((dispatch.push.width + 7u) / 8u, (dispatch.push.height + 7u) / 8u,
 		                 dispatch.push.depth);
 		TilerTrace::Count(load ? "dispatch.load" : "dispatch.store", 1,
-		                  uint64_t {dispatch.push.width} * dispatch.push.height * dispatch.push.depth);
+		                  uint64_t {dispatch.push.width} * dispatch.push.height *
+		                      dispatch.push.depth);
 	}
 
 	if (load) {

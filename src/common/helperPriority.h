@@ -30,10 +30,12 @@ inline Live::Switch g_step(
 	    }
 	    return std::clamp<long>(std::strtol(value, nullptr, 10), -2, 2);
     },
-    [](int64_t /*previous*/, int64_t /*value*/) { g_generation.fetch_add(1, std::memory_order_relaxed); });
+    [](int64_t /*previous*/, int64_t /*value*/) {
+	    g_generation.fetch_add(1, std::memory_order_relaxed);
+    });
 
 inline void Check(int own) noexcept {
-	thread_local uint32_t seen = 0;
+	thread_local uint32_t seen       = 0;
 	const auto            generation = g_generation.load(std::memory_order_relaxed);
 	if (generation != seen) [[unlikely]] {
 		const bool first = seen == 0;

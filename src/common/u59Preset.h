@@ -38,8 +38,8 @@ struct LoadResult {
 };
 
 // Parses preset text. False with `error` set for anything but a JSON object whose keys start with
-// KYTY_ or TRACY_ and whose values are strings (the launcher then applies nothing). A trailing comma
-// and // or /* */ comments are accepted; a syntax error names its line and column.
+// KYTY_ or TRACY_ and whose values are strings (the launcher then applies nothing). A trailing
+// comma and // or /* */ comments are accepted; a syntax error names its line and column.
 [[nodiscard]] bool Parse(std::string_view text, std::vector<Entry>& entries, std::string& error);
 
 // The first directory of `dirs` that holds FileName decides; Missing when none does.
@@ -54,7 +54,7 @@ struct LoadResult {
 // The title file in the first directory of `dirs` that holds it; Missing when none does, or when
 // the title id is not nine upper-case letters and digits (e.g. PPSA01417).
 [[nodiscard]] LoadResult LoadTitle(const std::vector<std::filesystem::path>& dirs,
-                                   std::string_view                           title_id);
+                                   std::string_view                          title_id);
 
 // The title id of a game's sce_sys/param.json text: "titleId", else the nine characters of a
 // "contentId" (XX0000-PPSA01474_00-...); empty when neither is there or the text is not JSON.

@@ -78,8 +78,8 @@ typedef struct KytyGpuNidInfo {
 /* Memory flags for register_memory / protect_memory. */
 #define KYTY_GPU_MEMORY_GPU_READ  0x1u
 #define KYTY_GPU_MEMORY_GPU_WRITE 0x2u
-#define KYTY_GPU_MEMORY_DIRECT    0x4u  /* direct memory */
-#define KYTY_GPU_MEMORY_FLEXIBLE  0x8u  /* 1.6: flexible memory */
+#define KYTY_GPU_MEMORY_DIRECT    0x4u /* direct memory */
+#define KYTY_GPU_MEMORY_FLEXIBLE  0x8u /* 1.6: flexible memory */
 #define KYTY_GPU_MEMORY_CPU_READ  0x10u /* 1.6: the guest's own protection of the range */
 #define KYTY_GPU_MEMORY_CPU_WRITE 0x20u
 

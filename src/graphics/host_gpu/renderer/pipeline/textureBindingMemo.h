@@ -83,7 +83,7 @@ public:
 		bool                                      cube              = false;
 		bool                                      r128              = false;
 		// KYTY_TEXTURE_LAYER_BOUND: the view's layer count follows it (descriptors.cpp).
-		uint32_t                                  max_array_index   = UINT32_MAX;
+		uint32_t max_array_index = UINT32_MAX;
 
 		bool operator==(const Key&) const = default;
 	};
@@ -207,42 +207,44 @@ public:
 	// KYTY_IMG_INPLACE (live 0|1|verify, default 0; only while KYTY_IMG_MEMO2=1): a second-level
 	// entry answers where it is stored; nothing is swapped. The binding then holds the entry's tag
 	// and its second-level slot (memo slots SlotCount() and above name second-level entries), and
-	// every user of (tag, slot) - views, stage set repeats - reads the entry there (SlotEntry). Exact
-	// for the same reasons as a promotion: validity is checked live at every use, independent of
-	// the storage place; a tag lives in exactly one place at a time (an eviction copies a primary
-	// entry whose slot is overwritten at once, a promotion clears the second-level copy), so a
-	// binding's (tag, slot) matches only the recording it was given. Verify: the in-place answer is
-	// followed by the full resolution (kept on a difference), and a view of a second-level entry is
-	// acquired by FindTexture and compared with the entry's (RecordView).
+	// every user of (tag, slot) - views, stage set repeats - reads the entry there (SlotEntry).
+	// Exact for the same reasons as a promotion: validity is checked live at every use, independent
+	// of the storage place; a tag lives in exactly one place at a time (an eviction copies a
+	// primary entry whose slot is overwritten at once, a promotion clears the second-level copy),
+	// so a binding's (tag, slot) matches only the recording it was given. Verify: the in-place
+	// answer is followed by the full resolution (kept on a difference), and a view of a
+	// second-level entry is acquired by FindTexture and compared with the entry's (RecordView).
 	//
 	// KYTY_IMG_PARTNER (live 0|1|verify, default 0): an entry whose image has an alias partner and
 	// does not own the bytes is a miss today, although FindImage's SyncAliasFromOwner does nothing
 	// unless a registered image of the same range qualifies as the owner to copy from
-	// (TextureCache::IsAliasSyncSource: registered, alias owner, GPU-modified, not buffer-owned, same
-	// range, grid and samples). Such an image starts at the same address, so it is in the owner list
-	// of the entry's first page; while the page version holds that list is the recorded one, and the
-	// owners' flags are read live. On: the entry answers when SyncAliasReturnsAtOnce holds or no
-	// owner of the page qualifies. Verify: such an answer is claimed, the full resolution runs and
-	// must give the same image and description and add no lookup side effect (residency
-	// extension, alias synchronization).
+	// (TextureCache::IsAliasSyncSource: registered, alias owner, GPU-modified, not buffer-owned,
+	// same range, grid and samples). Such an image starts at the same address, so it is in the
+	// owner list of the entry's first page; while the page version holds that list is the recorded
+	// one, and the owners' flags are read live. On: the entry answers when SyncAliasReturnsAtOnce
+	// holds or no owner of the page qualifies. Verify: such an answer is claimed, the full
+	// resolution runs and must give the same image and description and add no lookup side effect
+	// (residency extension, alias synchronization).
 	//
-	// KYTY_IMG_DEPTHALIAS (live 0|1|verify, default 0; acts only with KYTY_IMG_PARTNER=1, since every
-	// such entry has an alias partner): answers of FindImage's overlap loop that went through
+	// KYTY_IMG_DEPTHALIAS (live 0|1|verify, default 0; acts only with KYTY_IMG_PARTNER=1, since
+	// every such entry has an alias partner): answers of FindImage's overlap loop that went through
 	// ResolveDepthOverlap without recreating - Astro Bot samples the D32 memory of its depth target
-	// as R16G16_SFLOAT through a kept colour alias (ResolveDepthOverlap's keep_aliases branch) - are
-	// memoized. Exact condition (every state the full lookup reads, and what it writes):
-	//  reads: the owner lists of the outer region's pages (FindImagesInRegion over the description's
-	//    resident prefix) and of each inner region (the alias scan over the merged request's range),
-	//    the owners' registered flags, stencil associations and live ranges - all of which move the
-	//    structure versions of the pages they cover (TextureCache::NoteStructureChange) - the
-	//    candidates' fixed fields (info, backing sample count, generation in the id), the switches
-	//    read once (KYTY_IMAGE_ALIAS_AGE, KYTY_IMAGE_CONTAINS, ...), and for time-dependent "keep"
-	//    branches OverlapSafeToDelete (re-checked live, as KYTY_IMG_OVERLAP does); then FindImage's
-	//    tail as for any entry (requested_first, alias partner, touch).
-	//  writes: per alias answer, `cached.binding.needs_rebind = true` and the image-state epoch when
-	//    the cached (depth) image is bound or a target at that moment (read live at the hit, applied
-	//    in the lookup's order, before SyncAliasFromOwner as in FindImage); SyncAliasFromOwner
-	//    (KYTY_IMG_PARTNER's HitSync); the tick and LRU touch.
+	// as R16G16_SFLOAT through a kept colour alias (ResolveDepthOverlap's keep_aliases branch) -
+	// are memoized. Exact condition (every state the full lookup reads, and what it writes):
+	//  reads: the owner lists of the outer region's pages (FindImagesInRegion over the
+	//  description's
+	//    resident prefix) and of each inner region (the alias scan over the merged request's
+	//    range), the owners' registered flags, stencil associations and live ranges - all of which
+	//    move the structure versions of the pages they cover (TextureCache::NoteStructureChange) -
+	//    the candidates' fixed fields (info, backing sample count, generation in the id), the
+	//    switches read once (KYTY_IMAGE_ALIAS_AGE, KYTY_IMAGE_CONTAINS, ...), and for
+	//    time-dependent "keep" branches OverlapSafeToDelete (re-checked live, as KYTY_IMG_OVERLAP
+	//    does); then FindImage's tail as for any entry (requested_first, alias partner, touch).
+	//  writes: per alias answer, `cached.binding.needs_rebind = true` and the image-state epoch
+	//  when
+	//    the cached (depth) image is bound or a target at that moment (read live at the hit,
+	//    applied in the lookup's order, before SyncAliasFromOwner as in FindImage);
+	//    SyncAliasFromOwner (KYTY_IMG_PARTNER's HitSync); the tick and LRU touch.
 	//  An entry answers while the structure versions of every page of the span (outer region,
 	//  inner regions, the image's first page; at most MaxSpanPages) are the recorded ones: versions
 	//  only grow, so the sum of the span's versions is unchanged exactly when every version is. A
@@ -259,7 +261,7 @@ public:
 		ClaimKind               kind = ClaimKind::None;
 		ImageId                 image;
 		TextureCache::ImageDesc desc;
-		uint64_t                effects = 0; // TextureCache::LookupSideEffects when claimed
+		uint64_t                effects     = 0;     // TextureCache::LookupSideEffects when claimed
 		bool                    expect_sync = false; // KYTY_IMG_PARTNER: an owner qualified
 		// KYTY_IMG_DEPTHALIAS: the rebinds the hit would perform.
 		uint32_t                                                     rebind_count = 0;
@@ -287,9 +289,11 @@ private:
 	// structure versions of [first, first + count), and whether the last lookup is of the class.
 	static constexpr uint32_t MaxSpanPages = 64;
 	// The count build (r6) set this: depth-class answers counted (DaRecordable), never recorded.
-	static constexpr bool DepthAliasCountOnly = false;
-	[[nodiscard]] static uint64_t SpanSum(const TextureCache& cache, uint64_t first, uint32_t count);
-	[[nodiscard]] static bool DepthAliasClass(const TextureCache::OverlapLookup& lookup, ImageId found);
+	static constexpr bool         DepthAliasCountOnly = false;
+	[[nodiscard]] static uint64_t SpanSum(const TextureCache& cache, uint64_t first,
+	                                      uint32_t count);
+	[[nodiscard]] static bool     DepthAliasClass(const TextureCache::OverlapLookup& lookup,
+	                                              ImageId                            found);
 	// KYTY_TEXTURE_MEMO_SLOTS (startup, default 4096, 64..4M): the number of direct-mapped entries
 	// (~1 KiB each; the size is logged once). A level binding more distinct textures per frame
 	// than that evicts entries every frame (Sky Garden: most texture sets KYTY_XFRAME_REUSE kept
@@ -330,7 +334,7 @@ private:
 	static void CountBacking(const TextureCache& cache, const TextureCache::ImageDesc& desc,
 	                         bool exact_format, ImageId found);
 	// KYTY_IMG_MEMO2: the second level (allocated when first used).
-	static constexpr uint32_t SecondWays = 4;
+	static constexpr uint32_t     SecondWays = 4;
 	[[nodiscard]] static uint32_t SecondSets();
 	[[nodiscard]] static uint32_t SecondSet(uint64_t hash);
 	// Field copy of an entry's recorded answer (key, tag and the rest; the atomics are FindHint's
@@ -349,7 +353,9 @@ private:
 	// The entry a memo slot names (primary below SlotCount(), second level above), or null.
 	[[nodiscard]] Entry*       SlotEntry(uint32_t slot);
 	[[nodiscard]] const Entry* SlotEntry(uint32_t slot) const;
-	[[nodiscard]] static bool  IsSecondSlot(uint32_t slot) { return ImgSide::IsSecondSlot(slot, SlotCount()); }
+	[[nodiscard]] static bool  IsSecondSlot(uint32_t slot) {
+		return ImgSide::IsSecondSlot(slot, SlotCount());
+	}
 	// SlotEntry, or an empty entry (tag 0, matching no binding) when the slot names none.
 	[[nodiscard]] const Entry& SlotRef(uint32_t slot) const;
 	// KYTY_IMG_INPLACE=verify and `slot` is a second-level one: the stage repeats and the view memo
@@ -369,12 +375,12 @@ private:
 	[[nodiscard]] static AliasSync ClassifyAliasSync(const TextureCache& cache, const Entry& entry,
 	                                                 const Image& image);
 
-	std::unique_ptr<Entry[]> m_second;
+	std::unique_ptr<Entry[]>   m_second;
 	std::unique_ptr<uint8_t[]> m_second_next; // round-robin way per set
 	// m_second for FindHint's readers (KYTY_IMG_INPLACE): set once, after it exists (release).
 	std::atomic<const Entry*> m_second_published {nullptr};
-	SecondClaim              m_claim;
-	bool                     m_inplace_verify = false;
+	SecondClaim               m_claim;
+	bool                      m_inplace_verify = false;
 
 	std::unique_ptr<Entry[]> m_entries;
 	// m_entries for FindHint's readers: set once, after the entries exist (release).

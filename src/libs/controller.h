@@ -93,8 +93,8 @@ struct MotionStatus {
 	uint64_t rearms          = 0; // stale-sensor re-arms done
 	uint64_t events_total    = 0; // all SDL sensor events seen by the router
 	uint64_t events_unrouted = 0; // ... that belonged to no player's pad
-	bool     live            = false; // both sensors delivered within the last 250 ms, or emulated tilt
-	bool     emulated        = false;
+	bool     live     = false;    // both sensors delivered within the last 250 ms, or emulated tilt
+	bool     emulated = false;
 };
 bool PadGetMotionStatus(int handle, MotionStatus* status);
 // Re-arms the sensors of pads that stopped delivering events; cheap, call at ~2 Hz.

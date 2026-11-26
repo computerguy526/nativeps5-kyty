@@ -26,7 +26,8 @@ enum class ProcessHeapKind { Unknown, Nt, Segment };
 
 [[nodiscard]] inline ProcessHeapKind GetProcessHeapKind() noexcept {
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
-	const auto* heap = static_cast<const unsigned char*>(static_cast<const void*>(GetProcessHeap()));
+	const auto* heap =
+	    static_cast<const unsigned char*>(static_cast<const void*>(GetProcessHeap()));
 	if (heap == nullptr) {
 		return ProcessHeapKind::Unknown;
 	}

@@ -1,8 +1,8 @@
 #include "graphics/shader/recompiler/CallSplitPlan.h"
-#include "common/staticOnce.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
+#include "common/staticOnce.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
 #include "graphics/shader/recompiler/frontend/decode/ShaderFunctions.h"
 
@@ -105,14 +105,16 @@ uint32_t KernelReadVgprLimit(const Decoder::Program& decoded) {
 	};
 	for (const auto& inst: decoded.instructions) {
 		// Generous: every operand may span the instruction's widest data.
-		const uint32_t width = std::max({inst.data_dwords, inst.data_components, 4u}) + (inst.tfe ? 1u : 0u);
+		const uint32_t width =
+		    std::max({inst.data_dwords, inst.data_components, 4u}) + (inst.tfe ? 1u : 0u);
 		include(inst.dst, width);
 		include(inst.dst2, 2u);
 		include(inst.src0, inst.family == Decoder::Family::MIMG ? 16u : width);
 		include(inst.src1, width);
 		include(inst.src2, width);
 		include(inst.src3, width);
-		for (uint32_t i = 0; i < inst.image_nsa_dwords && i < Decoder::MaxImageNsaAddressComponents; i++) {
+		for (uint32_t i = 0; i < inst.image_nsa_dwords && i < Decoder::MaxImageNsaAddressComponents;
+		     i++) {
 			limit = std::max(limit, std::min(inst.image_nsa_addr[i] + 1u, IR::NumVectorRegs));
 		}
 	}
@@ -137,7 +139,8 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 	}
 	const auto& cs = *options.input_info.compute;
 	if (std::max(cs.threads_num[0], 1u) * std::max(cs.threads_num[1], 1u) *
-	        std::max(cs.threads_num[2], 1u) != 64u ||
+	            std::max(cs.threads_num[2], 1u) !=
+	        64u ||
 	    cs.dispatch_thread_dimensions) {
 		failure = "its workgroup is not one wave";
 		return false;
@@ -151,7 +154,8 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 	Decoder::DecodeProgram(code, decoded, true);
 	const auto& instructions = decoded.instructions;
 	const auto  at_pc        = [&](uint32_t pc) -> const Decoder::Instruction* {
-		const auto found = std::ranges::lower_bound(instructions, pc, {}, &Decoder::Instruction::pc);
+		const auto found =
+		    std::ranges::lower_bound(instructions, pc, {}, &Decoder::Instruction::pc);
 		return found != instructions.end() && found->pc == pc ? &*found : nullptr;
 	};
 	for (const auto& call: analysis.calls) {
@@ -164,7 +168,8 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 		for (const auto& inst: instructions) {
 			if (inst.pc > call.pc && Decoder::IsDirectBranch(inst.opcode) &&
 			    inst.branch_target <= call.pc &&
-			    (back == nullptr || inst.pc - inst.branch_target < back->pc - back->branch_target)) {
+			    (back == nullptr ||
+			     inst.pc - inst.branch_target < back->pc - back->branch_target)) {
 				back = &inst;
 			}
 		}
@@ -177,7 +182,7 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 		site.source_reg = call.source_reg;
 		site.return_reg = call.return_reg;
 		site.table      = *call.table;
-		site.b = EndPc(*back);
+		site.b          = EndPc(*back);
 		// The loop is entered by saving EXEC, a few instructions before its head (vector moves of
 		// the loop's own flags may sit between).
 		const Decoder::Instruction* first = nullptr;
@@ -191,7 +196,8 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 					first = &*head;
 					break;
 				}
-				if (head->family != Decoder::Family::VOP1 || Decoder::IsDirectBranch(head->opcode)) {
+				if (head->family != Decoder::Family::VOP1 ||
+				    Decoder::IsDirectBranch(head->opcode)) {
 					break;
 				}
 			}
@@ -201,22 +207,25 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 			failure = fmt::format("pc 0x{:x}: the loop is not entered by saving EXEC", call.pc);
 			return false;
 		}
-		bool exits = false;
-		bool record = false;
-		uint32_t calls = 0;
+		bool     exits  = false;
+		bool     record = false;
+		uint32_t calls  = 0;
 		for (const auto& inst: instructions) {
 			const bool inside = inst.pc >= site.a && inst.pc < site.b;
 			if (Decoder::IsDirectBranch(inst.opcode)) {
-				const bool target_inside = inst.branch_target > site.a && inst.branch_target < site.b;
+				const bool target_inside =
+				    inst.branch_target > site.a && inst.branch_target < site.b;
 				if (inside && (inst.branch_target < site.a || inst.branch_target > site.b)) {
 					failure = fmt::format("pc 0x{:x}: the loop branches out of itself", inst.pc);
 					return false;
 				}
 				if (!inside && target_inside) {
-					failure = fmt::format("pc 0x{:x}: a branch into the loop of pc 0x{:x}", inst.pc, call.pc);
+					failure = fmt::format("pc 0x{:x}: a branch into the loop of pc 0x{:x}", inst.pc,
+					                      call.pc);
 					return false;
 				}
-				exits |= inside && inst.opcode == Opcode::S_CBRANCH_EXECZ && inst.branch_target == site.b;
+				exits |= inside && inst.opcode == Opcode::S_CBRANCH_EXECZ &&
+				         inst.branch_target == site.b;
 			}
 			if (inside && inst.opcode == Opcode::V_READFIRSTLANE_B32 &&
 			    inst.src0.kind == Decoder::OperandKind::Vgpr && !record) {
@@ -247,8 +256,8 @@ bool AnalyzeShape(std::span<const uint32_t> code, const CompileOptions& options,
 		for (const auto& site: shape.sites) {
 			const bool own = inst.pc >= site.a && inst.pc < site.b;
 			if (!own && inst.branch_target <= site.a && inst.pc >= site.a) {
-				failure = fmt::format("the loop at pc 0x{:x} encloses the call at 0x{:x}", inst.branch_target,
-				                      site.call_pc);
+				failure = fmt::format("the loop at pc 0x{:x} encloses the call at 0x{:x}",
+				                      inst.branch_target, site.call_pc);
 				return false;
 			}
 		}
@@ -270,22 +279,23 @@ bool BuildCode(const Shape& shape, const Header& layouts, Kind kind, uint32_t si
                const Decoder::ShaderCodeReader& read, std::vector<uint32_t>& code,
                std::string& failure) {
 	code.clear();
-	Header header  = layouts;
-	header.digest  = shape.digest;
-	header.vgprs   = shape.vgprs;
+	Header header     = layouts;
+	header.digest     = shape.digest;
+	header.vgprs      = shape.vgprs;
 	header.entry_site = kind == Kind::Probe ? 0u : site;
-	header.flags   = (liveness ? FlagLiveness : 0u) | (kind == Kind::Probe ? FlagProbe : 0u);
+	header.flags      = (liveness ? FlagLiveness : 0u) | (kind == Kind::Probe ? FlagProbe : 0u);
 	if (liveness && site != 0) {
 		header.sites[site - 1u] = Candidates(shape.vgprs);
 	}
 	EncodeHeader(header, code);
 	if (kind == Kind::Callee) {
-		const auto& s = shape.sites.at(site - 1u);
+		const auto&           s = shape.sites.at(site - 1u);
 		std::vector<uint32_t> region(original.begin() + s.a / 4u, original.begin() + s.b / 4u);
-		// KYTY_SHADER_CALLS_SPLIT_SHADED_ONLY (default on; =0 reverts): store only the lanes that ran
-		// this callee. Without it every lane of the wave is stored, and a lane of another target leaves
-		// this pass marked done by the skip path, so in a wave whose lanes name several callees only
-		// the first callee pass shaded anything (Miles Morales: 65% of the reflection hits black).
+		// KYTY_SHADER_CALLS_SPLIT_SHADED_ONLY (default on; =0 reverts): store only the lanes that
+		// ran this callee. Without it every lane of the wave is stored, and a lane of another
+		// target leaves this pass marked done by the skip path, so in a wave whose lanes name
+		// several callees only the first callee pass shaded anything (Miles Morales: 65% of the
+		// reflection hits black).
 		if (ShadedOnly()) {
 			region.push_back(Decoder::EncodeCallStateWord(Decoder::CallStateOp::SaveChanged, 1));
 			region.push_back(1u);
@@ -302,13 +312,14 @@ bool BuildCode(const Shape& shape, const Header& layouts, Kind kind, uint32_t si
 		                                    .addresses    = {callee},
 		                                    .split_callee = true,
 		                                    .shader_base  = base};
-		Decoder::ShaderCallExpansion expansion;
-		if (!Decoder::ExpandShaderCalls(region, base + s.a, std::span(&call, 1u), read, 64u, expansion,
-		                                failure)) {
+		Decoder::ShaderCallExpansion  expansion;
+		if (!Decoder::ExpandShaderCalls(region, base + s.a, std::span(&call, 1u), read, 64u,
+		                                expansion, failure)) {
 			return false;
 		}
 		if (expansion.inlined == 0) {
-			failure = expansion.dropped.empty() ? std::string("the callee was not placed") : expansion.dropped.front();
+			failure = expansion.dropped.empty() ? std::string("the callee was not placed")
+			                                    : expansion.dropped.front();
 			return false;
 		}
 		code.insert(code.end(), expansion.code.begin(), expansion.code.end());
@@ -431,20 +442,21 @@ void Planner::Work() {
 // Probe, layouts (last site first: a site's registers pass through the programs before it),
 // then the codes of R_0, R_ak and the callees known so far.
 void Planner::PlanKernel(uint64_t id) {
-	const auto begin = std::chrono::steady_clock::now();
-	Kernel     kernel;
+	const auto                         begin = std::chrono::steady_clock::now();
+	Kernel                             kernel;
 	std::vector<std::vector<uint64_t>> targets;
 	{
 		std::scoped_lock lock(m_mutex);
-		auto&            k = m_kernels.at(id);
-		kernel.shape       = k.shape;
-		kernel.original    = k.original;
-		kernel.base        = k.base;
-		kernel.user_data   = k.user_data;
-		kernel.info        = k.info;
-		kernel.hash        = k.hash;
+		auto&            k    = m_kernels.at(id);
+		kernel.shape          = k.shape;
+		kernel.original       = k.original;
+		kernel.base           = k.base;
+		kernel.user_data      = k.user_data;
+		kernel.info           = k.info;
+		kernel.hash           = k.hash;
 		kernel.user_data_base = k.user_data_base;
-		for (const auto& site: k.sites) targets.push_back(site.targets);
+		for (const auto& site: k.sites)
+			targets.push_back(site.targets);
 	}
 	const auto fail = [&](std::string why) {
 		Log(fmt::format("CS shader 0x{:016x} is not split: {}.", kernel.hash, why));
@@ -483,8 +495,9 @@ void Planner::PlanKernel(uint64_t id) {
 				live.insert(report.live.begin(), report.live.end());
 				usable[k - 1u][t] = true;
 			} else {
-				Log(fmt::format("CS shader 0x{:016x} site {}: callee 0x{:x} is skipped: {}.", kernel.hash, k,
-				                targets[k - 1u][t], why.empty() ? std::string("its translation failed") : why));
+				Log(fmt::format("CS shader 0x{:016x} site {}: callee 0x{:x} is skipped: {}.",
+				                kernel.hash, k, targets[k - 1u][t],
+				                why.empty() ? std::string("its translation failed") : why));
 			}
 		}
 		auto& layout = layouts.sites[k - 1u];
@@ -492,10 +505,12 @@ void Planner::PlanKernel(uint64_t id) {
 		for (const auto code_value: live) {
 			(code_value >= VectorCode ? layout.vector : layout.uniform).push_back(code_value);
 		}
-		const auto& s = shape.sites[k - 1u];
-		const bool  exec =
-		    std::ranges::count(layout.uniform, CodeExecLo) == 1 && std::ranges::count(layout.uniform, CodeExecHi) == 1;
-		const bool record = std::ranges::count(layout.vector, static_cast<uint16_t>(VectorCode + s.record_vgpr)) == 1;
+		const auto& s    = shape.sites[k - 1u];
+		const bool  exec = std::ranges::count(layout.uniform, CodeExecLo) == 1 &&
+		                   std::ranges::count(layout.uniform, CodeExecHi) == 1;
+		const bool  record =
+		    std::ranges::count(layout.vector, static_cast<uint16_t>(VectorCode + s.record_vgpr)) ==
+		    1;
 		if (!exec || !record) {
 			return fail(fmt::format("site {} does not keep EXEC and its record register", k));
 		}
@@ -513,26 +528,29 @@ void Planner::PlanKernel(uint64_t id) {
 		resumes.push_back(MakeCode(code));
 		for (size_t t = 0; t < targets[k - 1u].size(); t++) {
 			std::shared_ptr<const Code> callee;
-			if (usable[k - 1u][t] && BuildCode(shape, layouts, Kind::Callee, k, false, kernel.original,
-			                                   kernel.base, targets[k - 1u][t], m_read, code, why)) {
+			if (usable[k - 1u][t] &&
+			    BuildCode(shape, layouts, Kind::Callee, k, false, kernel.original, kernel.base,
+			              targets[k - 1u][t], m_read, code, why)) {
 				DumpCallee(kernel.hash, k, targets[k - 1u][t], code);
 				callee = MakeCode(code);
 			}
 			callees[k - 1u].push_back(std::move(callee));
 		}
 	}
-	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-	                    std::chrono::steady_clock::now() - begin)
-	                    .count();
+	const auto  ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                     std::chrono::steady_clock::now() - begin)
+	                     .count();
 	std::string sizes;
 	for (uint32_t k = 1; k <= n; k++) {
 		const auto& layout = layouts.sites[k - 1u];
-		sizes += fmt::format("{}site {}: {} scalar + {} vector registers ({} scalars rebuilt), {} callees",
-		                     k == 1 ? "" : "; ", k, layout.uniform.size(), layout.vector.size(),
-		                     recipe->sites[k - 1u].roots.size(), callees[k - 1u].size());
+		sizes += fmt::format(
+		    "{}site {}: {} scalar + {} vector registers ({} scalars rebuilt), {} callees",
+		    k == 1 ? "" : "; ", k, layout.uniform.size(), layout.vector.size(),
+		    recipe->sites[k - 1u].roots.size(), callees[k - 1u].size());
 	}
-	Log(fmt::format("CS shader 0x{:016x} splits at {} call loop(s), planned in {} ms, {} dwords per wave: {}.",
-	                kernel.hash, n, ms, layouts.WaveDwords(), sizes));
+	Log(fmt::format(
+	    "CS shader 0x{:016x} splits at {} call loop(s), planned in {} ms, {} dwords per wave: {}.",
+	    kernel.hash, n, ms, layouts.WaveDwords(), sizes));
 	std::scoped_lock lock(m_mutex);
 	auto&            k = m_kernels.at(id);
 	k.layouts          = layouts;
@@ -569,21 +587,22 @@ void Planner::PlanTarget(uint64_t id, uint32_t site, uint64_t target) {
 		kernel.hash           = k.hash;
 		kernel.user_data_base = k.user_data_base;
 	}
-	std::vector<uint32_t> code;
-	std::string           why;
-	Report                report;
+	std::vector<uint32_t>       code;
+	std::string                 why;
+	Report                      report;
 	std::shared_ptr<const Code> result;
-	if (BuildCode(kernel.shape, kernel.layouts, Kind::Callee, site, true, kernel.original, kernel.base,
-	              target, m_read, code, why) &&
+	if (BuildCode(kernel.shape, kernel.layouts, Kind::Callee, site, true, kernel.original,
+	              kernel.base, target, m_read, code, why) &&
 	    Translate(kernel, code, report)) {
 		const auto& layout = kernel.layouts.sites[site - 1u];
 		const auto  fits   = std::ranges::all_of(report.live, [&](uint16_t c) {
-			return std::ranges::count(layout.uniform, c) != 0 || std::ranges::count(layout.vector, c) != 0;
+			return std::ranges::count(layout.uniform, c) != 0 ||
+			       std::ranges::count(layout.vector, c) != 0;
 		});
 		if (!fits) {
 			why = "its inputs are not in the site's layout";
-		} else if (BuildCode(kernel.shape, kernel.layouts, Kind::Callee, site, false, kernel.original,
-		                     kernel.base, target, m_read, code, why)) {
+		} else if (BuildCode(kernel.shape, kernel.layouts, Kind::Callee, site, false,
+		                     kernel.original, kernel.base, target, m_read, code, why)) {
 			DumpCallee(kernel.hash, site, target, code);
 			result = MakeCode(code);
 		}
@@ -591,8 +610,8 @@ void Planner::PlanTarget(uint64_t id, uint32_t site, uint64_t target) {
 		why = "its translation failed";
 	}
 	if (result == nullptr) {
-		Log(fmt::format("CS shader 0x{:016x} site {}: callee 0x{:x} is skipped: {}.", kernel.hash, site, target,
-		                why));
+		Log(fmt::format("CS shader 0x{:016x} site {}: callee 0x{:x} is skipped: {}.", kernel.hash,
+		                site, target, why));
 	}
 	std::scoped_lock lock(m_mutex);
 	auto&            k     = m_kernels.at(id);
@@ -639,7 +658,7 @@ Planner::Result Planner::Plan(std::span<const uint32_t> code, uint64_t base,
 	if (!m_read) {
 		m_read = read;
 	}
-	const auto id = base ^ (options.shader_hash * 0x9e3779b97f4a7c15ull) ^ code.size();
+	const auto id          = base ^ (options.shader_hash * 0x9e3779b97f4a7c15ull) ^ code.size();
 	auto [entry, inserted] = m_kernels.try_emplace(id);
 	auto& kernel           = entry->second;
 	if (inserted) {
@@ -651,7 +670,7 @@ Planner::Result Planner::Plan(std::span<const uint32_t> code, uint64_t base,
 			return Result::NotSplit;
 		}
 		kernel.original.assign(code.begin(), code.end());
-		kernel.base           = base;
+		kernel.base = base;
 		kernel.user_data.assign(options.user_data.begin(), options.user_data.end());
 		kernel.info           = info;
 		kernel.info.stage     = {};
@@ -668,8 +687,8 @@ Planner::Result Planner::Plan(std::span<const uint32_t> code, uint64_t base,
 		auto&         plan = kernel.sites[s];
 		CallTableView view;
 		std::string   why;
-		if (!EvaluateCallTable(kernel.shape.sites[s].table, options.user_data, options.user_data_base, read, view,
-		                       why)) {
+		if (!EvaluateCallTable(kernel.shape.sites[s].table, options.user_data,
+		                       options.user_data_base, read, view, why)) {
 			plan.record_slots.clear();
 			continue;
 		}
@@ -682,12 +701,13 @@ Planner::Result Planner::Plan(std::span<const uint32_t> code, uint64_t base,
 			plan.record_slots.clear();
 			continue;
 		}
-		const auto digest = XXH3_64bits(m_table_words.data(), m_table_words.size() * sizeof(uint32_t));
+		const auto digest =
+		    XXH3_64bits(m_table_words.data(), m_table_words.size() * sizeof(uint32_t));
 		if (digest == plan.table_digest && !plan.record_slots.empty()) {
 			continue;
 		}
-		plan.table_digest   = digest;
-		const auto records  = view.record_bytes != 0 ? view.bytes / view.record_bytes : 0u;
+		plan.table_digest  = digest;
+		const auto records = view.record_bytes != 0 ? view.bytes / view.record_bytes : 0u;
 		plan.record_slots.assign(records, Run::NoSlot);
 		for (uint64_t r = 0; r < records; r++) {
 			const auto offset = r * view.record_bytes + view.target_offset;
@@ -695,7 +715,8 @@ Planner::Result Planner::Plan(std::span<const uint32_t> code, uint64_t base,
 			const auto target = static_cast<uint64_t>(m_table_words[offset / 4u]) |
 			                    (static_cast<uint64_t>(m_table_words[offset / 4u + 1u]) << 32u);
 			if ((target & 0x0000ffffffffffffull) == 0) continue;
-			auto [slot, fresh] = plan.slot.try_emplace(target, static_cast<uint32_t>(plan.targets.size()));
+			auto [slot, fresh] =
+			    plan.slot.try_emplace(target, static_cast<uint32_t>(plan.targets.size()));
 			if (fresh) {
 				plan.targets.push_back(target);
 				plan.state.emplace_back();
@@ -721,34 +742,37 @@ Planner::Result Planner::Plan(std::span<const uint32_t> code, uint64_t base,
 	if (kernel.state != Kernel::State::Ready) {
 		return Result::Pending;
 	}
-	run        = {};
-	run.kernel = id;
-	run.hash   = kernel.hash;
-	run.start  = kernel.start;
+	run             = {};
+	run.kernel      = id;
+	run.hash        = kernel.hash;
+	run.start       = kernel.start;
 	run.wave_dwords = kernel.layouts.WaveDwords();
 	run.layouts     = kernel.layouts.sites;
 	for (uint32_t s = 0; s < kernel.sites.size(); s++) {
 		const auto& plan   = kernel.sites[s];
 		const auto& layout = kernel.layouts.sites[s];
 		run.targets.push_back(plan.targets);
-		auto&       site   = run.sites.emplace_back();
-		site.resume        = plan.resume;
-		site.targets       = plan.targets;
+		auto& site   = run.sites.emplace_back();
+		site.resume  = plan.resume;
+		site.targets = plan.targets;
 		for (const auto& state: plan.state) {
 			site.callees.push_back(state.code);
 			site.pending.push_back(state.code == nullptr && !state.unusable);
 		}
 		site.record_slots = plan.record_slots;
 		const auto index  = [&](uint16_t code_value) {
-			return static_cast<uint32_t>(std::ranges::find(layout.uniform, code_value) - layout.uniform.begin());
+			return static_cast<uint32_t>(std::ranges::find(layout.uniform, code_value) -
+			                             layout.uniform.begin());
 		};
 		site.exec_lo_slot = index(CodeExecLo);
 		site.exec_hi_slot = index(CodeExecHi);
 		site.record_dword =
 		    layout.VectorBase() +
-		    static_cast<uint32_t>(std::ranges::find(layout.vector, static_cast<uint16_t>(
-		                                                               VectorCode + kernel.shape.sites[s].record_vgpr)) -
-		                          layout.vector.begin()) *
+		    static_cast<uint32_t>(
+		        std::ranges::find(
+		            layout.vector,
+		            static_cast<uint16_t>(VectorCode + kernel.shape.sites[s].record_vgpr)) -
+		        layout.vector.begin()) *
 		        64u;
 	}
 	return Result::Ready;

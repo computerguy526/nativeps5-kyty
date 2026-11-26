@@ -57,21 +57,24 @@ bool DescriptorFitEnabled() {
 // Sets of a layout that does not fit a default pool that its own pool holds.
 constexpr uint32_t LargeSetsPerPool = 4;
 
-vk::DescriptorPoolSize* FindSize(std::vector<vk::DescriptorPoolSize>& sizes, vk::DescriptorType type) {
-	const auto size =
-	    std::find_if(sizes.begin(), sizes.end(), [&](const auto& entry) { return entry.type == type; });
+vk::DescriptorPoolSize* FindSize(std::vector<vk::DescriptorPoolSize>& sizes,
+                                 vk::DescriptorType                   type) {
+	const auto size = std::find_if(sizes.begin(), sizes.end(),
+	                               [&](const auto& entry) { return entry.type == type; });
 	return size == sizes.end() ? nullptr : &*size;
 }
 
 } // namespace
 
-const std::vector<vk::DescriptorPoolSize>& DescriptorHeap::LayoutSizes(vk::DescriptorSetLayout layout) {
+const std::vector<vk::DescriptorPoolSize>&
+DescriptorHeap::LayoutSizes(vk::DescriptorSetLayout layout) {
 	auto found = m_layout_sizes.find(layout);
 	if (found == m_layout_sizes.end()) {
 		std::vector<vk::DescriptorPoolSize> sizes;
 		{
 			std::lock_guard lock(s_layout_mutex);
-			if (const auto registered = s_layout_sizes.find(layout); registered != s_layout_sizes.end()) {
+			if (const auto registered = s_layout_sizes.find(layout);
+			    registered != s_layout_sizes.end()) {
 				sizes = registered->second;
 			}
 		}
@@ -136,8 +139,9 @@ vk::DescriptorSet DescriptorHeap::Commit(vk::DescriptorSetLayout layout) {
 	// KYTY_DESCRIPTOR_FIT: the set has more descriptors of a type than an empty default pool holds:
 	// a pool with the default sizes raised to hold LargeSetsPerPool of its sets. Once retired it is
 	// reused like a default pool (its room is then counted as the default sizes, which it holds).
-	const auto scale = DescriptorPoolScale();
-	std::vector<vk::DescriptorPoolSize> sizes(DescriptorPoolSizes.begin(), DescriptorPoolSizes.end());
+	const auto                          scale = DescriptorPoolScale();
+	std::vector<vk::DescriptorPoolSize> sizes(DescriptorPoolSizes.begin(),
+	                                          DescriptorPoolSizes.end());
 	for (auto& size: sizes) {
 		size.descriptorCount *= scale;
 	}
@@ -177,7 +181,8 @@ bool DescriptorHeap::Allocate(vk::DescriptorSetLayout layout, Batch& batch) {
 		uint32_t    count = std::min(DescriptorSetBatch, m_free_sets);
 		for (const auto& needed: needs) {
 			const auto* free = FindSize(m_free, needed.type);
-			count = std::min(count, free == nullptr ? 0u : free->descriptorCount / needed.descriptorCount);
+			count = std::min(count,
+			                 free == nullptr ? 0u : free->descriptorCount / needed.descriptorCount);
 		}
 		if (count == 0) {
 			return false;

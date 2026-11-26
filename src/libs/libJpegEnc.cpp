@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-
 #include <vector>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -245,7 +244,6 @@ LIB_DEFINE(InitJpegEnc_1) {
 	}
 
 	PRINT_NAME_ENABLE(true);
-
 
 	LIB_FUNC("o6ZgXfFdWXQ", JpegEnc::JpegEncQueryMemorySize);
 	LIB_FUNC("K+rocojkr-I", JpegEnc::JpegEncCreate);

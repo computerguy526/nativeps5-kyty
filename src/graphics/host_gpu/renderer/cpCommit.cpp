@@ -1,9 +1,9 @@
 #include "graphics/host_gpu/renderer/cpCommit.h"
-#include "common/staticOnce.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/slotVector.h"
+#include "common/staticOnce.h"
 
 #include <array>
 #include <cstdio>

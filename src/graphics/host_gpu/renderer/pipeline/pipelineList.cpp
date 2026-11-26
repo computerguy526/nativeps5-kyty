@@ -113,19 +113,21 @@ std::vector<uint8_t> EncodeLevels(const std::vector<std::string>& levels) {
 std::vector<uint8_t> EncodeFiles(const std::vector<std::string>& files) {
 	std::vector<uint8_t> out;
 	Put<uint32_t>(out, static_cast<uint32_t>(files.size()));
-	for (const auto& file: files) PutText(out, file);
+	for (const auto& file: files)
+		PutText(out, file);
 	return out;
 }
 
 bool DecodeFiles(std::span<const uint8_t> bytes, std::vector<std::string>& files) {
 	Reader     r(bytes);
 	const auto count = r.Count(4);
-	for (uint32_t i = 0; i < count && !r.Failed(); i++) files.push_back(r.Text());
+	for (uint32_t i = 0; i < count && !r.Failed(); i++)
+		files.push_back(r.Text());
 	if (r.Failed() || !r.AtEnd() || files.size() > PipelineList::MaxDataFiles) return false;
 	// Relative paths inside the game folder only.
 	for (const auto& file: files) {
-		if (file.empty() || file.front() == '/' || file.front() == '\\' || file.find(':') != std::string::npos ||
-		    file.find("..") != std::string::npos) {
+		if (file.empty() || file.front() == '/' || file.front() == '\\' ||
+		    file.find(':') != std::string::npos || file.find("..") != std::string::npos) {
 			return false;
 		}
 	}
@@ -555,11 +557,13 @@ bool Decode(std::span<const uint8_t> bytes, File& file, std::string* error) {
 	if (!DecodePipelines(*pipelines, file.permutations.size(), file.levels.size(), file.pipelines)) {
 		return Fail(error, "malformed pipelines section");
 	}
-	if (const auto* files = find(SectionId::Files); files != nullptr && !DecodeFiles(*files, file.files)) {
+	if (const auto* files = find(SectionId::Files);
+	    files != nullptr && !DecodeFiles(*files, file.files)) {
 		return Fail(error, "malformed files section");
 	}
 	for (const auto& shader: file.shaders) {
-		if (static_cast<uint32_t>(shader.file) > file.files.size()) return Fail(error, "a shader names a missing file");
+		if (static_cast<uint32_t>(shader.file) > file.files.size())
+			return Fail(error, "a shader names a missing file");
 	}
 	return true;
 }
@@ -597,8 +601,8 @@ namespace {
 
 // Where the device-derived words sit in a snapshot (pipelineSnapshot.cpp, Serialize).
 struct SnapshotDeviceWords {
-	std::vector<size_t> stage_flags;    // per stage: the VkShaderStageFlags word
-	std::vector<size_t> stage_subgroup; // per stage: the required subgroup size word
+	std::vector<size_t> stage_flags;       // per stage: the VkShaderStageFlags word
+	std::vector<size_t> stage_subgroup;    // per stage: the required subgroup size word
 	size_t              dynamic_count = 0; // the dynamic state count word; the states follow
 };
 
@@ -610,7 +614,7 @@ bool LocateSnapshotDeviceWords(std::span<const uint32_t> words, SnapshotDeviceWo
 	const bool tess     = words[0] == SnapshotMagicTess;
 	size_t     position = 5; // magic, mesh flag, view mask, depth format, stencil format
 	// `count` words must follow `position`.
-	const auto room = [&](uint64_t count) { return count <= size - position; };
+	const auto room   = [&](uint64_t count) { return count <= size - position; };
 	const auto colors = words[position++];
 	if (colors > 8 || !room(uint64_t {colors} + 1)) return false;
 	position += colors;
@@ -654,19 +658,22 @@ bool LocateSnapshotDeviceWords(std::span<const uint32_t> words, SnapshotDeviceWo
 
 } // namespace
 
-bool ApplySnapshotDeviceState(std::vector<uint32_t>& words, uint32_t& snapshot_words, bool feedback_loop,
-                              const SubgroupSizeFn& subgroup_for) {
+bool ApplySnapshotDeviceState(std::vector<uint32_t>& words, uint32_t& snapshot_words,
+                              bool feedback_loop, const SubgroupSizeFn& subgroup_for) {
 	if (snapshot_words > words.size()) return false;
 	SnapshotDeviceWords at;
-	if (!LocateSnapshotDeviceWords(std::span<const uint32_t>(words).first(snapshot_words), at)) return false;
+	if (!LocateSnapshotDeviceWords(std::span<const uint32_t>(words).first(snapshot_words), at))
+		return false;
 	for (size_t i = 0; i < at.stage_subgroup.size(); i++) {
-		words[at.stage_subgroup[i]] = subgroup_for ? subgroup_for(words[at.stage_flags[i]], static_cast<uint32_t>(i)) : 0u;
+		words[at.stage_subgroup[i]] =
+		    subgroup_for ? subgroup_for(words[at.stage_flags[i]], static_cast<uint32_t>(i)) : 0u;
 	}
 	const auto first = words.begin() + static_cast<std::ptrdiff_t>(at.dynamic_count + 1);
 	const auto last  = first + words[at.dynamic_count];
 	const auto found = std::find(first, last, DynamicStateAttachmentFeedbackLoop);
 	if (!feedback_loop && found != last) {
-		const auto removed = static_cast<uint32_t>(std::count(first, last, DynamicStateAttachmentFeedbackLoop));
+		const auto removed =
+		    static_cast<uint32_t>(std::count(first, last, DynamicStateAttachmentFeedbackLoop));
 		words[at.dynamic_count] -= removed;
 		words.erase(std::remove(first, last, DynamicStateAttachmentFeedbackLoop), last);
 		snapshot_words -= removed;
@@ -809,8 +816,9 @@ uint16_t Builder::AddLevel(const std::string& level) {
 }
 
 void Builder::AddPipeline(Pipeline pipeline, ExportStats& stats, bool normalize) {
-	// The same pipeline recorded on two devices differs only in values the device decides: stored in
-	// the canonical form (pipelineList.h) it is one entry. Words that are not a snapshot stay as they are.
+	// The same pipeline recorded on two devices differs only in values the device decides: stored
+	// in the canonical form (pipelineList.h) it is one entry. Words that are not a snapshot stay as
+	// they are.
 	if (normalize) (void)NormalizePipelineDeviceState(pipeline);
 	std::sort(pipeline.levels.begin(), pipeline.levels.end());
 	pipeline.levels.erase(std::unique(pipeline.levels.begin(), pipeline.levels.end()), pipeline.levels.end());
@@ -855,8 +863,8 @@ void Builder::AddJournals(const std::vector<ShaderJournal::Source>& sources,
 		}
 		const auto bytes = AsBytes(source.code);
 		Shader     shader;
-		shader.file      = offset->file;
-		shader.offset    = offset->offset;
+		shader.file                    = offset->file;
+		shader.offset                  = offset->offset;
 		shader.code_size = source.code_size;
 		const auto hash  = CodeHash(bytes);
 		shader.code_hash_low           = hash.low;
@@ -955,7 +963,8 @@ void Builder::AddList(const File& other, ExportStats& stats, bool normalize_pipe
 	for (size_t i = 0; i < other.shaders.size(); i++) {
 		bool added  = false;
 		auto shader = other.shaders[i];
-		if (shader.file != CodeFile::Executable) shader.file = AddFile(other.files[static_cast<uint32_t>(shader.file) - 1]);
+		if (shader.file != CodeFile::Executable)
+			shader.file = AddFile(other.files[static_cast<uint32_t>(shader.file) - 1]);
 		shader_of[i] = AddShader(shader, added);
 		stats.sources++;
 		if (added) {
@@ -1116,15 +1125,20 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 	return out;
 }
 
-void UpgradeVertexInputInfos(File& file, const VertexLayoutUpgrade& upgrade, uint32_t to_size, UpgradeStats& stats) {
+void UpgradeVertexInputInfos(File& file, const VertexLayoutUpgrade& upgrade, uint32_t to_size,
+                             UpgradeStats& stats) {
 	size_t added = 0;
-	for (const auto& insert: upgrade.inserts) added += insert.bytes.size();
+	for (const auto& insert: upgrade.inserts)
+		added += insert.bytes.size();
 	if (upgrade.from_size + added != to_size || upgrade.from_size == to_size) return;
 	for (auto& shader: file.shaders) {
-		if (shader.kind != ShaderJournal::Kind::Vertex || shader.input_info.size() != upgrade.from_size) continue;
+		if (shader.kind != ShaderJournal::Kind::Vertex ||
+		    shader.input_info.size() != upgrade.from_size)
+			continue;
 		if (upgrade.skip_if_nonzero_at + 4ull <= shader.input_info.size()) {
 			uint32_t value = 0;
-			std::memcpy(&value, shader.input_info.data() + upgrade.skip_if_nonzero_at, sizeof(value));
+			std::memcpy(&value, shader.input_info.data() + upgrade.skip_if_nonzero_at,
+			            sizeof(value));
 			if (value != 0) {
 				stats.skipped++;
 				continue;
@@ -1139,7 +1153,8 @@ void UpgradeVertexInputInfos(File& file, const VertexLayoutUpgrade& upgrade, uin
 			out.insert(out.end(), insert.bytes.begin(), insert.bytes.end());
 			from = insert.at;
 		}
-		out.insert(out.end(), shader.input_info.begin() + static_cast<ptrdiff_t>(from), shader.input_info.end());
+		out.insert(out.end(), shader.input_info.begin() + static_cast<ptrdiff_t>(from),
+		           shader.input_info.end());
 		shader.input_info = std::move(out);
 		stats.upgraded++;
 	}
@@ -1157,8 +1172,10 @@ File Retarget(const File& file, const Resolved& resolved, RetargetStats& stats) 
 			stats.missing++;
 			continue;
 		}
-		auto shader = file.shaders[i];
-		const bool same = shader.offset == resolved.offsets[i] && (shader.back_code_size == 0 || shader.back_offset == resolved.back_offsets[i]);
+		auto       shader = file.shaders[i];
+		const bool same =
+		    shader.offset == resolved.offsets[i] &&
+		    (shader.back_code_size == 0 || shader.back_offset == resolved.back_offsets[i]);
 		(same ? stats.same_offset : stats.moved)++;
 		shader.offset = resolved.offsets[i];
 		if (shader.back_code_size != 0) shader.back_offset = resolved.back_offsets[i];
@@ -1168,19 +1185,21 @@ File Retarget(const File& file, const Resolved& resolved, RetargetStats& stats) 
 	std::vector<uint32_t> permutation_map(file.permutations.size(), UINT32_MAX);
 	for (size_t i = 0; i < file.permutations.size(); i++) {
 		if (shader_map[file.permutations[i].shader] == UINT32_MAX) continue;
-		auto permutation = file.permutations[i];
+		auto permutation   = file.permutations[i];
 		permutation.shader = shader_map[permutation.shader];
 		permutation_map[i] = static_cast<uint32_t>(out.permutations.size());
 		out.permutations.push_back(std::move(permutation));
 	}
 	for (const auto& source: file.pipelines) {
 		stats.pipelines++;
-		if (!std::all_of(source.stages.begin(), source.stages.end(),
-		                 [&](const Stage& stage) { return permutation_map[stage.permutation] != UINT32_MAX; })) {
+		if (!std::all_of(source.stages.begin(), source.stages.end(), [&](const Stage& stage) {
+			    return permutation_map[stage.permutation] != UINT32_MAX;
+		    })) {
 			continue;
 		}
 		auto pipeline = source;
-		for (auto& stage: pipeline.stages) stage.permutation = permutation_map[stage.permutation];
+		for (auto& stage: pipeline.stages)
+			stage.permutation = permutation_map[stage.permutation];
 		out.pipelines.push_back(std::move(pipeline));
 		stats.pipelines_kept++;
 	}

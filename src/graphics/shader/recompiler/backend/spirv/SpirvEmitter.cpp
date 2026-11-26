@@ -119,9 +119,9 @@ void ValidateNativeProgram(const IR::Program& program, bool lds_storage) {
 	}
 	const bool uses_flattened_runtime =
 	    !program.srt_reads.empty() ||
-	     std::ranges::any_of(program.info.images, [](const IR::ImageResource& image) {
-		     return image.indirect_search_iterations != 0u || image.bindless;
-	     });
+	    std::ranges::any_of(program.info.images, [](const IR::ImageResource& image) {
+		    return image.indirect_search_iterations != 0u || image.bindless;
+	    });
 	if (uses_flattened_runtime) {
 		Expect(Kind::FlattenedSrt);
 	}
@@ -338,7 +338,8 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 			requirements.float64 |= inst.GetType() == IR::Type::F64;
 			// KYTY_DCACHE_INV: an invalidation makes every buffer the program reads coherent.
 			requirements.coherent_buffers |= inst.GetOpcode() == IR::ValueOpcode::DataCacheInvalidate;
-			requirements.coherent_dcache |= inst.GetOpcode() == IR::ValueOpcode::DataCacheInvalidate;
+			requirements.coherent_dcache |=
+			    inst.GetOpcode() == IR::ValueOpcode::DataCacheInvalidate;
 			switch (inst.GetOpcode()) {
 				case IR::ValueOpcode::HalfPkAdd:
 				case IR::ValueOpcode::HalfPkMul:
@@ -349,8 +350,8 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 			}
 			{
 				const auto image_access = IR::ImageOpcodeInfoOf(inst.GetOpcode()).access;
-				requirements.image_writes |=
-				    image_access == IR::ImageAccess::Write || image_access == IR::ImageAccess::Atomic;
+				requirements.image_writes |= image_access == IR::ImageAccess::Write ||
+				                             image_access == IR::ImageAccess::Atomic;
 			}
 			if (IR::BufferAccessOf(inst.GetOpcode()) == IR::BufferAccess::Atomic &&
 			    inst.GetType() == IR::Type::U64) {
@@ -400,8 +401,8 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 				    inst.GetOpcode() != IR::ValueOpcode::ReadConstBuffer) {
 					requirements.subgroup_local_invocation_id = true;
 				}
-				// KYTY_BUFFER_PAIR_ATOMIC: a DWORDX2 pair through a bound V# reads or writes the u64
-				// view of the buffer atomically.
+				// KYTY_BUFFER_PAIR_ATOMIC: a DWORDX2 pair through a bound V# reads or writes the
+				// u64 view of the buffer atomically.
 				if (memory.kind == IR::ResourceKind::Buffer &&
 				    GetCodegenOptions().buffer_pair_atomic && GetHostBufferPairAtomics() &&
 				    BufferPairAtomicProgram(program.shader_hash) &&
@@ -461,7 +462,7 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 							}
 						} else {
 							requirements.lds_slots_blocked = true;
-							static const bool log = [] {
+							static const bool log          = [] {
 								const auto* value = std::getenv("KYTY_LDS_SLOTS_LOG");
 								return value != nullptr && value[0] == '1';
 							}();
@@ -474,13 +475,15 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 								for (int depth = 0; def != nullptr && depth < 3; depth++) {
 									chain += std::string(depth ? " <- " : "") +
 									         std::string(IR::ValueOpcodeName(def->GetOpcode()));
-									const auto next = def->NumArgs() > 0 ? def->Arg(0).Resolve() : IR::Value {};
+									const auto next =
+									    def->NumArgs() > 0 ? def->Arg(0).Resolve() : IR::Value {};
 									def = next.IsEmpty() ? nullptr : next.TryInstruction();
 								}
-								std::printf("LDS slots: 0x%016" PRIx64 " blocked by %s at %s\n",
-								            program.shader_hash,
-								            std::string(IR::ValueOpcodeName(inst.GetOpcode())).c_str(),
-								            chain.c_str());
+								std::printf(
+								    "LDS slots: 0x%016" PRIx64 " blocked by %s at %s\n",
+								    program.shader_hash,
+								    std::string(IR::ValueOpcodeName(inst.GetOpcode())).c_str(),
+								    chain.c_str());
 							}
 						}
 					}
@@ -554,8 +557,8 @@ Emitter::SpirvRequirements Emitter::AnalyzeProgramRequirements(const IR::Program
 					break;
 				case IR::ValueOpcode::ImageQueryLod: requirements.compute_derivatives = true; break;
 				case IR::ValueOpcode::ImageSampleRaw: {
-					// KYTY_IMPLICIT_LOD_STAGES: an implicit-LOD sample of a compute shader takes its
-					// LOD from lane-quad derivatives (ComputeImplicitLod decides per module).
+					// KYTY_IMPLICIT_LOD_STAGES: an implicit-LOD sample of a compute shader takes
+					// its LOD from lane-quad derivatives (ComputeImplicitLod decides per module).
 					if (!GetCodegenOptions().implicit_lod_stages ||
 					    program.stage != ShaderType::Compute) {
 						break;
@@ -641,7 +644,7 @@ bool GetHostBufferPairAtomics() {
 }
 
 static std::atomic<bool> g_mesh_layer_drop {false};
-void SetHostMeshLayerDrop(bool drop) {
+void                     SetHostMeshLayerDrop(bool drop) {
 	g_mesh_layer_drop.store(drop, std::memory_order_relaxed);
 }
 bool GetHostMeshLayerDrop() {
@@ -649,7 +652,7 @@ bool GetHostMeshLayerDrop() {
 }
 
 static std::atomic<bool> g_coherent_load_vendor_barrier {false};
-void SetCoherentLoadVendorDefault(bool barrier) {
+void                     SetCoherentLoadVendorDefault(bool barrier) {
 	g_coherent_load_vendor_barrier.store(barrier, std::memory_order_relaxed);
 }
 
@@ -674,7 +677,8 @@ CoherentLoadMode GetCoherentLoadMode() {
 		return setting == "1" ? 1 : setting == "auto" ? 2 : 0;
 	}();
 	const bool barrier =
-	    acquire == 1 || (acquire == 2 && g_coherent_load_vendor_barrier.load(std::memory_order_relaxed));
+	    acquire == 1 ||
+	    (acquire == 2 && g_coherent_load_vendor_barrier.load(std::memory_order_relaxed));
 	return barrier ? CoherentLoadMode::Barrier : CoherentLoadMode::Plain;
 }
 
@@ -689,7 +693,7 @@ const char* CoherentLoadModeName(CoherentLoadMode mode) {
 }
 
 static std::atomic<uint64_t> g_indirect_format_count_address {0};
-void SetIndirectFormatCountAddress(uint64_t address) {
+void                         SetIndirectFormatCountAddress(uint64_t address) {
 	g_indirect_format_count_address.store(address, std::memory_order_release);
 }
 uint64_t IndirectFormatCountAddress() {
@@ -758,7 +762,8 @@ void SetHostShaderClock(const HostShaderClock& clock) {
 }
 
 HostShaderClock GetHostShaderClock() {
-	return {.scope = static_cast<HostClockScope>(g_shader_clock_scope.load(std::memory_order_relaxed)),
+	return {.scope =
+	            static_cast<HostClockScope>(g_shader_clock_scope.load(std::memory_order_relaxed)),
 	        .shift   = g_shader_clock_shift.load(std::memory_order_relaxed),
 	        .divisor = g_shader_clock_divisor.load(std::memory_order_relaxed)};
 }
@@ -810,8 +815,8 @@ int32_t RealtimeClockShift(double timestamp_period_ns) {
 
 // KYTY_HUGE_HELPER_OUTLINE (CodegenOptions::huge_helper_outline): in a module of at least
 // HugeHelperWords words that already calls DontInline helpers, each of `helpers` with at least
-// HugeHelperCalls call sites gets the DontInline function control (the NVIDIA compiler spent 10-35 s
-// inlining them at every site). Only the function control word changes.
+// HugeHelperCalls call sites gets the DontInline function control (the NVIDIA compiler spent 10-35
+// s inlining them at every site). Only the function control word changes.
 void OutlineHugeModuleHelpers(std::vector<uint32_t>& words, std::span<const uint32_t> helpers) {
 	constexpr size_t   HugeHelperWords = 100'000;
 	constexpr uint32_t HugeHelperCalls = 16;
@@ -839,8 +844,9 @@ void OutlineHugeModuleHelpers(std::vector<uint32_t>& words, std::span<const uint
 		if (op == spv::OpFunction && count >= 5u) {
 			for (size_t h = 0; h < helpers.size(); h++) {
 				if (helpers[h] != 0u && words[i + 2] == helpers[h] && calls[h] >= HugeHelperCalls) {
-					words[i + 3] = (words[i + 3] & ~static_cast<uint32_t>(spv::FunctionControlInlineMask)) |
-					               spv::FunctionControlDontInlineMask;
+					words[i + 3] =
+					    (words[i + 3] & ~static_cast<uint32_t>(spv::FunctionControlInlineMask)) |
+					    spv::FunctionControlDontInlineMask;
 				}
 			}
 		}
@@ -886,8 +892,8 @@ std::vector<uint32_t> EmitProgram(const IR::Program& program,
 	if (state.lane_count == 2 && Wave64WarpsShaderAllowed(program.shader_hash) &&
 	    program.stage == ShaderType::Compute && !program.dispatcher_fallback &&
 	    // BVH node counts (KYTY_RT_NODE_BUDGET/STATS) report per two-lane invocation.
-	    !IR::UsesBvhNodeCount(program) &&
-	    !state.requirements.compute_derivatives && !state.requirements.shared_int64_atomics &&
+	    !IR::UsesBvhNodeCount(program) && !state.requirements.compute_derivatives &&
+	    !state.requirements.shared_int64_atomics &&
 	    state.lds_storage_class == spv::StorageClassWorkgroup) {
 		// KYTY_WAVE64_WARPS: the workgroup must be exactly the one wave (its barriers then
 		// synchronize the wave, and every lane exists).
@@ -931,22 +937,22 @@ std::vector<uint32_t> EmitProgram(const IR::Program& program,
 		const auto& keys = state.requirements.lds_slot_keys; // sorted (AnalyzeProgramRequirements)
 		const uint64_t lanes = std::max<uint32_t>(program.wave_size, 1u);
 		state.lds_slot_plan  = state.lane_count == 1 && !state.requirements.lds_slots_blocked &&
-		                      !keys.empty() && keys.size() <= 64u &&
-		                      static_cast<uint64_t>(keys.back()) + lanes <= LdsDwordCount(state);
+		                       !keys.empty() && keys.size() <= 64u &&
+		                       static_cast<uint64_t>(keys.back()) + lanes <= LdsDwordCount(state);
 		g_lds_slot_verdicts[state.lds_slot_plan ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
 		static const bool log = [] {
 			const auto* value = std::getenv("KYTY_LDS_SLOTS_LOG");
 			return value != nullptr && value[0] == '1';
 		}();
 		if (log) {
-			std::printf("LDS slots: stage %u 0x%016" PRIx64 ": %s (%u-dword function array, %zu "
-			            "offset(s)%s, lanes/invocation %u)\n",
-			            static_cast<unsigned>(program.stage), program.shader_hash,
-			            state.lds_slot_plan ? "slots in variables" : "array kept",
-			            LdsDwordCount(state), keys.size(),
-			            state.requirements.lds_slots_blocked ? ", an access is not an own-lane dword"
-			                                                 : "",
-			            state.lane_count);
+			std::printf(
+			    "LDS slots: stage %u 0x%016" PRIx64 ": %s (%u-dword function array, %zu "
+			    "offset(s)%s, lanes/invocation %u)\n",
+			    static_cast<unsigned>(program.stage), program.shader_hash,
+			    state.lds_slot_plan ? "slots in variables" : "array kept", LdsDwordCount(state),
+			    keys.size(),
+			    state.requirements.lds_slots_blocked ? ", an access is not an own-lane dword" : "",
+			    state.lane_count);
 		}
 	}
 	state.wave_clusters = state.lane_count == 1 && WaveClustersActive(program);

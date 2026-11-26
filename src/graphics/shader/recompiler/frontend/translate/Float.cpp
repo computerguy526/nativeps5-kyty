@@ -1,5 +1,5 @@
-#include "graphics/shader/recompiler/frontend/translate/Translator.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/frontend/translate/Translator.h"
 
 #include <array>
 #include <bit>
@@ -38,7 +38,8 @@ void Translator::PackedFloat16(const Decoder::Instruction& inst, IR::ValueOpcode
 			default: break;
 		}
 	}
-	// V_PK_FMA_F16 / V_PK_FMAC_F16 (the accumulator is the destination's halves) as one f16vec2 Fma.
+	// V_PK_FMA_F16 / V_PK_FMAC_F16 (the accumulator is the destination's halves) as one f16vec2
+	// Fma.
 	if (opcode == IR::ValueOpcode::FPFma32 && (accumulator || inst.src_count == 3u) &&
 	    !inst.dst.clamp && inst.dst.omod == 0u && NativeHalfActive()) {
 		native = IR::ValueOpcode::HalfPkFma;
@@ -146,27 +147,27 @@ void Translator::Float16Ternary(const Decoder::Instruction& inst, IR::ValueOpcod
 		// KYTY_F16_EXACT_ROUND: V_FMA_F16/V_FMAC_F16/V_FMA_MIX*_F16 round once to f16 (ISA p.165).
 		// The product of two f32s is exact in f64, the f64 Fma rounds once to 53 bits, and a
 		// round-to-odd step to f32 keeps that rounding from deciding the f16 tie (24 >= 11 + 2), so
-		// the final round to nearest even is the single rounding; it is off only when the addend is so
-		// small that the 53-bit rounding itself lands on a 24-bit value.
+		// the final round to nearest even is the single rounding; it is off only when the addend is
+		// so small that the 53-bit rounding itself lands on a 24-bit value.
 		std::array<IR::Value, 3> wide;
 		for (uint32_t index = 0; index < wide.size(); index++) {
 			wide[index] = ir.Emit(IR::ValueOpcode::ConvertF64F32, {args[index]});
 		}
-		const auto exact  = ir.Emit(IR::ValueOpcode::FPFma64, {wide[0], wide[1], wide[2]});
-		const auto narrow = IR::F32(ir.Emit(IR::ValueOpcode::ConvertF32F64, {exact}));
-		const auto back   = ir.Emit(IR::ValueOpcode::ConvertF64F32, {narrow});
-		const auto inexact =
-		    IR::U1(ir.Emit(IR::ValueOpcode::FPOrdNotEqual64, {back, exact}));
-		const auto above = IR::U1(ir.Emit(IR::ValueOpcode::FPOrdGreaterThan64, {exact, back}));
-		const auto bits  = ir.BitCastU32(narrow);
-		const auto negative =
-		    ir.INotEqual(ir.ShiftRightLogical(bits, IR::U32(IR::Value(31u))), IR::U32(IR::Value(0u)));
+		const auto exact    = ir.Emit(IR::ValueOpcode::FPFma64, {wide[0], wide[1], wide[2]});
+		const auto narrow   = IR::F32(ir.Emit(IR::ValueOpcode::ConvertF32F64, {exact}));
+		const auto back     = ir.Emit(IR::ValueOpcode::ConvertF64F32, {narrow});
+		const auto inexact  = IR::U1(ir.Emit(IR::ValueOpcode::FPOrdNotEqual64, {back, exact}));
+		const auto above    = IR::U1(ir.Emit(IR::ValueOpcode::FPOrdGreaterThan64, {exact, back}));
+		const auto bits     = ir.BitCastU32(narrow);
+		const auto negative = ir.INotEqual(ir.ShiftRightLogical(bits, IR::U32(IR::Value(31u))),
+		                                   IR::U32(IR::Value(0u)));
 		const auto even =
 		    ir.IEqual(ir.BitwiseAnd(bits, IR::U32(IR::Value(1u))), IR::U32(IR::Value(0u)));
 		// One ulp away from zero when the exact value has the larger magnitude, else toward it.
-		const auto grow = IR::U1(ir.Emit(IR::ValueOpcode::SelectU1, {negative, ir.LogicalNot(above), above}));
-		const auto odd  = ir.Select(grow, ir.IAdd(bits, IR::U32(IR::Value(1u))),
-		                            ir.ISub(bits, IR::U32(IR::Value(1u))));
+		const auto grow =
+		    IR::U1(ir.Emit(IR::ValueOpcode::SelectU1, {negative, ir.LogicalNot(above), above}));
+		const auto odd     = ir.Select(grow, ir.IAdd(bits, IR::U32(IR::Value(1u))),
+		                               ir.ISub(bits, IR::U32(IR::Value(1u))));
 		const auto rounded = ir.Select(ir.LogicalAnd(inexact, even), odd, bits);
 		WriteF16(DestinationOperand(inst), ir.BitCastF32(rounded));
 		return;
@@ -192,10 +193,10 @@ void Translator::V_FRACT(const Decoder::Instruction& inst, IR::Type type) {
 		                                              : IR::ValueOpcode::FPFract32);
 	}
 	if (type == IR::Type::F64) {
-		const auto result    = ir.Emit(IR::ValueOpcode::FPFract64, {ReadOperand(inst.src0, type)});
-		const auto below_one = ir.Emit(IR::ValueOpcode::BitCastF64U64,
-		                               {IR::Value(uint64_t {0x3fefffffffffffff})});
-		const auto above     = ir.Emit(IR::ValueOpcode::FPOrdGreaterThan64, {result, below_one});
+		const auto result = ir.Emit(IR::ValueOpcode::FPFract64, {ReadOperand(inst.src0, type)});
+		const auto below_one =
+		    ir.Emit(IR::ValueOpcode::BitCastF64U64, {IR::Value(uint64_t {0x3fefffffffffffff})});
+		const auto above = ir.Emit(IR::ValueOpcode::FPOrdGreaterThan64, {result, below_one});
 		WriteOperand(destination, ir.Emit(IR::ValueOpcode::SelectF64, {above, below_one, result}));
 		return;
 	}

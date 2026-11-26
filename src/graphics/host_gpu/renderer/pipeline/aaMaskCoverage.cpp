@@ -84,10 +84,13 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 		if (count == 0 || offset + count > spirv.size()) {
 			return {};
 		}
-		instructions.push_back({offset, count, static_cast<spv::Op>(spirv[offset] & spv::OpCodeMask)});
+		instructions.push_back(
+		    {offset, count, static_cast<spv::Op>(spirv[offset] & spv::OpCodeMask)});
 		offset += count;
 	}
-	const auto words = [&](const Instruction& inst) { return spirv.subspan(inst.offset, inst.count); };
+	const auto words = [&](const Instruction& inst) {
+		return spirv.subspan(inst.offset, inst.count);
+	};
 
 	// The fragment entry point (one), the FragCoord input it may have, and no SampleMask of its
 	// own: a shader that exports its coverage is left as it is.
@@ -103,7 +106,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 			}
 			entry_index = i;
 			entry_fn    = w[2];
-		} else if (inst.opcode == spv::OpDecorate && w.size() >= 4 && w[2] == spv::DecorationBuiltIn) {
+		} else if (inst.opcode == spv::OpDecorate && w.size() >= 4 &&
+		           w[2] == spv::DecorationBuiltIn) {
 			if (w[3] == spv::BuiltInSampleMask) return {};
 			if (w[3] == spv::BuiltInFragCoord) frag_coord = w[1];
 		} else if (inst.opcode == spv::OpMemberDecorate && w.size() >= 5 &&
@@ -124,8 +128,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 				break; // the word holding the name's terminating zero
 			}
 		}
-		frag_coord_listed =
-		    std::find(w.begin() + static_cast<std::ptrdiff_t>(name_end), w.end(), frag_coord) != w.end();
+		frag_coord_listed = std::find(w.begin() + static_cast<std::ptrdiff_t>(name_end), w.end(),
+		                              frag_coord) != w.end();
 	}
 	// Types: a 32-bit uint, and the FragCoord variable's vec4 of 32-bit floats when it has one.
 	uint32_t uint_type = 0, float_type = 0, vec4_type = 0;
@@ -139,8 +143,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 	}
 	for (const auto& inst: instructions) {
 		const auto w = words(inst);
-		if (inst.opcode == spv::OpTypeVector && w.size() == 4 && float_type != 0 && w[2] == float_type &&
-		    w[3] == 4) {
+		if (inst.opcode == spv::OpTypeVector && w.size() == 4 && float_type != 0 &&
+		    w[2] == float_type && w[3] == 4) {
 			vec4_type = w[1];
 		}
 	}
@@ -168,7 +172,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 	// Where things go: decorations after the last annotation (before the types without one),
 	// declarations before the first function, the code at the top of the entry point's first
 	// block, after its variables.
-	size_t last_annotation = SIZE_MAX, first_type = SIZE_MAX, first_function = SIZE_MAX, code_at = SIZE_MAX;
+	size_t last_annotation = SIZE_MAX, first_type = SIZE_MAX, first_function = SIZE_MAX,
+	       code_at = SIZE_MAX;
 	for (size_t i = 0; i < instructions.size(); i++) {
 		const auto op = instructions[i].opcode;
 		if (IsAnnotation(op)) last_annotation = i;
@@ -177,14 +182,15 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 		if (op == spv::OpFunction && code_at == SIZE_MAX && words(instructions[i]).size() >= 3 &&
 		    words(instructions[i])[2] == entry_fn) {
 			size_t j = i + 1;
-			while (j < instructions.size() && instructions[j].opcode == spv::OpFunctionParameter) j++;
+			while (j < instructions.size() && instructions[j].opcode == spv::OpFunctionParameter)
+				j++;
 			if (j >= instructions.size() || instructions[j].opcode != spv::OpLabel) {
 				return {};
 			}
 			j++;
-			while (j < instructions.size() &&
-			       (instructions[j].opcode == spv::OpVariable || instructions[j].opcode == spv::OpLine ||
-			        instructions[j].opcode == spv::OpNoLine)) {
+			while (j < instructions.size() && (instructions[j].opcode == spv::OpVariable ||
+			                                   instructions[j].opcode == spv::OpLine ||
+			                                   instructions[j].opcode == spv::OpNoLine)) {
 				j++;
 			}
 			code_at = j;
@@ -210,7 +216,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 	if (new_frag_coord) frag_coord = id();
 	const uint32_t sample_mask = id();
 
-	const auto op = [](std::vector<uint32_t>& out, spv::Op opcode, std::initializer_list<uint32_t> operands) {
+	const auto op = [](std::vector<uint32_t>& out, spv::Op opcode,
+	                   std::initializer_list<uint32_t> operands) {
 		out.push_back((static_cast<uint32_t>(operands.size() + 1u) << spv::WordCountShift) |
 		              static_cast<uint32_t>(opcode));
 		out.insert(out.end(), operands.begin(), operands.end());
@@ -218,7 +225,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 	std::vector<uint32_t> decorations;
 	op(decorations, spv::OpDecorate, {sample_mask, spv::DecorationBuiltIn, spv::BuiltInSampleMask});
 	if (new_frag_coord) {
-		op(decorations, spv::OpDecorate, {frag_coord, spv::DecorationBuiltIn, spv::BuiltInFragCoord});
+		op(decorations, spv::OpDecorate,
+		   {frag_coord, spv::DecorationBuiltIn, spv::BuiltInFragCoord});
 	}
 	std::vector<uint32_t> declarations;
 	if (new_uint) op(declarations, spv::OpTypeInt, {uint_type, 32, 0});
@@ -239,9 +247,9 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 	}
 	op(declarations, spv::OpVariable, {out_array, sample_mask, spv::StorageClassOutput});
 	// mask = (y odd ? mask23 : mask01) >> (x odd ? 16 : 0) & 0xffff, as integer arithmetic.
-	const uint32_t position = id(), fx = id(), fy = id(), ux = id(), uy = id(), bx = id(), by = id(),
-	               diff = id(), scaled = id(), word = id(), shift = id(), shifted = id(), mask = id(),
-	               pointer = id();
+	const uint32_t position = id(), fx = id(), fy = id(), ux = id(), uy = id(), bx = id(),
+	               by = id(), diff = id(), scaled = id(), word = id(), shift = id(), shifted = id(),
+	               mask = id(), pointer = id();
 	std::vector<uint32_t> code;
 	op(code, spv::OpLoad, {vec4_type, position, frag_coord});
 	op(code, spv::OpCompositeExtract, {float_type, fx, position, 0});
@@ -284,7 +292,8 @@ std::vector<uint32_t> SpirvWithAaMask(std::span<const uint32_t> spirv, uint32_t 
 			// The interface lists the new variables too (every SPIR-V version), and FragCoord.
 			const bool     list_frag_coord = !frag_coord_listed;
 			const uint32_t added           = list_frag_coord ? 2u : 1u;
-			out.push_back(((inst.count + added) << spv::WordCountShift) | static_cast<uint32_t>(spv::OpEntryPoint));
+			out.push_back(((inst.count + added) << spv::WordCountShift) |
+			              static_cast<uint32_t>(spv::OpEntryPoint));
 			out.insert(out.end(), w.begin() + 1, w.end());
 			out.push_back(sample_mask);
 			if (list_frag_coord) out.push_back(frag_coord);
@@ -345,10 +354,10 @@ namespace AaMaskCoverage {
 namespace {
 
 struct Key {
-	uint64_t program_id = 0;
-	uint32_t mask01     = 0;
-	uint32_t mask23     = 0;
-	bool     pixel_rate = false;
+	uint64_t program_id                   = 0;
+	uint32_t mask01                       = 0;
+	uint32_t mask23                       = 0;
+	bool     pixel_rate                   = false;
 	bool     operator==(const Key&) const = default;
 };
 struct KeyHash {
@@ -379,8 +388,8 @@ public:
 		source.shader_hash = shader_hash;
 		source.words       = static_cast<uint32_t>(spirv.size());
 		source.compressed.resize(ZSTD_compressBound(spirv.size_bytes()));
-		const auto size = ZSTD_compress(source.compressed.data(), source.compressed.size(), spirv.data(),
-		                                spirv.size_bytes(), 1);
+		const auto size = ZSTD_compress(source.compressed.data(), source.compressed.size(),
+		                                spirv.data(), spirv.size_bytes(), 1);
 		if (ZSTD_isError(size) != 0u) return;
 		source.compressed.resize(size);
 		source.compressed.shrink_to_fit();
@@ -406,7 +415,8 @@ public:
 				}
 			}
 		}
-		for (auto module: doomed) device.destroyShaderModule(module, nullptr);
+		for (auto module: doomed)
+			device.destroyShaderModule(module, nullptr);
 	}
 
 	vk::ShaderModule Request(vk::Device device, const Key& key) {
@@ -419,7 +429,8 @@ public:
 		if (const auto source = m_sources.find(key.program_id); source != m_sources.end()) {
 			it->second.shader_hash = source->second.shader_hash;
 		} else if (key.program_id != 0) {
-			it->second.state = State::Failed; // not kept (compiled before the switch's registration)
+			it->second.state =
+			    State::Failed; // not kept (compiled before the switch's registration)
 			return nullptr;
 		}
 		m_device = device;
@@ -434,7 +445,9 @@ public:
 	vk::ShaderModule Lookup(const Key& key) {
 		std::scoped_lock lock(m_mutex);
 		const auto       found = m_entries.find(key);
-		return found != m_entries.end() && found->second.state == State::Ready ? found->second.module : nullptr;
+		return found != m_entries.end() && found->second.state == State::Ready
+		           ? found->second.module
+		           : nullptr;
 	}
 
 	void Stop() {
@@ -484,11 +497,12 @@ private:
 			entry.state  = module != nullptr ? State::Ready : State::Failed;
 			if (m_logged < 48u) {
 				m_logged++;
-				LOGF("AA mask: %s 0x%016" PRIx64 "%s with masks %08x %08x: %s (KYTY_AA_MASK_COVERAGE; %" PRIu64
+				LOGF("AA mask: %s 0x%016" PRIx64
+				     "%s with masks %08x %08x: %s (KYTY_AA_MASK_COVERAGE; %" PRIu64
 				     " KiB of pixel SPIR-V kept)\n",
 				     key.program_id == 0 ? "draws without a pixel shader," : "pixel shader", hash,
 				     key.pixel_rate ? " (EQAA per-pixel copy)" : "", key.mask01, key.mask23,
-				     module != nullptr      ? "its copy is ready"
+				     module != nullptr     ? "its copy is ready"
 				     : key.program_id == 0 ? "the coverage-only shader failed"
 				                           : "no copy (its draws stay as they were)",
 				     static_cast<uint64_t>(m_kept_bytes / 1024u));
@@ -496,16 +510,16 @@ private:
 		}
 	}
 
-	vk::ShaderModule Make(vk::Device device, const Key& key, uint64_t hash, const std::vector<uint8_t>& compressed,
-	                      uint32_t words) {
+	vk::ShaderModule Make(vk::Device device, const Key& key, uint64_t hash,
+	                      const std::vector<uint8_t>& compressed, uint32_t words) {
 		std::vector<uint32_t> variant;
 		if (key.program_id == 0) {
 			variant = CoverageOnlyFragmentSpirv(key.mask01, key.mask23);
 		} else {
 			if (compressed.empty() || words == 0) return nullptr;
 			std::vector<uint32_t> spirv(words);
-			const auto            size =
-			    ZSTD_decompress(spirv.data(), spirv.size() * sizeof(uint32_t), compressed.data(), compressed.size());
+			const auto size = ZSTD_decompress(spirv.data(), spirv.size() * sizeof(uint32_t),
+			                                  compressed.data(), compressed.size());
 			if (ZSTD_isError(size) != 0u || size != spirv.size() * sizeof(uint32_t)) return nullptr;
 			if (key.pixel_rate) {
 				// The EQAA per-pixel copy (sample index 0) the draw runs, then the mask.
@@ -527,8 +541,8 @@ private:
 		}
 		spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_3);
 		std::string          messages;
-		tools.SetMessageConsumer([&messages](spv_message_level_t, const char*, const spv_position_t&,
-		                                     const char* message) {
+		tools.SetMessageConsumer([&messages](spv_message_level_t, const char*,
+		                                     const spv_position_t&, const char* message) {
 			if (messages.size() < 2048u) {
 				messages += message;
 				messages += '\n';
@@ -542,23 +556,23 @@ private:
 			std::scoped_lock lock(m_mutex);
 			m_validation_failed = true;
 		}
-		LOGF("AA mask: the copy of shader 0x%016" PRIx64 " is not valid SPIR-V; not used:\n%s", hash,
-		     messages.c_str());
+		LOGF("AA mask: the copy of shader 0x%016" PRIx64 " is not valid SPIR-V; not used:\n%s",
+		     hash, messages.c_str());
 		return false;
 	}
 
-	std::mutex                                  m_mutex;
-	std::condition_variable                     m_wake;
-	std::unordered_map<uint64_t, Source>        m_sources;
-	std::unordered_map<Key, Entry, KeyHash>     m_entries;
-	std::deque<Key>                             m_queue;
-	vk::Device                                  m_device = nullptr;
-	uint64_t                                    m_kept_bytes        = 0;
-	uint32_t                                    m_validated         = 0;
-	bool                                        m_validation_failed = false;
-	uint32_t                                    m_logged            = 0;
-	bool                                        m_stopped           = false;
-	std::thread                                 m_worker;
+	std::mutex                              m_mutex;
+	std::condition_variable                 m_wake;
+	std::unordered_map<uint64_t, Source>    m_sources;
+	std::unordered_map<Key, Entry, KeyHash> m_entries;
+	std::deque<Key>                         m_queue;
+	vk::Device                              m_device            = nullptr;
+	uint64_t                                m_kept_bytes        = 0;
+	uint32_t                                m_validated         = 0;
+	bool                                    m_validation_failed = false;
+	uint32_t                                m_logged            = 0;
+	bool                                    m_stopped           = false;
+	std::thread                             m_worker;
 };
 
 Variants& Instance() {
@@ -577,7 +591,8 @@ bool Enabled() {
 }
 
 void Register(uint64_t program_id, uint64_t shader_hash, std::span<const uint32_t> spirv) {
-	if (Enabled() && program_id != 0 && !spirv.empty()) Instance().Register(program_id, shader_hash, spirv);
+	if (Enabled() && program_id != 0 && !spirv.empty())
+		Instance().Register(program_id, shader_hash, spirv);
 }
 
 void Forget(vk::Device device, uint64_t program_id) {
@@ -587,7 +602,8 @@ void Forget(vk::Device device, uint64_t program_id) {
 vk::ShaderModule Request(vk::Device device, uint64_t program_id, bool pixel_rate, uint32_t mask01,
                          uint32_t mask23) {
 	if (!Enabled()) return nullptr;
-	return Instance().Request(device, Key {program_id, mask01, mask23, pixel_rate && program_id != 0});
+	return Instance().Request(device,
+	                          Key {program_id, mask01, mask23, pixel_rate && program_id != 0});
 }
 
 vk::ShaderModule Lookup(uint64_t program_id, bool pixel_rate, uint32_t mask01, uint32_t mask23) {

@@ -32,7 +32,7 @@ namespace Common::HandoffLean {
 
 #if defined(_WIN32)
 extern "C" __declspec(dllimport) void __stdcall FlushProcessWriteBuffers();
-inline constexpr bool kAvailable = true;
+inline constexpr bool                           kAvailable = true;
 #else
 inline constexpr bool kAvailable = false;
 #endif
@@ -40,9 +40,10 @@ inline constexpr bool kAvailable = false;
 inline std::atomic<uint32_t> g_active {0};
 inline std::atomic<uint64_t> g_flushes {0};
 
-// The mode, written by the parser of the live switch KYTY_HANDOFF_LEAN registered in cpSequencer.cpp
-// (emulator only: this header is also used by tests that do not link the live-switch registry). The
-// parser runs at startup and for every live change; a publishing thread reads the mode per call.
+// The mode, written by the parser of the live switch KYTY_HANDOFF_LEAN registered in
+// cpSequencer.cpp (emulator only: this header is also used by tests that do not link the
+// live-switch registry). The parser runs at startup and for every live change; a publishing thread
+// reads the mode per call.
 inline std::atomic<int64_t> g_mode {0};
 
 inline int64_t Parse(const char* value) {
@@ -54,7 +55,7 @@ inline int64_t Parse(const char* value) {
 // The publishing side: whether this publication may be lean.
 [[nodiscard]] inline bool On() noexcept {
 	static thread_local bool lean = false;
-	const bool on = g_mode.load(std::memory_order_relaxed) != 0;
+	const bool               on   = g_mode.load(std::memory_order_relaxed) != 0;
 	if (on != lean) [[unlikely]] {
 		if (on) {
 			g_active.fetch_add(1, std::memory_order_seq_cst);
@@ -76,7 +77,8 @@ inline void ParkFence() noexcept {
 #if defined(_WIN32)
 	if (g_active.load(std::memory_order_seq_cst) != 0) {
 		FlushProcessWriteBuffers();
-		if (const auto n = g_flushes.fetch_add(1, std::memory_order_relaxed) + 1; (n & 0xfffu) == 0) {
+		if (const auto n = g_flushes.fetch_add(1, std::memory_order_relaxed) + 1;
+		    (n & 0xfffu) == 0) {
 			std::printf("HandoffLean: %llu park fences\n", static_cast<unsigned long long>(n));
 			std::fflush(stdout);
 		}

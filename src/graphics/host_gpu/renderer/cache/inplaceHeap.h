@@ -1,6 +1,8 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_CACHE_INPLACEHEAP_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_CACHE_INPLACEHEAP_H_
 
+#include "graphics/host_gpu/renderer/cache/inplaceCandidates.h"
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -8,8 +10,6 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
-
-#include "graphics/host_gpu/renderer/cache/inplaceCandidates.h"
 
 // KYTY_INPLACE (default off; 1 on, verify): the GPU reads guest buffer data where the game wrote
 // it. Windows of the direct-memory backing alias (LibKernel::Memory::GuestBackingAlias, the
@@ -98,28 +98,28 @@ private:
 
 	[[nodiscard]] Window* LookupWindow(uint64_t window_index);
 	[[nodiscard]] Window* ImportWindow(uint64_t window_index);
-	void Report(uint32_t frame);
+	void                  Report(uint32_t frame);
 
-	GraphicContext&                    m_graphics;
-	CommandScheduler&                  m_scheduler;
-	Mode                               m_mode;
-	uint32_t                           m_promote_frames;
-	uint64_t                           m_window_bytes;
-	uint64_t                           m_max_bytes;
-	uint64_t                           m_backing_base = 0;
-	uint64_t                           m_backing_size = 0;
-	InplaceCandidates                  m_candidates;
-	std::mutex                         m_window_mutex;
+	GraphicContext&                                       m_graphics;
+	CommandScheduler&                                     m_scheduler;
+	Mode                                                  m_mode;
+	uint32_t                                              m_promote_frames;
+	uint64_t                                              m_window_bytes;
+	uint64_t                                              m_max_bytes;
+	uint64_t                                              m_backing_base = 0;
+	uint64_t                                              m_backing_size = 0;
+	InplaceCandidates                                     m_candidates;
+	std::mutex                                            m_window_mutex;
 	std::unordered_map<uint64_t, std::unique_ptr<Window>> m_windows;
-	std::atomic<uint64_t>              m_pinned_bytes {0};
-	std::shared_ptr<VerifyBatch>       m_verify_batch; // GPU thread
-	uint64_t                           m_verify_tick = 0;
+	std::atomic<uint64_t>                                 m_pinned_bytes {0};
+	std::shared_ptr<VerifyBatch>                          m_verify_batch; // GPU thread
+	uint64_t                                              m_verify_tick = 0;
 	// Counters since the last report (relaxed atomics: several threads).
 	std::atomic<uint64_t> m_binds {0}, m_bind_bytes {0}, m_rejects_window {0}, m_rejects_cap {0},
 	    m_promotions {0}, m_demotions_gpu {0}, m_cp_writes {0}, m_cp_waits {0}, m_cp_unordered {0},
 	    m_verify_checks {0}, m_verify_mismatches {0};
-	uint32_t              m_report_frames = 0;
-	int64_t               m_report_start  = 0;
+	uint32_t m_report_frames = 0;
+	int64_t  m_report_start  = 0;
 };
 
 } // namespace Libs::Graphics

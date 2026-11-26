@@ -26,10 +26,9 @@
 // rescans every buffer (counted). Do not combine with KYTY_BDA_REACH=verify (both use the log
 // and rewrite page-table entries).
 
-#include "graphics/host_gpu/renderer/cache/bufferCache.h"
-
 #include "common/alignment.h"
 #include "common/liveSwitch.h"
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
 
 #include <algorithm>
@@ -58,16 +57,16 @@ Live::Switch g_bda_access_tags("KYTY_BDA_ACCESS_TAGS", ParseBdaAccessTags);
 } // namespace
 
 struct BufferCache::BdaTags {
-	mutable std::mutex           mutex;
-	RangeSet                     accessed;   // caching pages DMA shaders reported
-	RangeSet                     pending;    // registered since the last tagged pass
-	std::unordered_set<uint64_t> would_skip; // page indices (verify)
-	RangeSet                     log;
-	bool                         log_on = false;
-	BdaTagTotals                 totals;
-	BdaTagTotals                 reported;
+	mutable std::mutex                    mutex;
+	RangeSet                              accessed;   // caching pages DMA shaders reported
+	RangeSet                              pending;    // registered since the last tagged pass
+	std::unordered_set<uint64_t>          would_skip; // page indices (verify)
+	RangeSet                              log;
+	bool                                  log_on = false;
+	BdaTagTotals                          totals;
+	BdaTagTotals                          reported;
 	std::chrono::steady_clock::time_point report_time {};
-	uint32_t                     report_calls = 0;
+	uint32_t                              report_calls = 0;
 };
 
 void BufferCache::CreateBdaTags() {
@@ -80,7 +79,8 @@ int64_t BufferCache::BdaAccessTagsMode() const {
 	return m_bda_tags != nullptr ? g_bda_access_tags.Get() : 0;
 }
 
-void BufferCache::ApplyBdaTags(uint64_t first_page, std::span<vk::DeviceAddress> entries, bool insert) {
+void BufferCache::ApplyBdaTags(uint64_t first_page, std::span<vk::DeviceAddress> entries,
+                               bool insert) {
 	if (m_bda_tags == nullptr || entries.empty()) {
 		return;
 	}
@@ -89,7 +89,8 @@ void BufferCache::ApplyBdaTags(uint64_t first_page, std::span<vk::DeviceAddress>
 	const auto       begin = first_page << CACHING_PAGEBITS;
 	const auto       size  = static_cast<uint64_t>(entries.size()) << CACHING_PAGEBITS;
 	tags.accessed.ForEachInRange(begin, size, [&](uint64_t first, uint64_t last) {
-		for (auto page = first >> CACHING_PAGEBITS; page < ((last + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS); ++page) {
+		for (auto page = first >> CACHING_PAGEBITS;
+		     page < ((last + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS); ++page) {
 			auto& entry = entries[page - first_page];
 			if (entry != 0) {
 				entry |= BDA_ACCESSED;
@@ -118,7 +119,9 @@ vk::DeviceAddress BufferCache::TaggedBdaEntry(uint64_t page, vk::DeviceAddress e
 		return entry;
 	}
 	std::scoped_lock lock(m_bda_tags->mutex);
-	return m_bda_tags->accessed.Contains(page << CACHING_PAGEBITS, CACHING_PAGESIZE) ? (entry | BDA_ACCESSED) : entry;
+	return m_bda_tags->accessed.Contains(page << CACHING_PAGEBITS, CACHING_PAGESIZE)
+	           ? (entry | BDA_ACCESSED)
+	           : entry;
 }
 
 bool BufferCache::BdaTagAccessed(uint64_t page) const {
@@ -133,12 +136,13 @@ void BufferCache::NoteBdaTagFault(uint64_t start, uint64_t size) {
 	if (m_bda_tags == nullptr || size == 0) {
 		return;
 	}
-	auto&                          tags = *m_bda_tags;
-	std::vector<uint64_t>          pages;
+	auto&                 tags = *m_bda_tags;
+	std::vector<uint64_t> pages;
 	{
 		std::scoped_lock lock(tags.mutex);
-		for (auto page = start >> CACHING_PAGEBITS; page < ((start + size + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS) &&
-		                                            page < CACHING_NUMPAGES;
+		for (auto page = start >> CACHING_PAGEBITS;
+		     page < ((start + size + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS) &&
+		     page < CACHING_NUMPAGES;
 		     ++page) {
 			const auto address = page << CACHING_PAGEBITS;
 			if (tags.accessed.Contains(address, CACHING_PAGESIZE)) {
@@ -166,19 +170,21 @@ void BufferCache::NoteBdaTagFault(uint64_t start, uint64_t size) {
 	std::vector<vk::DeviceAddress> entries;
 	for (size_t first = 0; first < pages.size();) {
 		size_t last = first + 1;
-		while (last < pages.size() && pages[last] == pages[last - 1] + 1) ++last;
+		while (last < pages.size() && pages[last] == pages[last - 1] + 1)
+			++last;
 		entries.assign(last - first, 0);
 		bool any = false;
 		for (size_t k = first; k < last; ++k) {
 			const auto* owner = m_page_table.Find(pages[k]);
 			if (owner != nullptr && *owner) {
-				const auto& buffer     = m_slot_buffers[*owner];
-				entries[k - first] = (buffer.BufferDeviceAddress() +
-				                      ((pages[k] - (buffer.CpuAddress() >> CACHING_PAGEBITS)) << CACHING_PAGEBITS)) |
-				                     BDA_ACCESSED;
-				// KYTY_BDA_LIVE_PAGES: a page read through its redirect keeps the redirect, now tagged
-				// (LiveEntry adds the tag: the page is in the accessed set); the next full pass
-				// uploads it (LivePagesPrePass sees it accessed).
+				const auto& buffer = m_slot_buffers[*owner];
+				entries[k - first] =
+				    (buffer.BufferDeviceAddress() +
+				     ((pages[k] - (buffer.CpuAddress() >> CACHING_PAGEBITS)) << CACHING_PAGEBITS)) |
+				    BDA_ACCESSED;
+				// KYTY_BDA_LIVE_PAGES: a page read through its redirect keeps the redirect, now
+				// tagged (LiveEntry adds the tag: the page is in the accessed set); the next full
+				// pass uploads it (LivePagesPrePass sees it accessed).
 				if (m_bda_live_count.load(std::memory_order_relaxed) != 0) {
 					if (const auto live = LiveEntry(pages[k]); live != 0) {
 						entries[k - first] = live;
@@ -195,7 +201,8 @@ void BufferCache::NoteBdaTagFault(uint64_t start, uint64_t size) {
 				continue;
 			}
 			if (run != 0) {
-				WriteDataBuffer(m_bda_pagetable_buffer, (pages[first] + k - run) * sizeof(vk::DeviceAddress),
+				WriteDataBuffer(m_bda_pagetable_buffer,
+				                (pages[first] + k - run) * sizeof(vk::DeviceAddress),
 				                entries.data() + (k - run), run * sizeof(vk::DeviceAddress));
 				run = 0;
 			}
@@ -211,9 +218,9 @@ uint64_t BufferCache::SynchronizeBdaTagged(const RangeSet& mapped_ranges) {
 	{
 		std::scoped_lock lock(tags.mutex);
 		const auto       collect = [&](uint64_t begin, uint64_t end) {
-            mapped_ranges.ForEachInRange(begin, end - begin, [&](uint64_t first, uint64_t last) {
-                spans.emplace_back(first, last);
-            });
+			mapped_ranges.ForEachInRange(begin, end - begin, [&](uint64_t first, uint64_t last) {
+				spans.emplace_back(first, last);
+			});
 		};
 		tags.accessed.ForEach(collect);
 		tags.pending.ForEach(collect);
@@ -247,7 +254,7 @@ void BufferCache::PrepareBdaTagVerify() {
 	auto&            tags = *m_bda_tags;
 	std::scoped_lock lock(tags.mutex);
 	tags.totals.verify_passes++;
-	RangeSet candidates;
+	RangeSet   candidates;
 	const auto all_buffers = [&] {
 		for (const auto& [address, id]: m_buffers) {
 			candidates.Add(address, m_slot_buffers[id].Size());
@@ -268,10 +275,12 @@ void BufferCache::PrepareBdaTagVerify() {
 		candidates.Add(range.address, range.size);
 	}
 	candidates.ForEach([&](uint64_t begin, uint64_t end) {
-		for (auto page = begin >> CACHING_PAGEBITS; page < ((end + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS) && page < CACHING_NUMPAGES;
+		for (auto page = begin >> CACHING_PAGEBITS;
+		     page < ((end + CACHING_PAGESIZE - 1) >> CACHING_PAGEBITS) && page < CACHING_NUMPAGES;
 		     ++page) {
 			const auto address = page << CACHING_PAGEBITS;
-			if (tags.would_skip.contains(page) || tags.accessed.Contains(address, CACHING_PAGESIZE) ||
+			if (tags.would_skip.contains(page) ||
+			    tags.accessed.Contains(address, CACHING_PAGESIZE) ||
 			    tags.pending.Contains(address, CACHING_PAGESIZE)) {
 				continue;
 			}
@@ -312,8 +321,8 @@ void BufferCache::ReportBdaTags() {
 	if (m_bda_tags == nullptr || (++m_bda_tags->report_calls & 255u) != 0) {
 		return;
 	}
-	auto&      tags = *m_bda_tags;
-	const auto now  = std::chrono::steady_clock::now();
+	auto&        tags = *m_bda_tags;
+	const auto   now  = std::chrono::steady_clock::now();
 	BdaTagTotals t;
 	uint64_t     accessed_bytes = 0;
 	size_t       would_skip     = 0;
@@ -334,19 +343,23 @@ void BufferCache::ReportBdaTags() {
 	const auto& r       = tags.reported;
 	const auto  elapsed = std::chrono::duration<double>(now - tags.report_time).count();
 	const auto  mode    = g_bda_access_tags.Get();
-	auto& hops = s_tag_hops;
-	std::printf("BdaTags hops (totals): programs with the check %" PRIu64 ", fault scans %" PRIu64 " recorded / %" PRIu64
-	            " read, fault records %" PRIu64 ", full-pass prepares %" PRIu64
-	            " | GPU get_bda_pointer calls %" PRIu64 ", zero entries %" PRIu64 ", untagged %" PRIu64 "\n",
-	            hops.programs.load(), hops.scans.load(), hops.scans_read.load(), hops.records.load(),
-	            hops.prepares.load(), hops.gpu_calls.load(), hops.gpu_zero.load(), hops.gpu_untagged.load());
-	std::printf("BdaTags %.0fs (%s): tagged pages +%" PRIu64 " (accessed %.1f MB), tagged passes %" PRIu64
+	auto&       hops    = s_tag_hops;
+	std::printf("BdaTags hops (totals): programs with the check %" PRIu64 ", fault scans %" PRIu64
+	            " recorded / %" PRIu64 " read, fault records %" PRIu64
+	            ", full-pass prepares %" PRIu64 " | GPU get_bda_pointer calls %" PRIu64
+	            ", zero entries %" PRIu64 ", untagged %" PRIu64 "\n",
+	            hops.programs.load(), hops.scans.load(), hops.scans_read.load(),
+	            hops.records.load(), hops.prepares.load(), hops.gpu_calls.load(),
+	            hops.gpu_zero.load(), hops.gpu_untagged.load());
+	std::printf("BdaTags %.0fs (%s): tagged pages +%" PRIu64
+	            " (accessed %.1f MB), tagged passes %" PRIu64
 	            " uploading %.2f MB, verify passes %" PRIu64 " | verify: would-skip pages +%" PRIu64
 	            " (open %zu), misses %" PRIu64 " (total %" PRIu64 "), log overflows %" PRIu64 "\n",
-	            elapsed, mode == 2 ? "verify" : (mode == 1 ? "on" : "off"), t.tagged_pages - r.tagged_pages,
-	            accessed_bytes / 1e6, t.tagged_passes - r.tagged_passes, (t.tagged_bytes - r.tagged_bytes) / 1e6,
-	            t.verify_passes - r.verify_passes, t.would_skip - r.would_skip, would_skip, t.misses - r.misses,
-	            t.misses, t.log_overflows - r.log_overflows);
+	            elapsed, mode == 2 ? "verify" : (mode == 1 ? "on" : "off"),
+	            t.tagged_pages - r.tagged_pages, accessed_bytes / 1e6,
+	            t.tagged_passes - r.tagged_passes, (t.tagged_bytes - r.tagged_bytes) / 1e6,
+	            t.verify_passes - r.verify_passes, t.would_skip - r.would_skip, would_skip,
+	            t.misses - r.misses, t.misses, t.log_overflows - r.log_overflows);
 	std::fflush(stdout);
 	std::scoped_lock lock(tags.mutex);
 	tags.report_time = now;

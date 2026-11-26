@@ -140,41 +140,65 @@ KYTY_GPU_NID(98, "rTXw65xmLIA", "libkernel.prx", "KernelAllocateDirectMemory",
              KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(99, "rVjRvHJ0X6c", "libkernel.prx", "KernelVirtualQuery", KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(100, "vSMAm3cxYTY", "libkernel.prx", "KernelMprotect", KYTY_GPU_BINDING_KYTY)
-// nps5-kyty-saros: PPSA07631 (SAROS) graphics imports beyond ASTRO BOT's set (appended; indexes 0-100 unchanged)
+// nps5-kyty-saros: PPSA07631 (SAROS) graphics imports beyond ASTRO BOT's set (appended; indexes
+// 0-100 unchanged)
 KYTY_GPU_NID(101, "w1KFAHVqpaU", "libSceAgc.prx", "AgcCbBranch", KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(102, "uZW-mqsxkrM", "libSceAgc.prx", "AgcCbBranchGetSize", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(103, "w8HVkEeXPv8", "libSceAgc.prx", "AgcDcbDispatchIndirectGetSize", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(104, "ypVBz4uPKcQ", "libSceAgc.prx", "AgcDcbDrawIndexIndirectMulti", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(103, "w8HVkEeXPv8", "libSceAgc.prx", "AgcDcbDispatchIndirectGetSize",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(104, "ypVBz4uPKcQ", "libSceAgc.prx", "AgcDcbDrawIndexIndirectMulti",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(105, "1q1titRBL6o", "libSceAgc.prx", "AgcDcbDrawIndirect", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(106, "cxPZ4Wgvdj8", "libSceAgc.prx", "AgcDcbDrawIndirectGetSize", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(106, "cxPZ4Wgvdj8", "libSceAgc.prx", "AgcDcbDrawIndirectGetSize",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(107, "xSAR0LTcRKM", "libSceAgc.prx", "AgcDcbJump", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(108, "GBCh3zCihoU", "libSceAgc.prx", "AgcDcbSetCxRegistersIndirectGetSize", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(108, "GBCh3zCihoU", "libSceAgc.prx", "AgcDcbSetCxRegistersIndirectGetSize",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(109, "bbFueFP+J4k", "libSceAgc.prx", "AgcDcbSetPredication", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(110, "nNlUtdDDvZ0", "libSceAgc.prx", "AgcDcbSetShRegistersIndirectGetSize", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(111, "UQGTw4xRlcM", "libSceAgc.prx", "AgcDcbSetUcRegistersIndirectGetSize", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(112, "whb1RL7K4Ss", "libSceAgc.prx", "AgcSetCxRegIndirectPatchSetNumRegisters", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(110, "nNlUtdDDvZ0", "libSceAgc.prx", "AgcDcbSetShRegistersIndirectGetSize",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(111, "UQGTw4xRlcM", "libSceAgc.prx", "AgcDcbSetUcRegistersIndirectGetSize",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(112, "whb1RL7K4Ss", "libSceAgc.prx", "AgcSetCxRegIndirectPatchSetNumRegisters",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(113, "w6Dj1VJt5qY", "libSceAgc.prx", "AgcSetPacketPredication", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(114, "7Wa3aeJgeVU", "libSceAgc.prx", "AgcBranchPatchSetThenTarget", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(115, "dbOlWdppb4o", "libSceAgc.prx", "AgcCreateInterpolantMapping2", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(116, "Xru92wHJRmg", "libSceVideoOut.prx", "VideoOutAddVblankEvent", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(117, "w0hLuNarQxY", "libSceVideoOut.prx", "VideoOutConfigureOutput", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(114, "7Wa3aeJgeVU", "libSceAgc.prx", "AgcBranchPatchSetThenTarget",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(115, "dbOlWdppb4o", "libSceAgc.prx", "AgcCreateInterpolantMapping2",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(116, "Xru92wHJRmg", "libSceVideoOut.prx", "VideoOutAddVblankEvent",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(117, "w0hLuNarQxY", "libSceVideoOut.prx", "VideoOutConfigureOutput",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(118, "U2JJtSqNKZI", "libSceVideoOut.prx", "VideoOutGetEventId", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(119, "SbU3dwp80lQ", "libSceVideoOut.prx", "VideoOutGetFlipStatus", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(120, "+I4K03i3EL0", "libSceVideoOut.prx", "VideoOutInitializeOutputOptions", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(121, "Nv8c-Kb+DUM", "libSceVideoOut.prx", "VideoOutIsOutputSupported", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(119, "SbU3dwp80lQ", "libSceVideoOut.prx", "VideoOutGetFlipStatus",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(120, "+I4K03i3EL0", "libSceVideoOut.prx", "VideoOutInitializeOutputOptions",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(121, "Nv8c-Kb+DUM", "libSceVideoOut.prx", "VideoOutIsOutputSupported",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(122, "CBiu4mCE1DA", "libSceVideoOut.prx", "VideoOutSetFlipRate", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(123, "MTxxrOCeSig", "libSceVideoOut.prx", "VideoOutSetWindowModeMargins", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(124, "N5KDtkIjjJ4", "libSceVideoOut.prx", "VideoOutUnregisterBuffers", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(125, "5tRaBjtdTzY", "libSceVideoOut.prx", "VideoOutVrrPegToFixedRate", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(126, "T4ucGB8CsnM", "libSceVideoOut.prx", "VideoOutVrrUnpegFromFixedRate", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(123, "MTxxrOCeSig", "libSceVideoOut.prx", "VideoOutSetWindowModeMargins",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(124, "N5KDtkIjjJ4", "libSceVideoOut.prx", "VideoOutUnregisterBuffers",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(125, "5tRaBjtdTzY", "libSceVideoOut.prx", "VideoOutVrrPegToFixedRate",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(126, "T4ucGB8CsnM", "libSceVideoOut.prx", "VideoOutVrrUnpegFromFixedRate",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(127, "j6RaAUlaLv0", "libSceVideoOut.prx", "VideoOutWaitVblank", KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(128, "e1DFTg+Sd8U", "libSceAgc.prx", "AgcAcbJump", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(129, "03RZmELWWzw", "libSceAgc.prx", "AgcCbSetUcRegistersDirect", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(129, "03RZmELWWzw", "libSceAgc.prx", "AgcCbSetUcRegistersDirect",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(130, "q88lQ+GP5Yk", "libSceAgc.prx", "AgcDcbDrawIndex", KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(131, "K2mciNVxUCE", "libSceAgc.prx", "AgcSetNop", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(132, "GPbUp9jXQa8", "libSceAgc.prx", "AgcAcbWaitUntilSafeForRendering", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(133, "Zw7uUVPulbw", "libSceAgcDriver.prx", "AgcDriverGetEqContextId", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(134, "MM4IZSEYytQ", "libSceAgcDriver.prx", "AgcDriverSetHsOffchipParam", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(132, "GPbUp9jXQa8", "libSceAgc.prx", "AgcAcbWaitUntilSafeForRendering",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(133, "Zw7uUVPulbw", "libSceAgcDriver.prx", "AgcDriverGetEqContextId",
+             KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(134, "MM4IZSEYytQ", "libSceAgcDriver.prx", "AgcDriverSetHsOffchipParam",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(135, "XlNp7jzGiPo", "libSceAgcDriver.prx", "AgcDriverSetTFRing", KYTY_GPU_BINDING_KYTY)
-KYTY_GPU_NID(136, "-Ozn0F1AFRg", "libSceVideoOut.prx", "VideoOutDeleteFlipEvent", KYTY_GPU_BINDING_KYTY)
+KYTY_GPU_NID(136, "-Ozn0F1AFRg", "libSceVideoOut.prx", "VideoOutDeleteFlipEvent",
+             KYTY_GPU_BINDING_KYTY)
 KYTY_GPU_NID(137, "U46NwOiJpys", "libSceVideoOut.prx", "VideoOutSubmitFlip", KYTY_GPU_BINDING_KYTY)

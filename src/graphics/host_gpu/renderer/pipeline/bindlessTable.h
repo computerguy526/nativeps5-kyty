@@ -38,9 +38,9 @@ class PageManager;
 // Slots of each image array of set 1 (the same count for every array).
 [[nodiscard]] uint32_t BindlessImagesPerArray(const GraphicContext& graphics);
 
-// KYTY_BINDLESS_VIEW_KEY (Erlou93/KytyPS5-Yotei v0.1.4 TableView): what of a shader's image resource
-// changes the view ResolveBindlessKey makes of a T# (numeric class, dimension, mip mode and count,
-// conversion format, swizzle, depth compare, cube, R128), hashed; never 0.
+// KYTY_BINDLESS_VIEW_KEY (Erlou93/KytyPS5-Yotei v0.1.4 TableView): what of a shader's image
+// resource changes the view ResolveBindlessKey makes of a T# (numeric class, dimension, mip mode
+// and count, conversion format, swizzle, depth compare, cube, R128), hashed; never 0.
 [[nodiscard]] uint64_t BindlessViewKey(const ShaderRecompiler::IR::ImageResource& resource);
 // 0 off, 1 log heaps whose users view them differently, 2 such users get heaps (and shared slots)
 // of their own.
@@ -56,13 +56,13 @@ struct BindlessHeap {
 	uint32_t stride         = 32;
 	uint32_t record_pointer = UINT32_MAX;
 	// Nested heaps (BindlessHeapUse::nested_vsharp): key = record * nested_keys + inner key.
-	uint32_t nested_vsharp  = UINT32_MAX;
-	uint32_t nested_heap    = 0;
-	uint32_t nested_keys    = 0;
-	uint32_t binding      = 0;
-	uint32_t region       = 0;
+	uint32_t nested_vsharp = UINT32_MAX;
+	uint32_t nested_heap   = 0;
+	uint32_t nested_keys   = 0;
+	uint32_t binding       = 0;
+	uint32_t region        = 0;
 	// Position in BindlessTable::Heaps() (append-only), for KYTY_BINDLESS_SYNC_INDEX.
-	uint32_t serial       = 0;
+	uint32_t serial = 0;
 	// Keys the region holds. The guest appends textures to a heap as it streams them in and
 	// its descriptor grows; each draw patches its own descriptor's entry count.
 	uint32_t entries = 0;
@@ -73,28 +73,28 @@ struct BindlessHeap {
 	uint32_t                            watched_entries  = 0;
 	uint64_t                            watch_generation = 0;
 	ShaderRecompiler::IR::ImageResource resource;
-	// KYTY_BINDLESS_VIEW_KEY=2: the view fields of `resource` (BindlessViewKey) are part of the heap's
-	// key; 0 without the switch.
-	uint64_t                            view_key = 0;
+	// KYTY_BINDLESS_VIEW_KEY=2: the view fields of `resource` (BindlessViewKey) are part of the
+	// heap's key; 0 without the switch.
+	uint64_t view_key = 0;
 	// Per key, 0 = not resolved; else the translation entry: the slot in this heap's binding, or
 	// (BindlessSlotArrayFlag, KYTY_BINDLESS_3D_AS_ARRAY) in the 2D-array binding.
 	// BindlessTable::SlotBinding/SlotIndex decode it.
-	std::vector<uint32_t>               slots;
-	std::vector<uint8_t>                settled;   // per key; resolved, or known placeholder
-	std::vector<ImageId>                resolved;  // images to keep readable for draws
-	std::vector<ImageId>                unchecked; // settled since the last bindless draw (E5)
+	std::vector<uint32_t> slots;
+	std::vector<uint8_t>  settled;   // per key; resolved, or known placeholder
+	std::vector<ImageId>  resolved;  // images to keep readable for draws
+	std::vector<ImageId>  unchecked; // settled since the last bindless draw (E5)
 	// Per settled key, the T# it was settled from and the image it resolved to (none for a
 	// placeholder). The guest rewrites entries as it streams textures out and others in; a key
 	// whose T# changed is settled again.
 	std::vector<std::array<uint32_t, 8>> descriptors;
 	std::vector<ImageId>                 images;
 	uint32_t                             revalidate_cursor = 0; // next key to compare
-	uint64_t                             processed_frame    = UINT64_MAX; // record heaps: last ProcessRecordHeap
+	uint64_t processed_frame = UINT64_MAX; // record heaps: last ProcessRecordHeap
 	// KYTY_BINDLESS_SYNC_RETIRE: the last frame a draw prepared this heap, and whether a sync
 	// skipped a write into its keys since (the next draw that uses it compares every key first).
-	uint64_t                             sync_used_frame    = 0;
-	bool                                 sync_stale         = false;
-	uint64_t                             processed_snapshot = 0; // record heaps: snapshot serial taken
+	uint64_t sync_used_frame    = 0;
+	bool     sync_stale         = false;
+	uint64_t processed_snapshot = 0; // record heaps: snapshot serial taken
 	// What RenderExecutor::CommitBindings last checked: g_bindless_state_generation then, and
 	// how many resolved images. Unchanged since, only the images resolved after need a look.
 	uint64_t checked_generation = 0;
@@ -102,21 +102,23 @@ struct BindlessHeap {
 	// KYTY_RUNTIME_IMAGES: a runtime heap (BindlessTable::RuntimeHeap). Its keys are T#s shaders
 	// loaded at run time and asked for, kept here, not entries of a guest table; nothing of it is
 	// read from guest memory.
-	bool                                 runtime          = false;
+	bool runtime = false;
 	// KYTY_BINDLESS_PREFILL: the heap's keys were settled at its first use (RenderExecutor::
 	// PrefillBindlessHeap).
-	bool                                 prefilled        = false;
-	// KYTY_BINDLESS_REFILL: the scheduler tick of the last table check and the table bytes' digest then.
-	uint64_t                             refill_tick      = UINT64_MAX;
-	uint64_t                             refill_digest    = 0;
-	// KYTY_BINDLESS_TOUCH: the last frame its resolved images were touched (TextureCache::TouchImage).
+	bool prefilled = false;
+	// KYTY_BINDLESS_REFILL: the scheduler tick of the last table check and the table bytes' digest
+	// then.
+	uint64_t refill_tick   = UINT64_MAX;
+	uint64_t refill_digest = 0;
+	// KYTY_BINDLESS_TOUCH: the last frame its resolved images were touched
+	// (TextureCache::TouchImage).
 	uint64_t                             touched_frame    = UINT64_MAX;
 	uint32_t                             runtime_next_key = 0;
 	std::vector<std::array<uint32_t, 8>> runtime_dwords;
 	// KYTY_BINDLESS_REFRESH: the last frame every resolved key was looked up again, and the keys
 	// whose image the GPU writes (looked up again by every draw that uses the heap).
-	uint64_t                             refresh_frame = UINT64_MAX;
-	std::vector<uint32_t>                refresh_gpu_keys;
+	uint64_t              refresh_frame = UINT64_MAX;
+	std::vector<uint32_t> refresh_gpu_keys;
 };
 
 // Descriptor set 1 of every pipeline that samples bindless images: typed arrays of sampled
@@ -141,15 +143,16 @@ public:
 	              Translation == ShaderRecompiler::IR::BindlessTranslation &&
 	              Feedback == ShaderRecompiler::IR::BindlessFeedback);
 	// The runtime image bindings (BindlessBindings.h); the enum values above index nothing else.
-	static constexpr uint32_t RuntimeTableBinding    = ShaderRecompiler::IR::BindlessRuntimeTable;
-	static constexpr uint32_t RuntimeRequestsBinding = ShaderRecompiler::IR::BindlessRuntimeRequests;
+	static constexpr uint32_t RuntimeTableBinding = ShaderRecompiler::IR::BindlessRuntimeTable;
+	static constexpr uint32_t RuntimeRequestsBinding =
+	    ShaderRecompiler::IR::BindlessRuntimeRequests;
 	// KYTY_BINDLESS_SAMPLERS: the sampler array (BindlessBindings.h), at most MaxSamplers slots.
 	static constexpr uint32_t SamplersBinding = ShaderRecompiler::IR::BindlessSamplers;
 	static constexpr uint32_t MaxSamplers     = 4096;
 	// Keys of each binding's runtime heap (the T#s runtime images requested).
-	static constexpr uint32_t RuntimeKeys = 8192;
-	static constexpr uint32_t ImageArrays        = 4;
-	static constexpr uint32_t PlaceholderColors  = 3;
+	static constexpr uint32_t RuntimeKeys       = 8192;
+	static constexpr uint32_t ImageArrays       = 4;
+	static constexpr uint32_t PlaceholderColors = 3;
 	static_assert(ShaderRecompiler::IR::BindlessPendingSlot < PlaceholderColors);
 	static constexpr uint32_t Placeholders       = ImageArrays * PlaceholderColors;
 	static constexpr uint32_t MaxImagesPerArray  = 65536;
@@ -172,8 +175,8 @@ public:
 	// Creates the pool, the set, the buffers and the placeholders on first use (GPU thread, with
 	// a command buffer being recorded: the placeholders are cleared in it). False when the device
 	// has no support or creation failed; the caller then treats every key as the placeholder.
-	[[nodiscard]] bool EnsureCreated();
-	[[nodiscard]] bool Enabled() const noexcept { return m_set != nullptr; }
+	[[nodiscard]] bool              EnsureCreated();
+	[[nodiscard]] bool              Enabled() const noexcept { return m_set != nullptr; }
 	[[nodiscard]] vk::DescriptorSet Set() const noexcept { return m_set; }
 	[[nodiscard]] uint32_t          ImagesPerArray() const noexcept { return m_images_per_array; }
 
@@ -181,11 +184,11 @@ public:
 	// room to grow, or moved to a larger region when a descriptor covers more keys; null when
 	// the translation buffer is full.
 	[[nodiscard]] Heap* FindOrCreateHeap(uint64_t base, uint32_t table_offset, uint32_t binding,
-	                                     uint32_t entries,
+	                                     uint32_t                                   entries,
 	                                     const ShaderRecompiler::IR::ImageResource& resource,
 	                                     uint32_t stride = 32, uint32_t record_pointer = UINT32_MAX,
-	                                     uint32_t nested_vsharp = UINT32_MAX, uint32_t nested_heap = 0,
-	                                     uint32_t nested_keys = 0);
+	                                     uint32_t nested_vsharp = UINT32_MAX,
+	                                     uint32_t nested_heap = 0, uint32_t nested_keys = 0);
 	[[nodiscard]] std::deque<Heap>& Heaps() noexcept { return m_heaps; }
 	// KYTY_BINDLESS_SYNC_INDEX: the serials of heaps whose region was (re)allocated since the last
 	// call (their key span may have grown), moved out.
@@ -211,32 +214,33 @@ public:
 	}
 	// The image view slot `slot` of `binding` holds (null: a placeholder or nothing).
 	[[nodiscard]] vk::ImageView SlotView(uint32_t binding, uint32_t slot) const noexcept {
-		return binding < ImageArrays && slot < m_slot_views[binding].size() ? m_slot_views[binding][slot]
-		                                                                     : vk::ImageView {};
+		return binding < ImageArrays && slot < m_slot_views[binding].size()
+		           ? m_slot_views[binding][slot]
+		           : vk::ImageView {};
 	}
 	// KYTY_BINDLESS_REFRESH: slot `slot` of `binding` now shows `view` of `new_id`; every key that
-	// samples the slot through `old_id` moves its image reference to `new_id` (the shared slot too).
-	// True when `old_id` has no reference left.
-	bool RemapSlotImage(uint32_t binding, uint32_t slot, ImageId old_id, ImageId new_id, vk::ImageView view,
-	                    vk::ImageLayout layout);
+	// samples the slot through `old_id` moves its image reference to `new_id` (the shared slot
+	// too). True when `old_id` has no reference left.
+	bool RemapSlotImage(uint32_t binding, uint32_t slot, ImageId old_id, ImageId new_id,
+	                    vk::ImageView view, vk::ImageLayout layout);
 	// Queue a slot for reuse once the GPU is past the current tick (at most once; IDXTRI).
 	void FreeSlot(uint32_t binding, uint32_t slot);
 	void WriteSlot(uint32_t binding, uint32_t slot, vk::ImageView view, vk::ImageLayout layout);
 	// Resolve a key to a slot (0 = placeholder), or back to pending.
 	void SetTranslation(const Heap& heap, uint32_t key, uint32_t slot);
 	// KYTY_BINDLESS_WATCH_KEY: the watched key's translation and slot view in every heap.
-	void DebugWatchReport(uint64_t frame);
+	void                          DebugWatchReport(uint64_t frame);
 	[[nodiscard]] static uint32_t WatchKey();
 	// The host reads the feedback flags from a copy in host-cached memory. The feedback buffer
 	// itself is device memory, and reading every key of three heaps from it uncached took a
 	// fifth of the GPU thread. Records that copy at the current point of the command stream.
-	void RecordFeedbackSnapshot();
+	void               RecordFeedbackSnapshot();
 	[[nodiscard]] bool SnapshotRecorded() const noexcept { return m_snapshot_tick != 0; }
 	// Whether the GPU has executed the recorded copy; never waits.
 	[[nodiscard]] bool SnapshotReady();
-	// The recorded snapshot is the one read from now on; its chunk summary picks the chunks the next
-	// snapshot copies.
-	void               ConsumeSnapshot();
+	// The recorded snapshot is the one read from now on; its chunk summary picks the chunks the
+	// next snapshot copies.
+	void ConsumeSnapshot();
 	// Snapshot traffic since the last call (diagnostics): bytes copied, flagged chunks.
 	[[nodiscard]] std::pair<uint64_t, uint64_t> TakeSnapshotTraffic() noexcept {
 		return {std::exchange(m_copied_bytes, 0), std::exchange(m_flagged_chunks, 0)};
@@ -261,9 +265,11 @@ public:
 	void                      CollectUnusedImages(std::vector<ImageId>& unused);
 	// The host-mapped translation buffer (diagnostics).
 	[[nodiscard]] const uint32_t* TranslationWords() const noexcept {
-		return m_translation != nullptr ? reinterpret_cast<const uint32_t*>(m_translation->Mapped().data()) : nullptr;
+		return m_translation != nullptr
+		           ? reinterpret_cast<const uint32_t*>(m_translation->Mapped().data())
+		           : nullptr;
 	}
-	void                   AddImageReference(ImageId id, Heap& heap, uint32_t key);
+	void AddImageReference(ImageId id, Heap& heap, uint32_t key);
 	// The key no longer samples what it was settled to: it is pending again, and its image loses
 	// the key's reference. Its slot keeps the old view, which frames in flight may still sample;
 	// a new resolution takes a new slot. True when the image has no reference left, so it need
@@ -282,9 +288,10 @@ public:
 	};
 	// Null when unknown, or when the slot no longer shows an image (a placeholder was written to
 	// it, e.g. ReleaseViews when the image's views were dropped): the words are forgotten then.
-	[[nodiscard]] const SharedSlot* FindSharedSlot(uint32_t binding, const std::array<uint32_t, 8>& words,
-	                                               uint64_t view_key = 0);
-	void NoteSharedSlot(const Heap& heap, const std::array<uint32_t, 8>& words, uint32_t entry, ImageId image);
+	[[nodiscard]] const SharedSlot*
+	FindSharedSlot(uint32_t binding, const std::array<uint32_t, 8>& words, uint64_t view_key = 0);
+	void NoteSharedSlot(const Heap& heap, const std::array<uint32_t, 8>& words, uint32_t entry,
+	                    ImageId image);
 	void AddSharedSlotRef(uint32_t binding, uint32_t slot);
 	// Shared slots found holding a placeholder and forgotten (diagnostics).
 	[[nodiscard]] uint64_t SharedSlotsForgotten() const noexcept { return m_shared_forgotten; }
@@ -296,13 +303,13 @@ public:
 	// returns them, so a write after that is caught by the next submission; the caller then
 	// reads the entries and compares them with the mirror. Heaps of different view bindings over
 	// the same guest table share one watch.
-	void WatchHeap(Heap& heap);
+	void               WatchHeap(Heap& heap);
 	[[nodiscard]] bool NeedsWatch(const Heap& heap) const noexcept {
 		return heap.watched_entries != heap.guest_entries ||
 		       heap.watch_generation != m_watch_generation.load(std::memory_order_acquire);
 	}
-	void OnCpuWrite(uint64_t vaddr, uint64_t size) noexcept; // any thread
-	void UnwatchRange(uint64_t vaddr, uint64_t size);
+	void               OnCpuWrite(uint64_t vaddr, uint64_t size) noexcept; // any thread
+	void               UnwatchRange(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool HasWrittenRanges() const noexcept {
 		return m_heap_writes.load(std::memory_order_acquire);
 	}
@@ -324,9 +331,10 @@ public:
 	// KYTY_BINDLESS_UNMAP_RERESOLVE: the keys OnImageUnregistered sent back to pending, of heap,
 	// to settle again without waiting for a shader to flag them; taken (cleared) by the call.
 	void TakeReresolve(const Heap* heap, std::vector<uint32_t>& keys);
-	// KYTY_BINDLESS_UNMAP_RERESOLVE (live, default off; Miles preset): the guest unmaps part of a streamed texture,
-	// the texture cache frees the image, and its keys went back to pending until a shader flagged
-	// them and the flag came round (several frames of placeholder, on alternate call tables).
+	// KYTY_BINDLESS_UNMAP_RERESOLVE (live, default off; Miles preset): the guest unmaps part of a
+	// streamed texture, the texture cache frees the image, and its keys went back to pending until
+	// a shader flagged them and the flag came round (several frames of placeholder, on alternate
+	// call tables).
 	[[nodiscard]] static bool UnmapReresolve();
 	// Keys made pending because the texture cache dropped their image (statistics; reset on read).
 	[[nodiscard]] uint64_t TakeUnregisteredKeys() noexcept {
@@ -344,7 +352,8 @@ public:
 	[[nodiscard]] static bool RuntimeImagesEnabled();
 	// The runtime heap of a set-1 image binding, created on first use with `resource` (the first
 	// runtime image that reads it); null when the switch is off or the translation buffer is full.
-	[[nodiscard]] Heap* RuntimeHeap(uint32_t binding, const ShaderRecompiler::IR::ImageResource* resource);
+	[[nodiscard]] Heap* RuntimeHeap(uint32_t                                   binding,
+	                                const ShaderRecompiler::IR::ImageResource* resource);
 	// The T#s (and bindings) shaders requested before the last snapshot; the request buffer is
 	// cleared for new requests.
 	void TakeRuntimeRequests(std::vector<std::pair<std::array<uint32_t, 8>, uint32_t>>& requests);
@@ -361,13 +370,13 @@ public:
 	// kept, point filtering forced, border colours integer or cube edges clamped (the flags), so
 	// each kind gets its own region.
 	struct SamplerHeap {
-		uint64_t                             base          = 0;
-		uint32_t                             table_offset  = 0;
-		uint32_t                             stride        = 16;
-		uint32_t                             flags         = 0;
-		uint32_t                             region        = 0; // first slot; 0 = none yet
-		uint32_t                             capacity      = 0;
-		std::vector<std::array<uint32_t, 4>> records;           // mirrored S# records
+		uint64_t                             base         = 0;
+		uint32_t                             table_offset = 0;
+		uint32_t                             stride       = 16;
+		uint32_t                             flags        = 0;
+		uint32_t                             region       = 0; // first slot; 0 = none yet
+		uint32_t                             capacity     = 0;
+		std::vector<std::array<uint32_t, 4>> records; // mirrored S# records
 		uint64_t                             checked_frame = UINT64_MAX;
 	};
 	[[nodiscard]] SamplerHeap& FindOrCreateSamplerHeap(uint64_t base, uint32_t table_offset,
@@ -416,22 +425,22 @@ private:
 	std::vector<Watch> m_watches;
 	std::atomic_bool   m_heap_writes {false};
 	// Bounds of every watch, so a write far from the heaps returns without the lock.
-	std::atomic<uint64_t> m_watch_low {UINT64_MAX};
-	std::atomic<uint64_t> m_watch_high {0};
-	std::atomic<uint64_t> m_watch_generation {1};
-	uint64_t              m_unregistered_keys = 0;
-	std::vector<std::pair<Heap*, uint32_t>> m_replaced_keys;
-	std::mutex                                 m_reresolve_mutex;
+	std::atomic<uint64_t>                         m_watch_low {UINT64_MAX};
+	std::atomic<uint64_t>                         m_watch_high {0};
+	std::atomic<uint64_t>                         m_watch_generation {1};
+	uint64_t                                      m_unregistered_keys = 0;
+	std::vector<std::pair<Heap*, uint32_t>>       m_replaced_keys;
+	std::mutex                                    m_reresolve_mutex;
 	std::vector<std::pair<const Heap*, uint32_t>> m_reresolve;
-	std::deque<Heap>      m_heaps;
-	std::vector<uint32_t> m_resized_heaps; // TakeResizedHeaps()
+	std::deque<Heap>                              m_heaps;
+	std::vector<uint32_t>                         m_resized_heaps; // TakeResizedHeaps()
 	// FindOrCreateHeap's heaps by guest base (KYTY_BINDLESS_SMALL_HEAPS: Ghost of Yotei creates
 	// tens of thousands; a linear search per draw was the old lookup).
 	std::unordered_map<uint64_t, std::vector<Heap*>> m_heaps_by_base;
 	// Released slots per array, with the tick after which no command buffer reads them, and per
 	// slot whether it waits there (FreeSlot keeps each slot on the list once).
-	std::array<std::deque<std::pair<uint32_t, uint64_t>>, ImageArrays> m_free_slots;
-	std::array<std::vector<uint8_t>, ImageArrays>                      m_slot_free;
+	std::array<std::deque<std::pair<uint32_t, uint64_t>>, ImageArrays>    m_free_slots;
+	std::array<std::vector<uint8_t>, ImageArrays>                         m_slot_free;
 	std::unordered_map<uint64_t, std::vector<std::pair<Heap*, uint32_t>>> m_image_refs;
 	// KYTY_BINDLESS_PREFILL: shared slots by (binding, T# words), the words of each shared slot
 	// ((binding << 32) | slot), and each shared slot's keys beyond the first.
@@ -439,12 +448,13 @@ private:
 		uint32_t                binding = 0;
 		std::array<uint32_t, 8> words {};
 		uint64_t                view = 0; // KYTY_BINDLESS_VIEW_KEY=2: Heap::view_key
-		bool operator==(const SharedSlotKey&) const = default;
+		bool                    operator==(const SharedSlotKey&) const = default;
 	};
 	struct SharedSlotKeyHash {
 		size_t operator()(const SharedSlotKey& key) const noexcept {
 			uint64_t hash = (0xcbf29ce484222325ull ^ key.binding ^ key.view) * 0x100000001b3ull;
-			for (const auto word: key.words) hash = (hash ^ word) * 0x100000001b3ull;
+			for (const auto word: key.words)
+				hash = (hash ^ word) * 0x100000001b3ull;
 			return static_cast<size_t>(hash);
 		}
 	};
@@ -454,10 +464,10 @@ private:
 	uint64_t                                                         m_shared_forgotten = 0;
 	// The slot's words are forgotten (no new key shares it); drop_refs: its keys were released
 	// together, so the next FreeSlot frees it.
-	void ForgetSharedSlot(uint32_t binding, uint32_t slot, bool drop_refs);
+	void     ForgetSharedSlot(uint32_t binding, uint32_t slot, bool drop_refs);
 	uint32_t m_next_region = 1; // translation[0] is the out-of-range entry
-	std::array<uint32_t, ImageArrays> m_next_slot {PlaceholderColors, PlaceholderColors,
-	                                               PlaceholderColors, PlaceholderColors};
+	std::array<uint32_t, ImageArrays>       m_next_slot {PlaceholderColors, PlaceholderColors,
+	                                                     PlaceholderColors, PlaceholderColors};
 	std::array<VulkanImage, Placeholders>   m_placeholders {};
 	std::array<vk::ImageView, Placeholders> m_placeholder_views {};
 	vk::DescriptorPool                      m_pool             = nullptr;
@@ -466,36 +476,38 @@ private:
 	std::unique_ptr<Buffer>                 m_translation;
 	std::unique_ptr<Buffer>                 m_feedback;
 	std::array<std::unique_ptr<Buffer>, 2>  m_feedback_snapshots;
-	uint32_t                                m_snapshot_record = 0; // index the next snapshot is copied to
-	uint32_t                                m_snapshot_read   = 1; // index the host reads
-	std::vector<uint32_t>                   m_copy_chunks;      // flagged chunks for the next copy
-	std::vector<uint32_t>                   m_inflight_chunks;  // chunks in the recorded snapshot
+	uint32_t              m_snapshot_record = 0; // index the next snapshot is copied to
+	uint32_t              m_snapshot_read   = 1; // index the host reads
+	std::vector<uint32_t> m_copy_chunks;         // flagged chunks for the next copy
+	std::vector<uint32_t> m_inflight_chunks;     // chunks in the recorded snapshot
 	struct PendingChunk {
-		uint64_t                                                          serial = 0;
+		uint64_t                                                                     serial = 0;
 		std::array<uint32_t, 1u << ShaderRecompiler::IR::BindlessFeedbackChunkShift> words {};
 	};
-	std::unordered_map<uint32_t, PendingChunk> m_pending_chunks; // copied chunks whose flags wait for their heap
-	uint64_t                                m_snapshot_serial = 0;
-	static constexpr uint32_t MaxCopyChunks = 2048;
+	std::unordered_map<uint32_t, PendingChunk>
+	                          m_pending_chunks; // copied chunks whose flags wait for their heap
+	uint64_t                  m_snapshot_serial = 0;
+	static constexpr uint32_t MaxCopyChunks     = 2048;
 	static constexpr uint32_t SnapshotWords =
-	    ShaderRecompiler::IR::BindlessFeedbackFirstRegion + (MaxCopyChunks << ShaderRecompiler::IR::BindlessFeedbackChunkShift);
-	std::vector<vk::BufferCopy>             m_copy_regions;
-	uint64_t                                m_copied_bytes   = 0;
-	uint64_t                                m_flagged_chunks = 0;
-	uint64_t                                m_scanned_words  = 0;
-	uint64_t                                m_nonzero_words  = 0;
-	std::unique_ptr<Buffer>                 m_runtime_table;
-	std::unique_ptr<Buffer>                 m_runtime_requests;
-	std::unique_ptr<Buffer>                 m_runtime_requests_snapshot;
-	std::array<Heap*, ImageArrays>          m_runtime_heaps {};
-	uint32_t                                m_sampler_slots           = 0;
-	uint32_t                                m_next_sampler_slot       = 1; // slot 0: the stand-in
-	bool                                    m_default_sampler_written = false;
-	std::deque<SamplerHeap>                 m_sampler_heaps;
+	    ShaderRecompiler::IR::BindlessFeedbackFirstRegion +
+	    (MaxCopyChunks << ShaderRecompiler::IR::BindlessFeedbackChunkShift);
+	std::vector<vk::BufferCopy>    m_copy_regions;
+	uint64_t                       m_copied_bytes   = 0;
+	uint64_t                       m_flagged_chunks = 0;
+	uint64_t                       m_scanned_words  = 0;
+	uint64_t                       m_nonzero_words  = 0;
+	std::unique_ptr<Buffer>        m_runtime_table;
+	std::unique_ptr<Buffer>        m_runtime_requests;
+	std::unique_ptr<Buffer>        m_runtime_requests_snapshot;
+	std::array<Heap*, ImageArrays> m_runtime_heaps {};
+	uint32_t                       m_sampler_slots           = 0;
+	uint32_t                       m_next_sampler_slot       = 1; // slot 0: the stand-in
+	bool                           m_default_sampler_written = false;
+	std::deque<SamplerHeap>        m_sampler_heaps;
 	std::map<std::pair<uint32_t, std::array<uint32_t, 8>>, uint32_t> m_runtime_keys;
-	uint64_t                                m_snapshot_tick = 0; // 0 = none recorded
+	uint64_t m_snapshot_tick = 0; // 0 = none recorded
 	// The view each image slot holds, and the slots each view is in (placeholders excluded).
-	std::array<std::vector<vk::ImageView>, ImageArrays>                          m_slot_views;
+	std::array<std::vector<vk::ImageView>, ImageArrays>                         m_slot_views;
 	std::unordered_map<VkImageView, std::vector<std::pair<uint32_t, uint32_t>>> m_view_slots;
 };
 

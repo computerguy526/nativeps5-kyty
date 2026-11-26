@@ -156,8 +156,8 @@ public:
 	[[nodiscard]] uint64_t Backlog();
 	// A slice-end flush left open: the rendering instance and pending barriers end as a submission
 	// ends them; the recording goes with the next flush (any Submit clears the hold).
-	void                   HoldFlush();
-	[[nodiscard]] bool     FlushHeld() const noexcept { return m_flush_held; }
+	void               HoldFlush();
+	[[nodiscard]] bool FlushHeld() const noexcept { return m_flush_held; }
 
 private:
 	class CommandPool {
@@ -207,8 +207,8 @@ private:
 	CommandBuffer                m_command;
 	DynamicState                 m_dynamic_state;
 	std::queue<PendingOperation> m_pending_operations;
-	// KYTY_POP_READY_FAST: the tick of m_pending_operations' front (UINT64_MAX: empty), written under
-	// m_operation_mutex at every push and pop; PopReadyOperations reads it without the lock.
+	// KYTY_POP_READY_FAST: the tick of m_pending_operations' front (UINT64_MAX: empty), written
+	// under m_operation_mutex at every push and pop; PopReadyOperations reads it without the lock.
 	std::atomic<uint64_t>        m_pending_front_tick {UINT64_MAX};
 	std::queue<PendingOperation> m_priority_operations;
 	std::mutex                   m_operation_mutex;

@@ -105,9 +105,10 @@ void Translator::S_SAVEEXEC(const Decoder::Instruction& inst, IR::ValueOpcode op
 		for (size_t half = 0; half < 2; half++) {
 			const auto lhs_word = negate_exec ? ir.BitwiseNot(old_words[half]) : old_words[half];
 			const auto rhs_word = negate_source ? ir.BitwiseNot(src_words[half]) : src_words[half];
-			auto word = operation == IR::ValueOpcode::LogicalAnd  ? ir.BitwiseAnd(lhs_word, rhs_word)
-			            : operation == IR::ValueOpcode::LogicalOr ? ir.BitwiseOr(lhs_word, rhs_word)
-			                                                      : ir.BitwiseXor(lhs_word, rhs_word);
+			auto word = operation == IR::ValueOpcode::LogicalAnd ? ir.BitwiseAnd(lhs_word, rhs_word)
+			            : operation == IR::ValueOpcode::LogicalOr
+			                ? ir.BitwiseOr(lhs_word, rhs_word)
+			                : ir.BitwiseXor(lhs_word, rhs_word);
 			if (negate_result) {
 				word = ir.BitwiseNot(word);
 			}
@@ -300,7 +301,8 @@ void Translator::S_GETPC_B64(const Decoder::Instruction& inst) {
 	// program pc minus that prefix (CallSplit::Translation::guest_pc_offset).
 	// The native ray tracing patch moves guest instructions: guest_pc is where this one was.
 	uint64_t pc = inst.guest_pc != UINT32_MAX ? inst.guest_pc : inst.pc;
-	if (const auto* split = CallSplit::Current(); split != nullptr && pc >= split->guest_pc_offset) {
+	if (const auto* split = CallSplit::Current();
+	    split != nullptr && pc >= split->guest_pc_offset) {
 		pc -= split->guest_pc_offset;
 	}
 	const auto base    = IR::U64(ir.Emit(IR::ValueOpcode::GetShaderBase));
@@ -531,7 +533,8 @@ void Translator::V_MOVRELS_B32(const Decoder::Instruction& inst) {
 	// RDNA2 3.6.1: an out-of-range source VGPR reads VGPR0. VGPRs at or above the highest one the
 	// program names are never written, so reading VGPR0 there is as valid as any value. Constant
 	// propagation drops this select when the M0 value set stays below the limit.
-	if ((GetCodegenOptions().movrel_range || full_m0) && base != 0u && base < current_vector_limit) {
+	if ((GetCodegenOptions().movrel_range || full_m0) && base != 0u &&
+	    base < current_vector_limit) {
 		const auto in_range = ir.ULessThan(m0, IR::U32(IR::Value(current_vector_limit - base)));
 		selected = ir.Select(in_range, selected, ir.GetVectorReg(static_cast<IR::VectorReg>(0)));
 	}
@@ -603,7 +606,8 @@ void Translator::V_PERMLANE16_B32(const Decoder::Instruction& inst, bool x16) {
 	                          : ir.GetVectorReg(static_cast<IR::VectorReg>(inst.dst.reg));
 	const auto result   = ir.Emit(
 	    IR::ValueOpcode::Permlane16U32,
-	    {ReadU32(inst.src0), ReadU32(inst.src1), ReadU32(inst.src2), ir.GetExec(), inactive}, flags);
+	    {ReadU32(inst.src0), ReadU32(inst.src1), ReadU32(inst.src2), ir.GetExec(), inactive},
+	    flags);
 	auto dst      = DestinationOperand(inst);
 	dst.op_sel    = false;
 	dst.op_sel_hi = false;

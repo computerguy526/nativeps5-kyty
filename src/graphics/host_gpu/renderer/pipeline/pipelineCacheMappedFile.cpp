@@ -27,9 +27,10 @@ bool PipelineCacheMappedFile::Create(const std::filesystem::path& name, uint64_t
 	if (file == INVALID_HANDLE_VALUE) {
 		return false;
 	}
-	HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READWRITE, static_cast<DWORD>(size >> 32u),
-	                                    static_cast<DWORD>(size & 0xffffffffu), nullptr);
-	void*  data    = mapping != nullptr ? MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, size) : nullptr;
+	HANDLE mapping =
+	    CreateFileMappingW(file, nullptr, PAGE_READWRITE, static_cast<DWORD>(size >> 32u),
+	                       static_cast<DWORD>(size & 0xffffffffu), nullptr);
+	void* data = mapping != nullptr ? MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, size) : nullptr;
 	if (mapping != nullptr) {
 		CloseHandle(mapping); // the view keeps the mapping until it is unmapped
 	}
@@ -53,7 +54,7 @@ bool PipelineCacheMappedFile::Close(uint64_t final_size) {
 	if (final_size < m_size) {
 		LARGE_INTEGER end {};
 		end.QuadPart = static_cast<LONGLONG>(final_size);
-		ok           = SetFilePointerEx(file, end, nullptr, FILE_BEGIN) != 0 && SetEndOfFile(file) != 0 && ok;
+		ok = SetFilePointerEx(file, end, nullptr, FILE_BEGIN) != 0 && SetEndOfFile(file) != 0 && ok;
 	}
 	ok     = FlushFileBuffers(file) != 0 && ok;
 	ok     = CloseHandle(file) != 0 && ok;

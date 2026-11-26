@@ -1,14 +1,11 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
-#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
-#include "graphics/shader/recompiler/sarosHandShaders.h"
-
-#include <atomic>
-#include <cstdio>
-
 #include "common/logging/log.h"
+#include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -216,33 +213,37 @@ void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
 			           other.location == output.location && other.saros_raw_shared != 0;
 		    })) {
 			// sarosnanite: the vertices' dwords for the per-primitive AND (EmitMeshEntryPoint).
-			output.saros_raw_shared =
-			    MeshArray(state, spv::StorageClassWorkgroup, TypeF32Vector(state, 4), mesh.max_vertices);
+			output.saros_raw_shared  = MeshArray(state, spv::StorageClassWorkgroup,
+			                                     TypeF32Vector(state, 4), mesh.max_vertices);
 			const auto per_primitive = [&](uint32_t location, const char* suffix) {
-				const auto array =
-				    MeshArray(state, spv::StorageClassOutput, TypeU32Vector(state, 4), mesh.max_primitives);
+				const auto array = MeshArray(state, spv::StorageClassOutput,
+				                             TypeU32Vector(state, 4), mesh.max_primitives);
 				state.interface_variables.push_back(array);
 				state.builder.AddName(array, (output.debug_name + suffix).c_str());
-				state.builder.AddAnnotation(spv::OpDecorate, array, spv::DecorationLocation, location);
+				state.builder.AddAnnotation(spv::OpDecorate, array, spv::DecorationLocation,
+				                            location);
 				state.builder.AddAnnotation(spv::OpDecorate, array, spv::DecorationPerPrimitiveEXT);
 				return array;
 			};
 			if (SarosNaniteRawAnd(output.location)) {
-				output.saros_raw_primitive = per_primitive(SarosNaniteRawLocation(output.location), "_prim");
+				output.saros_raw_primitive =
+				    per_primitive(SarosNaniteRawLocation(output.location), "_prim");
 			}
 			if (SarosNaniteRawVerts(output.location)) {
 				for (uint32_t vertex = 0; vertex < 3u; vertex++) {
-					output.saros_raw_vertices[vertex] = per_primitive(
-					    SarosNaniteRawVertexLocation(output.location, vertex),
-					    vertex == 0 ? "_prim0" : vertex == 1 ? "_prim1" : "_prim2");
+					output.saros_raw_vertices[vertex] =
+					    per_primitive(SarosNaniteRawVertexLocation(output.location, vertex),
+					                  vertex == 0   ? "_prim0"
+					                  : vertex == 1 ? "_prim1"
+					                                : "_prim2");
 				}
 			}
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
 				std::printf("[sarosnanite] mesh 0x%016llx param location %u: per-primitive raw%s%s "
 				            "(%u vertices, %u primitives)\n",
-				            static_cast<unsigned long long>(state.program.shader_hash), output.location,
-				            output.saros_raw_primitive != 0 ? " AND" : "",
+				            static_cast<unsigned long long>(state.program.shader_hash),
+				            output.location, output.saros_raw_primitive != 0 ? " AND" : "",
 				            output.saros_raw_vertices[0] != 0 ? " vertices" : "", mesh.max_vertices,
 				            mesh.max_primitives);
 			}
@@ -276,8 +277,8 @@ void DefineMeshOutputs(EmitterState& state, uint32_t clip_distance_count,
 		    return output.kind == IR::StageOutputKind::Position;
 	    })) {
 		state.mesh_zero_position_words = (mesh.max_vertices + 31u) / 32u;
-		state.mesh_zero_position_mask  = MeshArray(state, spv::StorageClassWorkgroup, TypeU32(state),
-		                                           state.mesh_zero_position_words);
+		state.mesh_zero_position_mask = MeshArray(state, spv::StorageClassWorkgroup, TypeU32(state),
+		                                          state.mesh_zero_position_words);
 		static std::atomic_bool logged = false;
 		if (!logged.exchange(true, std::memory_order_relaxed)) {
 			Log::WriteToConsoleAndLog("Shader: emitted mesh zero-position primitive cull\n");
@@ -294,10 +295,10 @@ uint32_t MeshOutputPointer(EmitterState& state, IR::StageOutputKind kind, uint32
 		     index);
 	}
 	const bool shared = kind == IR::StageOutputKind::Layer;
-	return MeshElement(
-	    state, output->mesh_data_variable,
-	    shared ? spv::StorageClassWorkgroup : spv::StorageClassPrivate, MeshOutputType(state, kind),
-	    shared ? EmitLocalInvocationIndex(state) : MeshLaneSlot(state));
+	return MeshElement(state, output->mesh_data_variable,
+	                   shared ? spv::StorageClassWorkgroup : spv::StorageClassPrivate,
+	                   MeshOutputType(state, kind),
+	                   shared ? EmitLocalInvocationIndex(state) : MeshLaneSlot(state));
 }
 
 uint32_t MeshPrimitivePointer(EmitterState& state) {
@@ -312,10 +313,10 @@ uint32_t MeshLaneSlot(EmitterState& state) {
 	}
 	const auto pass = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), pass, state.mesh_pass_variable);
-	return Binary(state, spv::OpIAdd, TypeU32(state),
-	              Binary(state, spv::OpIMul, TypeU32(state), pass,
-	                     ConstantU32(state, state.lane_count)),
-	              ConstantU32(state, state.lane_half));
+	return Binary(
+	    state, spv::OpIAdd, TypeU32(state),
+	    Binary(state, spv::OpIMul, TypeU32(state), pass, ConstantU32(state, state.lane_count)),
+	    ConstantU32(state, state.lane_half));
 }
 
 void EmitMeshAllocate(ValueEmitContext& ctx, const IR::Inst& inst) {
@@ -358,11 +359,11 @@ void EmitMeshEntryPoint(EmitterState& state) {
 		                          EmitLocalInvocationIndex(state), ConstantU32(state, 0));
 		EmitIfCondition(state, first, [&] {
 			for (uint32_t word = 0; word < state.mesh_zero_position_words; word++) {
-				state.builder.AddFunction(
-				    spv::OpStore,
-				    MeshElement(state, state.mesh_zero_position_mask, spv::StorageClassWorkgroup,
-				                TypeU32(state), ConstantU32(state, word)),
-				    ConstantU32(state, 0));
+				state.builder.AddFunction(spv::OpStore,
+				                          MeshElement(state, state.mesh_zero_position_mask,
+				                                      spv::StorageClassWorkgroup, TypeU32(state),
+				                                      ConstantU32(state, word)),
+				                          ConstantU32(state, 0));
 			}
 		});
 	}
@@ -404,7 +405,9 @@ void EmitMeshEntryPoint(EmitterState& state) {
 	}
 	state.builder.AddFunction(spv::OpSetMeshOutputsEXT, vertices,
 	                          primitives); // OpSetMeshOutputsEXT
-	if (std::ranges::any_of(state.outputs, [](const OutputBinding& output) { return output.saros_raw_shared != 0; })) {
+	if (std::ranges::any_of(state.outputs, [](const OutputBinding& output) {
+		    return output.saros_raw_shared != 0;
+	    })) {
 		// sarosnanite: every vertex's parameter dwords where the primitive lanes can read them (the
 		// data slot is the mesh pass's: slot = pass * lane_count + half).
 		for (uint32_t slot = 0; slot < state.lane_count * state.mesh_passes; slot++) {
@@ -412,12 +415,14 @@ void EmitMeshEntryPoint(EmitterState& state) {
 			state.lane_half      = slot % state.lane_count;
 			const auto index     = EmitLocalInvocationIndex(state);
 			const auto is_vertex = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpULessThan, TypeBool(state), is_vertex, index, vertices);
+			state.builder.AddFunction(spv::OpULessThan, TypeBool(state), is_vertex, index,
+			                          vertices);
 			EmitIfCondition(state, is_vertex, [&] {
 				for (const auto& output: state.outputs) {
 					if (output.saros_raw_shared == 0) continue;
-					const auto value = MeshLoad(state, output.mesh_data_variable, spv::StorageClassPrivate,
-					                            TypeF32Vector(state, 4), ConstantU32(state, slot));
+					const auto value =
+					    MeshLoad(state, output.mesh_data_variable, spv::StorageClassPrivate,
+					             TypeF32Vector(state, 4), ConstantU32(state, slot));
 					state.builder.AddFunction(spv::OpStore,
 					                          MeshElement(state, output.saros_raw_shared,
 					                                      spv::StorageClassWorkgroup,
@@ -542,36 +547,42 @@ void EmitMeshEntryPoint(EmitterState& state) {
 			                          culled);
 			for (const auto& output: state.outputs) {
 				if (output.saros_raw_shared == 0) continue;
-				for (uint32_t component = 0; output.saros_raw_vertices[0] != 0 && component < 3; component++) {
-					const auto value = MeshLoad(state, output.saros_raw_shared, spv::StorageClassWorkgroup,
-					                            TypeF32Vector(state, 4), vertex[component]);
-					const auto bits  = state.builder.AllocateId();
+				for (uint32_t component = 0; output.saros_raw_vertices[0] != 0 && component < 3;
+				     component++) {
+					const auto value =
+					    MeshLoad(state, output.saros_raw_shared, spv::StorageClassWorkgroup,
+					             TypeF32Vector(state, 4), vertex[component]);
+					const auto bits = state.builder.AllocateId();
 					state.builder.AddFunction(spv::OpBitcast, TypeU32Vector(state, 4), bits, value);
-					state.builder.AddFunction(spv::OpStore,
-					                          MeshElement(state, output.saros_raw_vertices[component],
-					                                      spv::StorageClassOutput, TypeU32Vector(state, 4), index),
-					                          bits);
+					state.builder.AddFunction(
+					    spv::OpStore,
+					    MeshElement(state, output.saros_raw_vertices[component],
+					                spv::StorageClassOutput, TypeU32Vector(state, 4), index),
+					    bits);
 				}
 				if (output.saros_raw_primitive == 0) continue;
-				// sarosnanite: AND of the three vertices' dwords (a pixel shader that ANDs its three
-				// raw reads, or reads a value all three share, gets exactly its result).
+				// sarosnanite: AND of the three vertices' dwords (a pixel shader that ANDs its
+				// three raw reads, or reads a value all three share, gets exactly its result).
 				uint32_t all = 0;
 				for (uint32_t component = 0; component < 3; component++) {
-					const auto value = MeshLoad(state, output.saros_raw_shared, spv::StorageClassWorkgroup,
-					                            TypeF32Vector(state, 4), vertex[component]);
-					const auto bits  = state.builder.AllocateId();
+					const auto value =
+					    MeshLoad(state, output.saros_raw_shared, spv::StorageClassWorkgroup,
+					             TypeF32Vector(state, 4), vertex[component]);
+					const auto bits = state.builder.AllocateId();
 					state.builder.AddFunction(spv::OpBitcast, TypeU32Vector(state, 4), bits, value);
 					if (component == 0) {
 						all = bits;
 					} else {
 						const auto both = state.builder.AllocateId();
-						state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32Vector(state, 4), both, all, bits);
+						state.builder.AddFunction(spv::OpBitwiseAnd, TypeU32Vector(state, 4), both,
+						                          all, bits);
 						all = both;
 					}
 				}
 				state.builder.AddFunction(spv::OpStore,
 				                          MeshElement(state, output.saros_raw_primitive,
-				                                      spv::StorageClassOutput, TypeU32Vector(state, 4), index),
+				                                      spv::StorageClassOutput,
+				                                      TypeU32Vector(state, 4), index),
 				                          all);
 			}
 			for (const auto& output: state.outputs) {

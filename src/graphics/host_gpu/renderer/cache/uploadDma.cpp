@@ -385,7 +385,11 @@ bool UploadDma::DrainHostCopies(uint64_t address, uint64_t size, bool all, bool 
 	if (log && m_drain.waits <= 16) {
 		std::printf("Upload DMA write drain: CP write [0x%016" PRIx64 ", +0x%" PRIx64
 		            ") made queued host copies first (%s, %" PRIu64 " ns)\n",
-		            address, size, frame ? "frame" : every ? "all" : "overlapping", ns);
+		            address, size,
+		            frame   ? "frame"
+		            : every ? "all"
+		                    : "overlapping",
+		            ns);
 		std::fflush(stdout);
 	}
 	if (log && (m_drain.waits & 0xfffu) == 1) {

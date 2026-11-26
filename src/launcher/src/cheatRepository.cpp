@@ -172,7 +172,7 @@ void CheatRepository::Fetch(const RemoteFile& file) {
 	const auto generation = m_fetch_generation;
 	m_file_reply =
 	    Request(file.Url(), kFileLimit,
-		        [this, generation, format = file.format](QByteArray data, QString error) {
+	            [this, generation, format = file.format](QByteArray data, QString error) {
 		            if (generation != m_fetch_generation) {
 			            return;
 		            }

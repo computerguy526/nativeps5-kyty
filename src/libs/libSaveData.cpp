@@ -1239,11 +1239,11 @@ int KYTY_SYSV_ABI SaveDataGetEventResult(const void* event_param, SaveDataEvent*
 }
 
 // sceSaveDataConvert: converts save data to the current format. A result >= 0 starts an
-// asynchronous conversion the caller polls; NOT_FOUND and NO_NEED_CONVERT mean "nothing to convert",
-// and the caller goes on to mount or create its save. Kyty only writes the current format, so a
-// conversion that would be needed also reports NO_NEED_CONVERT (Senaxx 511447c79: unresolved, the
-// stub's 0 made Wolverine wait for a conversion forever after New Game). The synchronous checks are
-// upstream 22a9392d2's; dst_blocks 0 keeps the source size.
+// asynchronous conversion the caller polls; NOT_FOUND and NO_NEED_CONVERT mean "nothing to
+// convert", and the caller goes on to mount or create its save. Kyty only writes the current
+// format, so a conversion that would be needed also reports NO_NEED_CONVERT (Senaxx 511447c79:
+// unresolved, the stub's 0 made Wolverine wait for a conversion forever after New Game). The
+// synchronous checks are upstream 22a9392d2's; dst_blocks 0 keeps the source size.
 int KYTY_SYSV_ABI SaveDataConvert(const SaveDataConvert* convert) {
 	PRINT_NAME();
 
@@ -1253,8 +1253,8 @@ int KYTY_SYSV_ABI SaveDataConvert(const SaveDataConvert* convert) {
 	if (convert == nullptr || convert->src_dir_name == nullptr ||
 	    !valid_name(convert->src_dir_name) ||
 	    (convert->dst_dir_name != nullptr && !valid_name(convert->dst_dir_name)) ||
-	    (convert->dst_blocks != 0 &&
-	     (convert->dst_blocks < SAVE_DATA_BLOCKS_MIN || convert->dst_blocks > SAVE_DATA_BLOCKS_MAX))) {
+	    (convert->dst_blocks != 0 && (convert->dst_blocks < SAVE_DATA_BLOCKS_MIN ||
+	                                  convert->dst_blocks > SAVE_DATA_BLOCKS_MAX))) {
 		return SAVE_DATA_ERROR_PARAMETER;
 	}
 	if (convert->user_id < 0) {
@@ -1292,7 +1292,8 @@ int KYTY_SYSV_ABI SaveDataConvert(const SaveDataConvert* convert) {
 			return SAVE_DATA_ERROR_BLOCKS_FEWER_THAN_SRC;
 		}
 	}
-	LOGF("\t conversion of %s not implemented: reported as not needed\n", convert->src_dir_name->data);
+	LOGF("\t conversion of %s not implemented: reported as not needed\n",
+	     convert->src_dir_name->data);
 	return SAVE_DATA_ERROR_NO_NEED_CONVERT;
 }
 

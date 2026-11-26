@@ -186,26 +186,27 @@ static LONG WINAPI FirstExceptionFilter(PEXCEPTION_POINTERS exception) noexcept 
 		info.native_code            = record->ExceptionCode;
 		info.native_context         = exception->ContextRecord;
 		info.type                   = ExceptionType::AccessViolation;
-		info.access_violation_type  = record->ExceptionInformation[0] == 1 ? AccessViolationType::Write
-		                                                                   : AccessViolationType::Read;
+		info.access_violation_type  = record->ExceptionInformation[0] == 1
+		                                  ? AccessViolationType::Write
+		                                  : AccessViolationType::Read;
 		info.access_violation_vaddr = record->ExceptionInformation[1];
 		const auto* context         = exception->ContextRecord;
-		info.rax = context->Rax;
-		info.rbx = context->Rbx;
-		info.rcx = context->Rcx;
-		info.rdx = context->Rdx;
-		info.rsi = context->Rsi;
-		info.rdi = context->Rdi;
-		info.rbp = context->Rbp;
-		info.rsp = context->Rsp;
-		info.r8  = context->R8;
-		info.r9  = context->R9;
-		info.r10 = context->R10;
-		info.r11 = context->R11;
-		info.r12 = context->R12;
-		info.r13 = context->R13;
-		info.r14 = context->R14;
-		info.r15 = context->R15;
+		info.rax                    = context->Rax;
+		info.rbx                    = context->Rbx;
+		info.rcx                    = context->Rcx;
+		info.rdx                    = context->Rdx;
+		info.rsi                    = context->Rsi;
+		info.rdi                    = context->Rdi;
+		info.rbp                    = context->Rbp;
+		info.rsp                    = context->Rsp;
+		info.r8                     = context->R8;
+		info.r9                     = context->R9;
+		info.r10                    = context->R10;
+		info.r11                    = context->R11;
+		info.r12                    = context->R12;
+		info.r13                    = context->R13;
+		info.r14                    = context->R14;
+		info.r15                    = context->R15;
 		return handler(info) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
 	}
 	if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) {
@@ -260,7 +261,8 @@ static void SignalHandler(int signal_number, siginfo_t* signal_info, void* nativ
 #if defined(__APPLE__) && defined(__aarch64__)
 	// nps5 arm64: there are no guest x86 registers in a host context.
 	info.exception_address = __darwin_arm_thread_state64_get_pc(context->uc_mcontext->__ss);
-	info.rsp               = __darwin_arm_thread_state64_get_sp(context->uc_mcontext->__ss); // the host stack pointer
+	info.rsp =
+	    __darwin_arm_thread_state64_get_sp(context->uc_mcontext->__ss); // the host stack pointer
 #elif defined(__APPLE__)
 	const auto& registers  = context->uc_mcontext->__ss;
 	info.exception_address = registers.__rip;

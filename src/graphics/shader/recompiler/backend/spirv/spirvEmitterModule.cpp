@@ -1,10 +1,10 @@
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/recompiler/LodStatsEarlyTests.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/BindlessBindings.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <algorithm>
 #include <atomic>
@@ -49,8 +49,9 @@ void CountCoherentProgram(const EmitterState& state, bool per_access) {
 		return;
 	}
 	const auto total = g_coherent_programs.fetch_add(1, std::memory_order_relaxed) + 1;
-	const auto glc   = g_coherent_per_access.fetch_add(per_access ? 1 : 0, std::memory_order_relaxed) +
-	                 (per_access ? 1 : 0);
+	const auto glc =
+	    g_coherent_per_access.fetch_add(per_access ? 1 : 0, std::memory_order_relaxed) +
+	    (per_access ? 1 : 0);
 	static const bool log = [] {
 		const auto* value = std::getenv("KYTY_COHERENT_GLC_LOG");
 		return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
@@ -61,7 +62,8 @@ void CountCoherentProgram(const EmitterState& state, bool per_access) {
 	const auto& r = state.requirements;
 	char        text[320];
 	std::snprintf(text, sizeof(text),
-	              "Kyty coherent program 0x%016" PRIx64 " stage %u: %s (buffer writes %d, narrow %d, "
+	              "Kyty coherent program 0x%016" PRIx64
+	              " stage %u: %s (buffer writes %d, narrow %d, "
 	              "image writes %d, u64 %d, dcache inv %d); totals %" PRIu64 " coherent, %" PRIu64
 	              " GLC-only\n",
 	              state.program.shader_hash, static_cast<unsigned>(state.program.stage),
@@ -242,8 +244,9 @@ static uint32_t UniformDwordBlockType(EmitterState& state) {
 }
 
 uint32_t FlattenedSrtElementPointerType(EmitterState& state) {
-	return state.flattened_srt_uniform ? TypePointer(state, spv::StorageClassUniform, TypeU32(state))
-	                                   : TypeStorageBufferElementPointer(state);
+	return state.flattened_srt_uniform
+	           ? TypePointer(state, spv::StorageClassUniform, TypeU32(state))
+	           : TypeStorageBufferElementPointer(state);
 }
 
 uint32_t TypePhysicalU32Pointer(EmitterState& state) {
@@ -321,8 +324,8 @@ void DefineBindlessImages(EmitterState& state) {
 			continue;
 		}
 		images.push_back(image);
-		// KYTY_RUNTIME_INT_IMAGES: a runtime T# may name an integer texture; its loads read the slot
-		// through an alias of the binding with the texture's component type (EmitImage).
+		// KYTY_RUNTIME_INT_IMAGES: a runtime T# may name an integer texture; its loads read the
+		// slot through an alias of the binding with the texture's component type (EmitImage).
 		if (image.runtime && GetCodegenOptions().runtime_int_images) {
 			for (const auto numeric_class:
 			     {Prospero::TextureNumericClass::Uint, Prospero::TextureNumericClass::Sint}) {
@@ -371,8 +374,8 @@ void DefineBindlessImages(EmitterState& state) {
 	// KYTY_BINDLESS_SAMPLERS: the samplers the host mirrors from guest sampler heaps.
 	if (state.bindless_sampler_variable == 0 &&
 	    std::ranges::any_of(state.program.info.samplers, &IR::SamplerResource::bindless)) {
-		const auto array    = state.builder.Type(spv::OpTypeRuntimeArray,
-		                                         state.builder.Type(spv::OpTypeSampler));
+		const auto array =
+		    state.builder.Type(spv::OpTypeRuntimeArray, state.builder.Type(spv::OpTypeSampler));
 		const auto variable = state.builder.DefineGlobalVariable(
 		    TypePointer(state, spv::StorageClassUniformConstant, array),
 		    spv::StorageClassUniformConstant);
@@ -398,7 +401,7 @@ void DefineBindlessImages(EmitterState& state) {
 		                            IR::BindlessTranslation);
 		state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationNonWritable);
 		state.bindless_translation_variable = variable;
-		const auto feedback = state.builder.DefineGlobalVariable(
+		const auto feedback                 = state.builder.DefineGlobalVariable(
 		    TypePointer(state, spv::StorageClassStorageBuffer, StorageBufferType(state)),
 		    spv::StorageClassStorageBuffer);
 		state.builder.AddName(feedback, "bindless_feedback");
@@ -513,12 +516,13 @@ void DefineDescriptors(EmitterState& state) {
 				// scalar registers, as the guest's S_BUFFER_LOAD does, instead of once per lane
 				// with the address in a vector register. Coherent (polling) loads keep the
 				// buffers writable-declared so no load can be assumed loop-invariant.
-				// KYTY_COHERENT_GLC_ONLY (Erlou93/KytyPS5-Yotei: a grass vertex shader with one GLC read
-				// among 107 per vertex 7.2 -> <0.15 ms per frame on their GPU): in a program that writes
-				// no buffer or image memory, only the GLC/DLC accesses use a Coherent alias. Nothing the
-				// command itself does can change what a plain read sees (no invocation of it writes
-				// buffer memory); writes of earlier commands are made visible by the emulator's barriers;
-				// and the guest's own non-GLC loads go through its non-coherent GL0/GL1 caches too.
+				// KYTY_COHERENT_GLC_ONLY (Erlou93/KytyPS5-Yotei: a grass vertex shader with one GLC
+				// read among 107 per vertex 7.2 -> <0.15 ms per frame on their GPU): in a program
+				// that writes no buffer or image memory, only the GLC/DLC accesses use a Coherent
+				// alias. Nothing the command itself does can change what a plain read sees (no
+				// invocation of it writes buffer memory); writes of earlier commands are made
+				// visible by the emulator's barriers; and the guest's own non-GLC loads go through
+				// its non-coherent GL0/GL1 caches too.
 				const auto glc_only_mode = GetCodegenOptions().coherent_glc_only;
 				const bool per_access_coherence =
 				    glc_only_mode != 0u && state.requirements.coherent_buffers &&
@@ -529,18 +533,21 @@ void DefineDescriptors(EmitterState& state) {
 				if (per_access_coherence) {
 					state.storage_buffer_coherent_variable =
 					    Define(ArrayType(StorageBufferType(state)), "buffers_coherent");
-					state.builder.AddAnnotation(spv::OpDecorate, state.storage_buffer_coherent_variable,
+					state.builder.AddAnnotation(spv::OpDecorate,
+					                            state.storage_buffer_coherent_variable,
 					                            spv::DecorationAliased);
-					state.builder.AddAnnotation(spv::OpDecorate, state.storage_buffer_coherent_variable,
+					state.builder.AddAnnotation(spv::OpDecorate,
+					                            state.storage_buffer_coherent_variable,
 					                            spv::DecorationCoherent);
 				}
-				const bool read_only = GetCodegenOptions().readonly_buffers &&
-				                       !state.requirements.buffer_writes &&
-				                       (!state.requirements.coherent_buffers || per_access_coherence);
+				const bool read_only =
+				    GetCodegenOptions().readonly_buffers && !state.requirements.buffer_writes &&
+				    (!state.requirements.coherent_buffers || per_access_coherence);
 				for (const auto variable: {state.storage_buffer_variable, state.storage_buffer_u8_variable,
 				                           state.storage_buffer_u16_variable, state.storage_buffer_u64_variable}) {
 					if (variable == 0) continue;
-					if (state.storage_buffer_u8_variable != 0 || state.storage_buffer_u16_variable != 0 ||
+					if (state.storage_buffer_u8_variable != 0 ||
+					    state.storage_buffer_u16_variable != 0 ||
 					    state.storage_buffer_u64_variable != 0 || per_access_coherence) {
 						state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationAliased);
 					}
@@ -576,20 +583,21 @@ void DefineDescriptors(EmitterState& state) {
 				break;
 			case IR::DescriptorBindingKind::ShaderData:
 				state.shader_data_storage_variable =
-				    SrtUniformEnabled()
-				        ? Define(UniformDwordBlockType(state), "shader_data", spv::StorageClassUniform)
-				        : Define(StorageBufferType(state), "shader_data");
+				    SrtUniformEnabled() ? Define(UniformDwordBlockType(state), "shader_data",
+				                                 spv::StorageClassUniform)
+				                        : Define(StorageBufferType(state), "shader_data");
 				break;
 			case IR::DescriptorBindingKind::MipStats:
 				state.mip_stats_variable = Define(StorageBufferType(state), "mip_stats");
 				break;
 			case IR::DescriptorBindingKind::FlattenedSrt:
 				if (SrtUniformEnabled()) {
-					state.flattened_srt_variable =
-					    Define(UniformDwordBlockType(state), "flattened_srt", spv::StorageClassUniform);
+					state.flattened_srt_variable = Define(
+					    UniformDwordBlockType(state), "flattened_srt", spv::StorageClassUniform);
 					state.flattened_srt_uniform = true;
 				} else {
-					state.flattened_srt_variable = Define(StorageBufferType(state), "flattened_srt");
+					state.flattened_srt_variable =
+					    Define(StorageBufferType(state), "flattened_srt");
 				}
 				break;
 			case IR::DescriptorBindingKind::Samplers:
@@ -622,9 +630,9 @@ void DefineDescriptors(EmitterState& state) {
 				    StorageBindingHasCoherentAccess(state, binding.resources)) {
 					// KYTY_IMAGE_GLC_COHERENT / KYTY_POPS_INTERLOCK: a Coherent alias of the same
 					// binding for the coherent accesses only (ImageDescriptorPointer).
-					const auto alias = Define(ArrayType(ImageType(state, image)),
-					                          (name + "_coherent").c_str(),
-					                          spv::StorageClassUniformConstant);
+					const auto alias =
+					    Define(ArrayType(ImageType(state, image)), (name + "_coherent").c_str(),
+					           spv::StorageClassUniformConstant);
 					state.builder.AddAnnotation(spv::OpDecorate, alias, spv::DecorationCoherent);
 					state.image_coherent_variables[IR::ImageBindingIndex(binding.kind)] = alias;
 				}
@@ -858,10 +866,12 @@ void DefineInputs(EmitterState& state) {
 					    state, TypeU32Vector(state, 4), spv::StorageClassInput,
 					    fmt::format("{}_prim{}", input.debug_name, vertex).c_str());
 					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
-					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationPerPrimitiveEXT);
+					state.builder.AddAnnotation(spv::OpDecorate, variable,
+					                            spv::DecorationPerPrimitiveEXT);
 					state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation,
-					                            verts ? SarosNaniteRawVertexLocation(location, vertex)
-					                                  : SarosNaniteRawLocation(location));
+					                            verts
+					                                ? SarosNaniteRawVertexLocation(location, vertex)
+					                                : SarosNaniteRawLocation(location));
 					input.vertex_variable_ids[vertex] = variable;
 				}
 				if (!verts) {
@@ -872,12 +882,16 @@ void DefineInputs(EmitterState& state) {
 				input.saros_raw_u32 = true;
 				static std::atomic<uint32_t> logged {0};
 				if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-					std::printf("[sarosnanite] ps 0x%016llx param %u (location %u) reads per-primitive raw %s "
+					std::printf("[sarosnanite] ps 0x%016llx param %u (location %u) reads "
+					            "per-primitive raw %s "
 					            "at location %u%s\n",
-					            static_cast<unsigned long long>(state.program.shader_hash), input.location,
-					            location, verts ? "vertices" : "AND",
-					            verts ? SarosNaniteRawVertexLocation(location, 0) : SarosNaniteRawLocation(location),
-					            verts || SarosNaniteRawAnd(location) ? "" : " (NOT forwarded by the mesh program)");
+					            static_cast<unsigned long long>(state.program.shader_hash),
+					            input.location, location, verts ? "vertices" : "AND",
+					            verts ? SarosNaniteRawVertexLocation(location, 0)
+					                  : SarosNaniteRawLocation(location),
+					            verts || SarosNaniteRawAnd(location)
+					                ? ""
+					                : " (NOT forwarded by the mesh program)");
 				}
 				continue;
 			}
@@ -956,7 +970,8 @@ void DefineInputs(EmitterState& state) {
 		// KYTY_OBJPRIM_ID: the fragment primitive index. SPIR-V enables PrimitiveId in a fragment
 		// shader through the Tessellation capability as well as Geometry (based on
 		// Erlou93/KytyPS5-Yotei).
-		if (input.kind == IR::StageInputKind::PrimitiveId && state.program.stage == ShaderType::Pixel) {
+		if (input.kind == IR::StageInputKind::PrimitiveId &&
+		    state.program.stage == ShaderType::Pixel) {
 			state.builder.AddAnnotation(spv::OpDecorate, input.variable_id, spv::DecorationFlat);
 			state.builder.RequireCapability(spv::CapabilityTessellation);
 		}
@@ -1141,8 +1156,8 @@ void DefineOutputs(EmitterState& state) {
 			case IR::StageOutputKind::ObjPrimId:
 				// KYTY_OBJPRIM_ID: one 32-bit unsigned value at the colour slot (location) the
 				// hardware writes.
-				binding.variable_id = DefineInterfaceVariable(state, TypeU32(state), spv::StorageClassOutput,
-				                                              binding.debug_name.c_str());
+				binding.variable_id = DefineInterfaceVariable(
+				    state, TypeU32(state), spv::StorageClassOutput, binding.debug_name.c_str());
 				state.builder.AddAnnotation(spv::OpDecorate, binding.variable_id,
 				                            spv::DecorationLocation, binding.location);
 				state.objprim_output_variable = binding.variable_id;
@@ -1153,8 +1168,9 @@ void DefineOutputs(EmitterState& state) {
 				if (binding.kind == IR::StageOutputKind::Mrt &&
 				    state.program.stage == ShaderType::Pixel &&
 				    binding.index < std::size(state.input_info.pixel->target_output_mode)) {
-					// KYTY_INT_MRT_OUTPUTS=1 (upstream 26ca60923): UINT and SINT targets take integer
-					// outputs of their signedness (ExportVector's type, spirvEmitterFlow.cpp).
+					// KYTY_INT_MRT_OUTPUTS=1 (upstream 26ca60923): UINT and SINT targets take
+					// integer outputs of their signedness (ExportVector's type,
+					// spirvEmitterFlow.cpp).
 					const auto mode = state.input_info.pixel->target_output_mode[binding.index];
 					if (GetCodegenOptions().int_mrt_outputs) {
 						type = mode != 0u ? MrtOutputType(state, binding.index) : type;
@@ -1203,8 +1219,8 @@ void DeclareFloatControls(EmitterState& state) {
 	// device takes it, as before).
 	if (state.requirements.native_half) {
 		static std::atomic<uint64_t> native_half_programs {0};
-		const auto count = native_half_programs.fetch_add(1, std::memory_order_relaxed) + 1;
-		static const bool log = [] {
+		const auto        count = native_half_programs.fetch_add(1, std::memory_order_relaxed) + 1;
+		static const bool log   = [] {
 			const auto* value = std::getenv("KYTY_COHERENT_GLC_LOG");
 			return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 		}();
@@ -1212,7 +1228,8 @@ void DeclareFloatControls(EmitterState& state) {
 			char text[160];
 			std::snprintf(text, sizeof(text),
 			              "Kyty native f16 program 0x%016" PRIx64 " stage %u; total %" PRIu64 "\n",
-			              state.program.shader_hash, static_cast<unsigned>(state.program.stage), count);
+			              state.program.shader_hash, static_cast<unsigned>(state.program.stage),
+			              count);
 			Log::WriteToConsoleAndLog(text);
 		}
 		state.builder.RequireCapability(spv::CapabilityFloat16);
@@ -1224,8 +1241,8 @@ void DeclareFloatControls(EmitterState& state) {
 	// FLOAT_MODE 0xC0 flushes f32 denormals (inputs and outputs) and keeps f16/f64 ones.
 	// Declare only what the device supports; otherwise host defaults stay in effect.
 	const auto float_controls = GetHostFloatControls();
-	const auto denorm_mode = [&](spv::ExecutionMode mode, spv::Capability capability,
-	                             uint32_t width) {
+	const auto denorm_mode    = [&](spv::ExecutionMode mode, spv::Capability capability,
+	                                uint32_t width) {
 		state.builder.RequireCapability(capability);
 		state.builder.AddExecutionMode(state.main_func, mode, width);
 	};
@@ -1452,11 +1469,13 @@ void DefineModule(EmitterState& state) {
 			// POPS modes (sample order is the weaker guarantee).
 			state.builder.RequireExtension("SPV_EXT_fragment_shader_interlock");
 			state.builder.RequireCapability(spv::CapabilityFragmentShaderPixelInterlockEXT);
-			state.builder.AddExecutionMode(state.main_func, spv::ExecutionModePixelInterlockOrderedEXT);
+			state.builder.AddExecutionMode(state.main_func,
+			                               spv::ExecutionModePixelInterlockOrderedEXT);
 			static std::mutex         ordered_mutex;
 			static std::set<uint64_t> ordered_logged;
 			std::scoped_lock          ordered_lock(ordered_mutex);
-			if (ordered_logged.size() < 64 && ordered_logged.insert(state.program.shader_hash).second) {
+			if (ordered_logged.size() < 64 &&
+			    ordered_logged.insert(state.program.shader_hash).second) {
 				LOGF("KYTY_POPS_INTERLOCK: pixel shader 0x%016" PRIx64
 				     " runs as a pixel-ordered interlock section\n",
 				     state.program.shader_hash);

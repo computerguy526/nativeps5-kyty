@@ -31,18 +31,20 @@ static std::string BuildFatalReport(const char* title, std::string_view text, co
 // llvm-symbolizer --obj=kyty_emulator.exe with the offset added to the image base).
 static std::string FatalStack() {
 #if defined(_WIN32)
-	void*      frames[48] = {};
-	const auto count      = CaptureStackBackTrace(2, 48, frames, nullptr);
-	std::string text      = "--- Stack ---";
+	void*       frames[48] = {};
+	const auto  count      = CaptureStackBackTrace(2, 48, frames, nullptr);
+	std::string text       = "--- Stack ---";
 	for (USHORT i = 0; i < count; i++) {
-		HMODULE module = nullptr;
+		HMODULE module         = nullptr;
 		char    name[MAX_PATH] = {};
-		if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+		                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 		                       static_cast<LPCSTR>(frames[i]), &module) != 0 &&
 		    GetModuleFileNameA(module, name, MAX_PATH) != 0) {
 			const char* base = std::strrchr(name, '\\');
 			text += fmt::format("\n  {}+0x{:x}", base != nullptr ? base + 1 : name,
-			                    reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(module));
+			                    reinterpret_cast<uintptr_t>(frames[i]) -
+			                        reinterpret_cast<uintptr_t>(module));
 		} else {
 			text += fmt::format("\n  0x{:x}", reinterpret_cast<uintptr_t>(frames[i]));
 		}
@@ -79,8 +81,8 @@ static std::string FatalStack() {
 }
 
 void DbgExitIfHandler(const char* expr, const char* file, int line) {
-	DbgReport("--- Fatal Error ---", fmt::format("Error: condition ({}) is true", expr), file,
-	          line, true);
+	DbgReport("--- Fatal Error ---", fmt::format("Error: condition ({}) is true", expr), file, line,
+	          true);
 }
 
 void DbgNotImplementedHandler(const char* expr, const char* file, int line) {

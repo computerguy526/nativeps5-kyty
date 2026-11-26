@@ -222,16 +222,28 @@ struct Totals {
 Totals g_totals;
 
 constexpr std::array<const char*, static_cast<size_t>(FlushCause::Count)> kFlushCauseNames = {
-    "slice_end",          "slice_stopped",           "eop_batch",
-    "eop_packet_bound",   "idle_gpu",                "eager_readback",
-    "periodic",           "batched",                 "deferred_label_wait",
-    "proxy_label",        "flip_wait",               "before_gc",
-    "defer_held",         "defer_declined_priority", "defer_declined_backlog",
-    "defer_released_backlog", "defer_released_idle"};
+    "slice_end",
+    "slice_stopped",
+    "eop_batch",
+    "eop_packet_bound",
+    "idle_gpu",
+    "eager_readback",
+    "periodic",
+    "batched",
+    "deferred_label_wait",
+    "proxy_label",
+    "flip_wait",
+    "before_gc",
+    "defer_held",
+    "defer_declined_priority",
+    "defer_declined_backlog",
+    "defer_released_backlog",
+    "defer_released_idle"};
 
 // KYTY_GPU_OP_COUNTERS=2: a graphics pipeline's fragment stage.
 enum class PipelineClass : uint8_t { Unknown, GuestFragment, NoFragment, EmptyFragment };
-constexpr std::array<const char*, 4> kPipelineClassNames = {"unknown", "guest_fs", "no_fs", "empty_fs"};
+constexpr std::array<const char*, 4>        kPipelineClassNames = {"unknown", "guest_fs", "no_fs",
+                                                                   "empty_fs"};
 std::mutex                                  g_pipeline_class_mutex;
 std::unordered_map<uint64_t, PipelineClass> g_pipeline_class;
 // The guest buffer's bound graphics pipeline class and the class of the previous draw of the
@@ -1242,7 +1254,8 @@ VKAPI_ATTR void VKAPI_CALL HookCmdBindPipeline(VkCommandBuffer cb, VkPipelineBin
 		auto pipeline_class = PipelineClass::Unknown;
 		{
 			std::lock_guard lock(g_pipeline_class_mutex);
-			if (const auto found = g_pipeline_class.find(HandleBits(pipeline)); found != g_pipeline_class.end()) {
+			if (const auto found = g_pipeline_class.find(HandleBits(pipeline));
+			    found != g_pipeline_class.end()) {
 				pipeline_class = found->second;
 			}
 		}
@@ -1672,7 +1685,8 @@ VKAPI_ATTR void VKAPI_CALL HookCmdBeginRendering(VkCommandBuffer cb, const VkRen
 		return;
 	}
 	g_counters.render_passes.fetch_add(1, std::memory_order_relaxed);
-	g_pass_draw_class.store(static_cast<uint8_t>(PipelineClass::Unknown), std::memory_order_relaxed);
+	g_pass_draw_class.store(static_cast<uint8_t>(PipelineClass::Unknown),
+	                        std::memory_order_relaxed);
 	if (IsCapture(cb)) [[unlikely]] {
 		PassRecord pass;
 		pass.width     = info->renderArea.extent.width;
@@ -1848,23 +1862,25 @@ PipelineClass ClassOf(const VkGraphicsPipelineCreateInfo& info) {
 	return PipelineClass::NoFragment;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL HookCreateGraphicsPipelines(VkDevice device, VkPipelineCache cache,
-                                                           uint32_t                            count,
-                                                           const VkGraphicsPipelineCreateInfo* infos,
-                                                           const VkAllocationCallbacks*        allocator,
-                                                           VkPipeline*                         pipelines) {
-	const auto result = g_real.vkCreateGraphicsPipelines(device, cache, count, infos, allocator, pipelines);
+VKAPI_ATTR VkResult VKAPI_CALL
+HookCreateGraphicsPipelines(VkDevice device, VkPipelineCache cache, uint32_t count,
+                            const VkGraphicsPipelineCreateInfo* infos,
+                            const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
+	const auto result =
+	    g_real.vkCreateGraphicsPipelines(device, cache, count, infos, allocator, pipelines);
 	if (pipelines == nullptr || infos == nullptr) {
 		return result;
 	}
 	std::lock_guard lock(g_pipeline_class_mutex);
 	for (uint32_t i = 0; i < count; ++i) {
-		if (pipelines[i] == VK_NULL_HANDLE || (infos[i].flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) != 0) {
+		if (pipelines[i] == VK_NULL_HANDLE ||
+		    (infos[i].flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) != 0) {
 			continue;
 		}
-		const auto pipeline_class = ClassOf(infos[i]);
+		const auto pipeline_class                  = ClassOf(infos[i]);
 		g_pipeline_class[HandleBits(pipelines[i])] = pipeline_class;
-		g_totals.pipelines[static_cast<size_t>(pipeline_class)].fetch_add(1, std::memory_order_relaxed);
+		g_totals.pipelines[static_cast<size_t>(pipeline_class)].fetch_add(
+		    1, std::memory_order_relaxed);
 	}
 	return result;
 }
@@ -1887,12 +1903,12 @@ void WriteCountsFile(uint64_t flips) {
 	if (failed || now - last_ns < 1'000'000'000ull) {
 		return;
 	}
-	last_ns         = now;
-	const auto dir  = HangTrace::OutputDirectory();
+	last_ns        = now;
+	const auto dir = HangTrace::OutputDirectory();
 	if (dir.empty()) {
 		return;
 	}
-	const auto path   = std::filesystem::path(dir) / "gpucounts.csv";
+	const auto  path   = std::filesystem::path(dir) / "gpucounts.csv";
 	static bool header = false;
 	auto*       file   = std::fopen(path.string().c_str(), header ? "ab" : "wb");
 	if (file == nullptr) {
@@ -1908,7 +1924,9 @@ void WriteCountsFile(uint64_t flips) {
 	const auto row  = [&](const char* kind, std::string_view name, uint64_t value) {
 		out += fmt::format("{},{},{},{},{}\n", t_ms, flips, kind, name, value);
 	};
-	const auto load = [](const std::atomic<uint64_t>& value) { return value.load(std::memory_order_relaxed); };
+	const auto load = [](const std::atomic<uint64_t>& value) {
+		return value.load(std::memory_order_relaxed);
+	};
 	row("total", "submit_calls", load(g_totals.submit_calls));
 	row("total", "submit_cbs", load(g_totals.submit_cbs));
 	row("total", "guest_cbs", g_totals.guest_cbs);
@@ -2305,8 +2323,8 @@ void OnGuestFlip() {
 	HangTrace::RecordGpuOpCounts(counts);
 	if (HangTrace::Enabled()) {
 		// One flip thread at a time publishes (flips are serialized by the presenter).
-		static std::mutex           totals_mutex;
-		std::lock_guard             lock(totals_mutex);
+		static std::mutex totals_mutex;
+		std::lock_guard   lock(totals_mutex);
 		g_totals.guest_cbs += counts.command_buffers;
 		g_totals.render_passes += counts.render_passes;
 		g_totals.rendering_ends += counts.rendering_ends;

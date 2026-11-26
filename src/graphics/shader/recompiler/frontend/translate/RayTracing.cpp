@@ -106,9 +106,10 @@ void Translator::IMAGE_BVH_INTERSECT_RAY(const Decoder::Instruction& inst) {
 }
 
 // PS5 Pro (Trinity) instructions, ported from upstream 5eab0ec73 (IMAGE_BVH8_INTERSECT_RAY) and
-// bfd4c34b8 (DS_BVH_STACK_PUSH8_POP1_RTN_B32). Upstream lowered them on its BvhIntersect design; here
-// BVH8 is one address-reading IR value lowered beside our BVH4 node test (spirvEmitterBvh8.cpp), and
-// the stack is plain IR over the LDS accesses every other DS instruction uses.
+// bfd4c34b8 (DS_BVH_STACK_PUSH8_POP1_RTN_B32). Upstream lowered them on its BvhIntersect design;
+// here BVH8 is one address-reading IR value lowered beside our BVH4 node test
+// (spirvEmitterBvh8.cpp), and the stack is plain IR over the LDS accesses every other DS
+// instruction uses.
 
 IR::U32 Translator::ReadBvh8Address(const Decoder::Instruction& inst, uint32_t index) {
 	// NSA (two dwords): the decoder expanded the ten addresses after VADDR, one per component.
@@ -134,9 +135,9 @@ void Translator::IMAGE_BVH8_INTERSECT_RAY(const Decoder::Instruction& inst) {
 	const auto base_hi =
 	    ir.BitwiseOr(ir.ShiftRightLogical(tsharp[0], u(24u)),
 	                 ir.ShiftLeftLogical(ir.BitwiseAnd(tsharp[1], u(0xffu)), u(8u)));
-	const auto resource   = GetAddressResource(base_lo, base_hi);
-	const auto descriptor = ir.Emit(IR::ValueOpcode::CompositeConstructU32x4,
-	                                {tsharp[0], tsharp[1], tsharp[2], tsharp[3]});
+	const auto              resource   = GetAddressResource(base_lo, base_hi);
+	const auto              descriptor = ir.Emit(IR::ValueOpcode::CompositeConstructU32x4,
+	                                             {tsharp[0], tsharp[1], tsharp[2], tsharp[3]});
 	std::array<IR::U32, 11> address;
 	for (uint32_t i = 0; i < address.size(); i++) {
 		address[i] = ReadBvh8Address(inst, i);
@@ -153,7 +154,7 @@ void Translator::IMAGE_BVH8_INTERSECT_RAY(const Decoder::Instruction& inst) {
 	                                  address[8], address[9], address[10], ir.GetExec()},
 	                                 AddMemoryInfo(memory, inst.pc));
 	const auto get         = [&](uint32_t index) {
-        return IR::U32(ir.Emit(IR::ValueOpcode::Bvh8Extract, {result, IR::Value(index)}));
+		return IR::U32(ir.Emit(IR::ValueOpcode::Bvh8Extract, {result, IR::Value(index)}));
 	};
 	const auto instance = ir.INotEqual(get(16u), u(0u));
 	for (uint32_t i = 0; i < 10u; i++) {
@@ -200,10 +201,10 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 	const auto     capacity       = u(capacity_value);
 	const auto     exec           = ir.GetExec();
 	IR::MemoryInfo memory;
-	memory.kind            = IR::ResourceKind::Lds;
-	memory.data_dwords     = 1u;
-	memory.data_bits       = 32u;
-	memory.component_count = 1u;
+	memory.kind             = IR::ResourceKind::Lds;
+	memory.data_dwords      = 1u;
+	memory.data_bits        = 32u;
+	memory.component_count  = 1u;
 	const auto byte_address = [&](IR::U32 control, IR::U32 ring) {
 		const auto index = ir.IAdd(bits(control, 15u, 14u), ir.ShiftLeftLogical(ring, u(5u)));
 		return ir.ShiftLeftLogical(index, u(2u));
@@ -212,8 +213,8 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 		return ir.IEqual(bits(node, 3u, 29u), u(0x1fffffffu));
 	};
 
-	auto       control = ReadU32(inst.src0);
-	const auto last    = ReadU32(inst.src1);
+	auto                   control = ReadU32(inst.src0);
+	const auto             last    = ReadU32(inst.src1);
 	std::array<IR::U32, 8> children;
 	for (uint32_t i = 0; i < children.size(); i++) {
 		children[i] = ReadU32(OffsetOperand(inst.src2, i));
@@ -231,7 +232,7 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 		const bool     high     = index >= 4u;
 		const auto     node     = children[index];
 		const auto     sentinel = is_sentinel(node);
-		const auto     marker   = ir.LogicalAnd(sentinel, ir.LogicalNot(high ? skip_high : skip_low));
+		const auto     marker = ir.LogicalAnd(sentinel, ir.LogicalNot(high ? skip_high : skip_low));
 		const auto     next_low =
 		    ir.LogicalOr(skip_low, ir.LogicalAnd(marker, ir.IEqual(bits(node, 1u, 1u), u(0u))));
 		const auto next_high =
@@ -251,10 +252,10 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 		        AddMemoryInfo(memory, inst.pc));
 		auto pushed =
 		    ir.BitwiseOr(control, ir.Select(ir.IEqual(count, capacity), u(1u << 30u), u(0u)));
-		pushed = ir.Select(ir.IEqual(parent, capacity), ir.BitwiseAnd(pushed, u(~(1u << 29u))),
-		                   pushed);
-		pushed = set(pushed, umin(ir.IAdd(count, u(1u)), capacity), 0u, 5u);
-		pushed = set(pushed, umin(ir.IAdd(parent, u(1u)), capacity), 5u, 5u);
+		pushed =
+		    ir.Select(ir.IEqual(parent, capacity), ir.BitwiseAnd(pushed, u(~(1u << 29u))), pushed);
+		pushed               = set(pushed, umin(ir.IAdd(count, u(1u)), capacity), 0u, 5u);
+		pushed               = set(pushed, umin(ir.IAdd(parent, u(1u)), capacity), 5u, 5u);
 		const auto next_ring = ir.IAdd(ring, u(1u));
 		pushed  = set(pushed, ir.Select(ir.IEqual(next_ring, capacity), u(0u), next_ring), 10u, 5u);
 		control = ir.Select(push, pushed, control);
@@ -265,11 +266,11 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 	}
 
 	// Pop.
-	const auto count      = bits(control, 0u, 5u);
-	const auto parent     = bits(control, 5u, 5u);
-	const auto ring       = bits(control, 10u, 5u);
-	const auto returning  = ir.LogicalAnd(ir.INotEqual(bits(control, 29u, 1u), u(0u)),
-	                                      ir.IEqual(parent, u(0u)));
+	const auto count  = bits(control, 0u, 5u);
+	const auto parent = bits(control, 5u, 5u);
+	const auto ring   = bits(control, 10u, 5u);
+	const auto returning =
+	    ir.LogicalAnd(ir.INotEqual(bits(control, 29u, 1u), u(0u)), ir.IEqual(parent, u(0u)));
 	control               = set(control, ir.Select(returning, u(1u), u(0u)), 31u, 1u);
 	control               = ir.Select(returning, ir.BitwiseAnd(control, u(~(1u << 29u))), control);
 	const auto overflow   = ir.INotEqual(bits(control, 30u, 1u), u(0u));
@@ -279,11 +280,11 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 	popped                = set(popped, ir.ISub(parent, u(1u)), 5u, 5u);
 	const auto previous_ring =
 	    ir.Select(ir.IEqual(ring, u(0u)), u(capacity_value - 1u), ir.ISub(ring, u(1u)));
-	popped            = set(popped, previous_ring, 10u, 5u);
-	const auto loaded = IR::U32(ir.Emit(
-	    IR::ValueOpcode::LoadSharedU32,
-	    {byte_address(popped, previous_ring), ir.LogicalAnd(exec, nonempty)},
-	    AddMemoryInfo(memory, inst.pc)));
+	popped = set(popped, previous_ring, 10u, 5u);
+	const auto loaded =
+	    IR::U32(ir.Emit(IR::ValueOpcode::LoadSharedU32,
+	                    {byte_address(popped, previous_ring), ir.LogicalAnd(exec, nonempty)},
+	                    AddMemoryInfo(memory, inst.pc)));
 	// Popping an instance node: the walk continues in the instance's parent BVH. Inside a nested
 	// instance the entries pushed since its boundary are dropped (and the stack marked overflowed).
 	const auto instance  = ir.IEqual(bits(loaded, 0u, 3u), u(6u));
@@ -292,8 +293,7 @@ void Translator::DS_BVH_STACK(const Decoder::Instruction& inst) {
 	const auto entered =
 	    ir.BitwiseOr(set(ir.Select(nested, discarded, popped), u(0u), 5u, 5u), u(1u << 29u));
 	popped = ir.Select(instance, entered, popped);
-	WriteOperand(inst.src0,
-	             ir.Select(nonempty, popped, ir.BitwiseAnd(control, u(0x5fffffffu))));
+	WriteOperand(inst.src0, ir.Select(nonempty, popped, ir.BitwiseAnd(control, u(0x5fffffffu))));
 	WriteOperand(inst.dst, ir.Select(nonempty, loaded, empty_node));
 }
 

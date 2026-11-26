@@ -19,18 +19,18 @@ layout(buffer_reference, std430, buffer_reference_align = 8) buffer RwU64 {
 	uint64_t q[];
 };
 
-const uint PSR_INVALID            = 0xffffffffu;
-const uint PSR_ROOT               = 37u;
-const uint PSR_FAKE_INSTANCE_OFF  = 0x80u;
-const uint PSR_INSTANCE_STRIDE    = 128u;
-const uint PSR_HEADER_FLAGS       = 24u;
-const uint PSR_HEADER_TRAP_BIT    = 1u << 18u;
-const uint PSR_HEADER_INSTANCES   = 48u;
-const uint PSR_CULL_DISABLE       = 1u << 24u;
-const uint PSR_FACING             = 1u << 25u;
-const uint PSR_BLAS_HIGH_MASK     = 0x003fffffu;
-const uint PSR_LEAF_LAST          = 1u << 31u;
-const uint PSR_FAKE_INDEX         = 0x00ffffffu;
+const uint PSR_INVALID           = 0xffffffffu;
+const uint PSR_ROOT              = 37u;
+const uint PSR_FAKE_INSTANCE_OFF = 0x80u;
+const uint PSR_INSTANCE_STRIDE   = 128u;
+const uint PSR_HEADER_FLAGS      = 24u;
+const uint PSR_HEADER_TRAP_BIT   = 1u << 18u;
+const uint PSR_HEADER_INSTANCES  = 48u;
+const uint PSR_CULL_DISABLE      = 1u << 24u;
+const uint PSR_FACING            = 1u << 25u;
+const uint PSR_BLAS_HIGH_MASK    = 0x003fffffu;
+const uint PSR_LEAF_LAST         = 1u << 31u;
+const uint PSR_FAKE_INDEX        = 0x00ffffffu;
 
 // Guest addresses reach device memory through a page table like the recompiler's BDA path
 // (BufferCache: 16 KiB pages, one device address per page). With no table, guest addresses are
@@ -130,16 +130,18 @@ bool PsrReadBox(uint64_t base, uint ptr, out PsrBox box) {
 			uint child_type  = PsrBits(n, 29u + 3u * c, 3u);
 			uint child_field = PsrBits(n, 41u + 2u * c, 2u);
 			box.child[c]     = child_field == 3u ? PSR_INVALID : ((running << 3u) | child_type);
-			running += child_type == 2u ? 4u
+			running += child_type == 2u                                             ? 4u
 			           : (child_type == 3u || child_type == 5u || child_type == 6u) ? 2u
 			                                                                        : 1u;
-			uint b      = 80u + 108u * c;
-			box.bmin[c] = vec3(uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b, 18u), ex, true)),
-			                   uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 18u, 18u), ey, true)),
-			                   uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 36u, 18u), ez, true)));
-			box.bmax[c] = vec3(uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 54u, 18u), ex, false)),
-			                   uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 72u, 18u), ey, false)),
-			                   uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 90u, 18u), ez, false)));
+			uint b = 80u + 108u * c;
+			box.bmin[c] =
+			    vec3(uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b, 18u), ex, true)),
+			         uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 18u, 18u), ey, true)),
+			         uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 36u, 18u), ez, true)));
+			box.bmax[c] =
+			    vec3(uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 54u, 18u), ex, false)),
+			         uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 72u, 18u), ey, false)),
+			         uintBitsToFloat(PsrSharedExpBound(PsrBits(n, b + 90u, 18u), ez, false)));
 		}
 		return true;
 	}
@@ -226,7 +228,8 @@ const uint PSR_FAN[12] = uint[](0u, 1u, 2u, 1u, 3u, 2u, 2u, 3u, 4u, 2u, 4u, 0u);
 
 vec3 PsrVertex(PsrWords n, uint slot) {
 	uint b = slot * 3u;
-	return vec3(uintBitsToFloat(n.w[b]), uintBitsToFloat(n.w[b + 1u]), uintBitsToFloat(n.w[b + 2u]));
+	return vec3(uintBitsToFloat(n.w[b]), uintBitsToFloat(n.w[b + 1u]),
+	            uintBitsToFloat(n.w[b + 2u]));
 }
 
 bool PsrReadTriangle(uint64_t base, uint ptr, out vec3 v0, out vec3 v1, out vec3 v2) {
@@ -313,10 +316,10 @@ uint PsrDivBits(uint a, uint b) {
 	bool     sticky = (n % uint64_t(mb)) != 0ul;
 	int      e      = xa - xb + 127 - (ge ? 0 : 1);
 	// Results below the normal range shift further right before rounding.
-	uint total    = 3u + uint(e >= 1 ? 0 : min(1 - e, 27));
-	uint mant     = q >> total;
-	uint lost     = q & ((1u << total) - 1u);
-	uint halfway  = 1u << (total - 1u);
+	uint total   = 3u + uint(e >= 1 ? 0 : min(1 - e, 27));
+	uint mant    = q >> total;
+	uint lost    = q & ((1u << total) - 1u);
+	uint halfway = 1u << (total - 1u);
 	if (lost > halfway || (lost == halfway && (sticky || (mant & 1u) != 0u))) {
 		mant += 1u;
 	}
@@ -331,7 +334,8 @@ float PsrDiv(float a, float b) {
 	return uintBitsToFloat(PsrDivBits(floatBitsToUint(a), floatBitsToUint(b)));
 }
 
-// The instruction's miss decision on the correctly rounded quotients t, u, v (and the rounded u + v).
+// The instruction's miss decision on the correctly rounded quotients t, u, v (and the rounded u +
+// v).
 bool PsrTriangleMissExact(float t_num, float t_den, float i_num, float j_num) {
 	float         t  = PsrDiv(t_num, t_den);
 	float         u  = PsrDiv(i_num, t_den);
@@ -362,9 +366,9 @@ bool PsrTriangleMiss(float t_num, float t_den, float i_num, float j_num) {
 	precise float du = u - 1.0;
 	precise float dv = v - 1.0;
 	precise float ds = uv - 1.0;
-	bool certain = !isinf(t) && !isnan(t) && !isinf(uv) && !isnan(uv) && abs(t) > tiny &&
-	               abs(u) > tiny && abs(v) > tiny && abs(du) > margin && abs(dv) > margin &&
-	               abs(ds) > margin * (1.0 + abs(u) + abs(v));
+	bool certain     = !isinf(t) && !isnan(t) && !isinf(uv) && !isnan(uv) && abs(t) > tiny &&
+	                   abs(u) > tiny && abs(v) > tiny && abs(du) > margin && abs(dv) > margin &&
+	                   abs(ds) > margin * (1.0 + abs(u) + abs(v));
 	if (!certain) {
 		return PsrTriangleMissExact(t_num, t_den, i_num, j_num);
 	}

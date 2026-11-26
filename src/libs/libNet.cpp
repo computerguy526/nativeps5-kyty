@@ -969,7 +969,8 @@ static int KYTY_SYSV_ABI Http2Term(int lib_http2_ctx_id) {
 	return 0;
 }
 
-static int KYTY_SYSV_ABI Http2GetMemoryPoolStats(int lib_http2_ctx_id, Http2MemoryPoolStats* stats) {
+static int KYTY_SYSV_ABI Http2GetMemoryPoolStats(int                   lib_http2_ctx_id,
+                                                 Http2MemoryPoolStats* stats) {
 	PRINT_NAME();
 
 	if (stats == nullptr) {
@@ -1925,8 +1926,8 @@ static int np_auth_complete_unavailable(NpAuthRequest* request, int user_id) {
 
 	request->state  = NpAuthRequestState::Complete;
 	// Emulating sign-in cannot provide a real authorization code or ID token.
-	request->result = Network::NpManager::IsSignedIn(user_id) ? NP_AUTH_ERROR_SERVICE_DOWN
-	                                                        : NP_ERROR_SIGNED_OUT;
+	request->result =
+	    Network::NpManager::IsSignedIn(user_id) ? NP_AUTH_ERROR_SERVICE_DOWN : NP_ERROR_SIGNED_OUT;
 
 	return request->async ? 0 : request->result;
 }
@@ -1949,9 +1950,9 @@ static int KYTY_SYSV_ABI NpAuthPollAsync(int req_id, int* result) {
 	return np_auth_wait_or_poll_async(req_id, result);
 }
 
-static int KYTY_SYSV_ABI NpAuthGetAuthorizationCodeV3(
-    int req_id, const NpAuthGetAuthorizationCodeParameterV3* param, void* auth_code,
-    int* issuer_id) {
+static int KYTY_SYSV_ABI
+NpAuthGetAuthorizationCodeV3(int req_id, const NpAuthGetAuthorizationCodeParameterV3* param,
+                             void* auth_code, int* issuer_id) {
 	PRINT_NAME();
 
 	LOGF("\t req_id    = %d\n", req_id);
@@ -1983,7 +1984,7 @@ static int KYTY_SYSV_ABI NpAuthGetAuthorizationCodeV3(
 }
 
 static int KYTY_SYSV_ABI NpAuthGetIdTokenV3(int req_id, const NpAuthGetIdTokenParameterV3* param,
-                                        void* id_token) {
+                                            void* id_token) {
 	PRINT_NAME();
 
 	LOGF("\t req_id   = %d\n", req_id);

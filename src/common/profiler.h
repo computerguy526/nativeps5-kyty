@@ -316,9 +316,9 @@ enum class FrameEvent : uint32_t {
 	// Rendering instances with ZPASS counting enabled that began while no occlusion dump pair was
 	// open, so no query was recorded (KYTY_OCCLUSION_GATE).
 	OcclusionScopesGated,
-	// Occlusion query recovery (OcclusionCounter::RecoverBeforePrepare; never expected): a query left
-	// open when the next scope began (ended then), and scopes not counted because the query pool
-	// could not be reduced.
+	// Occlusion query recovery (OcclusionCounter::RecoverBeforePrepare; never expected): a query
+	// left open when the next scope began (ended then), and scopes not counted because the query
+	// pool could not be reduced.
 	OcclusionUnendedScopes,
 	OcclusionCapacityDropped,
 	// DCC clear materialization of GPU-written metadata (TextureCache::MaterializeDccClear):
@@ -327,14 +327,14 @@ enum class FrameEvent : uint32_t {
 	DccGpuRecords,
 	DccGpuReuses,
 	DccCpuFallbacks,
-	DccFallbackDisabled,       // KYTY_DCC_GPU is not 1, or the device lacks the helper features
-	DccFallbackBinding,        // video-out binding (its clear key is not consumed)
-	DccFallbackShape,          // volume, mip/aspect/view shape, or native extent mismatch
-	DccFallbackFormat,         // no UINT storage alias of the view format's texel size
-	DccFallbackImageState,     // image not registered/GPU-owned, CPU/buffer dirty, alias/depth
+	DccFallbackDisabled,        // KYTY_DCC_GPU is not 1, or the device lacks the helper features
+	DccFallbackBinding,         // video-out binding (its clear key is not consumed)
+	DccFallbackShape,           // volume, mip/aspect/view shape, or native extent mismatch
+	DccFallbackFormat,          // no UINT storage alias of the view format's texel size
+	DccFallbackImageState,      // image not registered/GPU-owned, CPU/buffer dirty, alias/depth
 	DccFallbackMetadataAliased, // an image owns (overlaps) the metadata, or metadata overlaps data
-	DccFallbackUnsupported,    // native image lacks storage/mutable usage, or size limits
-	DccFallbackAlignment,      // canonical metadata buffer offset is not 4-byte aligned
+	DccFallbackUnsupported,     // native image lacks storage/mutable usage, or size limits
+	DccFallbackAlignment,       // canonical metadata buffer offset is not 4-byte aligned
 	// Texture streaming (TextureCache, KYTY_TEXTURE_PARTIAL_UPLOAD): refreshes that uploaded only
 	// the mip rows/levels overlapping dirty chunks, their tiled bytes, the bytes a full refresh
 	// would have added, chunk-tracked refreshes that still had to upload the whole image
@@ -355,7 +355,8 @@ enum class FrameEvent : uint32_t {
 	ImageWritebackSkippedBytes,
 	// Overlapped texture images kept alive instead of freed (KYTY_TEXTURE_OVERLAP_KEEP_FRAMES).
 	TextureOverlapKeeps,
-	// TileManager scratch buffers reused from its pool or newly allocated (KYTY_TILER_SCRATCH_POOL).
+	// TileManager scratch buffers reused from its pool or newly allocated
+	// (KYTY_TILER_SCRATCH_POOL).
 	TilerScratchPoolHits,
 	TilerScratchPoolMisses,
 	// Texture refresh staging copies handed to the StagingCopier worker, and their bytes
@@ -375,7 +376,8 @@ enum class FrameEvent : uint32_t {
 	// changed since the previous one (KYTY_TEXEL_SYNC_SKIP).
 	TexelImageSyncDownloads,
 	TexelImageSyncSkips,
-	// Texel-read syncs of an image over stale GPU-dirty buffer bytes (KYTY_IMAGE_SUPERSEDES_GPU_DIRTY).
+	// Texel-read syncs of an image over stale GPU-dirty buffer bytes
+	// (KYTY_IMAGE_SUPERSEDES_GPU_DIRTY).
 	TexelImageSyncOverGpuDirty,
 	// Colour metadata draws (fast clear eliminate, FMASK/DCC decompress) consumed without drawing,
 	// and targets of them resolved to materialize a DCC clear (KYTY_CB_METADATA_MATERIALIZE).
@@ -421,7 +423,8 @@ enum class FrameEvent : uint32_t {
 	WaitRegMemDeferredLabel,
 	WaitRegMemDeferredLabelFlushes,
 	// Completion-runner (priority) operations run, and broadcasts to WaitPriorityOperations /
-	// DrainPriorityOperations waiters (KYTY_PRIORITY_WAKE_BATCH: only at a tick boundary with waiters).
+	// DrainPriorityOperations waiters (KYTY_PRIORITY_WAKE_BATCH: only at a tick boundary with
+	// waiters).
 	PriorityOperationsRun,
 	PriorityWaiterWakeups,
 	// CP scheduler with every queue suspended (KYTY_CP_WAKEUPS): short retry spins, timed sleeps,
@@ -437,11 +440,12 @@ enum class FrameEvent : uint32_t {
 	// written at completion instead of draining the GPU (KYTY_GDS_EOP_MODE=defer).
 	GdsEopReads,
 	GdsEopReadsDeferred,
-	// Early submits because the GPU had finished all submitted work (KYTY_IDLE_FLUSH_DRAWS), outside
-	// and inside an active rendering instance.
+	// Early submits because the GPU had finished all submitted work (KYTY_IDLE_FLUSH_DRAWS),
+	// outside and inside an active rendering instance.
 	IdleFlushes,
 	IdleFlushesInPass,
-	// Graphics slices ended early so runnable async compute queues could run (KYTY_GFX_SLICE_DRAWS).
+	// Graphics slices ended early so runnable async compute queues could run
+	// (KYTY_GFX_SLICE_DRAWS).
 	GfxSliceYields,
 	// End-of-pipe data writes Kyty used to drop (KYTY_EOP_DROPPED_LABELS): graphics-queue events
 	// with INT_SEL=1, and RELEASE_MEM with INT_SEL=4 and DATA_SEL 1/2/3.
@@ -706,7 +710,8 @@ enum class FrameEvent : uint32_t {
 	// the code part of the certificate (KYTY_DRAW_PREP_CODE_CERT, shader.cpp).
 	ShaderCodeHashCertified,
 	// SET_*_REG_INDIRECT packets that kept the draw-prep window open because their register pairs
-	// were clean (KYTY_DRAW_PREP_REG_INDIRECT_WINDOW); the others count as DrawPrepFenceRegIndirect.
+	// were clean (KYTY_DRAW_PREP_REG_INDIRECT_WINDOW); the others count as
+	// DrawPrepFenceRegIndirect.
 	DrawPrepRegIndirectKept,
 	// KYTY_TILER_IMAGE_DIRECT_BC: direct uploads into block-compressed images (also counted in
 	// TilerImageUploads/UploadBytes).
@@ -752,7 +757,8 @@ enum class FrameEvent : uint32_t {
 	MeshIndirectVerifyMismatches,
 	MeshIndirectStatus,
 	// KYTY_SET_REUSE_FRESH: descriptor-set commits that skipped the reuse lookup because the set
-	// refers to a shader-data or flattened-SRT upload made for this draw (no earlier set can hold it).
+	// refers to a shader-data or flattened-SRT upload made for this draw (no earlier set can hold
+	// it).
 	DescriptorSetReuseSkippedFresh,
 	// KYTY_BUFFER_RANGE_MEMO (bufferCache.h): read-only synchronizations skipped because the
 	// range's tracker bits did not change since one that found nothing to upload; small read
@@ -801,8 +807,8 @@ enum class FrameEvent : uint32_t {
 	// KYTY_DEPTH_LAYOUT_STABLE: draws whose unsampled depth target kept its current layout where
 	// the per-draw layout would have transitioned it (and ended the rendering instance).
 	DepthLayoutTransitionsAvoided,
-	// KYTY_LOD_STATS_PLAIN_VARIANT: draws of GET_LOD_STATS-instrumented pixel programs that used the
-	// plain (feedback-free) variant because no image had a counter, and those that needed the
+	// KYTY_LOD_STATS_PLAIN_VARIANT: draws of GET_LOD_STATS-instrumented pixel programs that used
+	// the plain (feedback-free) variant because no image had a counter, and those that needed the
 	// instrumented one; verify mode: canary checks at GET_LOD_STATS and counters found changed.
 	LodStatsPlainDraws,
 	LodStatsInstrumentedDraws,
@@ -920,12 +926,14 @@ enum class FrameEvent : uint32_t {
 	EqueueCoalescedDataChanges,
 	// KYTY_DRAW_PREP_HOT: parked (cold) draw-prep workers woken because the unclaimed backlog grew.
 	DrawPrepColdWakes,
-	// KYTY_SERVE_IN_WAITS bit 1: service commands run while the commit thread waited for a held head.
+	// KYTY_SERVE_IN_WAITS bit 1: service commands run while the commit thread waited for a held
+	// head.
 	DrawPrepServedInWait,
 	// KYTY_RENDER_STATE_FAST (colorRenderTarget.h): prepared vertex inputs copied as their used
 	// prefixes, or in full (a count out of range); draws whose target entries were not
-	// value-initialised first; stage preparations swapped member by member. VerifyChecks/Mismatches:
-	// KYTY_RENDER_STATE_VERIFY comparisons with the full copy, swap or resolution.
+	// value-initialised first; stage preparations swapped member by member.
+	// VerifyChecks/Mismatches: KYTY_RENDER_STATE_VERIFY comparisons with the full copy, swap or
+	// resolution.
 	RenderStateVertexPartialCopies,
 	RenderStateVertexFullCopies,
 	RenderStateMinimalResets,
@@ -1040,10 +1048,10 @@ enum class FrameEvent : uint32_t {
 	// bytes that gave their clean tracked pages the transition of a guest write fault.
 	HostBackingWritesTracked,
 	// KYTY_BINDING_MEMO_CROSS_EPOCH (BufferCache::ObtainReadBinding): cache-buffer memos from an
-	// earlier sync epoch reused (included in BindingEpochMemoCachedHits) or refused (CPU-dirty pages
-	// or a racing transition), and why the other lookups missed: no memo of that range in the slot,
-	// a tracker transition in the range's regions, a changed buffer structure or stream tick, or an
-	// earlier epoch that could not be crossed (stream memos, or the switch off).
+	// earlier sync epoch reused (included in BindingEpochMemoCachedHits) or refused (CPU-dirty
+	// pages or a racing transition), and why the other lookups missed: no memo of that range in the
+	// slot, a tracker transition in the range's regions, a changed buffer structure or stream tick,
+	// or an earlier epoch that could not be crossed (stream memos, or the switch off).
 	BindingEpochMemoCrossHits,
 	BindingEpochMemoCrossRejects,
 	BindingEpochMemoMissSlot,
@@ -1064,9 +1072,9 @@ enum class FrameEvent : uint32_t {
 	PriorityWaitSpinHits,
 	// Placement samples (cpuPlacement.h): the CP, and off its reserved core; guest threads, and on
 	// the physical core of the CP's latest sample; draw-prep workers and service threads, and on
-	// that core; the recorder off its reserved core (cp+recorder). Threads found with a hard affinity
-	// other than the process's, those confined to reserved cores, and those moved to the general
-	// processors (KYTY_CPU_RESERVE_REPIN), each thread counted once.
+	// that core; the recorder off its reserved core (cp+recorder). Threads found with a hard
+	// affinity other than the process's, those confined to reserved cores, and those moved to the
+	// general processors (KYTY_CPU_RESERVE_REPIN), each thread counted once.
 	CpuPlacementCpSamples,
 	CpuPlacementCpOffCore,
 	CpuPlacementGuestSamples,
@@ -1140,8 +1148,8 @@ enum class FrameEvent : uint32_t {
 	//                  or the image is unregistered or a video-out surface;
 	//   Dcc*         - the DCC decision was not a provable no-op: a recorded-fill clear was applied
 	//                  (Clear), the native inspection (Native) or the readback (Fallback) decided
-	//                  GPU-owned bytes, guest bytes decided (Guest), or the metadata pages could not
-	//                  be captured (Pages);
+	//                  GPU-owned bytes, guest bytes decided (Guest), or the metadata pages could
+	//                  not be captured (Pages);
 	//   Cmask*       - the CMASK decision: GPU-owned bytes without a recorded fill (Native), or any
 	//                  other non-provable decision (guest bytes, a clear, fills).
 	TargetRecordNotFirstPage,
@@ -1244,13 +1252,16 @@ enum class FrameEvent : uint32_t {
 	VariantPlanSkips,
 	// KYTY_BDA_STORE_LOG: stores a BDA-writing dispatch logged for pages without a cache buffer.
 	BdaLoggedStores,
-	// KYTY_DISCARDED_TARGET_SKIP: new targets not initialized from a discarded target's stale bytes.
+	// KYTY_DISCARDED_TARGET_SKIP: new targets not initialized from a discarded target's stale
+	// bytes.
 	TextureDiscardedTargetSkips,
-	// KYTY_UNMAP_DRAIN_SKIP: guest unmaps that skipped the full GPU drain (nothing GPU-owned there).
+	// KYTY_UNMAP_DRAIN_SKIP: guest unmaps that skipped the full GPU drain (nothing GPU-owned
+	// there).
 	UnmapDrainSkips,
 	// KYTY_CLAMP_RANGE_BITMAP: ClampRangeSize answers from the committed-page bitmap.
 	ClampRangeBitmapHits,
-	// KYTY_WRITE_DATA_GPU_RELEASE: GPU-timeline WRITE_DATA bytes taken out of the GPU-written ranges.
+	// KYTY_WRITE_DATA_GPU_RELEASE: GPU-timeline WRITE_DATA bytes taken out of the GPU-written
+	// ranges.
 	WriteDataGpuReleased,
 	Count,
 };

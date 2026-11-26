@@ -1216,9 +1216,9 @@ bool TileGetRenderTargetSize(uint32_t width, uint32_t height, uint32_t pitch,
 	return true;
 }
 
-bool TileGetDccSize(uint32_t width, uint32_t height, uint32_t slices,
-                    uint32_t bytes_per_element, uint32_t levels, Prospero::TileMode tile,
-                    TileSizeAlign& total_size, uint32_t num_fragments_log2, TileSizeOffset* mips) {
+bool TileGetDccSize(uint32_t width, uint32_t height, uint32_t slices, uint32_t bytes_per_element,
+                    uint32_t levels, Prospero::TileMode tile, TileSizeAlign& total_size,
+                    uint32_t num_fragments_log2, TileSizeOffset* mips) {
 	total_size = {};
 	// Mipmapped DCC (upstream a5cfdcfd3) is reported only to callers that ask for the per-level
 	// layout (mips != nullptr); existing single-mip callers keep the levels == 1 rule.
@@ -1235,8 +1235,9 @@ bool TileGetDccSize(uint32_t width, uint32_t height, uint32_t slices,
 		const uint32_t block_width  = 1u << ((coverage_bits + 1u) / 2u);
 		const uint32_t block_height = 1u << (coverage_bits / 2u);
 		const uint64_t blocks_x = (static_cast<uint64_t>(width) + block_width - 1u) / block_width;
-		const uint64_t blocks_y = (static_cast<uint64_t>(height) + block_height - 1u) / block_height;
-		const uint64_t blocks   = blocks_x * blocks_y;
+		const uint64_t blocks_y =
+		    (static_cast<uint64_t>(height) + block_height - 1u) / block_height;
+		const uint64_t blocks = blocks_x * blocks_y;
 		if (blocks > UINT32_MAX / 4096u / slices) {
 			return false;
 		}
@@ -1262,7 +1263,8 @@ bool TileGetDccSize(uint32_t width, uint32_t height, uint32_t slices,
 	     level-- > 0;) {
 		const uint64_t size = uint64_t {ShiftCeil(width, level + (coverage_bits + 1u) / 2u)} *
 		                      ShiftCeil(height, level + coverage_bits / 2u) * 4096u;
-		mips[level] = {.size = static_cast<uint32_t>(size), .offset = static_cast<uint32_t>(slice_size)};
+		mips[level]         = {.size   = static_cast<uint32_t>(size),
+		                       .offset = static_cast<uint32_t>(slice_size)};
 		slice_size += size;
 	}
 	if (slice_size == 0 || slice_size > UINT32_MAX / slices) {
@@ -1406,11 +1408,12 @@ void TileGetTextureTotalSize(Prospero::BufferFormat format, uint32_t width, uint
 			if (Common::SkipInvalidEnabled()) {
 				static std::atomic_bool logged {false};
 				if (Common::LogOnce(logged)) {
-					std::printf("Warning: 3D texture without a known layout left unsized "
-					            "(KYTY_SKIP_INVALID; logged once): format=%u tile=%u extent=%ux%ux%u "
-					            "levels=%u\n",
-					            static_cast<uint32_t>(format), static_cast<uint32_t>(tile), width,
-					            height, depth, levels);
+					std::printf(
+					    "Warning: 3D texture without a known layout left unsized "
+					    "(KYTY_SKIP_INVALID; logged once): format=%u tile=%u extent=%ux%ux%u "
+					    "levels=%u\n",
+					    static_cast<uint32_t>(format), static_cast<uint32_t>(tile), width, height,
+					    depth, levels);
 				}
 				total_size = {};
 				return;

@@ -89,7 +89,7 @@ constexpr auto MakeOpcodeNames() {
 	names[IT_INCREMENT_DE_COUNTER]      = "IT_INCREMENT_DE_COUNTER";
 	names[IT_WAIT_ON_CE_COUNTER]        = "IT_WAIT_ON_CE_COUNTER";
 	names[IT_WAIT_ON_DE_COUNTER_DIFF]   = "IT_WAIT_ON_DE_COUNTER_DIFF";
-	names[IT_DRAW_INDEX_MULTI_INST]     = "IT_DRAW_INDEX_MULTI_INST";
+	names[IT_DRAW_INDEX_MULTI_INST]      = "IT_DRAW_INDEX_MULTI_INST";
 	names[IT_DISPATCH_DRAW]             = "IT_DISPATCH_DRAW";
 	names[IT_GET_LOD_STATS]             = "IT_GET_LOD_STATS";
 	names[IT_WAIT_REG_MEM_64]           = "IT_WAIT_REG_MEM_64";

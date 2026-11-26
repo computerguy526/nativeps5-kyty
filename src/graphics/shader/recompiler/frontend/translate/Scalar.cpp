@@ -28,7 +28,8 @@ void Translator::EmitScalar(const Decoder::Instruction& inst) {
 			return;
 		case O::S_SETREG_B32:
 			// hwreg id = SIMM16[5:0]; 25 = POPS_PACKER opens a POPS (primitive-ordered pixel
-			// shading) section (KYTY_POPS_INTERLOCK, ShaderInfo::pops). The write itself stays a no-op.
+			// shading) section (KYTY_POPS_INTERLOCK, ShaderInfo::pops). The write itself stays a
+			// no-op.
 			if (program.stage == ShaderType::Pixel && (inst.src1.value & 0x3fu) == 25u) {
 				program.info.pops = true;
 			}

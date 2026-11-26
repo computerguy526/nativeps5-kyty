@@ -76,7 +76,7 @@ struct MemoryInfo {
 	bool                    formatted                                             = false;
 	bool                    image_has_mip                                         = false;
 	bool                    image_r128                                            = false;
-	bool                    image_cube                                            = false; // MIMG DIM is CUBE.
+	bool                    image_cube = false; // MIMG DIM is CUBE.
 	bool                    idxen                                                 = false;
 	bool                    offen                                                 = false;
 	bool                    coherent                                              = false;
@@ -91,14 +91,16 @@ struct MemoryInfo {
 	// bound V# or one the shader computed, which may run as one 64-bit access.
 	[[nodiscard]] bool IsCoherentBufferPair(ValueOpcode opcode) const {
 		return (kind == ResourceKind::Buffer || kind == ResourceKind::IndirectBuffer) &&
-		       (opcode == ValueOpcode::LoadBufferU32x2 || opcode == ValueOpcode::StoreBufferU32x2) &&
+		       (opcode == ValueOpcode::LoadBufferU32x2 ||
+		        opcode == ValueOpcode::StoreBufferU32x2) &&
 		       coherent && !typed && !formatted && data_bits == 32u;
 	}
 
 	[[nodiscard]] bool SupportsIndirectBufferLoad(ValueOpcode opcode) const {
 		// ReadConstBuffer: one dword of an S_BUFFER_LOAD (no formats, RDNA2 ISA 7.2.1). A formatted
-		// X load decodes the V#'s format in the shader (upstream a55a28380, LoadIndirectFormattedX):
-		// Miles' hit callbacks read vertex data with BUFFER_LOAD_FORMAT_X through a material's V#.
+		// X load decodes the V#'s format in the shader (upstream a55a28380,
+		// LoadIndirectFormattedX): Miles' hit callbacks read vertex data with BUFFER_LOAD_FORMAT_X
+		// through a material's V#.
 		return !typed && data_bits == 32u &&
 		       (formatted ? opcode == ValueOpcode::LoadBufferU32 ||
 		                        opcode == ValueOpcode::LoadBufferU32x2 ||
@@ -185,9 +187,9 @@ struct ExportInfo {
 	bool operator==(const ExportInfo& other) const = default;
 };
 
-// KYTY_BUFFER_OOB_MODES: BufferResource::packed_stride flag (above ShaderBufferResource::PackedStride's
-// bits): the V# has OOB_SELECT 0 and a stride (no swizzle), so an offset at or past the stride is out
-// of range (RDNA2 ISA Table 35).
+// KYTY_BUFFER_OOB_MODES: BufferResource::packed_stride flag (above
+// ShaderBufferResource::PackedStride's bits): the V# has OOB_SELECT 0 and a stride (no swizzle), so
+// an offset at or past the stride is out of range (RDNA2 ISA Table 35).
 inline constexpr uint32_t BufferOobOffsetCheck = 1u << 23u;
 
 struct BufferResource {
@@ -218,11 +220,12 @@ enum class ImageMipMode { None, Dynamic };
 
 // ImageResource::table_access bits (recorded with KYTY_SAMPLED_TABLE_READS only).
 enum ImageTableAccess : uint32_t {
-	ImageTableAccessRead        = 1u << 0u, // ImageRead (IMAGE_LOAD*)
-	ImageTableAccessSample      = 1u << 1u, // ImageSampleRaw without LOD, clamp, gradients or offset
-	ImageTableAccessSampleExtra = 1u << 2u, // ImageSampleRaw with an LOD or clamp after its coordinates
-	ImageTableAccessWrite       = 1u << 3u, // ImageWrite
-	ImageTableAccessOther       = 1u << 4u, // gathers, queries, atomics, samples with gradients/offsets
+	ImageTableAccessRead   = 1u << 0u, // ImageRead (IMAGE_LOAD*)
+	ImageTableAccessSample = 1u << 1u, // ImageSampleRaw without LOD, clamp, gradients or offset
+	ImageTableAccessSampleExtra =
+	    1u << 2u,                     // ImageSampleRaw with an LOD or clamp after its coordinates
+	ImageTableAccessWrite = 1u << 3u, // ImageWrite
+	ImageTableAccessOther = 1u << 4u, // gathers, queries, atomics, samples with gradients/offsets
 };
 
 constexpr uint32_t ShaderImageIdentitySwizzle = 0x00000facu;
@@ -250,18 +253,18 @@ struct ImageResource {
 	bool                          r128              = false;
 	// Sampled through the bindless image arrays (descriptor set 1) at the slot the translation
 	// table gives for the handle's key; the mapping offset locates the heap's region and size.
-	bool                          bindless          = false;
+	bool bindless = false;
 	// KYTY_RUNTIME_IMAGES, with bindless: the handle holds the eight T# dwords the shader loaded at
 	// run time (from a material record, say). The shader looks the T# up in the runtime image
 	// table (set 1) and decodes its size from the dwords; one resource serves every such T#.
-	bool                          runtime           = false;
+	bool runtime = false;
 	// KYTY_FLOAT_STORE_CLAMP: a storage image of a 16-bit float format whose float stores clamp
 	// finite values beyond the half range to the largest half, as the guest GPU's conversion.
-	bool                          clamp_half_float  = false;
+	bool clamp_half_float = false;
 	// KYTY_SAMPLED_TABLE_READS: the kinds of instruction that access the image (ImageTableAccess
 	// bits, ResourceTracking). A GPU-selected table lets its candidates differ in dimension only
 	// when every access takes its own candidate's coordinates. 0 without the switch.
-	uint32_t                      table_access      = 0;
+	uint32_t                      table_access               = 0;
 	uint32_t                      indirect_root     = NoIndirectImage;
 	uint32_t                      indirect_mapping_offset   = 0;
 	uint32_t                      indirect_search_iterations = 0;
@@ -321,8 +324,8 @@ enum class TessellationAttribute {
 	PatchInput,
 	Factor,
 	// KYTY_TESS_MERGED_CARRY: the VGPRs a split merged LS+HS program carries from its LS part into
-	// its HS part (ShaderTessellationInputInfo::carried_vgprs): the LS stage's per-vertex output and
-	// the HS stage's per-control-point input, one u32 each, packed four per vec4 after the LS
+	// its HS part (ShaderTessellationInputInfo::carried_vgprs): the LS stage's per-vertex output
+	// and the HS stage's per-control-point input, one u32 each, packed four per vec4 after the LS
 	// outputs; address = 4 * the register's rank in the set.
 	CarriedOutput,
 	CarriedInput
@@ -649,20 +652,20 @@ constexpr uint32_t CallPartitionParamTargetLo = 2;
 constexpr uint32_t CallPartitionParamTargetHi = 3;
 constexpr uint32_t CallPartitionReportSlots   = 512;
 constexpr uint32_t PartitionDropVariable      = 0x7ffffff0u;
-// Call-split callee programs (CallSplitPlan.cpp BuildCode): the lanes whose call matched the callee the
-// dispatch runs (SplitTargetCompare). A shaded-only SaveChanged stores just these lanes.
-constexpr uint32_t SplitShadedVariable        = 0x7ffffff1u;
+// Call-split callee programs (CallSplitPlan.cpp BuildCode): the lanes whose call matched the callee
+// the dispatch runs (SplitTargetCompare). A shaded-only SaveChanged stores just these lanes.
+constexpr uint32_t SplitShadedVariable = 0x7ffffff1u;
 // Set by the translation of a program with partition markers (thread of that translation).
-void SetPartitionDropLanes(bool value) noexcept;
+void               SetPartitionDropLanes(bool value) noexcept;
 [[nodiscard]] bool PartitionDropLanes() noexcept;
 
 struct BindingLayout {
 	uint32_t                       push_data_start_dword = PushData::NoStart;
 	uint32_t                       dispatch_thread_dword = PushData::NoStart;
-	// Call-split programs (CallSplit.h): CallStateDwords push dwords (state base, wave list and wave
-	// header addresses, wave stride, callee address), after the dispatch thread extents.
-	uint32_t                       call_state_dword = PushData::NoStart;
-	static constexpr uint32_t      CallStateDwords  = 9;
+	// Call-split programs (CallSplit.h): CallStateDwords push dwords (state base, wave list and
+	// wave header addresses, wave stride, callee address), after the dispatch thread extents.
+	uint32_t                       call_state_dword    = PushData::NoStart;
+	static constexpr uint32_t      CallStateDwords     = 9;
 	uint32_t                       memory_offset_dword = 0;
 	uint32_t                       memory_offset_count = 0;
 	// Per-draw GET_LOD_STATS field of each image (one dword each, LodStatsReport::ImageField:
@@ -695,9 +698,9 @@ struct ShaderInfo {
 	// GT7 material variant brings its own statically resolved descriptors). A shader past a limit
 	// fails translation (its draws are skipped), so only such shaders change; the fixed arrays
 	// sized by these are small (ResourceMaterialization, the emitter's buffer offsets).
-	static constexpr uint32_t MaxBuffers      = 256;
-	static constexpr uint32_t MaxImages       = 512;
-	static constexpr uint32_t MaxSamplers     = 128;
+	static constexpr uint32_t MaxBuffers  = 256;
+	static constexpr uint32_t MaxImages   = 512;
+	static constexpr uint32_t MaxSamplers = 128;
 
 	std::vector<BufferResource>      buffers;
 	std::vector<ImageResource>       images;
@@ -719,18 +722,18 @@ struct ShaderInfo {
 	// writes through BDA). Implies uses_dma and has_address_writes; the renderer settles each of
 	// its dispatches synchronously.
 	bool                             bda_writes         = false;
-	// KYTY_POPS_INTERLOCK: a pixel shader that writes hwreg(POPS_PACKER) with S_SETREG_B32, the start
-	// of a primitive-ordered pixel shading section (RDNA2 ISA Table 16; REPORT-ISA-2 M1).
-	bool                             pops               = false;
+	// KYTY_POPS_INTERLOCK: a pixel shader that writes hwreg(POPS_PACKER) with S_SETREG_B32, the
+	// start of a primitive-ordered pixel shading section (RDNA2 ISA Table 16; REPORT-ISA-2 M1).
+	bool pops = false;
 	// KYTY_RT_HW (RayTracingPatch.h): the native ray tracing sites of the program (bit per site)
 	// and their guest TLAS: the header address is the 64-bit value at the base of the V# at user
 	// data pointer `ray_query_user_sgpr` + `ray_query_vsharp_offset`, plus
 	// `ray_query_header_offset`; the root node `ray_query_root`.
-	uint32_t                         ray_query_sites         = 0;
-	uint32_t                         ray_query_user_sgpr     = 0;
-	uint32_t                         ray_query_vsharp_offset = 0;
-	uint32_t                         ray_query_header_offset = 0;
-	uint32_t                         ray_query_root          = 0;
+	uint32_t ray_query_sites         = 0;
+	uint32_t ray_query_user_sgpr     = 0;
+	uint32_t ray_query_vsharp_offset = 0;
+	uint32_t ray_query_header_offset = 0;
+	uint32_t ray_query_root          = 0;
 
 	bool operator==(const ShaderInfo& other) const = default;
 };
@@ -762,7 +765,7 @@ struct DescriptorSource {
 			// KYTY_SELECTOR_BITSET (upstream 145578ac0, 914a3bb4b): stride / 4 bitmap words per
 			// record (four or eight); the keys are first + key_count - 1 - each set-bit rank of the
 			// words OR-ed over the buffer.
-			bool     bitset = false;
+			bool bitset = false;
 			// KYTY_SELECTOR_EXCLUDED (upstream f297c0bfe): a guard keeps this key from the read.
 			std::optional<uint32_t>  excluded;
 			std::optional<MaskRanks> ranks;
@@ -777,10 +780,10 @@ struct DescriptorSource {
 		uint32_t table_record_bytes = 0;
 		bool     table_scalar = false;
 		// No enumeration: the shader looks the key up in the bindless translation table.
-		bool     bindless     = false;
+		bool bindless = false;
 		// KYTY_RUNTIME_IMAGES: no table either; the T# is a value the shader loads
 		// (ImageResource::runtime).
-		bool     runtime      = false;
+		bool runtime = false;
 		// KYTY_WORKGROUP_IMAGES (upstream de3ed905c): nonzero, the workgroup keys are
 		// (selector_first + ID) * workgroup_multiplier >> workgroup_shift (shift 32..63).
 		uint8_t  workgroup_shift = 0;
@@ -788,18 +791,19 @@ struct DescriptorSource {
 		// Bindless through a record pointer: the key selects a table_stride-byte record of the
 		// table, whose 64-bit word at this byte offset points at the T# (table_offset bytes past
 		// it). UINT32_MAX: the T# itself is in the table, 32 bytes per key.
-		uint32_t record_pointer  = UINT32_MAX;
+		uint32_t record_pointer = UINT32_MAX;
 		// Nested heap (with a record pointer): the T# is in a heap whose V# is read at byte
 		// nested_heap of the buffer whose V# is at byte nested_vsharp past the record pointer; the
 		// shader's key is record * nested_keys + the key into that heap (table_offset and 32-byte
 		// T#s from its base). nested_vsharp UINT32_MAX: no nesting.
-		uint32_t nested_vsharp   = UINT32_MAX;
-		uint32_t nested_heap     = 0;
-		uint32_t nested_keys     = 0;
+		uint32_t nested_vsharp        = UINT32_MAX;
+		uint32_t nested_heap          = 0;
+		uint32_t nested_keys          = 0;
 		uint32_t workgroup_multiplier = 0;
-		// Address tables: keys 0 .. key_count - 1 (from selector_first when set, KYTY_SELECTOR_BITSET's
-		// reversed ranges). A scalar material selector (KYTY_SELECTOR_BITSCAN /
-		// KYTY_SELECTOR_SHARED_LIST): the records 0 .. key_count - 1 instead of every offset.
+		// Address tables: keys 0 .. key_count - 1 (from selector_first when set,
+		// KYTY_SELECTOR_BITSET's reversed ranges). A scalar material selector
+		// (KYTY_SELECTOR_BITSCAN / KYTY_SELECTOR_SHARED_LIST): the records 0 .. key_count - 1
+		// instead of every offset.
 		Value    key_count;
 		// With workgroup_axis: a runtime base the shader adds to the workgroup ID (empty: none).
 		// Without it, on an address table: the first key (KYTY_SELECTOR_BITSET).
@@ -913,32 +917,33 @@ struct BufferWriteRange {
 //   lie in table_bits. A scalar load reads [V# base, V# base + V# size). A vector load reads at
 //   index * stride + offset + immediate + soffset (+ lane with ADD_TID) and extent bytes past it.
 struct DmaReadAccess {
-	// MeshIndex: the mesh prologue's index fetch (Translate.cpp: base = draw dwords 4-5, read only for
-	// input vertices below the dispatch's count): the reach is the draw's index range, from the host.
+	// MeshIndex: the mesh prologue's index fetch (Translate.cpp: base = draw dwords 4-5, read only
+	// for input vertices below the dispatch's count): the reach is the draw's index range, from the
+	// host.
 	enum class Kind : uint8_t { Window, IndirectScalar, IndirectVector, MeshIndex };
-	Kind     kind          = Kind::Window;
-	bool     scalar        = false; // Window: ResourceKind::ScalarAddress (bits 1:0 cleared)
-	uint8_t  table_words   = 0;
-	uint32_t base_low      = 0;
-	uint32_t base_high     = 0;
-	uint32_t offset        = 0;
-	int32_t  immediate     = 0;
-	uint32_t extent        = 0;
-	uint32_t table_offset  = 0;
-	uint32_t table_bits    = 0;
+	Kind     kind            = Kind::Window;
+	bool     scalar          = false; // Window: ResourceKind::ScalarAddress (bits 1:0 cleared)
+	uint8_t  table_words     = 0;
+	uint32_t base_low        = 0;
+	uint32_t base_high       = 0;
+	uint32_t offset          = 0;
+	int32_t  immediate       = 0;
+	uint32_t extent          = 0;
+	uint32_t table_offset    = 0;
+	uint32_t table_bits      = 0;
 	int32_t  table_immediate = 0;
 	std::array<uint32_t, 4> words {};
-	uint32_t index         = 0;
-	uint32_t soffset       = 0;
+	uint32_t                index   = 0;
+	uint32_t                soffset = 0;
 
 	bool operator==(const DmaReadAccess& other) const = default;
 };
 
 struct DmaReadReach {
 	// Every guest memory read of the program through a device address is one of `accesses`.
-	bool                       bounded = false;
+	bool bounded = false;
 	// Why not (DmaUnbounded); 0 when bounded or when the program has no device-address access.
-	uint32_t                   reason  = 0;
+	uint32_t                   reason = 0;
 	std::vector<DmaReadAccess> accesses;
 
 	bool operator==(const DmaReadReach& other) const = default;

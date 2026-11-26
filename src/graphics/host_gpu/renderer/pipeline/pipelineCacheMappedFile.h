@@ -8,7 +8,8 @@ namespace Libs::Graphics {
 
 // KYTY_PCACHE_SAVE_MAPPED (PipelineCache::WriteDriverCache; based on Senaxx/KytyPS5 2708521dc's
 // Common::MappedFile): a new file of a fixed size, written through a shared mapping. Its pages
-// belong to the file, so they are not charged to the commit limit as the same bytes on the heap are.
+// belong to the file, so they are not charged to the commit limit as the same bytes on the heap
+// are.
 class PipelineCacheMappedFile final {
 public:
 	PipelineCacheMappedFile() = default;
@@ -16,10 +17,11 @@ public:
 	PipelineCacheMappedFile(const PipelineCacheMappedFile&)            = delete;
 	PipelineCacheMappedFile& operator=(const PipelineCacheMappedFile&) = delete;
 
-	// Creates or replaces the file with `size` bytes and maps it; an open file is closed empty first.
+	// Creates or replaces the file with `size` bytes and maps it; an open file is closed empty
+	// first.
 	bool Create(const std::filesystem::path& name, uint64_t size);
-	// Flushes, unmaps, cuts the file to final_size bytes and closes it. False when not open or when a
-	// step failed.
+	// Flushes, unmaps, cuts the file to final_size bytes and closes it. False when not open or when
+	// a step failed.
 	bool Close(uint64_t final_size);
 
 	[[nodiscard]] uint8_t* Data() const noexcept { return m_data; }

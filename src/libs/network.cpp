@@ -298,7 +298,7 @@ int Network::PoolGetMemoryPoolStats(int memid, Net::NetMemoryPoolStats* stats) {
 	}
 
 	// Pool allocations are not tracked; only the configured size is available.
-	*stats = {};
+	*stats           = {};
 	stats->pool_size = static_cast<uint64_t>(m_pools[memid].size);
 	return OK;
 }
@@ -4451,7 +4451,7 @@ int KYTY_SYSV_ABI NpGetAccountAge(int req_id, int user_id, uint8_t* age) {
 	}
 
 	std::lock_guard lock(g_np_request_mutex);
-	auto* request = np_get_request_locked(req_id);
+	auto*           request = np_get_request_locked(req_id);
 	if (request == nullptr) {
 		return np_error_request_not_found;
 	}

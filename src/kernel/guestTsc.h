@@ -59,8 +59,7 @@ class Scale {
 public:
 	Scale() = default;
 
-	Scale(uint64_t host_frequency, uint64_t guest_frequency, uint64_t base) noexcept
-	    : m_base(base) {
+	Scale(uint64_t host_frequency, uint64_t guest_frequency, uint64_t base) noexcept: m_base(base) {
 		if (host_frequency == 0 || guest_frequency == 0 || host_frequency == guest_frequency) {
 			return;
 		}

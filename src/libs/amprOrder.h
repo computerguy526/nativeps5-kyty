@@ -58,8 +58,8 @@ inline void Mapped(uint64_t va, uint64_t size, uint64_t seq) {
 
 // The parts of [va, va + size) an unmap from submission seq may remove: all of it except what a
 // later submission mapped. Those parts stop being tracked.
-inline std::vector<std::pair<uint64_t, uint64_t>> UnmapPieces(uint64_t va, uint64_t size, uint64_t seq,
-                                                       uint64_t* kept_bytes) {
+inline std::vector<std::pair<uint64_t, uint64_t>> UnmapPieces(uint64_t va, uint64_t size,
+                                                              uint64_t seq, uint64_t* kept_bytes) {
 	std::vector<std::pair<uint64_t, uint64_t>> pieces;
 	*kept_bytes = 0;
 	std::scoped_lock lock(g_mutex);

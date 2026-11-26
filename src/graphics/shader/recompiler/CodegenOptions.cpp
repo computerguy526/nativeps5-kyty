@@ -69,7 +69,7 @@ const char* FastMathDenyProblem(const char* value, std::vector<uint64_t>* hashes
 	if (value[0] == '\0') {
 		return "KYTY_FAST_MATH_DENY is set but empty (no deny list)";
 	}
-	bool ok = false;
+	bool ok   = false;
 	auto list = ReadHashFile(value, &ok);
 	if (!ok) {
 		return "KYTY_FAST_MATH_DENY names a file that cannot be read (no deny list)";
@@ -99,7 +99,7 @@ CodegenOptions FromEnvironment() {
 	options.movrel_switch      = EnvFlag("KYTY_MOVREL_SWITCH", options.movrel_switch);
 	options.uniform_lane_reads = EnvFlag("KYTY_UNIFORM_LANE_READS", options.uniform_lane_reads);
 	options.short_f32_helpers  = EnvFlag("KYTY_SHORT_F32_HELPERS", options.short_f32_helpers);
-	options.vs_lane_wrap32     = EnvFlag("KYTY_VS_LANE_WRAP32", options.vs_lane_wrap32);
+	options.vs_lane_wrap32       = EnvFlag("KYTY_VS_LANE_WRAP32", options.vs_lane_wrap32);
 	options.fast_float_min_max = EnvFlag("KYTY_FAST_FMINMAX", options.fast_float_min_max);
 	options.native_float_min_max = EnvFlag("KYTY_NATIVE_FMINMAX", options.native_float_min_max);
 	options.relaxed_float        = EnvFlag("KYTY_RELAXED_FLOAT", options.relaxed_float);
@@ -117,16 +117,19 @@ CodegenOptions FromEnvironment() {
 	    EnvFlag("KYTY_LOD_STATS_EARLY_TESTS", options.lod_stats_early_tests) &&
 	    LodStatsPlainVariantOn(std::getenv("KYTY_LOD_STATS_PLAIN_VARIANT"));
 	options.robust_buffer_loads = EnvFlag("KYTY_ROBUST_BUFFER_LOADS", options.robust_buffer_loads);
-	options.robust_buffer_stores = EnvFlag("KYTY_ROBUST_BUFFER_STORES", options.robust_buffer_stores);
+	options.robust_buffer_stores =
+	    EnvFlag("KYTY_ROBUST_BUFFER_STORES", options.robust_buffer_stores);
 	options.branchless_loads    = EnvFlag("KYTY_BRANCHLESS_LOADS", options.branchless_loads);
 	options.branchless_lds      = EnvFlag("KYTY_BRANCHLESS_LDS", options.branchless_lds);
 	options.flat_aperture_bvh   = EnvFlag("KYTY_FLAT_APERTURE_BVH", options.flat_aperture_bvh);
 	options.lane_local          = EnvFlag("KYTY_LANE_LOCAL", options.lane_local);
 	options.readonly_buffers    = EnvFlag("KYTY_READONLY_BUFFERS", options.readonly_buffers);
-	options.native_f16     = EnvFlag("KYTY_NATIVE_F16", options.native_f16);
-	options.f32_flush_host = EnvFlagVendor("KYTY_F32_FLUSH_HOST", options.f32_flush_host);
+	options.native_f16          = EnvFlag("KYTY_NATIVE_F16", options.native_f16);
+	options.f32_flush_host      = EnvFlagVendor("KYTY_F32_FLUSH_HOST", options.f32_flush_host);
 	if (const auto* glc = std::getenv("KYTY_COHERENT_GLC_ONLY"); glc != nullptr && glc[0] != '\0') {
-		options.coherent_glc_only = std::strcmp(glc, "2") == 0 ? 2u : std::strcmp(glc, "0") == 0 ? 0u : 1u;
+		options.coherent_glc_only = std::strcmp(glc, "2") == 0   ? 2u
+		                            : std::strcmp(glc, "0") == 0 ? 0u
+		                                                         : 1u;
 	}
 	options.interp_modes = EnvFlag("KYTY_INTERP_MODES", options.interp_modes);
 	options.sample_offsets = EnvFlag("KYTY_SAMPLE_OFFSETS", options.sample_offsets);
@@ -146,9 +149,8 @@ CodegenOptions FromEnvironment() {
 	options.ps_helper_atomics_skip =
 	    EnvFlag("KYTY_PS_HELPER_ATOMICS_SKIP", options.ps_helper_atomics_skip);
 	options.volatile_loads         = EnvFlag("KYTY_VOLATILE_LOADS", options.volatile_loads);
-	options.indirect_coherent = EnvFlag("KYTY_INDIRECT_COHERENT", options.indirect_coherent);
-	options.buffer_pair_atomic =
-	    EnvFlag("KYTY_BUFFER_PAIR_ATOMIC", options.buffer_pair_atomic);
+	options.indirect_coherent      = EnvFlag("KYTY_INDIRECT_COHERENT", options.indirect_coherent);
+	options.buffer_pair_atomic     = EnvFlag("KYTY_BUFFER_PAIR_ATOMIC", options.buffer_pair_atomic);
 	options.indirect_format_compact =
 	    EnvFlag("KYTY_INDIRECT_FORMAT_COMPACT", options.indirect_format_compact);
 	options.indirect_format_inline =
@@ -158,61 +160,69 @@ CodegenOptions FromEnvironment() {
 	}
 	options.cfg_clone_exits   = EnvFlag("KYTY_CFG_CLONE_EXITS", options.cfg_clone_exits);
 	options.cfg_clone_regions = EnvFlag("KYTY_CFG_CLONE_REGIONS", options.cfg_clone_regions);
-	options.indirect_raw_outline = EnvFlag("KYTY_INDIRECT_RAW_OUTLINE", options.indirect_raw_outline);
-	options.huge_helper_outline  = EnvFlag("KYTY_HUGE_HELPER_OUTLINE", options.huge_helper_outline);
-	options.null_buffer_share    = EnvFlag("KYTY_NULL_BUFFER_SHARE", options.null_buffer_share);
-	options.bounded_key_images   = EnvFlag("KYTY_BOUNDED_KEY_IMAGES", options.bounded_key_images);
+	options.indirect_raw_outline =
+	    EnvFlag("KYTY_INDIRECT_RAW_OUTLINE", options.indirect_raw_outline);
+	options.huge_helper_outline = EnvFlag("KYTY_HUGE_HELPER_OUTLINE", options.huge_helper_outline);
+	options.null_buffer_share   = EnvFlag("KYTY_NULL_BUFFER_SHARE", options.null_buffer_share);
+	options.bounded_key_images  = EnvFlag("KYTY_BOUNDED_KEY_IMAGES", options.bounded_key_images);
 	options.drop_graphics_indirect_stores =
 	    EnvFlag("KYTY_DROP_GRAPHICS_INDIRECT_STORES", options.drop_graphics_indirect_stores);
-	options.indirect_format_stores = EnvFlag("KYTY_INDIRECT_FORMAT_STORES", options.indirect_format_stores);
-	options.graphics_bda_writes    = EnvFlag("KYTY_GRAPHICS_BDA_WRITES", options.graphics_bda_writes);
+	options.indirect_format_stores =
+	    EnvFlag("KYTY_INDIRECT_FORMAT_STORES", options.indirect_format_stores);
+	options.graphics_bda_writes = EnvFlag("KYTY_GRAPHICS_BDA_WRITES", options.graphics_bda_writes);
 	options.indirect_format_stores_log =
 	    EnvFlag("KYTY_INDIRECT_FORMAT_STORES_LOG", options.indirect_format_stores_log);
-	options.r128_table_images    = EnvFlag("KYTY_R128_TABLE_IMAGES", options.r128_table_images);
-	options.indirect_format_d16  = EnvFlag("KYTY_INDIRECT_FORMAT_D16", options.indirect_format_d16);
-	options.heap_key_mask     = EnvFlag("KYTY_HEAP_KEY_MASK", options.heap_key_mask);
-	options.wave64_active_zero =
-	    EnvFlag("KYTY_WAVE64_ACTIVE_ZERO", options.wave64_active_zero);
-	options.lane2_share = EnvFlag("KYTY_LANE2_SHARE", options.lane2_share);
-	options.known_bits_masks = EnvFlag("KYTY_KNOWN_BITS_MASKS", options.known_bits_masks);
-	options.gds_m0_base      = EnvFlag("KYTY_GDS_M0_BASE", options.gds_m0_base);
-	options.lds_atomic_order = EnvFlag("KYTY_LDS_ATOMIC_ORDER", options.lds_atomic_order);
-	options.split_lds_write_sync = EnvFlag("KYTY_SPLIT_LDS_WRITE_SYNC", options.split_lds_write_sync);
-	options.storage_table_loose  = EnvFlag("KYTY_STORAGE_TABLE_LOOSE", options.storage_table_loose);
-	options.sampled_table_reads  = EnvFlag("KYTY_SAMPLED_TABLE_READS", options.sampled_table_reads);
-	options.scalar_load_groups   = EnvFlag("KYTY_SCALAR_LOAD_GROUPS", options.scalar_load_groups);
-	options.srt_uniform          = EnvFlag("KYTY_SRT_UNIFORM", options.srt_uniform);
-	options.null_image_keep_dim  = EnvFlag("KYTY_NULL_IMAGE_KEEP_DIM", options.null_image_keep_dim);
-	options.storage_swizzle_canon = EnvFlag("KYTY_STORAGE_SWIZZLE_CANON", options.storage_swizzle_canon);
+	options.r128_table_images   = EnvFlag("KYTY_R128_TABLE_IMAGES", options.r128_table_images);
+	options.indirect_format_d16 = EnvFlag("KYTY_INDIRECT_FORMAT_D16", options.indirect_format_d16);
+	options.heap_key_mask       = EnvFlag("KYTY_HEAP_KEY_MASK", options.heap_key_mask);
+	options.wave64_active_zero  = EnvFlag("KYTY_WAVE64_ACTIVE_ZERO", options.wave64_active_zero);
+	options.lane2_share         = EnvFlag("KYTY_LANE2_SHARE", options.lane2_share);
+	options.known_bits_masks    = EnvFlag("KYTY_KNOWN_BITS_MASKS", options.known_bits_masks);
+	options.gds_m0_base         = EnvFlag("KYTY_GDS_M0_BASE", options.gds_m0_base);
+	options.lds_atomic_order    = EnvFlag("KYTY_LDS_ATOMIC_ORDER", options.lds_atomic_order);
+	options.split_lds_write_sync =
+	    EnvFlag("KYTY_SPLIT_LDS_WRITE_SYNC", options.split_lds_write_sync);
+	options.storage_table_loose = EnvFlag("KYTY_STORAGE_TABLE_LOOSE", options.storage_table_loose);
+	options.sampled_table_reads = EnvFlag("KYTY_SAMPLED_TABLE_READS", options.sampled_table_reads);
+	options.scalar_load_groups  = EnvFlag("KYTY_SCALAR_LOAD_GROUPS", options.scalar_load_groups);
+	options.srt_uniform         = EnvFlag("KYTY_SRT_UNIFORM", options.srt_uniform);
+	options.null_image_keep_dim = EnvFlag("KYTY_NULL_IMAGE_KEEP_DIM", options.null_image_keep_dim);
+	options.storage_swizzle_canon =
+	    EnvFlag("KYTY_STORAGE_SWIZZLE_CANON", options.storage_swizzle_canon);
 	options.raw_small_sint_storage =
 	    EnvFlag("KYTY_RAW_SMALL_SINT_STORAGE", options.raw_small_sint_storage);
-	options.point_integer_images = EnvFlag("KYTY_POINT_INTEGER_IMAGES", options.point_integer_images);
-	options.compare_sampler_split = EnvFlag("KYTY_COMPARE_SAMPLER_SPLIT", options.compare_sampler_split);
-	options.waterfall_active_leader = EnvFlag("KYTY_WATERFALL_ACTIVE_LEADER", options.waterfall_active_leader);
+	options.point_integer_images =
+	    EnvFlag("KYTY_POINT_INTEGER_IMAGES", options.point_integer_images);
+	options.compare_sampler_split =
+	    EnvFlag("KYTY_COMPARE_SAMPLER_SPLIT", options.compare_sampler_split);
+	options.waterfall_active_leader =
+	    EnvFlag("KYTY_WATERFALL_ACTIVE_LEADER", options.waterfall_active_leader);
 	options.wave64_present_exec = EnvFlag("KYTY_WAVE64_PRESENT_EXEC", options.wave64_present_exec);
-	options.embedded_fetch_no_sgpr_offset = EnvFlag("KYTY_EMBEDDED_FETCH_NO_SGPR_OFFSET", options.embedded_fetch_no_sgpr_offset);
+	options.embedded_fetch_no_sgpr_offset =
+	    EnvFlag("KYTY_EMBEDDED_FETCH_NO_SGPR_OFFSET", options.embedded_fetch_no_sgpr_offset);
 	options.mov_no_float_mods = EnvFlag("KYTY_MOV_NO_FLOAT_MODS", options.mov_no_float_mods);
-	options.pops_interlock = EnvFlag("KYTY_POPS_INTERLOCK", options.pops_interlock);
+	options.pops_interlock    = EnvFlag("KYTY_POPS_INTERLOCK", options.pops_interlock);
 	options.barrier_acquire_stores =
 	    EnvFlag("KYTY_BARRIER_ACQUIRE_STORES", options.barrier_acquire_stores);
 	options.format_missing_canonical =
 	    EnvFlag("KYTY_FORMAT_MISSING_CANON", options.format_missing_canonical);
 	options.indirect_format_all = EnvFlag("KYTY_INDIRECT_FORMAT_ALL", options.indirect_format_all);
-	options.format_store_dst_sel = EnvFlag("KYTY_FORMAT_STORE_DST_SEL", options.format_store_dst_sel);
-	options.image_glc_coherent = EnvFlag("KYTY_IMAGE_GLC_COHERENT", options.image_glc_coherent);
+	options.format_store_dst_sel =
+	    EnvFlag("KYTY_FORMAT_STORE_DST_SEL", options.format_store_dst_sel);
+	options.image_glc_coherent  = EnvFlag("KYTY_IMAGE_GLC_COHERENT", options.image_glc_coherent);
 	options.implicit_lod_stages = EnvFlag("KYTY_IMPLICIT_LOD_STAGES", options.implicit_lod_stages);
-	options.buffer_oob_modes = EnvFlag("KYTY_BUFFER_OOB_MODES", options.buffer_oob_modes);
-	options.srgb8_decode = EnvFlag("KYTY_SRGB8_DECODE", options.srgb8_decode);
-	options.depth_bits_read = EnvFlag("KYTY_DEPTH_BITS_READ", options.depth_bits_read);
+	options.buffer_oob_modes    = EnvFlag("KYTY_BUFFER_OOB_MODES", options.buffer_oob_modes);
+	options.srgb8_decode        = EnvFlag("KYTY_SRGB8_DECODE", options.srgb8_decode);
+	options.depth_bits_read     = EnvFlag("KYTY_DEPTH_BITS_READ", options.depth_bits_read);
 	options.bindless_3d_as_array =
 	    EnvFlag("KYTY_BINDLESS_3D_AS_ARRAY", options.bindless_3d_as_array);
-	options.runtime_images   = EnvFlag("KYTY_RUNTIME_IMAGES", options.runtime_images);
+	options.runtime_images = EnvFlag("KYTY_RUNTIME_IMAGES", options.runtime_images);
 	options.runtime_int_images =
 	    options.runtime_images && EnvFlag("KYTY_RUNTIME_INT_IMAGES", options.runtime_int_images);
-	options.bindless_strided = EnvFlag("KYTY_BINDLESS_STRIDE", options.bindless_strided);
+	options.bindless_strided  = EnvFlag("KYTY_BINDLESS_STRIDE", options.bindless_strided);
 	options.bindless_samplers = EnvFlag("KYTY_BINDLESS_SAMPLERS", options.bindless_samplers);
-	options.workgroup_images = EnvFlag("KYTY_WORKGROUP_IMAGES", options.workgroup_images);
-	options.table_key_bounds = EnvFlag("KYTY_TABLE_KEY_BOUNDS", options.table_key_bounds);
+	options.workgroup_images  = EnvFlag("KYTY_WORKGROUP_IMAGES", options.workgroup_images);
+	options.table_key_bounds  = EnvFlag("KYTY_TABLE_KEY_BOUNDS", options.table_key_bounds);
 	{
 		const auto selector_bit = [&](const char* name, uint8_t bit) {
 			if (EnvFlag(name, (options.selector_keys & bit) != 0u)) {
@@ -235,10 +245,10 @@ CodegenOptions FromEnvironment() {
 	if (const auto* cap = std::getenv("KYTY_CALL_LOOP_CAP"); cap != nullptr && cap[0] != '\0') {
 		options.call_loop_cap = static_cast<uint32_t>(std::strtoul(cap, nullptr, 0));
 	}
-	options.call_loops           = EnvFlag("KYTY_CALL_LOOPS", options.call_loops);
-	options.call_waterfall_clear = EnvFlag("KYTY_CALL_WATERFALL_CLEAR", options.call_waterfall_clear);
-	options.storage_length_zero =
-	    EnvFlag("KYTY_STORAGE_LENGTH_ZERO", options.storage_length_zero);
+	options.call_loops = EnvFlag("KYTY_CALL_LOOPS", options.call_loops);
+	options.call_waterfall_clear =
+	    EnvFlag("KYTY_CALL_WATERFALL_CLEAR", options.call_waterfall_clear);
+	options.storage_length_zero = EnvFlag("KYTY_STORAGE_LENGTH_ZERO", options.storage_length_zero);
 	if (const auto* list = std::getenv("KYTY_BDA_FORCE_SHADERS"); list != nullptr) {
 		std::string_view text(list);
 		while (!text.empty()) {
@@ -287,7 +297,7 @@ CodegenOptions FromEnvironment() {
 	options.srt_image_reach   = EnvFlag("KYTY_SRT_IMAGE_REACH", options.srt_image_reach);
 	options.shader_calls      = EnvFlag("KYTY_SHADER_CALLS", options.shader_calls);
 	options.call_trace_wave32 = EnvFlag("KYTY_CALL_TRACE_WAVE32", options.call_trace_wave32);
-	options.realtime_clock   = EnvFlag("KYTY_REALTIME_CLOCK", options.realtime_clock);
+	options.realtime_clock    = EnvFlag("KYTY_REALTIME_CLOCK", options.realtime_clock);
 	options.dpp_skip_inactive = EnvFlag("KYTY_DPP_SKIP_INACTIVE", options.dpp_skip_inactive);
 	options.split_dpp_lane    = EnvFlag("KYTY_SPLIT_DPP_LANE", options.split_dpp_lane);
 	options.mov_int_mods      = EnvFlag("KYTY_MOV_INT_MODS", options.mov_int_mods);
@@ -303,7 +313,7 @@ CodegenOptions FromEnvironment() {
 	options.fold_lane_masks   = EnvFlag("KYTY_FOLD_LANE_MASKS", options.fold_lane_masks);
 	options.vs_full_wave      = EnvFlagVendor("KYTY_VS_FULL_WAVE", options.vs_full_wave);
 	options.int_mrt_outputs   = EnvFlag("KYTY_INT_MRT_OUTPUTS", options.int_mrt_outputs);
-	options.ufloat_store_rtz = EnvFlag("KYTY_UFLOAT_STORE_RTZ", options.ufloat_store_rtz);
+	options.ufloat_store_rtz  = EnvFlag("KYTY_UFLOAT_STORE_RTZ", options.ufloat_store_rtz);
 	if (const auto* cap = std::getenv("KYTY_DISPATCHER_CAP"); cap != nullptr && cap[0] != '\0') {
 		options.dispatcher_cap = static_cast<uint32_t>(std::strtoul(cap, nullptr, 0));
 	}
@@ -320,7 +330,8 @@ CodegenOptions FromEnvironment() {
 	{
 		const auto* mode        = std::getenv("KYTY_BDA_ACCESS_TAGS");
 		options.bda_access_tags = mode != nullptr && mode[0] != '\0' && std::strcmp(mode, "0") != 0;
-		options.bda_tags_gpu_count = options.bda_access_tags && EnvFlag("KYTY_BDA_TAGS_GPU_COUNT", false);
+		options.bda_tags_gpu_count =
+		    options.bda_access_tags && EnvFlag("KYTY_BDA_TAGS_GPU_COUNT", false);
 	}
 	options.rt_stub      = EnvFlag("KYTY_RT_STUB", options.rt_stub);
 	options.fract_clamp  = EnvFlag("KYTY_FRACT_CLAMP", options.fract_clamp);
@@ -371,14 +382,14 @@ CodegenOptions FromEnvironment() {
 		options.ps_per_vertex = EnvFlag("KYTY_PS_PER_VERTEX", options.ps_per_vertex);
 	}
 	options.clip_guard    = EnvFlag("KYTY_CLIP_GUARD", options.clip_guard);
-	options.lds_slots     = EnvFlagVendor("KYTY_LDS_SLOTS", options.lds_slots);
+	options.lds_slots         = EnvFlagVendor("KYTY_LDS_SLOTS", options.lds_slots);
 	options.float_store_clamp = EnvFlag("KYTY_FLOAT_STORE_CLAMP", options.float_store_clamp);
 	options.vte_cntl          = EnvFlag("KYTY_VTE_CNTL", options.vte_cntl);
 	options.snapshot_written_guard =
 	    EnvFlag("KYTY_SNAPSHOT_WRITTEN_GUARD", options.snapshot_written_guard);
-	options.tess_indexed = EnvFlag("KYTY_TESS_INDEXED", options.tess_indexed);
+	options.tess_indexed   = EnvFlag("KYTY_TESS_INDEXED", options.tess_indexed);
 	options.tess_single_cp = EnvFlag("KYTY_TESS_SINGLE_CP", options.tess_single_cp);
-	options.ps_exec_words = EnvFlag("KYTY_PS_EXEC_WORDS", options.ps_exec_words);
+	options.ps_exec_words  = EnvFlag("KYTY_PS_EXEC_WORDS", options.ps_exec_words);
 	// "off" (or "0") skips that stage's shader-side denormal flushes; unset, "exact" or anything
 	// else keeps them.
 	const auto flush_off = [](const char* name) {
@@ -404,17 +415,21 @@ CodegenOptions FromEnvironment() {
 		options.fast_math_vs = value >= 3;
 	}
 	options.fast_math_vs = EnvFlag("KYTY_FAST_MATH_VS", options.fast_math_vs);
-	// ovguard: a deny list that does not load leaves EVERY shader on fast math under KYTY_GPU_ACCURACY != high, so the Metal override keys
-	// move and every override silently misses (a box ran whole gate series with a laptop path here). Loud, once, at start-up; nps5 run
+	// ovguard: a deny list that does not load leaves EVERY shader on fast math under
+	// KYTY_GPU_ACCURACY != high, so the Metal override keys move and every override silently misses
+	// (a box ran whole gate series with a laptop path here). Loud, once, at start-up; nps5 run
 	// refuses such a composition unless KYTY_FAST_MATH_DENY_OPTIONAL=1.
 	if (const auto* path = std::getenv("KYTY_FAST_MATH_DENY"); path != nullptr) {
 		const auto* problem = FastMathDenyProblem(path, &options.fast_math_deny);
 		const auto* acc     = std::getenv("KYTY_GPU_ACCURACY");
-		const auto* fm       = std::getenv("KYTY_FAST_MATH");
-		const bool  not_high = (acc != nullptr && (std::strcmp(acc, "normal") == 0 || std::strcmp(acc, "low") == 0)) ||
-		                       (fm != nullptr && std::strtoul(fm, nullptr, 10) >= 1);
+		const auto* fm      = std::getenv("KYTY_FAST_MATH");
+		const bool  not_high =
+		    (acc != nullptr && (std::strcmp(acc, "normal") == 0 || std::strcmp(acc, "low") == 0)) ||
+		    (fm != nullptr && std::strtoul(fm, nullptr, 10) >= 1);
 		if (problem != nullptr && not_high) {
-			std::fprintf(stderr, "[fastmath] ERROR: %s [%s]: fast math (KYTY_GPU_ACCURACY=%s) applies to every shader, Metal override keys will miss; deny=missing\n",
+			std::fprintf(stderr,
+			             "[fastmath] ERROR: %s [%s]: fast math (KYTY_GPU_ACCURACY=%s) applies to "
+			             "every shader, Metal override keys will miss; deny=missing\n",
 			             problem, path, acc != nullptr ? acc : "-");
 		}
 	}
@@ -422,11 +437,13 @@ CodegenOptions FromEnvironment() {
 	    path != nullptr && path[0] != '\0') {
 		options.fast_math_allow = ReadHashFile(path, &options.fast_math_allow_set);
 	}
-	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_DENY"); path != nullptr && path[0] != '\0') {
+	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_DENY");
+	    path != nullptr && path[0] != '\0') {
 		bool ok                   = false;
 		options.wave64_warps_deny = ReadHashFile(path, &ok);
 	}
-	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_ALLOW"); path != nullptr && path[0] != '\0') {
+	if (const auto* path = std::getenv("KYTY_WAVE64_WARPS_ALLOW");
+	    path != nullptr && path[0] != '\0') {
 		// A missing file leaves the set flag false (no list), as for KYTY_FAST_MATH_ALLOW.
 		options.wave64_warps_allow = ReadHashFile(path, &options.wave64_warps_allow_set);
 	}
@@ -632,8 +649,10 @@ bool Wave64WarpsShaderAllowed(uint64_t shader_hash) {
 	const auto& options = Storage();
 	return options.wave64_warps &&
 	       (!options.wave64_warps_allow_set ||
-	        std::binary_search(options.wave64_warps_allow.begin(), options.wave64_warps_allow.end(), shader_hash)) &&
-	       !std::binary_search(options.wave64_warps_deny.begin(), options.wave64_warps_deny.end(), shader_hash);
+	        std::binary_search(options.wave64_warps_allow.begin(), options.wave64_warps_allow.end(),
+	                           shader_hash)) &&
+	       !std::binary_search(options.wave64_warps_deny.begin(), options.wave64_warps_deny.end(),
+	                           shader_hash);
 }
 
 bool SelectivePrecisionApplies(uint64_t shader_hash, const char* stage) {
@@ -670,7 +689,7 @@ void ApplyHostVendor(uint32_t vendor_id) {
 	constexpr uint32_t NvidiaVendorId = 0x10deu;
 	const bool         nvidia         = vendor_id == NvidiaVendorId;
 	auto&              options        = Storage();
-	const auto         apply          = [nvidia, vendor_id](const char* name, bool& option, bool deferred) {
+	const auto         apply = [nvidia, vendor_id](const char* name, bool& option, bool deferred) {
 		if (!EnvNamesNvidia(name)) {
 			return false;
 		}
@@ -693,10 +712,10 @@ bool F32FlushHostAwaitsSelfTest() {
 }
 
 void SettleF32FlushHost(uint8_t classes) {
-	Storage().f32_flush_host         = (classes & F32FlushClassAll) != 0u;
+	Storage().f32_flush_host = (classes & F32FlushClassAll) != 0u;
 	Storage().f32_flush_host_classes =
 	    static_cast<uint8_t>(classes & (F32FlushClassAll | F32FlushClassNoPreserve16));
-	g_f32_flush_host_self_test       = false;
+	g_f32_flush_host_self_test = false;
 }
 
 namespace {
@@ -716,19 +735,20 @@ void NoteFormattedSelectorMissing(uint64_t shader_hash, uint32_t format, uint32_
                                   const char* where) {
 	// Counted per compiled formatted channel; the first 32 distinct (program, format, dst_sel)
 	// combinations are named.
-	static std::atomic<uint64_t> total {0};
-	static std::atomic<uint32_t> named {0};
-	static std::mutex            mutex;
+	static std::atomic<uint64_t>                                 total {0};
+	static std::atomic<uint32_t>                                 named {0};
+	static std::mutex                                            mutex;
 	static std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> seen;
-	const auto count = total.fetch_add(1, std::memory_order_relaxed) + 1;
+	const auto       count = total.fetch_add(1, std::memory_order_relaxed) + 1;
 	std::scoped_lock lock(mutex);
-	const auto key = std::make_tuple(shader_hash, format, swizzle);
+	const auto       key = std::make_tuple(shader_hash, format, swizzle);
 	if (std::find(seen.begin(), seen.end(), key) != seen.end()) {
 		return;
 	}
 	if (named.load(std::memory_order_relaxed) >= 32u) {
 		if ((count & (count - 1u)) == 0u) {
-			LOGF("Format: dst_sel past the format's channels, %" PRIu64 " formatted channels so far\n",
+			LOGF("Format: dst_sel past the format's channels, %" PRIu64
+			     " formatted channels so far\n",
 			     count);
 		}
 		return;

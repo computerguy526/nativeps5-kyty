@@ -20,7 +20,8 @@ struct Fsr3Frame {
 	float    jitter[2] {};
 	float    prev_jitter[2] {};
 	float    mv_scale[2] {};
-	uint32_t word31 = 0; // FSR 3.1 frameIndex (unverified: Fsr3ResetTracker only trusts it once it counts up)
+	uint32_t word31 =
+	    0; // FSR 3.1 frameIndex (unverified: Fsr3ResetTracker only trusts it once it counts up)
 };
 
 [[nodiscard]] inline bool ParseFsr3Constants(const uint32_t* w, size_t bytes, Fsr3Frame& out) {
@@ -32,25 +33,27 @@ struct Fsr3Frame {
 			return false;
 		}
 	}
-	if (w[0] > w[8] || w[1] > w[9] || w[4] != w[10] || w[5] != w[11] || w[0] > w[4] || w[1] > w[5]) {
+	if (w[0] > w[8] || w[1] > w[9] || w[4] != w[10] || w[5] != w[11] || w[0] > w[4] ||
+	    w[1] > w[5]) {
 		return false;
 	}
 	float f[24];
 	std::memcpy(f, w, sizeof(f));
-	if (!std::isfinite(f[16]) || !std::isfinite(f[17]) || std::fabs(f[16]) > 1.0f || std::fabs(f[17]) > 1.0f ||
-	    !std::isfinite(f[20]) || !std::isfinite(f[21]) || f[20] == 0.0f || f[21] == 0.0f) {
+	if (!std::isfinite(f[16]) || !std::isfinite(f[17]) || std::fabs(f[16]) > 1.0f ||
+	    std::fabs(f[17]) > 1.0f || !std::isfinite(f[20]) || !std::isfinite(f[21]) ||
+	    f[20] == 0.0f || f[21] == 0.0f) {
 		return false;
 	}
 	if (std::fabs(f[22] - static_cast<float>(w[0]) / static_cast<float>(w[4])) > 0.01f ||
 	    std::fabs(f[23] - static_cast<float>(w[1]) / static_cast<float>(w[5])) > 0.01f) {
 		return false;
 	}
-	out.in_w  = w[0];
-	out.in_h  = w[1];
-	out.out_w = w[4];
-	out.out_h = w[5];
-	out.max_w = w[8];
-	out.max_h = w[9];
+	out.in_w           = w[0];
+	out.in_h           = w[1];
+	out.out_w          = w[4];
+	out.out_h          = w[5];
+	out.max_w          = w[8];
+	out.max_h          = w[9];
 	out.jitter[0]   = f[16];
 	out.jitter[1]   = f[17];
 	out.prev_jitter[0] = f[18];
@@ -68,19 +71,21 @@ enum class MaskFormat : uint8_t { Other, R8, RG8, RGBA8 };
 struct MaskCandidate {
 	uint32_t   binding = 0; // index in the dispatch's image bindings
 	uint32_t   width = 0, height = 0;
-	MaskFormat format = MaskFormat::Other;
+	MaskFormat format  = MaskFormat::Other;
 	bool       written = false;
 };
 
 // The 8-bit unorm image of the render size the dispatch only reads: FSR3's dilated reactive masks
-// (RGBA8 or RG8 in the Accumulate pass; its other 8-bit images are 4K lock status). `override_binding`
-// >= 0 forces that binding index (KYTY_METALFX_REACTIVE_IMG). Returns the candidate index or -1; with
-// several the best format wins (RGBA8 > RG8 > R8), the first of equals.
-[[nodiscard]] inline int PickReactiveMask(const MaskCandidate* c, size_t n, uint32_t in_w, uint32_t in_h,
-                                          int override_binding) {
+// (RGBA8 or RG8 in the Accumulate pass; its other 8-bit images are 4K lock status).
+// `override_binding`
+// >= 0 forces that binding index (KYTY_METALFX_REACTIVE_IMG). Returns the candidate index or -1;
+// with several the best format wins (RGBA8 > RG8 > R8), the first of equals.
+[[nodiscard]] inline int PickReactiveMask(const MaskCandidate* c, size_t n, uint32_t in_w,
+                                          uint32_t in_h, int override_binding) {
 	int best = -1;
 	for (size_t i = 0; i < n; i++) {
-		if (c[i].format == MaskFormat::Other || c[i].written || c[i].width != in_w || c[i].height != in_h) {
+		if (c[i].format == MaskFormat::Other || c[i].written || c[i].width != in_w ||
+		    c[i].height != in_h) {
 			continue;
 		}
 		if (override_binding >= 0) {
@@ -89,7 +94,8 @@ struct MaskCandidate {
 			}
 			continue;
 		}
-		if (best < 0 || static_cast<int>(c[i].format) > static_cast<int>(c[static_cast<size_t>(best)].format)) {
+		if (best < 0 ||
+		    static_cast<int>(c[i].format) > static_cast<int>(c[static_cast<size_t>(best)].format)) {
 			best = static_cast<int>(i);
 		}
 	}
@@ -121,14 +127,15 @@ struct MaskCandidate {
 	return m < 0.0f ? 0.0f : m > 1.0f ? 1.0f : m;
 }
 
-// History restart from the FSR3 block: the plugin's "previous jitter" (words 18-19) must be the jitter we
-// saw on the previous frame, and frameIndex (word 31) must count up by one once it has been seen doing
-// so 8 times in a row (an unverified word is never trusted: a wrong guess would reset every frame).
+// History restart from the FSR3 block: the plugin's "previous jitter" (words 18-19) must be the
+// jitter we saw on the previous frame, and frameIndex (word 31) must count up by one once it has
+// been seen doing so 8 times in a row (an unverified word is never trusted: a wrong guess would
+// reset every frame).
 struct Fsr3ResetTracker {
 	bool     have_last = false;
 	float    last_jitter[2] {};
-	uint32_t last_index = 0;
-	uint32_t index_run  = 0; // consecutive +1 steps seen
+	uint32_t last_index   = 0;
+	uint32_t index_run    = 0; // consecutive +1 steps seen
 	uint64_t index_breaks = 0, jitter_breaks = 0;
 
 	[[nodiscard]] bool Observe(const Fsr3Frame& f, bool consecutive_frame) {

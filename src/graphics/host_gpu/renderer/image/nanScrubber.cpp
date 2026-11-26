@@ -26,14 +26,16 @@ NanScrubber::NanScrubber(GraphicContext& graphics): m_graphics(graphics) {
 	layout_info.pBindings    = &binding;
 	auto result = graphics.device.createDescriptorSetLayout(&layout_info, nullptr, &m_set_layout);
 	if (result != vk::Result::eSuccess) {
-		LOGF("NanScrubber: create descriptor set layout failed: %s\n", vk::to_string(result).c_str());
+		LOGF("NanScrubber: create descriptor set layout failed: %s\n",
+		     vk::to_string(result).c_str());
 		m_set_layout = nullptr;
 		return;
 	}
 	vk::PipelineLayoutCreateInfo pipeline_layout_info {};
 	pipeline_layout_info.setLayoutCount = 1;
 	pipeline_layout_info.pSetLayouts    = &m_set_layout;
-	result = graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr, &m_pipeline_layout);
+	result =
+	    graphics.device.createPipelineLayout(&pipeline_layout_info, nullptr, &m_pipeline_layout);
 	if (result != vk::Result::eSuccess) {
 		LOGF("NanScrubber: create pipeline layout failed: %s\n", vk::to_string(result).c_str());
 		m_pipeline_layout = nullptr;
@@ -97,10 +99,10 @@ void NanScrubber::Scrub(CommandBuffer& command, vk::Buffer buffer, uint64_t offs
 	command.EndRendering();
 	const auto               sink = command.HelperSink();
 	vk::BufferMemoryBarrier2 barrier {};
-	barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
-	barrier.srcAccessMask       = vk::AccessFlagBits2::eMemoryWrite;
-	barrier.dstStageMask        = vk::PipelineStageFlagBits2::eComputeShader;
-	barrier.dstAccessMask       = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
+	barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+	barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+	barrier.dstStageMask  = vk::PipelineStageFlagBits2::eComputeShader;
+	barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.buffer              = buffer;
@@ -111,16 +113,17 @@ void NanScrubber::Scrub(CommandBuffer& command, vk::Buffer buffer, uint64_t offs
 	dependency.pBufferMemoryBarriers    = &barrier;
 	sink.pipelineBarrier2(dependency);
 
-	const auto                   pipeline = m_pipelines[static_cast<uint32_t>(packing)];
+	const auto                     pipeline = m_pipelines[static_cast<uint32_t>(packing)];
 	const vk::DescriptorBufferInfo info {buffer, offset, words * sizeof(uint32_t)};
-	vk::WriteDescriptorSet       write {};
+	vk::WriteDescriptorSet         write {};
 	write.dstBinding      = 0;
 	write.descriptorCount = 1;
 	write.descriptorType  = vk::DescriptorType::eStorageBuffer;
 	write.pBufferInfo     = &info;
 	command.BindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
 	(void)command.PushDescriptors(vk::PipelineBindPoint::eCompute, m_pipeline_layout, 0, 1, &write);
-	const auto max_groups = m_graphics.GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount[0];
+	const auto max_groups =
+	    m_graphics.GetPhysicalDeviceProperties().limits.maxComputeWorkGroupCount[0];
 	const uint64_t groups = std::clamp<uint64_t>((words + LocalSize - 1u) / LocalSize, 1u,
 	                                             std::min<uint64_t>(max_groups, 65535u));
 	sink.dispatch(static_cast<uint32_t>(groups), 1, 1);

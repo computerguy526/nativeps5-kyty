@@ -59,11 +59,11 @@ struct ShaderCallBody {
 
 struct ShaderCallExpansion {
 	std::vector<ShaderCallBody> bodies;
-	std::vector<uint32_t> code;
+	std::vector<uint32_t>       code;
 	// The callee code as it was read: (guest address, words). The expansion is valid while these
 	// read the same.
 	std::vector<std::pair<uint64_t, std::vector<uint32_t>>> reads;
-	uint32_t              inlined = 0; // callee bodies placed
+	uint32_t                                                inlined = 0; // callee bodies placed
 	// Why targets were left out (unreadable, not a placeable function): their calls are skipped.
 	std::vector<std::string> dropped;
 };
@@ -97,4 +97,5 @@ constexpr uint32_t MaxExpandedShaderWords = 1u << 20u;
 
 } // namespace Libs::Graphics::ShaderRecompiler::Decoder
 
-#endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_FRONTEND_DECODE_SHADERFUNCTIONS_H_ */
+#endif /* EMULATOR_INCLUDE_EMULATOR_GRAPHICS_SHADER_RECOMPILER_FRONTEND_DECODE_SHADERFUNCTIONS_H_  \
+        */

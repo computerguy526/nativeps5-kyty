@@ -389,15 +389,17 @@ void Registry::Apply(uint64_t flip) {
 	}
 	if (auto* provider = g_cp_idle.load(std::memory_order_acquire); provider != nullptr) {
 		const auto i = provider();
-		gpu += fmt::format(" cpidle [tsc {}, nowork {}, empty {}, blocked {}, fence {}, starved {}]", i.tsc,
-		                   i.nowork, i.empty, i.blocked, i.fence, i.starved);
+		gpu +=
+		    fmt::format(" cpidle [tsc {}, nowork {}, empty {}, blocked {}, fence {}, starved {}]",
+		                i.tsc, i.nowork, i.empty, i.blocked, i.fence, i.starved);
 	}
 	// jgcp counters: only once something counted (the line keeps its old form otherwise).
 	const auto drawidx = g_test_counts[0].load(std::memory_order_relaxed);
 	const auto suspend = g_test_counts[1].load(std::memory_order_relaxed);
 	const auto submits = g_test_counts[2].load(std::memory_order_relaxed);
 	if (drawidx + suspend + submits != 0) {
-		gpu += fmt::format(" counts [drawidx {}, suspend {}, submits {}]", drawidx, suspend, submits);
+		gpu +=
+		    fmt::format(" counts [drawidx {}, suspend {}, submits {}]", drawidx, suspend, submits);
 	}
 	if (auto* suffix = g_line_suffix.load(std::memory_order_acquire); suffix != nullptr) {
 		gpu += suffix();

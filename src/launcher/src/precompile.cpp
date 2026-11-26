@@ -33,7 +33,8 @@ bool EventFields(const QString& line, const char* name, QHash<QString, QString>*
 	for (const auto field: rest.split(u' ', Qt::SkipEmptyParts)) {
 		const auto equals = field.indexOf(u'=');
 		if (equals > 0) {
-			fields->insert(field.left(equals).toString(), field.mid(equals + 1).trimmed().toString());
+			fields->insert(field.left(equals).toString(),
+			               field.mid(equals + 1).trimmed().toString());
 		}
 	}
 	return true;
@@ -48,7 +49,8 @@ bool ParseCount(const QString& text, quint64* count) {
 // "<done>/<total>"
 bool ParsePair(const QString& text, quint64* done, quint64* total) {
 	const auto slash = text.indexOf(u'/');
-	return slash > 0 && ParseCount(text.left(slash), done) && ParseCount(text.mid(slash + 1), total);
+	return slash > 0 && ParseCount(text.left(slash), done) &&
+	       ParseCount(text.mid(slash + 1), total);
 }
 
 } // namespace
@@ -183,7 +185,8 @@ Step CurrentStep(const Progress& progress) {
 		return Step::Compute;
 	}
 	if (progress.phase == QLatin1String("pipelines") ||
-	    (progress.phase.isEmpty() && progress.shaders_total != 0 && progress.shaders_done >= progress.shaders_total)) {
+	    (progress.phase.isEmpty() && progress.shaders_total != 0 &&
+	     progress.shaders_done >= progress.shaders_total)) {
 		return Step::Pipelines;
 	}
 	return Step::Shaders;
@@ -194,22 +197,26 @@ Step CurrentStep(const Progress& progress) {
 int ProgressPermille(const Progress& progress) {
 	// The bar covers the whole run and the text names the step: each step fills its own part of the
 	// bar with the count the text shows. The parts follow where a run spends its time when the
-	// driver has no cached pipelines (shaders about 10%, graphics pipelines most of the rest); with a
-	// warm driver cache the later steps just go by quicker.
+	// driver has no cached pipelines (shaders about 10%, graphics pipelines most of the rest); with
+	// a warm driver cache the later steps just go by quicker.
 	constexpr int shaders_end   = 150;
 	constexpr int pipelines_end = 900;
 	constexpr int compute_end   = 990;
-	const auto    part = [](quint64 done, quint64 total, int from, int to) {
+	const auto    part          = [](quint64 done, quint64 total, int from, int to) {
 		if (total == 0) {
 			return from;
 		}
-		return from + static_cast<int>(std::min(done, total) * static_cast<quint64>(to - from) / total);
+		return from +
+		       static_cast<int>(std::min(done, total) * static_cast<quint64>(to - from) / total);
 	};
 	switch (CurrentStep(progress)) {
-		case Step::Shaders: return part(progress.shaders_done, progress.shaders_total, 0, shaders_end);
+		case Step::Shaders:
+			return part(progress.shaders_done, progress.shaders_total, 0, shaders_end);
 		case Step::Pipelines:
-			return part(progress.pipelines_done, progress.pipelines_total, shaders_end, pipelines_end);
-		case Step::Compute: return part(progress.compute_done, progress.compute_total, pipelines_end, compute_end);
+			return part(progress.pipelines_done, progress.pipelines_total, shaders_end,
+			            pipelines_end);
+		case Step::Compute:
+			return part(progress.compute_done, progress.compute_total, pipelines_end, compute_end);
 		case Step::Saving: break;
 	}
 	return 1000;
@@ -225,8 +232,10 @@ QString ProgressText(const Progress& progress) {
 	};
 	switch (CurrentStep(progress)) {
 		case Step::Saving: return QStringLiteral("Saving the caches...");
-		case Step::Compute: return counts(3, "compute pipelines", progress.compute_done, progress.compute_total);
-		case Step::Pipelines: return counts(2, "pipelines", progress.pipelines_done, progress.pipelines_total);
+		case Step::Compute:
+			return counts(3, "compute pipelines", progress.compute_done, progress.compute_total);
+		case Step::Pipelines:
+			return counts(2, "pipelines", progress.pipelines_done, progress.pipelines_total);
 		case Step::Shaders: break;
 	}
 	return counts(1, "shaders", progress.shaders_done, progress.shaders_total);

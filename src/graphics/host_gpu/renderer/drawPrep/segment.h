@@ -47,24 +47,25 @@ enum class Mode : uint8_t { Off = 0, On = 1, Verify = 2 };
 enum class Miss : uint8_t {
 	None,
 	// Encode (preparing thread).
-	NotIndexed,      // not a DrawIndex slot
-	NotPrepared,     // the preparation failed
-	NoKey,           // no run structure key (KYTY_DRAW_RUN off, or ineligible)
-	OffsetSource,    // offsets not from the draw state (indirect offsets)
-	GpuInstances,    // KYTY_GPU_INSTANCE_COUNT: the instance count is GPU data
-	PrimitiveType,   // a primitive type the plain draw command does not cover
-	ElementSize,     // not a 16- or 32-bit index type
-	NoVertexStage,   // the prepared vertex stage has no program
+	NotIndexed,    // not a DrawIndex slot
+	NotPrepared,   // the preparation failed
+	NoKey,         // no run structure key (KYTY_DRAW_RUN off, or ineligible)
+	OffsetSource,  // offsets not from the draw state (indirect offsets)
+	GpuInstances,  // KYTY_GPU_INSTANCE_COUNT: the instance count is GPU data
+	PrimitiveType, // a primitive type the plain draw command does not cover
+	ElementSize,   // not a 16- or 32-bit index type
+	NoVertexStage, // the prepared vertex stage has no program
 	// Validate (commit thread).
-	NotEncoded,      // the slot carried no encoded draw (switched on after it was prepared)
-	Key,             // its structure key is not the run's
-	RecordElement,   // its element size is not the run record's
+	NotEncoded,    // the slot carried no encoded draw (switched on after it was prepared)
+	Key,           // its structure key is not the run's
+	RecordElement, // its element size is not the run record's
 	Count,
 };
 
 inline constexpr std::array<const char*, static_cast<size_t>(Miss::Count)> kMissNames {
-    "none",          "not_indexed",  "not_prepared", "no_key",    "offset_source", "gpu_instances",
-    "primitive_type", "element_size", "no_vertex_stage", "not_encoded", "key",     "record_element"};
+    "none",          "not_indexed",    "not_prepared", "no_key",          "offset_source",
+    "gpu_instances", "primitive_type", "element_size", "no_vertex_stage", "not_encoded",
+    "key",           "record_element"};
 
 // The draw a continuation emits: vkCmdDrawIndexed's arguments, and what it must share with the run.
 struct EncodedDraw {
@@ -84,16 +85,17 @@ struct EncodeInputs {
 	bool     indexed              = true;
 	bool     prepared_ok          = true;
 	uint64_t run_key              = 0;
-	bool     offsets_from_state   = true;  // DrawOffsetSource::DrawState
+	bool     offsets_from_state   = true; // DrawOffsetSource::DrawState
 	uint64_t gpu_instance_address = 0;
-	bool     plain_primitive      = true;  // EmitDrawPrimitives' one-command primitive types
-	uint32_t index_type           = 0;     // Prospero::IndexType: 0 16-bit, 1 32-bit
-	bool     vertex_stage         = true;  // the prepared vertex stage has its program
+	bool     plain_primitive      = true; // EmitDrawPrimitives' one-command primitive types
+	uint32_t index_type           = 0;    // Prospero::IndexType: 0 16-bit, 1 32-bit
+	bool     vertex_stage         = true; // the prepared vertex stage has its program
 	uint32_t index_count          = 0;
 	uint32_t instance_count       = 0;
 	int32_t  base_vertex          = 0;
 	uint64_t index_address        = 0;
-	// ResolveDrawOffsets(index offset, prepared vertex info): the stage's vertex and instance offsets.
+	// ResolveDrawOffsets(index offset, prepared vertex info): the stage's vertex and instance
+	// offsets.
 	int32_t  resolved_vertex_offset   = 0;
 	uint32_t resolved_instance_offset = 0;
 };
@@ -102,8 +104,8 @@ struct EncodeInputs {
 [[nodiscard]] inline EncodedDraw Encode(const EncodeInputs& in) noexcept {
 	EncodedDraw draw;
 	const auto  fail = [&](Miss why) {
-        draw.miss = why;
-        return draw;
+		draw.miss = why;
+		return draw;
 	};
 	if (!in.indexed) return fail(Miss::NotIndexed);
 	if (!in.prepared_ok) return fail(Miss::NotPrepared);
@@ -136,13 +138,23 @@ struct EncodeInputs {
 }
 
 // Verify: the fields the serial path computes for the same draw.
-enum class Field : uint8_t { IndexCount, InstanceCount, VertexOffset, FirstInstance, IndexAddress, IndexBytes, Count };
+enum class Field : uint8_t {
+	IndexCount,
+	InstanceCount,
+	VertexOffset,
+	FirstInstance,
+	IndexAddress,
+	IndexBytes,
+	Count
+};
 inline constexpr std::array<const char*, static_cast<size_t>(Field::Count)> kFieldNames {
-    "index_count", "instance_count", "vertex_offset", "first_instance", "index_address", "index_bytes"};
+    "index_count",    "instance_count", "vertex_offset",
+    "first_instance", "index_address",  "index_bytes"};
 
 // A mask of the fields where `encoded` differs from `serial` (0: equal).
-[[nodiscard]] inline uint32_t Compare(const EncodedDraw& encoded, const EncodedDraw& serial) noexcept {
-	uint32_t mask = 0;
+[[nodiscard]] inline uint32_t Compare(const EncodedDraw& encoded,
+                                      const EncodedDraw& serial) noexcept {
+	uint32_t   mask = 0;
 	const auto note = [&](bool differs, Field field) {
 		if (differs) mask |= 1u << static_cast<uint32_t>(field);
 	};
@@ -157,17 +169,18 @@ inline constexpr std::array<const char*, static_cast<size_t>(Field::Count)> kFie
 
 // Totals (process-wide; encodes on the preparing threads, the rest on the commit thread). Relaxed.
 struct Counters {
-	std::atomic<uint64_t> encoded {0};      // drawn up by a preparing thread
-	std::array<std::atomic<uint64_t>, static_cast<size_t>(Miss::Count)> misses {}; // encode + validate
+	std::atomic<uint64_t> encoded {0}; // drawn up by a preparing thread
+	std::array<std::atomic<uint64_t>, static_cast<size_t>(Miss::Count)>
+	                      misses {};        // encode + validate
 	std::atomic<uint64_t> kernel_taken {0}; // continuations the kernel took while the switch was on
 	std::atomic<uint64_t> validated {0};    // validated against their run
 	std::atomic<uint64_t> spliced {0};      // emitted from the encoded draw (mode 1)
-	std::atomic<uint64_t> segments {0};     // series of consecutive validated continuations of one run
+	std::atomic<uint64_t> segments {0}; // series of consecutive validated continuations of one run
 	std::atomic<uint64_t> verify_draws {0};
 	std::array<std::atomic<uint64_t>, static_cast<size_t>(Field::Count)> mismatches {};
-	std::atomic<uint64_t> validate_ns {0};  // commit thread, inside Validate (sampled clock)
-	std::atomic<uint64_t> splice_ns {0};    // commit thread, emitting a spliced draw (sampled clock)
-	std::atomic<uint64_t> timed {0};        // validations that were timed
+	std::atomic<uint64_t> validate_ns {0}; // commit thread, inside Validate (sampled clock)
+	std::atomic<uint64_t> splice_ns {0};   // commit thread, emitting a spliced draw (sampled clock)
+	std::atomic<uint64_t> timed {0};       // validations that were timed
 	std::atomic<uint64_t> splice_timed {0}; // splices that were timed
 };
 
@@ -192,24 +205,27 @@ private:
 
 // The 10 s line: everything a count boot needs to read the coverage and the verify result.
 [[nodiscard]] inline std::string FormatLine(const Counters& c, const char* mode) {
-	char head[512];
+	char       head[512];
 	const auto taken     = c.kernel_taken.load(std::memory_order_relaxed);
 	const auto validated = c.validated.load(std::memory_order_relaxed);
 	const auto segments  = c.segments.load(std::memory_order_relaxed);
 	const auto timed     = c.timed.load(std::memory_order_relaxed);
 	const auto s_timed   = c.splice_timed.load(std::memory_order_relaxed);
-	std::snprintf(head, sizeof(head),
-	              "SpecSegments (%s): encoded %" PRIu64 " | kernel-taken %" PRIu64 " validated %" PRIu64
-	              " (%.1f%%) spliced %" PRIu64 " segments %" PRIu64 " (%.1f draws/segment) | validate %.0f ns"
-	              " splice %.0f ns (per timed draw) | verify draws %" PRIu64 " mismatches",
-	              mode, c.encoded.load(std::memory_order_relaxed), taken, validated,
-	              taken != 0 ? 100.0 * static_cast<double>(validated) / static_cast<double>(taken) : 0.0,
-	              c.spliced.load(std::memory_order_relaxed), segments,
-	              segments != 0 ? static_cast<double>(validated) / static_cast<double>(segments) : 0.0,
-	              timed != 0 ? static_cast<double>(c.validate_ns.load(std::memory_order_relaxed)) / timed : 0.0,
-	              s_timed != 0 ? static_cast<double>(c.splice_ns.load(std::memory_order_relaxed)) / s_timed : 0.0,
-	              c.verify_draws.load(std::memory_order_relaxed));
-	std::string line = head;
+	std::snprintf(
+	    head, sizeof(head),
+	    "SpecSegments (%s): encoded %" PRIu64 " | kernel-taken %" PRIu64 " validated %" PRIu64
+	    " (%.1f%%) spliced %" PRIu64 " segments %" PRIu64 " (%.1f draws/segment) | validate %.0f ns"
+	    " splice %.0f ns (per timed draw) | verify draws %" PRIu64 " mismatches",
+	    mode, c.encoded.load(std::memory_order_relaxed), taken, validated,
+	    taken != 0 ? 100.0 * static_cast<double>(validated) / static_cast<double>(taken) : 0.0,
+	    c.spliced.load(std::memory_order_relaxed), segments,
+	    segments != 0 ? static_cast<double>(validated) / static_cast<double>(segments) : 0.0,
+	    timed != 0 ? static_cast<double>(c.validate_ns.load(std::memory_order_relaxed)) / timed
+	               : 0.0,
+	    s_timed != 0 ? static_cast<double>(c.splice_ns.load(std::memory_order_relaxed)) / s_timed
+	                 : 0.0,
+	    c.verify_draws.load(std::memory_order_relaxed));
+	std::string line  = head;
 	uint64_t    total = 0;
 	for (size_t i = 0; i < kFieldNames.size(); i++) {
 		const auto n = c.mismatches[i].load(std::memory_order_relaxed);

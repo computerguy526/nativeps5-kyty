@@ -19,17 +19,17 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <functional>
-#include <mutex>
-#include <thread>
-#include <unordered_map>
 #include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -742,7 +742,7 @@ void CommandRecorder::WaitRecorded(uint64_t tick, bool from_producer) {
 	const auto start = NowNs();
 	// KYTY_SPIN_BUDGET (common/spinGate.h): a short spin while the core budget is exceeded.
 	using Common::SpinGate::Site;
-	const auto spin_ns  = Common::SpinGate::SpinNs(Site::RecorderDrain, m_drain_policy.spin_ns);
+	const auto spin_ns = Common::SpinGate::SpinNs(Site::RecorderDrain, m_drain_policy.spin_ns);
 	struct SpinNote {
 		uint64_t start = Common::SpinGate::Tsc();
 		bool     open  = true;

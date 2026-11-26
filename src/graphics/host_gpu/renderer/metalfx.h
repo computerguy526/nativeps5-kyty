@@ -70,14 +70,16 @@ void               FindLog(const char* kind, const PreparedBindings& bindings, T
 //   KYTY_METALFX_FIND=3; diagnostic): the last 64 passes FindLog saw before a dispatch of that
 //   shader (e.g. TSR UpdateHistory) are printed as "MetalFX anchor: -<k> ..." with every image and
 //   buffer, level 1 = shares an image with the anchor pass, 2 = shares one with a level-1 pass; the
-//   small buffers of level-1 passes and of the anchor as hex words ("MetalFX anchor:   words"); and,
-//   until the next flip, every later pass that binds one of the anchor's images ("+<k>": consumers).
-//   Starts after KYTY_METALFX_FIND_RESET_S. FindLog only sees passes when FIND=3 is set.
-// KYTY_CS_KO=<hash>[,<hash>...] (diagnostic knock-out: per-pass GPU cost without GPU timers): compute
+//   small buffers of level-1 passes and of the anchor as hex words ("MetalFX anchor:   words");
+//   and, until the next flip, every later pass that binds one of the anchor's images ("+<k>":
+//   consumers). Starts after KYTY_METALFX_FIND_RESET_S. FindLog only sees passes when FIND=3 is
+//   set.
+// KYTY_CS_KO=<hash>[,<hash>...] (diagnostic knock-out: per-pass GPU cost without GPU timers):
+// compute
 //   dispatches of these shaders are not recorded (their outputs go stale: timing runs only).
-//   KYTY_CS_KO_FROM_S=<s> (default 90) after the first dispatch; KYTY_CS_KO_CYCLE=<flips> alternates
-//   off/on windows of that many flips (in-run ABAB; "CsKo cycle: flip <n> t_us <t> on|off" lines,
-//   same clock as "MetalFX cycle:"); 0 = on all the time.
+//   KYTY_CS_KO_FROM_S=<s> (default 90) after the first dispatch; KYTY_CS_KO_CYCLE=<flips>
+//   alternates off/on windows of that many flips (in-run ABAB; "CsKo cycle: flip <n> t_us <t>
+//   on|off" lines, same clock as "MetalFX cycle:"); 0 = on all the time.
 // KYTY_METALFX_COMPUTE_PASS=<hash>[:<in>:<out>]: the image indices of the colour and of the output
 //   of the compute pass (default 0 and 1; SAROS TSR UpdateHistory baa4068f48160685:6:7).
 // KYTY_METALFX_COMPUTE_REPLACE=1: MetalFX runs INSTEAD of that dispatch (which is not recorded)
@@ -85,27 +87,30 @@ void               FindLog(const char* kind, const PreparedBindings& bindings, T
 // KYTY_METALFX_PASS=<hash>:blit[:<image index>]: a full-screen draw that scales one bound image to
 //   a larger single colour target (UE's secondary upscale into the back buffer) is replaced by the
 //   SPATIAL scaler; the colour is the widest bound image smaller than the target with its aspect.
-//   KYTY_METALFX_PASS=auto:blit (experiments): any such draw by shape (target >= 2560 wide, exactly one
-//   bound image > 8 texels, >= 960 wide, the target's aspect); "MetalFX blit: auto shader" names it.
-// KYTY_METALFX_UE=log|fsr3 (metalfxUe.h): UE's third-party temporal upscaler slot with the FSR3 plugin
-//   enabled by cvar (r.FidelityFX.FSR3.Enabled=1, dynamic resolution off). log: one "MetalFX ue:" line
-//   per FSR3 shader (role, sizes, jitter), no behaviour change. fsr3 (needs KYTY_METALFX=temporal):
-//   MetalFX temporal runs INSTEAD of FSR3's Accumulate dispatch (the last one: a render-size colour and
-//   two or more upscale-size colour images; output = the highest-index one) with the scene depth and
-//   the dilated RG16F motion vectors of the frame's FSR3 dispatches and the jitter of the block; the
-//   first FSR3 dispatch of a frame (PrepareInputs: it writes the motion vectors) always runs, the
-//   others are not recorded once 8 evaluations in a row succeeded (KYTY_METALFX_UE_SKIP=0 keeps
-//   them); a refusal leaves FSR3's own picture and stops the skipping for 300 flips.
-//   KYTY_METALFX_CYCLE=<flips>,gt alternates FSR3 (g) and the adapter (t).
-//   Signs: KYTY_METALFX_MV_SIGN, KYTY_METALFX_JITTER_SIGN, KYTY_METALFX_JITTER_SIGN_Y.
+//   KYTY_METALFX_PASS=auto:blit (experiments): any such draw by shape (target >= 2560 wide, exactly
+//   one bound image > 8 texels, >= 960 wide, the target's aspect); "MetalFX blit: auto shader"
+//   names it.
+// KYTY_METALFX_UE=log|fsr3 (metalfxUe.h): UE's third-party temporal upscaler slot with the FSR3
+// plugin
+//   enabled by cvar (r.FidelityFX.FSR3.Enabled=1, dynamic resolution off). log: one "MetalFX ue:"
+//   line per FSR3 shader (role, sizes, jitter), no behaviour change. fsr3 (needs
+//   KYTY_METALFX=temporal): MetalFX temporal runs INSTEAD of FSR3's Accumulate dispatch (the last
+//   one: a render-size colour and two or more upscale-size colour images; output = the
+//   highest-index one) with the scene depth and the dilated RG16F motion vectors of the frame's
+//   FSR3 dispatches and the jitter of the block; the first FSR3 dispatch of a frame (PrepareInputs:
+//   it writes the motion vectors) always runs, the others are not recorded once 8 evaluations in a
+//   row succeeded (KYTY_METALFX_UE_SKIP=0 keeps them); a refusal leaves FSR3's own picture and
+//   stops the skipping for 300 flips. KYTY_METALFX_CYCLE=<flips>,gt alternates FSR3 (g) and the
+//   adapter (t). Signs: KYTY_METALFX_MV_SIGN, KYTY_METALFX_JITTER_SIGN, KYTY_METALFX_JITTER_SIGN_Y.
 // Returns 0: record the dispatch; 1: do not record it; 2: MetalFX was recorded in its place and the
 // caller commits the GPU write of UeOutput().
 [[nodiscard]] ImageId UeOutput();
-[[nodiscard]] bool UeEnabled();
-[[nodiscard]] int  UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings, TextureCache& cache);
-[[nodiscard]] bool CsKnockoutEnabled();
-[[nodiscard]] bool CsKnockout(uint64_t shader_hash);
-[[nodiscard]] bool ComputeReplace(uint64_t shader_hash);
+[[nodiscard]] bool    UeEnabled();
+[[nodiscard]] int     UeDispatch(CommandBuffer& buffer, const PreparedBindings& bindings,
+                                 TextureCache& cache);
+[[nodiscard]] bool    CsKnockoutEnabled();
+[[nodiscard]] bool    CsKnockout(uint64_t shader_hash);
+[[nodiscard]] bool    ComputeReplace(uint64_t shader_hash);
 
 // KYTY_RES_AUDIT=1|2 (diagnostic, default off; independent of KYTY_METALFX): resolution audit for
 // a forced internal resolution (720p patch of a title that only ever renders >= 1080p). Once per

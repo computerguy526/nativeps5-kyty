@@ -122,7 +122,8 @@ void RenderMutex::RequesterUnlock() {
 
 NativeRayTracing& RenderContext::GetNativeRayTracing() {
 	if (m_native_ray_tracing == nullptr) {
-		m_native_ray_tracing = std::make_unique<NativeRayTracing>(m_graphics, m_command_scheduler, m_buffer_cache);
+		m_native_ray_tracing =
+		    std::make_unique<NativeRayTracing>(m_graphics, m_command_scheduler, m_buffer_cache);
 	}
 	return *m_native_ray_tracing;
 }
@@ -191,9 +192,10 @@ RenderContext::RenderContext(GraphicContext& graphics)
 		}
 		return "none";
 	});
-	FaultCost::SetRangeDescriber([](uint64_t vaddr, uint64_t* start, uint64_t* size, char* name, uint64_t name_size) {
-		return LibKernel::Memory::DescribeVirtualRange(vaddr, start, size, name, name_size);
-	});
+	FaultCost::SetRangeDescriber(
+	    [](uint64_t vaddr, uint64_t* start, uint64_t* size, char* name, uint64_t name_size) {
+		    return LibKernel::Memory::DescribeVirtualRange(vaddr, start, size, name, name_size);
+	    });
 	// The internal helper pipelines before the first frame (and before a prepare ends the process).
 	if (const auto* prewarm = std::getenv("KYTY_HELPER_PREWARM");
 	    prewarm != nullptr && prewarm[0] == '1') {
@@ -263,9 +265,9 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	// resolve its page; guessing a width can cross the end of a valid guest mapping.
 	constexpr uint64_t fault_size = 1;
 	if (!IsMapped(fault_vaddr, fault_size)) {
-		// KYTY_FAULT_WATCHED_OUTSIDE=1 (default off; TheCruZ/KytyPS5-GTA b7961f66): cache tracking may
-		// still protect a page whose range left the GPU-mapped set; that fault is ours to resolve,
-		// not a guest access violation.
+		// KYTY_FAULT_WATCHED_OUTSIDE=1 (default off; TheCruZ/KytyPS5-GTA b7961f66): cache tracking
+		// may still protect a page whose range left the GPU-mapped set; that fault is ours to
+		// resolve, not a guest access violation.
 		if (!FaultWatchedOutsideEnabled() || !GuestRange {fault_vaddr, fault_size}.Valid()) {
 			return false;
 		}
@@ -275,9 +277,10 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 		}
 		static std::atomic<uint32_t> reported {0};
 		if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
-			std::printf("RenderContext: resolving a fault on a watched page outside the GPU-mapped ranges "
-			            "(0x%016" PRIx64 ")\n",
-			            fault_vaddr);
+			std::printf(
+			    "RenderContext: resolving a fault on a watched page outside the GPU-mapped ranges "
+			    "(0x%016" PRIx64 ")\n",
+			    fault_vaddr);
 		}
 	}
 	// The access retries once the image write-backs over its page land (upstream 9678c59b7;
@@ -289,14 +292,19 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr) no
 	const MemoryStats::ScopedTimer fault_timer(MemoryStats::Counter::FaultNs);
 	const CpGaps::Scope            fault_gap(CpGaps::Cat::Fault);
 	// KYTY_WAIT_ATTRIB: the command processor's faults by call site, page state and region.
-	FaultCost::AttribScope attrib(access == PageFaultAccess::Write ? FaultCost::AttribKind::FaultWrite
-	                                                               : FaultCost::AttribKind::FaultRead,
+	FaultCost::AttribScope attrib(access == PageFaultAccess::Write
+	                                  ? FaultCost::AttribKind::FaultWrite
+	                                  : FaultCost::AttribKind::FaultRead,
 	                              FaultCost::InRetriedFault());
 	if (attrib.Active()) {
 		const auto page = Common::AlignDown(fault_vaddr, TRACKER_PAGE_SIZE);
 		attrib.SetAddress(fault_vaddr);
-		attrib.AddFlags((m_buffer_cache.IsRegionGpuModifiedRelaxed(page, TRACKER_PAGE_SIZE) ? FaultCost::AttribBufferGpu : 0u) |
-		                (m_texture_cache.IsRegionGpuModified(page, TRACKER_PAGE_SIZE) ? FaultCost::AttribImageGpu : 0u));
+		attrib.AddFlags((m_buffer_cache.IsRegionGpuModifiedRelaxed(page, TRACKER_PAGE_SIZE)
+		                     ? FaultCost::AttribBufferGpu
+		                     : 0u) |
+		                (m_texture_cache.IsRegionGpuModified(page, TRACKER_PAGE_SIZE)
+		                     ? FaultCost::AttribImageGpu
+		                     : 0u));
 	}
 	// Live cost numbers (faultCost.h); the slow-PC simulation's wait comes first, outside every lock.
 	const auto start = FaultCost::NowNs();
@@ -542,7 +550,8 @@ bool RenderContext::IsMapped(uint64_t vaddr, uint64_t size) const noexcept {
 
 std::string RenderContext::DescribeGpuBackingForRead(uint64_t vaddr, uint64_t size) {
 	const auto images = m_texture_cache.DescribeGpuModifiedImages(vaddr, size);
-	return fmt::format("mapped {} gpu_dirty {} pending_pub {} gpu_images [{}] writer {}", IsMapped(vaddr, size) ? 1 : 0,
+	return fmt::format("mapped {} gpu_dirty {} pending_pub {} gpu_images [{}] writer {}",
+	                   IsMapped(vaddr, size) ? 1 : 0,
 	                   m_buffer_cache.HasGpuDirtyBytes(vaddr, size) ? 1 : 0,
 	                   m_buffer_cache.HasPendingBackingPublication(vaddr, size) ? 1 : 0, images,
 	                   m_buffer_cache.DescribeNewestWriter(vaddr));
@@ -584,18 +593,20 @@ bool RenderContext::SynchronizeGpuBackingForRead(uint64_t vaddr, uint64_t size) 
 				             "[memtrk] CP read 0x%016" PRIx64 "+0x%" PRIx64
 				             " covered by a GPU-modified image%s\n",
 				             vaddr, size,
-				             CpReadImageSync() ? ": publishing it first (KYTY_CP_READ_IMAGE_SYNC)"
-				                               : ": reading the guest view (stale if the image wrote it)");
+				             CpReadImageSync()
+				                 ? ": publishing it first (KYTY_CP_READ_IMAGE_SYNC)"
+				                 : ": reading the guest view (stale if the image wrote it)");
 			}
 		}
-		// upbase: with the switch off int22's own handling below (KYTY_SRT_STALE_IMAGE_READS) decides.
+		// upbase: with the switch off int22's own handling below (KYTY_SRT_STALE_IMAGE_READS)
+		// decides.
 		if (CpReadImageSync()) {
 			m_buffer_cache.CompleteSideReadbacks(vaddr, size);
 			HangTrace::SetReadbackKind(HangTrace::ReadbackKind::GpuSync);
 			m_buffer_cache.ReadMemory(vaddr, size);
 			HangTrace::SetReadbackKind(HangTrace::ReadbackKind::Invalidate);
-			// The caller retries the strict read; if the image keeps the range GPU-modified it falls
-			// back to the guest view, which the read above has published.
+			// The caller retries the strict read; if the image keeps the range GPU-modified it
+			// falls back to the guest view, which the read above has published.
 			return false;
 		}
 	}
@@ -693,7 +704,7 @@ struct UnmapStatsT {
 	std::atomic<uint64_t> bytes {0};
 	std::atomic<uint64_t> ns {0};
 	std::atomic<uint64_t> big {0}; // >= 1 MiB
-	static bool Enabled() {
+	static bool           Enabled() {
 		static const bool on = [] {
 			const auto* v = std::getenv("KYTY_UNMAP_STATS");
 			return v != nullptr && std::strcmp(v, "1") == 0;
@@ -710,16 +721,19 @@ struct UnmapStatsT {
 		if (Enabled() && n < 48) {
 			std::fprintf(stderr, "[unmapstat] #%llu addr=0x%llx size=0x%llx wait_us=%.0f\n",
 			             static_cast<unsigned long long>(n), static_cast<unsigned long long>(vaddr),
-			             static_cast<unsigned long long>(size), static_cast<double>(wait_ns) * 1e-3);
+			             static_cast<unsigned long long>(size),
+			             static_cast<double>(wait_ns) * 1e-3);
 		}
 	}
 	~UnmapStatsT() {
 		if (!Enabled() || calls.load() == 0) {
 			return;
 		}
-		std::fprintf(stderr, "[unmapstat] total drained_unmaps=%llu bytes=%llu big=%llu wait_ms=%.1f\n",
-		             static_cast<unsigned long long>(calls.load()), static_cast<unsigned long long>(bytes.load()),
-		             static_cast<unsigned long long>(big.load()), static_cast<double>(ns.load()) * 1e-6);
+		std::fprintf(
+		    stderr, "[unmapstat] total drained_unmaps=%llu bytes=%llu big=%llu wait_ms=%.1f\n",
+		    static_cast<unsigned long long>(calls.load()),
+		    static_cast<unsigned long long>(bytes.load()),
+		    static_cast<unsigned long long>(big.load()), static_cast<double>(ns.load()) * 1e-6);
 	}
 };
 UnmapStatsT& UnmapStats() {
@@ -744,9 +758,9 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 		}
 	}
 	const auto unmap = [this, vaddr, size] {
-		// KYTY_UNMAP_DRAIN_SKIP=1 (default off; adapted from TheCruZ/KytyPS5-GTA 1f331bb7): the full
-		// GPU drain is skipped when nothing in the range is owned by GPU work or written by a pending
-		// completion: no GPU-dirty buffer bytes, no GPU-modified image, no pending backing
+		// KYTY_UNMAP_DRAIN_SKIP=1 (default off; adapted from TheCruZ/KytyPS5-GTA 1f331bb7): the
+		// full GPU drain is skipped when nothing in the range is owned by GPU work or written by a
+		// pending completion: no GPU-dirty buffer bytes, no GPU-modified image, no pending backing
 		// publication (downloads, side readbacks) and no deferred label write. The GPU never reads
 		// guest memory itself (uploads copy it into cache buffers and images, freed by tick), and
 		// the guest unmaps memory only after the labels of the work that used it. Streaming games
@@ -755,7 +769,8 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 			const auto* value = std::getenv("KYTY_UNMAP_DRAIN_SKIP");
 			return value != nullptr && std::strcmp(value, "1") == 0;
 		}();
-		const bool skip_drain = drain_skip && m_command_scheduler.Active() && GuestRange {vaddr, size}.Valid() &&
+		const bool skip_drain = drain_skip && m_command_scheduler.Active() &&
+		                        GuestRange {vaddr, size}.Valid() &&
 		                        !m_buffer_cache.HasGpuDirtyBytes(vaddr, size) &&
 		                        !m_texture_cache.IsRegionGpuModified(vaddr, size) &&
 		                        !m_buffer_cache.HasPendingBackingPublication(vaddr, size) &&
@@ -766,18 +781,20 @@ void RenderContext::UnmapMemory(uint64_t vaddr, uint64_t size) {
 			Common::CruzStats::Add(Common::CruzStats::Counter::UnmapDrainSkips);
 		} else if (m_command_scheduler.Active()) {
 			Profiler::ScopedGpuWaitReason wait_reason(Profiler::FrameWait::GpuWaitUnmap);
-			const auto                    drain_start = Common::CruzStats::Enabled() ? Common::CruzStats::NowNs() : 0;
+			const auto drain_start = Common::CruzStats::Enabled() ? Common::CruzStats::NowNs() : 0;
 			const auto                    tick = m_command_scheduler.CurrentTick();
 			const auto                    unmap_t0 = std::chrono::steady_clock::now();
 			m_command_scheduler.Finish();
 			m_command_scheduler.WaitPriorityOperations(tick);
-			UnmapStats().Note(vaddr, size,
-			                  static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-			                                            std::chrono::steady_clock::now() - unmap_t0)
-			                                            .count()));
+			UnmapStats().Note(
+			    vaddr, size,
+			    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+			                              std::chrono::steady_clock::now() - unmap_t0)
+			                              .count()));
 			if (drain_start != 0) {
-				Common::CruzStats::Add(Common::CruzStats::Counter::UnmapDrainNs,
-				                       static_cast<uint64_t>(Common::CruzStats::NowNs() - drain_start));
+				Common::CruzStats::Add(
+				    Common::CruzStats::Counter::UnmapDrainNs,
+				    static_cast<uint64_t>(Common::CruzStats::NowNs() - drain_start));
 				Common::CruzStats::Add(Common::CruzStats::Counter::UnmapDrains);
 			}
 		}
@@ -926,7 +943,8 @@ void RenderContext::RunGarbageCollector() {
 		if (FaultManager::ScanMappedActive()) {
 			std::shared_lock lock(m_mapped_ranges_mutex);
 			mapped.reserve(m_mapped_ranges.Size());
-			m_mapped_ranges.ForEach([&](uint64_t begin, uint64_t end) { mapped.emplace_back(begin, end); });
+			m_mapped_ranges.ForEach(
+			    [&](uint64_t begin, uint64_t end) { mapped.emplace_back(begin, end); });
 		}
 		m_buffer_cache.ProcessFaultBuffer(mapped);
 	}

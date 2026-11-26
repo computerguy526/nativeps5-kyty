@@ -45,16 +45,16 @@ struct alignas(64) WorkerCounters {
 inline WorkerCounters g_workers[MaxWorkers];
 
 struct Local {
-	uint32_t index = 0;
-	uint64_t slots = 0;
-	uint64_t busy  = 0;
-	uint64_t spin  = 0;
-	uint64_t park  = 0;
-	uint64_t parks = 0;
+	uint32_t index              = 0;
+	uint64_t slots              = 0;
+	uint64_t busy               = 0;
+	uint64_t spin               = 0;
+	uint64_t park               = 0;
+	uint64_t parks              = 0;
 	uint64_t digest_hits        = 0;
 	uint64_t digest_misses      = 0;
 	uint64_t digest_uncacheable = 0;
-	uint64_t unflushed = 0;
+	uint64_t unflushed          = 0;
 };
 
 inline thread_local Local t_local;
@@ -76,21 +76,22 @@ inline void Flush(Local& local) noexcept {
 
 // Command processor side (one thread; the reporter runs there too).
 struct Commit {
-	uint64_t ready     = 0; // head done when the commit wanted it
-	uint64_t waited    = 0; // a worker held it: the commit spun
-	uint64_t wait_tsc  = 0;
-	uint64_t self      = 0; // nobody had claimed it: prepared on the command processor
-	uint64_t self_tsc  = 0;
-	uint64_t lead_tsc  = 0; // ready heads: TSC from Complete to the commit taking it
+	uint64_t ready    = 0; // head done when the commit wanted it
+	uint64_t waited   = 0; // a worker held it: the commit spun
+	uint64_t wait_tsc = 0;
+	uint64_t self     = 0; // nobody had claimed it: prepared on the command processor
+	uint64_t self_tsc = 0;
+	uint64_t lead_tsc = 0;    // ready heads: TSC from Complete to the commit taking it
 	uint64_t lead_hist[6] {}; // <2, <10, <50, <200, <1000 us, more
-	uint64_t occupancy = 0; // window occupancy (published - head) at each head
+	uint64_t occupancy = 0;   // window occupancy (published - head) at each head
 	uint64_t heads     = 0;
 };
 
 inline Commit g_commit;
 
 // GPU (command processor) thread idle time, by what it waited for (one thread, plain counters):
-// - starved: inside a slice, the resolver had no op from the sequencer yet (its spin; the slice then
+// - starved: inside a slice, the resolver had no op from the sequencer yet (its spin; the slice
+// then
 //   returns Blocked, so a longer starvation continues as idle time below);
 // - empty: outside slices, no submission queued at all (the game has not submitted);
 // - blocked: outside slices, submissions queued but every queue suspended (waits on GPU labels,

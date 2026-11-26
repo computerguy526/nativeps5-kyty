@@ -6,10 +6,9 @@
 #include <array>
 #include <cinttypes>
 #include <cstddef>
+#include <fmt/format.h>
 #include <unordered_map>
 #include <vector>
-
-#include <fmt/format.h>
 
 namespace Libs::Graphics::ShaderRecompiler::Decoder {
 
@@ -49,8 +48,9 @@ bool CheckSite(const Program& program, const RayTracingSite& site) {
 	return entry != nullptr && EndPc(*entry) == site.loop_pc && !IsDirectBranch(entry->opcode) &&
 	       expect(site.loop_pc, Opcode::S_MOV_B64) && expect(site.setup_pc, Opcode::UNKNOWN) &&
 	       expect(site.cull_exit_pc, Opcode::UNKNOWN) &&
-	       expect(site.blas_pc, Opcode::IMAGE_BVH_INTERSECT_RAY) && expect(site.leaf_pc, Opcode::UNKNOWN) &&
-	       expect(site.leaf_end_pc, Opcode::S_MOV_B64) && expect(site.exit_pc, Opcode::UNKNOWN);
+	       expect(site.blas_pc, Opcode::IMAGE_BVH_INTERSECT_RAY) &&
+	       expect(site.leaf_pc, Opcode::UNKNOWN) && expect(site.leaf_end_pc, Opcode::S_MOV_B64) &&
+	       expect(site.exit_pc, Opcode::UNKNOWN);
 }
 
 // The rewritten program before its pcs are assigned: branch targets are guest pcs (resolved
@@ -146,7 +146,8 @@ public:
 					inst.branch_target = found->second;
 				} else if (target == guest_end_pc) {
 					inst.branch_target = pc;
-				} else if (const auto found = m_guest_items.find(target); found != m_guest_items.end()) {
+				} else if (const auto found = m_guest_items.find(target);
+				           found != m_guest_items.end()) {
 					inst.branch_target = pcs[found->second];
 				} else {
 					return false;
@@ -183,9 +184,9 @@ bool AddRangeCopy(Layout& layout, const Program& program, uint32_t begin, uint32
 	std::unordered_map<uint32_t, uint32_t> copy_labels;
 	std::vector<const Instruction*>        range;
 	for (auto it = first; it != program.instructions.end() && it->pc < end; ++it) {
-		if (it->opcode == Opcode::S_SETPC_B64 ||
-		    it->opcode == Opcode::S_GETPC_B64 || it->opcode == Opcode::S_ENDPGM ||
-		    it->opcode == Opcode::S_KYTY_CALL_STATE || it->opcode == Opcode::UNSUPPORTED) {
+		if (it->opcode == Opcode::S_SETPC_B64 || it->opcode == Opcode::S_GETPC_B64 ||
+		    it->opcode == Opcode::S_ENDPGM || it->opcode == Opcode::S_KYTY_CALL_STATE ||
+		    it->opcode == Opcode::UNSUPPORTED) {
 			return false;
 		}
 		copy_labels.emplace(it->pc, layout.NewLabel());
@@ -223,8 +224,13 @@ bool AddRangeCopy(Layout& layout, const Program& program, uint32_t begin, uint32
 
 // The result registers RT_VERIFY_SAVE / RT_VERIFY_CHECK compare (NoRegister: none).
 std::array<uint32_t, 8> VerifyRegisters(const RayTracingSite& site) {
-	return {site.result_t,        site.result_u,           site.result_v,    site.result_word,
-	        site.result_node,     site.result_instance,    site.result_instance + 1u,
+	return {site.result_t,
+	        site.result_u,
+	        site.result_v,
+	        site.result_word,
+	        site.result_node,
+	        site.result_instance,
+	        site.result_instance + 1u,
 	        site.alpha_counter};
 }
 
@@ -234,7 +240,8 @@ std::array<uint32_t, 8> VerifyRegisters(const RayTracingSite& site) {
 bool AddNativeTraversal(Layout& layout, const Program& program, const RayTracingSite& site,
                         uint32_t index, bool verify, uint32_t verify_label) {
 	if (verify) {
-		// dmask 2: the registers' values at the entry, for the guest loop's run after the native one.
+		// dmask 2: the registers' values at the entry, for the guest loop's run after the native
+		// one.
 		auto&      snapshot = layout.AddPseudo(Opcode::RT_VERIFY_SAVE, index);
 		const auto regs     = VerifyRegisters(site);
 		for (uint32_t i = 0; i < regs.size(); i++) {
@@ -263,14 +270,16 @@ bool AddNativeTraversal(Layout& layout, const Program& program, const RayTracing
 	layout.AddBranch(Opcode::S_CBRANCH_SCC0, Layout::Target::Label, exit_label);
 	// The guest instance setup; it continues with the lanes' candidates instead of the BLAS stack.
 	if (!AddRangeCopy(layout, program, site.setup_pc, site.blas_pc, [&](uint32_t target) {
-		    return target == site.blas_pc ? leaf_label : target == site.cull_exit_pc ? cull_label : UINT32_MAX;
+		    return target == site.blas_pc        ? leaf_label
+		           : target == site.cull_exit_pc ? cull_label
+		                                         : UINT32_MAX;
 	    })) {
 		return false;
 	}
 	layout.Bind(leaf_label);
-	auto& leaf = layout.AddPseudo(Opcode::RT_LEAF, index);
-	leaf.dst   = Vgpr(site.leaf_node);
-	leaf.dst2  = Vgpr(site.leaf_word);
+	auto& leaf             = layout.AddPseudo(Opcode::RT_LEAF, index);
+	leaf.dst               = Vgpr(site.leaf_node);
+	leaf.dst2              = Vgpr(site.leaf_word);
 	leaf.image_nsa_addr[0] = site.result_t;
 	leaf.image_nsa_addr[1] = site.result_node;
 	leaf.image_nsa_addr[2] = site.result_instance;
@@ -289,14 +298,14 @@ bool AddNativeTraversal(Layout& layout, const Program& program, const RayTracing
 	}
 	// The end of an iteration: lanes whose leaf code accepted the hit confirm their candidate.
 	layout.Bind(tail_label);
-	auto& resolve = layout.AddPseudo(Opcode::RT_RESOLVE, index);
+	auto& resolve             = layout.AddPseudo(Opcode::RT_RESOLVE, index);
 	resolve.image_nsa_addr[0] = site.result_t;
 	resolve.image_nsa_addr[1] = site.result_node;
 	resolve.image_nsa_addr[2] = site.result_instance;
 	layout.AddBranch(Opcode::S_BRANCH, Layout::Target::Label, loop_label);
 	// The instance setup culled the instance (its mask test): the candidates are dropped.
 	layout.Bind(cull_label);
-	auto& cull = layout.AddPseudo(Opcode::RT_RESOLVE, index);
+	auto& cull             = layout.AddPseudo(Opcode::RT_RESOLVE, index);
 	cull.image_nsa_addr[0] = site.result_t;
 	cull.image_nsa_addr[1] = site.result_node;
 	cull.image_nsa_addr[2] = site.result_instance;
@@ -308,7 +317,7 @@ bool AddNativeTraversal(Layout& layout, const Program& program, const RayTracing
 	if (verify) {
 		// The native results are kept, the registers get their values at RT_INIT back and the
 		// guest loop runs from the same state; RT_VERIFY_CHECK at the exit compares.
-		auto& save = layout.AddPseudo(Opcode::RT_VERIFY_SAVE, index);
+		auto&      save = layout.AddPseudo(Opcode::RT_VERIFY_SAVE, index);
 		const auto regs = VerifyRegisters(site);
 		for (uint32_t i = 0; i < regs.size(); i++) {
 			save.image_nsa_addr[i] = regs[i];
@@ -332,8 +341,8 @@ bool AddNativeTraversal(Layout& layout, const Program& program, const RayTracing
 //
 // PsrClosest sites (Miles Morales' kernels; pcs of 0x6d9e's first traversal):
 //   loop header   S_MOV_B64 <e>, exec (0x710, the target of the stack pop's backward branch),
-//                 S_AND_B32 vcc_lo, <node>, 7, S_ADD_I32 vcc_lo, vcc_lo, -4, S_CMP_LE_U32 vcc_lo, 2,
-//                 S_CBRANCH_SCC1 <TLAS box test>
+//                 S_AND_B32 vcc_lo, <node>, 7, S_ADD_I32 vcc_lo, vcc_lo, -4, S_CMP_LE_U32 vcc_lo,
+//                 2, S_CBRANCH_SCC1 <TLAS box test>
 //   instance      S_CMP_LG_U32 -1, <node> ... S_AND_SAVEEXEC_B64 <s>, vcc, S_CBRANCH_EXECZ <skip>;
 //                 the setup follows (record = instances + (node >> 3) * 128, mask test
 //                 S_CBRANCH_SCC0 <skip>)
@@ -348,7 +357,8 @@ bool AddNativeTraversal(Layout& layout, const Program& program, const RayTracing
 //                 <a> + 1
 //   TLAS test     the IMAGE_BVH_INTERSECT_RAY after the box branch target (NSA: t max, origin,
 //                 direction); its T# from S_BFE_U64 <t>, <header>, 0x280008
-//   exit          the stack pop S_CMP_LG_U32 0, <sp>, S_CBRANCH_SCC0 <exit> before the backward branch
+//   exit          the stack pop S_CMP_LG_U32 0, <sp>, S_CBRANCH_SCC0 <exit> before the backward
+//   branch
 // The TLAS header address is S_BUFFER_LOAD_DWORDX2 <header>, <v#> @k from the V#
 // S_LOAD_DWORDX4 <v#>, <user> @j of a user data pointer nothing writes before; the root is the
 // S_MOV_B32 <node>, 0x25 before the loop.
@@ -407,12 +417,13 @@ public:
 			uint32_t site_user = NoRegister, site_vsharp = 0, site_offset = 0;
 			if (!FindTlasSource(header, site.header_sgpr, site_user, site_vsharp, site_offset)) {
 				patch.unmatched++;
-				patch.report += fmt::format(" loop@0x{:x}: TLAS source not traced;", m_inst[header].pc);
+				patch.report +=
+				    fmt::format(" loop@0x{:x}: TLAS source not traced;", m_inst[header].pc);
 				continue;
 			}
 			if (user_sgpr != NoRegister &&
-			    (site_user != user_sgpr || site_vsharp != vsharp_offset || site_offset != header_offset ||
-			     site.root != root)) {
+			    (site_user != user_sgpr || site_vsharp != vsharp_offset ||
+			     site_offset != header_offset || site.root != root)) {
 				patch.unmatched++;
 				patch.report += fmt::format(" loop@0x{:x}: another TLAS;", m_inst[header].pc);
 				continue;
@@ -421,9 +432,9 @@ public:
 			vsharp_offset = site_vsharp;
 			header_offset = site_offset;
 			root          = site.root;
-			patch.report += fmt::format(" site@0x{:x} (blas 0x{:x}, leaf 0x{:x}-0x{:x}, exit 0x{:x});",
-			                            site.loop_pc, site.blas_pc, site.leaf_pc, site.leaf_end_pc,
-			                            site.exit_pc);
+			patch.report += fmt::format(
+			    " site@0x{:x} (blas 0x{:x}, leaf 0x{:x}-0x{:x}, exit 0x{:x});", site.loop_pc,
+			    site.blas_pc, site.leaf_pc, site.leaf_end_pc, site.exit_pc);
 			sites.push_back(site);
 		}
 		if (sites.empty() || sites.size() > 4) {
@@ -442,14 +453,17 @@ private:
 
 	size_t IndexOf(uint32_t pc) const {
 		const auto found = std::ranges::lower_bound(m_inst, pc, {}, &Instruction::pc);
-		return found != m_inst.end() && found->pc == pc ? static_cast<size_t>(found - m_inst.begin()) : npos;
+		return found != m_inst.end() && found->pc == pc
+		           ? static_cast<size_t>(found - m_inst.begin())
+		           : npos;
 	}
 
 	// The last backward S_BRANCH to instruction `target`, or npos.
 	size_t BackwardBranchTo(size_t target) const {
 		size_t found = npos;
 		for (size_t i = target + 1; i < m_inst.size(); i++) {
-			if (m_inst[i].opcode == Opcode::S_BRANCH && m_inst[i].branch_target == m_inst[target].pc) {
+			if (m_inst[i].opcode == Opcode::S_BRANCH &&
+			    m_inst[i].branch_target == m_inst[target].pc) {
 				found = i;
 			}
 		}
@@ -484,16 +498,18 @@ private:
 		}
 		const auto& a = m_inst[i];
 		const auto& b = m_inst[i + 1];
-		return a.opcode == Opcode::S_AND_B32 && IsVccLo(a.dst) && a.src0.kind == OperandKind::Sgpr &&
-		       IsConstant(a.src1, 7) && b.opcode == Opcode::S_ADD_I32 && IsVccLo(b.dst) &&
-		       IsVccLo(b.src0) && b.src1.kind == OperandKind::IntegerInlineConstant && b.src1.signed_val == -4;
+		return a.opcode == Opcode::S_AND_B32 && IsVccLo(a.dst) &&
+		       a.src0.kind == OperandKind::Sgpr && IsConstant(a.src1, 7) &&
+		       b.opcode == Opcode::S_ADD_I32 && IsVccLo(b.dst) && IsVccLo(b.src0) &&
+		       b.src1.kind == OperandKind::IntegerInlineConstant && b.src1.signed_val == -4;
 	}
 
 	bool IsClosestHeader(size_t i) const {
 		return i + 4 < m_inst.size() && m_inst[i].opcode == Opcode::S_MOV_B64 &&
-		       m_inst[i].dst.kind == OperandKind::Sgpr && IsExecLo(m_inst[i].src0) && IsNodeType(i + 1) &&
-		       m_inst[i + 3].opcode == Opcode::S_CMP_LE_U32 && IsVccLo(m_inst[i + 3].src0) &&
-		       IsConstant(m_inst[i + 3].src1, 2) && m_inst[i + 4].opcode == Opcode::S_CBRANCH_SCC1;
+		       m_inst[i].dst.kind == OperandKind::Sgpr && IsExecLo(m_inst[i].src0) &&
+		       IsNodeType(i + 1) && m_inst[i + 3].opcode == Opcode::S_CMP_LE_U32 &&
+		       IsVccLo(m_inst[i + 3].src0) && IsConstant(m_inst[i + 3].src1, 2) &&
+		       m_inst[i + 4].opcode == Opcode::S_CBRANCH_SCC1;
 	}
 
 	bool Derive(size_t header, size_t back, RayTracingSite& site, std::string& why) const {
@@ -522,7 +538,8 @@ private:
 		site.setup_pc      = m_inst[setup].pc;
 		// The BLAS test: the first BVH test after the setup, before the TLAS box block.
 		const auto blas = Next(setup, Opcode::IMAGE_BVH_INTERSECT_RAY, box);
-		if (blas == npos || m_inst[blas].src0.kind != OperandKind::Vgpr || m_inst[blas].image_nsa_dwords != 0) {
+		if (blas == npos || m_inst[blas].src0.kind != OperandKind::Vgpr ||
+		    m_inst[blas].image_nsa_dwords != 0) {
 			return fail("no BLAS test");
 		}
 		site.blas_pc   = m_inst[blas].pc;
@@ -536,21 +553,25 @@ private:
 		}
 		// The leaf: the node type test of the BLAS test's node.
 		if (blas + 4 >= back || m_inst[blas + 1].opcode != Opcode::V_AND_B32 ||
-		    !IsConstant(m_inst[blas + 1].src0, 7) || !IsVgpr(m_inst[blas + 1].src1, site.leaf_node) ||
-		    m_inst[blas + 2].opcode != Opcode::V_CMP_LT_U32 || !IsConstant(m_inst[blas + 2].src0, 3) ||
-		    m_inst[blas + 3].opcode != Opcode::S_AND_SAVEEXEC_B64 || m_inst[blas + 3].dst.kind != OperandKind::Sgpr ||
+		    !IsConstant(m_inst[blas + 1].src0, 7) ||
+		    !IsVgpr(m_inst[blas + 1].src1, site.leaf_node) ||
+		    m_inst[blas + 2].opcode != Opcode::V_CMP_LT_U32 ||
+		    !IsConstant(m_inst[blas + 2].src0, 3) ||
+		    m_inst[blas + 3].opcode != Opcode::S_AND_SAVEEXEC_B64 ||
+		    m_inst[blas + 3].dst.kind != OperandKind::Sgpr ||
 		    m_inst[blas + 4].opcode != Opcode::S_CBRANCH_EXECZ) {
 			return fail("no node type test after the BLAS test");
 		}
 		const auto box_save = m_inst[blas + 3].dst.reg;
 		const auto triangle = IndexOf(m_inst[blas + 4].branch_target);
-		if (triangle == npos || triangle + 2 >= back || m_inst[triangle].opcode != Opcode::S_ANDN2_B64 ||
-		    !IsExecLo(m_inst[triangle].dst) || !IsSgpr(m_inst[triangle].src0, box_save) ||
-		    !IsExecLo(m_inst[triangle].src1) || m_inst[triangle + 1].opcode != Opcode::S_CBRANCH_EXECZ) {
+		if (triangle == npos || triangle + 2 >= back ||
+		    m_inst[triangle].opcode != Opcode::S_ANDN2_B64 || !IsExecLo(m_inst[triangle].dst) ||
+		    !IsSgpr(m_inst[triangle].src0, box_save) || !IsExecLo(m_inst[triangle].src1) ||
+		    m_inst[triangle + 1].opcode != Opcode::S_CBRANCH_EXECZ) {
 			return fail("no triangle branch");
 		}
-		site.leaf_pc     = m_inst[triangle + 2].pc;
-		site.leaf_end_pc = m_inst[triangle + 1].branch_target;
+		site.leaf_pc        = m_inst[triangle + 2].pc;
+		site.leaf_end_pc    = m_inst[triangle + 1].branch_target;
 		const auto leaf_end = IndexOf(site.leaf_end_pc);
 		if (leaf_end == npos || leaf_end <= triangle || leaf_end >= back ||
 		    m_inst[leaf_end].opcode != Opcode::S_MOV_B64 || !IsExecLo(m_inst[leaf_end].dst) ||
@@ -585,7 +606,8 @@ private:
 		size_t accept = npos;
 		for (size_t i = triangle + 2; i + 2 < leaf_end && accept == npos; i++) {
 			if (m_inst[i].opcode == Opcode::V_CMPX_NE_U32 && IsConstant(m_inst[i].src0, 0) &&
-			    m_inst[i + 1].opcode == Opcode::S_CBRANCH_EXECZ && m_inst[i + 2].opcode == Opcode::V_MOV_B32) {
+			    m_inst[i + 1].opcode == Opcode::S_CBRANCH_EXECZ &&
+			    m_inst[i + 2].opcode == Opcode::V_MOV_B32) {
 				accept = i + 2;
 			}
 		}
@@ -593,7 +615,7 @@ private:
 			return fail("no accepted hit");
 		}
 		site.result_t = site.result_node = site.result_instance = NoRegister;
-		uint32_t bary = 0;
+		uint32_t bary                                           = 0;
 		for (size_t i = accept; i < leaf_end && m_inst[i].opcode == Opcode::V_MOV_B32; i++) {
 			const auto& move = m_inst[i];
 			if (move.dst.kind != OperandKind::Vgpr) {
@@ -631,8 +653,8 @@ private:
 		// The alpha test counter: V_ADD_NC_U32 <c>, 1, <c> in the leaf code.
 		for (size_t i = triangle + 2; i < leaf_end; i++) {
 			const auto& add = m_inst[i];
-			if (add.opcode == Opcode::V_ADD_NC_U32 && add.dst.kind == OperandKind::Vgpr && IsConstant(add.src0, 1) &&
-			    IsVgpr(add.src1, add.dst.reg)) {
+			if (add.opcode == Opcode::V_ADD_NC_U32 && add.dst.kind == OperandKind::Vgpr &&
+			    IsConstant(add.src0, 1) && IsVgpr(add.src1, add.dst.reg)) {
 				site.alpha_counter = add.dst.reg;
 				break;
 			}
@@ -644,7 +666,8 @@ private:
 			if (move.opcode == Opcode::V_MOV_B32 && IsVgpr(move.dst, site.leaf_node) &&
 			    move.src0.kind == OperandKind::Vgpr) {
 				for (size_t j = i; j-- > leaf_end;) {
-					if (m_inst[j].opcode == Opcode::BUFFER_LOAD_DWORDX2 && IsVgpr(m_inst[j].dst, move.src0.reg)) {
+					if (m_inst[j].opcode == Opcode::BUFFER_LOAD_DWORDX2 &&
+					    IsVgpr(m_inst[j].dst, move.src0.reg)) {
 						site.leaf_word = move.src0.reg + 1u;
 						break;
 					}
@@ -661,7 +684,8 @@ private:
 		size_t pop = npos;
 		for (size_t i = back; i-- > box && i + 6 > back && pop == npos;) {
 			if (m_inst[i].opcode == Opcode::S_CMP_LG_U32 && IsConstant(m_inst[i].src0, 0) &&
-			    m_inst[i].src1.kind == OperandKind::Sgpr && m_inst[i + 1].opcode == Opcode::S_CBRANCH_SCC0) {
+			    m_inst[i].src1.kind == OperandKind::Sgpr &&
+			    m_inst[i + 1].opcode == Opcode::S_CBRANCH_SCC0) {
 				pop = i;
 			}
 		}
@@ -701,8 +725,8 @@ private:
 
 	// The TLAS header pair: S_BUFFER_LOAD_DWORDX2 <pair>, <v#> @k, the V# S_LOAD_DWORDX4 <v#>,
 	// <user> @j from a pair nothing writes before (user data).
-	bool FindTlasSource(size_t header, uint32_t header_sgpr, uint32_t& user_sgpr, uint32_t& vsharp_offset,
-	                    uint32_t& offset) const {
+	bool FindTlasSource(size_t header, uint32_t header_sgpr, uint32_t& user_sgpr,
+	                    uint32_t& vsharp_offset, uint32_t& offset) const {
 		size_t load = npos;
 		for (size_t i = header; i-- > 0;) {
 			if (IsSgpr(m_inst[i].dst, header_sgpr)) {
@@ -712,7 +736,8 @@ private:
 		}
 		if (load == npos || m_inst[load].opcode != Opcode::S_BUFFER_LOAD_DWORDX2 ||
 		    m_inst[load].src0.kind != OperandKind::Sgpr ||
-		    (m_inst[load].src1.kind != OperandKind::Unknown && m_inst[load].src1.kind != OperandKind::Null)) {
+		    (m_inst[load].src1.kind != OperandKind::Unknown &&
+		     m_inst[load].src1.kind != OperandKind::Null)) {
 			return false;
 		}
 		const auto vsharp = m_inst[load].src0.reg;
@@ -727,7 +752,8 @@ private:
 		}
 		if (source == npos || m_inst[source].opcode != Opcode::S_LOAD_DWORDX4 ||
 		    !IsSgpr(m_inst[source].dst, vsharp) || m_inst[source].src0.kind != OperandKind::Sgpr ||
-		    (m_inst[source].src1.kind != OperandKind::Unknown && m_inst[source].src1.kind != OperandKind::Null)) {
+		    (m_inst[source].src1.kind != OperandKind::Unknown &&
+		     m_inst[source].src1.kind != OperandKind::Null)) {
 			return false;
 		}
 		const auto base = m_inst[source].src0.reg;
@@ -749,15 +775,17 @@ private:
 
 bool DeriveRayTracingPatch(const Program& program, RayTracingPatch& patch) {
 	if (program.instructions.empty() ||
-	    std::ranges::none_of(program.instructions,
-	                         [](const Instruction& inst) { return inst.opcode == Opcode::IMAGE_BVH_INTERSECT_RAY; })) {
+	    std::ranges::none_of(program.instructions, [](const Instruction& inst) {
+		    return inst.opcode == Opcode::IMAGE_BVH_INTERSECT_RAY;
+	    })) {
 		return false;
 	}
 	SiteFinder finder(program);
 	if (!finder.Find(patch)) {
 		return false;
 	}
-	return std::ranges::all_of(patch.sites, [&](const RayTracingSite& site) { return CheckSite(program, site); });
+	return std::ranges::all_of(
+	    patch.sites, [&](const RayTracingSite& site) { return CheckSite(program, site); });
 }
 
 bool ApplyRayTracingPatch(const RayTracingPatch& patch, Program& program, bool verify) {
@@ -788,8 +816,8 @@ bool ApplyRayTracingPatch(const RayTracingPatch& patch, Program& program, bool v
 			if (verify && patch.sites[index].exit_pc == inst.pc) {
 				// Every path to the exit (the guest loop's) compares first.
 				layout.Bind(verify_labels[index]);
-				auto& check     = layout.AddPseudo(Opcode::RT_VERIFY_CHECK, index);
-				const auto regs = VerifyRegisters(patch.sites[index]);
+				auto&      check = layout.AddPseudo(Opcode::RT_VERIFY_CHECK, index);
+				const auto regs  = VerifyRegisters(patch.sites[index]);
 				for (uint32_t i = 0; i < regs.size(); i++) {
 					check.image_nsa_addr[i] = regs[i];
 				}
@@ -798,13 +826,15 @@ bool ApplyRayTracingPatch(const RayTracingPatch& patch, Program& program, bool v
 		layout.AddGuest(inst);
 		for (uint32_t index = 0; index < patch.sites.size(); index++) {
 			if (patch.sites[index].entry_pc == inst.pc &&
-			    !AddNativeTraversal(layout, program, patch.sites[index], index, verify, verify_labels[index])) {
+			    !AddNativeTraversal(layout, program, patch.sites[index], index, verify,
+			                        verify_labels[index])) {
 				return fail(inst.pc, "the instance setup or the leaf code cannot be copied");
 			}
 		}
 	}
 	std::vector<Instruction> patched;
-	if (!layout.Finish(program.instructions.front().pc, EndPc(program.instructions.back()), patched)) {
+	if (!layout.Finish(program.instructions.front().pc, EndPc(program.instructions.back()),
+	                   patched)) {
 		return fail(0, "a branch target is unknown");
 	}
 	program.instructions       = std::move(patched);

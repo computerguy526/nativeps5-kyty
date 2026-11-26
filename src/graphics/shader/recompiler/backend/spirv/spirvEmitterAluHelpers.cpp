@@ -1,5 +1,5 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
 #include <array>
 #include <atomic>
@@ -285,9 +285,9 @@ uint32_t EmitHalfPk(EmitterState& state, HalfPkOp op, uint32_t a, uint32_t b, ui
 	if (state.f16_pair_type == 0) {
 		state.f16_pair_type = state.builder.Type(spv::OpTypeVector, state.f16_type, 2);
 	}
-	const auto pair = state.f16_pair_type;
-	const auto ha   = Unary(state, spv::OpBitcast, pair, a);
-	const auto hb   = Unary(state, spv::OpBitcast, pair, b);
+	const auto pair   = state.f16_pair_type;
+	const auto ha     = Unary(state, spv::OpBitcast, pair, a);
+	const auto hb     = Unary(state, spv::OpBitcast, pair, b);
 	uint32_t   result = 0;
 	switch (op) {
 		case HalfPkOp::Add:
@@ -299,7 +299,8 @@ uint32_t EmitHalfPk(EmitterState& state, HalfPkOp op, uint32_t a, uint32_t b, ui
 		case HalfPkOp::Max:
 			result = state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpExtInst, pair, result, GlslStd450(state),
-			                          op == HalfPkOp::Max ? GLSLstd450NMax : GLSLstd450NMin, ha, hb);
+			                          op == HalfPkOp::Max ? GLSLstd450NMax : GLSLstd450NMin, ha,
+			                          hb);
 			break;
 		case HalfPkOp::Fma: {
 			// V_PK_FMA_F16 / V_PK_FMAC_F16: one fused f16 rounding per lane, as the guest does. The
@@ -308,8 +309,8 @@ uint32_t EmitHalfPk(EmitterState& state, HalfPkOp op, uint32_t a, uint32_t b, ui
 			// overflow to infinity) where the guest rounds every step.
 			const auto hc = Unary(state, spv::OpBitcast, pair, c);
 			result        = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpExtInst, pair, result, GlslStd450(state), GLSLstd450Fma,
-			                          ha, hb, hc);
+			state.builder.AddFunction(spv::OpExtInst, pair, result, GlslStd450(state),
+			                          GLSLstd450Fma, ha, hb, hc);
 			break;
 		}
 	}

@@ -27,7 +27,9 @@ public:
 	}
 
 	// A host file: whether it was opened and its last read was complete (the stream's state).
-	[[nodiscard]] bool Ok() const { return m_member != nullptr || (m_stream.is_open() && !m_stream.fail()); }
+	[[nodiscard]] bool Ok() const {
+		return m_member != nullptr || (m_stream.is_open() && !m_stream.fail());
+	}
 
 	// False when the size is not known.
 	[[nodiscard]] bool Size(uint64_t& size) const {
@@ -45,14 +47,15 @@ public:
 		if (m_member == nullptr) {
 			m_stream.clear();
 			m_stream.seekg(static_cast<std::streamoff>(offset));
-			return static_cast<bool>(
-			    m_stream.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size())));
+			return static_cast<bool>(m_stream.read(reinterpret_cast<char*>(out.data()),
+			                                       static_cast<std::streamsize>(out.size())));
 		}
 		if (!m_member->Seek(offset)) return false;
 		size_t done = 0;
 		while (done < out.size()) {
-			const auto step = static_cast<uint32_t>(std::min<size_t>(out.size() - done, size_t {64} << 20u));
-			uint32_t   got  = 0;
+			const auto step =
+			    static_cast<uint32_t>(std::min<size_t>(out.size() - done, size_t {64} << 20u));
+			uint32_t got = 0;
 			m_member->Read(out.data() + done, step, &got);
 			if (got == 0) return false;
 			done += got;

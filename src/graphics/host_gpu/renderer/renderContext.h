@@ -20,10 +20,10 @@
 
 #include <array>
 #include <atomic>
-#include <span>
-#include <string>
 #include <memory>
 #include <shared_mutex>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace Libs::VideoOut {
@@ -146,7 +146,7 @@ public:
 	LodStatsCounter&    GetLodStats() { return m_lod_stats; }
 	BindlessTable&      GetBindlessTable() { return m_bindless_table; }
 	// KYTY_RT_HW (nativeRayTracing.h): created at its first use, on the GPU thread.
-	NativeRayTracing&   GetNativeRayTracing();
+	NativeRayTracing& GetNativeRayTracing();
 
 	[[nodiscard]] bool HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept;
 	// Store in place (KYTY_STORE_IN_PLACE / KYTY_STORE_CLEAN, adapted from usa-ratt/KytyPS5-GT7
@@ -176,24 +176,26 @@ public:
 		m_page_manager.ResyncHostProtection(vaddr, size);
 	}
 	// KYTY_MPROTECT_TRACKED_ONCE (PageManager::ProtectGuestWritable).
-	void ProtectGuestWritable(uint64_t vaddr, uint64_t size, Common::VirtualMemory::Mode guest_mode) {
+	void ProtectGuestWritable(uint64_t vaddr, uint64_t size,
+	                          Common::VirtualMemory::Mode guest_mode) {
 		m_page_manager.ProtectGuestWritable(vaddr, size, guest_mode);
 	}
 	void               PrepareBda();
-	// KYTY_BDA_REACH=1|verify (default off, live; renderContextReach.cpp; based on TheCruZ/KytyPS5-GTA
-	// SynchronizeDmaFootprint): the stages of one draw or dispatch. When every stage that reads
-	// through device addresses has a reach proven for its inputs (ShaderInfo write_ranges.dma), only
-	// the buffers inside the reach are synchronized; otherwise, and with the switch off, PrepareBda().
+	// KYTY_BDA_REACH=1|verify (default off, live; renderContextReach.cpp; based on
+	// TheCruZ/KytyPS5-GTA SynchronizeDmaFootprint): the stages of one draw or dispatch. When every
+	// stage that reads through device addresses has a reach proven for its inputs (ShaderInfo
+	// write_ranges.dma), only the buffers inside the reach are synchronized; otherwise, and with
+	// the switch off, PrepareBda().
 	struct BdaReachStage {
-		const ShaderStageRuntime*                 runtime = nullptr;
+		const ShaderStageRuntime* runtime = nullptr;
 		// Bindless patches of the stage's flattened SRT (PreparedBindings::bindless_patches).
 		std::span<const std::array<uint32_t, 3>> bindless_patches;
 		std::array<uint32_t, 3>                  groups {};
 		bool                                     has_groups = false;
 		// A mesh stage's index bytes [mesh_index_begin, mesh_index_end), when known (may be empty).
-		bool                                     mesh_index_known = false;
-		uint64_t                                 mesh_index_begin = 0;
-		uint64_t                                 mesh_index_end   = 0;
+		bool     mesh_index_known = false;
+		uint64_t mesh_index_begin = 0;
+		uint64_t mesh_index_end   = 0;
 	};
 	void               PrepareBda(std::span<const BdaReachStage> stages);
 	void               RunGarbageCollector();

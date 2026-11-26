@@ -425,7 +425,7 @@ bool ServeInHeadWait() {
 }
 
 // KYTY_SPEC_SEGMENTS (live, default 0; segment.h): 0 off, 1 splice, 2 / verify.
-static Live::Switch g_spec_segments("KYTY_SPEC_SEGMENTS", [](const char* value) -> int64_t {
+static Live::Switch      g_spec_segments("KYTY_SPEC_SEGMENTS", [](const char* value) -> int64_t {
 	return static_cast<int64_t>(Segment::ParseMode(value));
 });
 static Segment::Counters g_segment_counters;
@@ -498,7 +498,7 @@ int DirectReadsMode() {
 // are maintained whether it is on or not).
 // A change also makes the next commit print the PrepStats / DrawPrep lines (closing the A/B slot).
 static std::atomic<bool> g_stats_due {false};
-static Live::Switch g_lean(
+static Live::Switch      g_lean(
     "KYTY_DRAW_PREP_LEAN", [](const char* value) -> int64_t { return Lean::ParseParts(value); },
     [](int64_t, int64_t) { g_stats_due.store(true, std::memory_order_relaxed); });
 static std::atomic<uint64_t> g_lean_verify_checks {0};
@@ -640,11 +640,12 @@ static void NoteHot(uint64_t page, uint32_t mask, uint64_t bytes) {
 
 // Commit side (the CP thread only): log entries walked per certificate check, and how many checks
 // came from untouched preparations and found the log clean.
-static uint64_t g_commit_checks  = 0;
-static uint64_t g_commit_entries = 0;
+static uint64_t g_commit_checks          = 0;
+static uint64_t g_commit_entries         = 0;
 static uint64_t g_commit_untouched_clean = 0;
 static uint64_t g_commit_log_conflicts   = 0;
-static std::array<uint64_t, 8> g_commit_entry_hist {}; // 0, 1-15, 16-63, 64-255, 256-1023, 1K-4K, 4K-16K, more
+static std::array<uint64_t, 8>
+    g_commit_entry_hist {}; // 0, 1-15, 16-63, 64-255, 256-1023, 1K-4K, 4K-16K, more
 
 static void NoteCommit(uint64_t entries, bool untouched, bool clean) {
 	g_commit_checks++;
@@ -662,22 +663,26 @@ static void NoteCommit(uint64_t entries, bool untouched, bool clean) {
 	g_commit_entry_hist[bucket]++;
 	if ((g_commit_checks & 0x3ffffu) == 0) {
 		const double c = static_cast<double>(g_commit_checks) / 100.0;
-		std::printf("CleanUntouchedDiag commits: %" PRIu64 " checks, %.1f log entries/check, untouched+clean "
-		            "%.1f%%, log not clean %.2f%%; entries hist [0 1-15 16-63 64-255 256-1K 1K-4K 4K-16K "
-		            ">16K] %%: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n",
-		            g_commit_checks, static_cast<double>(g_commit_entries) / static_cast<double>(g_commit_checks),
-		            static_cast<double>(g_commit_untouched_clean) / c,
-		            static_cast<double>(g_commit_log_conflicts) / c, g_commit_entry_hist[0] / c,
-		            g_commit_entry_hist[1] / c, g_commit_entry_hist[2] / c, g_commit_entry_hist[3] / c,
-		            g_commit_entry_hist[4] / c, g_commit_entry_hist[5] / c, g_commit_entry_hist[6] / c,
-		            g_commit_entry_hist[7] / c);
+		std::printf(
+		    "CleanUntouchedDiag commits: %" PRIu64
+		    " checks, %.1f log entries/check, untouched+clean "
+		    "%.1f%%, log not clean %.2f%%; entries hist [0 1-15 16-63 64-255 256-1K 1K-4K 4K-16K "
+		    ">16K] %%: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n",
+		    g_commit_checks,
+		    static_cast<double>(g_commit_entries) / static_cast<double>(g_commit_checks),
+		    static_cast<double>(g_commit_untouched_clean) / c,
+		    static_cast<double>(g_commit_log_conflicts) / c, g_commit_entry_hist[0] / c,
+		    g_commit_entry_hist[1] / c, g_commit_entry_hist[2] / c, g_commit_entry_hist[3] / c,
+		    g_commit_entry_hist[4] / c, g_commit_entry_hist[5] / c, g_commit_entry_hist[6] / c,
+		    g_commit_entry_hist[7] / c);
 		std::fflush(stdout);
 	}
 }
 
 static void Print(uint64_t certs) {
 	const double c = static_cast<double>(certs) / 100.0;
-	std::printf("CleanUntouchedDiag: %" PRIu64 " certs, untouched %.1f%%, 1KiB-untouched %.1f%% (of all), "
+	std::printf("CleanUntouchedDiag: %" PRIu64
+	            " certs, untouched %.1f%%, 1KiB-untouched %.1f%% (of all), "
 	            "ranges touched %.1f%%; touched by source mask [buf trk img pub]:",
 	            certs, static_cast<double>(g_untouched.load()) / c,
 	            static_cast<double>(g_fine_untouched.load()) / c,
@@ -685,8 +690,8 @@ static void Print(uint64_t certs) {
 	                static_cast<double>(std::max<uint64_t>(1, g_ranges.load())));
 	for (uint32_t m = 0; m < 16; m++) {
 		if (const auto n = g_masks[m].load(); n != 0) {
-			std::printf(" %c%c%c%c=%.1f%%", (m & 1u) ? 'b' : '-', (m & 2u) ? 't' : '-', (m & 4u) ? 'i' : '-',
-			            (m & 8u) ? 'p' : '-', static_cast<double>(n) / c);
+			std::printf(" %c%c%c%c=%.1f%%", (m & 1u) ? 'b' : '-', (m & 2u) ? 't' : '-',
+			            (m & 4u) ? 'i' : '-', (m & 8u) ? 'p' : '-', static_cast<double>(n) / c);
 		}
 	}
 	std::printf("\n");
@@ -694,30 +699,33 @@ static void Print(uint64_t certs) {
 	for (size_t i = 0; i < g_hot.size(); i++) {
 		order[i] = {g_hot[i].hits.load(), i};
 	}
-	std::sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+	std::sort(order.begin(), order.end(),
+	          [](const auto& a, const auto& b) { return a.first > b.first; });
 	for (size_t i = 0; i < 12 && order[i].first != 0; i++) {
 		const auto& slot = g_hot[order[i].second];
 		const auto  m    = slot.mask.load();
-		std::printf("CleanUntouchedDiag:   page 0x%" PRIx64 " %.1f%% of certs, mask %c%c%c%c, avg range %" PRIu64
-		            " B\n",
-		            slot.page.load() << 12u, static_cast<double>(order[i].first) / c, (m & 1u) ? 'b' : '-',
-		            (m & 2u) ? 't' : '-', (m & 4u) ? 'i' : '-', (m & 8u) ? 'p' : '-',
+		std::printf("CleanUntouchedDiag:   page 0x%" PRIx64
+		            " %.1f%% of certs, mask %c%c%c%c, avg range %" PRIu64 " B\n",
+		            slot.page.load() << 12u, static_cast<double>(order[i].first) / c,
+		            (m & 1u) ? 'b' : '-', (m & 2u) ? 't' : '-', (m & 4u) ? 'i' : '-',
+		            (m & 8u) ? 'p' : '-',
 		            slot.bytes.load() / std::max<uint64_t>(1, order[i].first));
 	}
 	std::fflush(stdout);
 }
 
-static void Note(std::span<const Coherence::Range> a, std::span<const Coherence::Range> b, bool untouched) {
+static void Note(std::span<const Coherence::Range> a, std::span<const Coherence::Range> b,
+                 bool untouched) {
 	const auto certs = g_certs.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (untouched) {
 		g_untouched.fetch_add(1, std::memory_order_relaxed);
 		g_fine_untouched.fetch_add(1, std::memory_order_relaxed);
 	} else {
-		uint32_t mask     = 0;
-		bool     fine     = true;
-		bool     first    = true;
-		uint64_t ranges   = 0;
-		uint64_t touched  = 0;
+		uint32_t mask    = 0;
+		bool     fine    = true;
+		bool     first   = true;
+		uint64_t ranges  = 0;
+		uint64_t touched = 0;
 		for (const auto list: {a, b}) {
 			for (const auto& range: list) {
 				ranges++;
@@ -762,12 +770,13 @@ static void Note(std::span<const Coherence::Range> a, std::span<const Coherence:
 // its mark). At the pirate island about half the certificates touch a few GPU-written pages (4-byte
 // reads of buffers written by the GPU and published back), and 79% of their ranges are untouched.
 // 2 (verify): the full pass decides; a touched-only "clean" the full pass refuses is counted.
-static Live::Switch g_clean_untouched_ranges("KYTY_CLEAN_UNTOUCHED_RANGES", [](const char* value) -> int64_t {
-	if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
-		return 0;
-	}
-	return std::strcmp(value, "verify") == 0 || std::strcmp(value, "2") == 0 ? 2 : 1;
-});
+static Live::Switch
+    g_clean_untouched_ranges("KYTY_CLEAN_UNTOUCHED_RANGES", [](const char* value) -> int64_t {
+	    if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
+		    return 0;
+	    }
+	    return std::strcmp(value, "verify") == 0 || std::strcmp(value, "2") == 0 ? 2 : 1;
+    });
 
 static void CollectTouched(PreparedDraw& prepared) {
 	const bool fine = g_clean_untouched_fine.On();
@@ -800,7 +809,8 @@ static bool ReadsUntouched(PreparedDraw& prepared) {
 	if (prepared.certificate_built) {
 		untouched = RangesUntouched(prepared.certificate);
 	} else {
-		untouched = RangesUntouched(prepared.reads.Ranges()) && RangesUntouched(prepared.reads.DigestRanges());
+		untouched = RangesUntouched(prepared.reads.Ranges()) &&
+		            RangesUntouched(prepared.reads.DigestRanges());
 	}
 	if (GpuTouched::DiagEnabled()) [[unlikely]] {
 		if (prepared.certificate_built) {
@@ -1074,8 +1084,9 @@ static bool AllCleanAfterLog(const PreparedDraw& prepared) {
 				const auto since    = prepared.coherence_generation;
 				const bool shortcut = g_clean_since.Get() == 1;
 				const auto is_clean = [&](uint64_t address, uint64_t size) {
-					return shortcut ? LibKernel::Memory::IsGpuCleanForReadSince(address, size, since)
-					                : LibKernel::Memory::IsGpuCleanForRead(address, size);
+					return shortcut
+					           ? LibKernel::Memory::IsGpuCleanForReadSince(address, size, since)
+					           : LibKernel::Memory::IsGpuCleanForRead(address, size);
 				};
 				bool touched_clean = true;
 				for (const auto& range: prepared.touched_reads) {
@@ -1088,18 +1099,22 @@ static bool AllCleanAfterLog(const PreparedDraw& prepared) {
 					return touched_clean;
 				}
 				const bool exact = prepared.reads.AllClean(LibKernel::Memory::IsGpuCleanForRead);
-				const auto checks = g_untouched_ranges_checks.fetch_add(1, std::memory_order_relaxed) + 1;
+				const auto checks =
+				    g_untouched_ranges_checks.fetch_add(1, std::memory_order_relaxed) + 1;
 				if (touched_clean && !exact) {
-					const auto count = g_untouched_ranges_mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+					const auto count =
+					    g_untouched_ranges_mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
 					if (count <= 16) {
-						std::printf("CleanUntouchedRanges: the touched ranges are clean but not all ranges "
-						            "(%zu ranges, %zu touched)\n",
-						            prepared.reads.Ranges().size(), prepared.touched_reads.size());
+						std::printf(
+						    "CleanUntouchedRanges: the touched ranges are clean but not all ranges "
+						    "(%zu ranges, %zu touched)\n",
+						    prepared.reads.Ranges().size(), prepared.touched_reads.size());
 					}
 				}
 				if ((checks & 0x3ffffu) == 0) {
-					std::printf("CleanUntouchedRanges verify: %" PRIu64 " checks, %" PRIu64 " mismatches\n",
-					            checks, g_untouched_ranges_mismatches.load(std::memory_order_relaxed));
+					std::printf(
+					    "CleanUntouchedRanges verify: %" PRIu64 " checks, %" PRIu64 " mismatches\n",
+					    checks, g_untouched_ranges_mismatches.load(std::memory_order_relaxed));
 					std::fflush(stdout);
 				}
 				return exact;
@@ -1189,7 +1204,7 @@ static Coherence::CheckOutcome SummaryCheck(uint64_t from, std::span<const Coher
 	if (!GuestGpu::IsGpuThread()) {
 		return Coherence::g_log.Check(from, to, ranges, true);
 	}
-	const bool clean = summary.Clean(from, to, ranges);
+	const bool clean  = summary.Clean(from, to, ranges);
 	const auto checks = g_summary_checks.fetch_add(1, std::memory_order_relaxed) + 1;
 	if (clean) {
 		g_summary_clean.fetch_add(1, std::memory_order_relaxed);
@@ -1204,14 +1219,15 @@ static Coherence::CheckOutcome SummaryCheck(uint64_t from, std::span<const Coher
 	if (clean && exact.result == Coherence::CheckResult::Conflict) {
 		const auto count = g_summary_mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
 		if (count <= 16) {
-			std::printf("CertLogSummary: the summary called an interval clean that conflicts (from %" PRIu64
-			            " to %" PRIu64 ", %zu ranges)\n",
-			            from, to, ranges.size());
+			std::printf(
+			    "CertLogSummary: the summary called an interval clean that conflicts (from %" PRIu64
+			    " to %" PRIu64 ", %zu ranges)\n",
+			    from, to, ranges.size());
 		}
 	}
 	if ((checks & 0x3ffffu) == 0) {
-		std::printf("CertLogSummary verify: %" PRIu64 " checks, %" PRIu64 " clean by summary, %" PRIu64
-		            " mismatches\n",
+		std::printf("CertLogSummary verify: %" PRIu64 " checks, %" PRIu64
+		            " clean by summary, %" PRIu64 " mismatches\n",
 		            checks, g_summary_clean.load(std::memory_order_relaxed),
 		            g_summary_mismatches.load(std::memory_order_relaxed));
 		std::fflush(stdout);
@@ -1465,9 +1481,9 @@ bool VerifyCommitted(bool pixel_active, const PipelineCache::GraphicsPrograms& p
 	const bool pixel_equal = SamePixelInfo(pixel_info, serial_pixel_info) &&
 	                         (!pixel_active || SamePrep(preps.pixel, serial_preps.pixel));
 	// KYTY_DRAW_PREP_TESS: a tessellated draw's HS and TES preps too.
-	const bool tess_equal = !serial_programs.vertex[1] ||
-	                        (SamePrep(preps.vertex[1], serial_preps.vertex[1]) &&
-	                         SamePrep(preps.vertex[2], serial_preps.vertex[2]));
+	const bool tess_equal =
+	    !serial_programs.vertex[1] || (SamePrep(preps.vertex[1], serial_preps.vertex[1]) &&
+	                                   SamePrep(preps.vertex[2], serial_preps.vertex[2]));
 	const bool vertex_equal = SamePrep(preps.vertex[0], serial_preps.vertex[0]) &&
 	                          SameVertexInfo(vertex_info, serial_vertex_info) && tess_equal;
 	if (programs_equal && pixel_equal && vertex_equal) {
@@ -1601,25 +1617,30 @@ void EncodeSlotSegment(Engine::Slot& slot) {
 	Segment::EncodeInputs in;
 	in.indexed = slot.kind == DrawKind::Index;
 	if (in.indexed) {
-		const auto& args   = slot.index_args;
-		const auto& vs     = slot.prepared.vertex_info;
-		const auto  prim   = slot.registers.user_config.GetPrimType();
-		in.prepared_ok     = slot.prepared.ok;
-		in.run_key         = slot.run_key;
+		const auto& args        = slot.index_args;
+		const auto& vs          = slot.prepared.vertex_info;
+		const auto  prim        = slot.registers.user_config.GetPrimType();
+		in.prepared_ok          = slot.prepared.ok;
+		in.run_key              = slot.run_key;
 		in.offsets_from_state   = args.offset_source == DrawOffsetSource::DrawState;
 		in.gpu_instance_address = args.gpu_instance_address;
-		in.plain_primitive = prim != Prospero::PrimitiveType::kQuadListLegacy &&
-		                     (prim == Prospero::PrimitiveType::kPointList || prim == Prospero::PrimitiveType::kLineList ||
-		                      prim == Prospero::PrimitiveType::kLineStrip || prim == Prospero::PrimitiveType::kTriList ||
-		                      prim == Prospero::PrimitiveType::kTriFan || prim == Prospero::PrimitiveType::kTriStrip ||
-		                      prim == Prospero::PrimitiveType::kRectList || prim == Prospero::PrimitiveType::kPolygon ||
-		                      prim == Prospero::PrimitiveType::kRectListLegacy || prim == Prospero::PrimitiveType::kPatch);
-		in.index_type      = args.index_type_and_size;
-		in.vertex_stage    = !vs.fetch_embedded || static_cast<bool>(vs.stage);
-		in.index_count     = args.index_count;
-		in.instance_count  = args.instance_count;
-		in.base_vertex     = args.base_vertex;
-		in.index_address   = reinterpret_cast<uint64_t>(args.index_addr);
+		in.plain_primitive      = prim != Prospero::PrimitiveType::kQuadListLegacy &&
+		                          (prim == Prospero::PrimitiveType::kPointList ||
+		                           prim == Prospero::PrimitiveType::kLineList ||
+		                           prim == Prospero::PrimitiveType::kLineStrip ||
+		                           prim == Prospero::PrimitiveType::kTriList ||
+		                           prim == Prospero::PrimitiveType::kTriFan ||
+		                           prim == Prospero::PrimitiveType::kTriStrip ||
+		                           prim == Prospero::PrimitiveType::kRectList ||
+		                           prim == Prospero::PrimitiveType::kPolygon ||
+		                           prim == Prospero::PrimitiveType::kRectListLegacy ||
+		                           prim == Prospero::PrimitiveType::kPatch);
+		in.index_type           = args.index_type_and_size;
+		in.vertex_stage         = !vs.fetch_embedded || static_cast<bool>(vs.stage);
+		in.index_count          = args.index_count;
+		in.instance_count       = args.instance_count;
+		in.base_vertex          = args.base_vertex;
+		in.index_address        = reinterpret_cast<uint64_t>(args.index_addr);
 		if (in.prepared_ok && in.vertex_stage) {
 			const auto [vertex_offset, instance_offset] =
 			    ResolveDrawOffsets(slot.registers.user_config.GetIndexOffset(), vs);
@@ -1627,12 +1648,13 @@ void EncodeSlotSegment(Engine::Slot& slot) {
 			in.resolved_instance_offset = instance_offset;
 		}
 	}
-	slot.segment = Segment::Encode(in);
+	slot.segment   = Segment::Encode(in);
 	auto& counters = SegmentCounters();
 	if (slot.segment.miss == Segment::Miss::None) {
 		counters.encoded.fetch_add(1, std::memory_order_relaxed);
 	} else {
-		counters.misses[static_cast<size_t>(slot.segment.miss)].fetch_add(1, std::memory_order_relaxed);
+		counters.misses[static_cast<size_t>(slot.segment.miss)].fetch_add(
+		    1, std::memory_order_relaxed);
 	}
 }
 
@@ -1646,12 +1668,12 @@ void HashForRepeatTrace(Engine::Slot& slot) {
 	slot.run_targets_key = 0;
 	slot.run_swap_key    = 0;
 	slot.run_texfree_key = 0;
-	slot.run_key = DrawRun::Enabled() ? DrawRun::StructureKey(slot.registers.context,
-	                                                          slot.registers.user_config,
-	                                                          slot.prepared, &slot.run_targets_key,
-	                                                          &slot.run_swap_key,
-	                                                          DrawRun::TexDeltaMode() != 0 ? &slot.run_texfree_key : nullptr)
-	                                  : 0;
+	slot.run_key =
+	    DrawRun::Enabled()
+	        ? DrawRun::StructureKey(slot.registers.context, slot.registers.user_config,
+	                                slot.prepared, &slot.run_targets_key, &slot.run_swap_key,
+	                                DrawRun::TexDeltaMode() != 0 ? &slot.run_texfree_key : nullptr)
+	        : 0;
 	slot.run_parts_valid = slot.run_key != 0 && DrawRun::KeyDiagEnabled();
 	if (slot.run_parts_valid) [[unlikely]] {
 		DrawRun::StructureKeyParts(slot.registers.context, slot.registers.user_config, slot.prepared,
@@ -1766,26 +1788,28 @@ std::atomic<uint32_t> g_adapt_cap {0};
 std::atomic<uint32_t> g_adapt_lps {0};
 std::atomic<uint64_t> g_adapt_busy_milli {0}; // busy cores x 1000 of the last interval
 
-// The engine's worker pool (one parallel engine per process) and its mode setter, for the live switch
-// below (Engine::Workers is private to the engine).
+// The engine's worker pool (one parallel engine per process) and its mode setter, for the live
+// switch below (Engine::Workers is private to the engine).
 std::atomic<void*> g_live_workers {nullptr};
-void (*g_live_set_adapt)(void*, bool) = nullptr;
+void (*g_live_set_adapt)(void*, bool)      = nullptr;
 void (*g_live_set_active)(void*, uint32_t) = nullptr;
 void ApplyAdaptMode(int64_t previous, int64_t value);
 void ApplyActiveWorkers(int64_t previous, int64_t value);
 } // namespace
 
 // KYTY_DRAW_PREP_ACTIVE=<n> (live, default unset or 0 = every worker): only the first n draw-prep
-// workers run the hot/cold gate loop (KYTY_DRAW_PREP_HOT of them hot, the rest cold); the others park
-// until the value changes. With the six default workers, n = 3 is KYTY_DRAW_PREP_WORKERS=3 (2 hot +
-// 1 cold) switchable inside one boot. A worker that is retired while parked cold leaves when its
-// next cold wake reaches it, so that one wake is lost (the commit thread prepares an unclaimed head
-// itself, as always). No effect while KYTY_DRAW_PREP_ADAPT is on (its cap decides); applies again
-// when the gate loop resumes.
+// workers run the hot/cold gate loop (KYTY_DRAW_PREP_HOT of them hot, the rest cold); the others
+// park until the value changes. With the six default workers, n = 3 is KYTY_DRAW_PREP_WORKERS=3 (2
+// hot + 1 cold) switchable inside one boot. A worker that is retired while parked cold leaves when
+// its next cold wake reaches it, so that one wake is lost (the commit thread prepares an unclaimed
+// head itself, as always). No effect while KYTY_DRAW_PREP_ADAPT is on (its cap decides); applies
+// again when the gate loop resumes.
 static Live::Switch g_active_workers(
     "KYTY_DRAW_PREP_ACTIVE",
     [](const char* value) -> int64_t {
-	    return value != nullptr ? static_cast<int64_t>(std::min(std::strtoul(value, nullptr, 10), 32ul)) : 0;
+	    return value != nullptr
+	               ? static_cast<int64_t>(std::min(std::strtoul(value, nullptr, 10), 32ul))
+	               : 0;
     },
     [](int64_t previous, int64_t value) { ApplyActiveWorkers(previous, value); });
 
@@ -1798,7 +1822,9 @@ static Live::Switch g_active_workers(
 // Unset follows KYTY_CORE_BUDGET_PROFILE (common/coreBudget.h); a profile change moves the workers
 // the same way while the switch is unset.
 static Live::Switch g_adapt_mode("KYTY_DRAW_PREP_ADAPT", Common::ParseTriState,
-                                 [](int64_t previous, int64_t value) { ApplyAdaptMode(previous, value); });
+                                 [](int64_t previous, int64_t value) {
+	                                 ApplyAdaptMode(previous, value);
+                                 });
 
 namespace {
 bool AdaptOn() {
@@ -1837,13 +1863,18 @@ struct Engine::Workers {
 		leave_adapt.store(!on, std::memory_order_seq_cst);
 		leave_gate.store(on, std::memory_order_seq_cst);
 		const auto active_value = static_cast<uint32_t>(g_active_workers.Get());
-		active.store(active_value == 0 ? count : std::min(active_value, count), std::memory_order_seq_cst);
+		active.store(active_value == 0 ? count : std::min(active_value, count),
+		             std::memory_order_seq_cst);
 		PublishLeaves();
 		for (uint32_t index = 0; index < count; index++) {
 			threads.emplace_back([this, index] { Run(index); });
 		}
-		g_live_set_adapt  = [](void* workers, bool on) { static_cast<Workers*>(workers)->SetAdapt(on); };
-		g_live_set_active = [](void* workers, uint32_t n) { static_cast<Workers*>(workers)->SetActive(n); };
+		g_live_set_adapt = [](void* workers, bool on) {
+			static_cast<Workers*>(workers)->SetAdapt(on);
+		};
+		g_live_set_active = [](void* workers, uint32_t n) {
+			static_cast<Workers*>(workers)->SetActive(n);
+		};
 		g_live_workers.store(this, std::memory_order_seq_cst);
 	}
 
@@ -1861,8 +1892,9 @@ struct Engine::Workers {
 		}
 	}
 
-	// KYTY_DRAW_PREP_ACTIVE: each worker's leave flag for the gate loop = the loop's own leave flag,
-	// or the worker is beyond the active count (command processor thread, and the constructor).
+	// KYTY_DRAW_PREP_ACTIVE: each worker's leave flag for the gate loop = the loop's own leave
+	// flag, or the worker is beyond the active count (command processor thread, and the
+	// constructor).
 	void PublishLeaves() {
 		const bool all = leave_gate.load(std::memory_order_seq_cst);
 		const auto n   = active.load(std::memory_order_seq_cst);
@@ -1870,7 +1902,8 @@ struct Engine::Workers {
 			leave_worker[index].store(all || index >= n, std::memory_order_seq_cst);
 		}
 	}
-	// Wakes the workers parked beyond the active count, so they re-read it (and the mode, and stop).
+	// Wakes the workers parked beyond the active count, so they re-read it (and the mode, and
+	// stop).
 	void NotifyActive() {
 		active_word.fetch_add(1, std::memory_order_seq_cst);
 		active_word.notify_all();
@@ -1896,7 +1929,8 @@ struct Engine::Workers {
 			gate.WakeAll();
 			NotifyActive();
 		} else {
-			// WakeAll left the cold token in its shutdown state; no worker is parked in the gate now.
+			// WakeAll left the cold token in its shutdown state; no worker is parked in the gate
+			// now.
 			gate.Rearm();
 			leave_gate.store(false, std::memory_order_seq_cst);
 			PublishLeaves();
@@ -1925,7 +1959,8 @@ struct Engine::Workers {
 				adapt->SetCap(cap);
 				g_adapt_cap.store(cap, std::memory_order_relaxed);
 				g_adapt_lps.store(lps, std::memory_order_relaxed);
-				g_adapt_busy_milli.store(static_cast<uint64_t>(busy * 1000.0), std::memory_order_relaxed);
+				g_adapt_busy_milli.store(static_cast<uint64_t>(busy * 1000.0),
+				                         std::memory_order_relaxed);
 			}
 			return;
 		}
@@ -1967,7 +2002,7 @@ struct Engine::Workers {
 		t_worker_thread = true;
 		uint32_t placement_count = 0; // placement samples (common/cpuPlacement.h), every 64th slot
 		t_worker_number = index + 1u;
-		const auto prepare = [this, &placement_count](Slot& slot, uint64_t seq) {
+		const auto prepare       = [this, &placement_count](Slot& slot, uint64_t seq) {
 			Common::HelperPriority::Check(0); // KYTY_HELPER_PRIORITY (measurement)
 			PrepareClaimed(slot, seq);
 			if ((++placement_count & 63u) == 0u) {
@@ -1982,17 +2017,20 @@ struct Engine::Workers {
 					WorkerRelax(); // a switch in progress
 					continue;
 				}
-				RunAdaptiveWorker(*adapt, window, index, adapt_config.spin_ns, leave_adapt, prepare, batch);
+				RunAdaptiveWorker(*adapt, window, index, adapt_config.spin_ns, leave_adapt, prepare,
+				                  batch);
 			} else {
 				if (leave_gate.load(std::memory_order_seq_cst)) {
 					WorkerRelax();
 					continue;
 				}
-				// KYTY_DRAW_PREP_ACTIVE: beyond the active count, park until it (or the mode) changes.
+				// KYTY_DRAW_PREP_ACTIVE: beyond the active count, park until it (or the mode)
+				// changes.
 				if (index >= active.load(std::memory_order_seq_cst)) {
 					const auto observed = active_word.load(std::memory_order_seq_cst);
 					if (index >= active.load(std::memory_order_seq_cst) &&
-					    !adapt_on.load(std::memory_order_seq_cst) && !stop.load(std::memory_order_seq_cst)) {
+					    !adapt_on.load(std::memory_order_seq_cst) &&
+					    !stop.load(std::memory_order_seq_cst)) {
 						active_word.wait(observed, std::memory_order_seq_cst);
 					}
 					continue;
@@ -2012,8 +2050,8 @@ struct Engine::Workers {
 				};
 				RunPreparationWorkerBatched(
 				    gate, window, index, spin_ns, cold_spin_ns, leave_worker[index], prepare,
-				    [] { Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepColdWakes); }, batch,
-				    BudgetHooks {});
+				    [] { Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepColdWakes); },
+				    batch, BudgetHooks {});
 			}
 		}
 	}
@@ -2024,19 +2062,19 @@ struct Engine::Workers {
 	uint64_t                 cold_spin_ns = 0;
 	StealPolicy              steal; // KYTY_DRAW_PREP_STEAL, KYTY_DRAW_PREP_STEAL_AFTER_US
 	WorkerGate               gate;
-	AdaptConfig              adapt_config;
+	AdaptConfig                   adapt_config;
 	std::unique_ptr<AdaptivePool> adapt; // KYTY_DRAW_PREP_ADAPT
-	// KYTY_DRAW_PREP_ADAPT live: which loop the workers run, and each loop's leave flag (also set at
-	// shutdown).
-	std::atomic<bool> adapt_on {false};
-	std::atomic<bool> leave_gate {false};
-	std::atomic<bool> leave_adapt {true};
+	// KYTY_DRAW_PREP_ADAPT live: which loop the workers run, and each loop's leave flag (also set
+	// at shutdown).
+	std::atomic<bool>        adapt_on {false};
+	std::atomic<bool>        leave_gate {false};
+	std::atomic<bool>        leave_adapt {true};
 	std::atomic<bool>        stop {false};
 	// KYTY_DRAW_PREP_ACTIVE: the workers that run the gate loop, the parked others' wake word, and
 	// each worker's leave flag for that loop (PublishLeaves).
-	const uint32_t                                       threads_count;
-	std::atomic<uint32_t>                                active {0};
-	std::atomic<uint32_t>                                active_word {0};
+	const uint32_t                                          threads_count;
+	std::atomic<uint32_t>                                   active {0};
+	std::atomic<uint32_t>                                   active_word {0};
 	std::array<std::atomic<bool>, AdaptivePool::MaxWorkers> leave_worker {};
 	std::vector<std::thread> threads;
 };
@@ -2060,7 +2098,7 @@ void ApplyActiveWorkers(int64_t /*previous*/, int64_t value) {
 } // namespace
 
 Engine::Engine(RenderContext& renderer, std::function<void()> service_commands,
-               void (*after_commit)(void*), void* after_commit_context)
+               void (*after_commit)(void*), void*             after_commit_context)
     : m_renderer(renderer), m_mode(GetMode()), m_service_commands(std::move(service_commands)),
       m_after_commit(after_commit), m_after_commit_context(after_commit_context),
       m_inline_slot(std::make_unique<Slot>()) {
@@ -2094,13 +2132,15 @@ Engine::Engine(RenderContext& renderer, std::function<void()> service_commands,
 		// KYTY_DRAW_PREP_ADAPT=1 (adaptivePool.h): the demand-sized pool instead of the hot/cold
 		// gate (KYTY_DRAW_PREP_HOT, _SPIN_US, _COLD_SPIN_US, _WAKE_BACKLOG are then unused).
 		AdaptConfig adapt;
-		adapt.spin_ns     = uint64_t {EnvUnsigned("KYTY_DRAW_PREP_ADAPT_SPIN_US", 10, 0, 1000000)} * 1000u;
-		adapt.min_cap     = EnvUnsigned("KYTY_DRAW_PREP_ADAPT_MIN", 1, 1, 32);
-		adapt.max_cap     = EnvUnsigned("KYTY_DRAW_PREP_ADAPT_MAX", 0, 0, 32);
-		adapt.interval_ns = uint64_t {EnvUnsigned("KYTY_DRAW_PREP_ADAPT_INTERVAL_MS", 250, 10, 10000)} * 1000000u;
-		m_workers = std::make_unique<Workers>(m_renderer.GetPipelineCache(), window, workers,
-		                                      uint64_t {spin_us} * 1000u, hot, wake_backlog,
-		                                      uint64_t {cold_spin_us} * 1000u, steal, cold_token, adapt);
+		adapt.spin_ns =
+		    uint64_t {EnvUnsigned("KYTY_DRAW_PREP_ADAPT_SPIN_US", 10, 0, 1000000)} * 1000u;
+		adapt.min_cap = EnvUnsigned("KYTY_DRAW_PREP_ADAPT_MIN", 1, 1, 32);
+		adapt.max_cap = EnvUnsigned("KYTY_DRAW_PREP_ADAPT_MAX", 0, 0, 32);
+		adapt.interval_ns =
+		    uint64_t {EnvUnsigned("KYTY_DRAW_PREP_ADAPT_INTERVAL_MS", 250, 10, 10000)} * 1000000u;
+		m_workers = std::make_unique<Workers>(
+		    m_renderer.GetPipelineCache(), window, workers, uint64_t {spin_us} * 1000u, hot,
+		    wake_backlog, uint64_t {cold_spin_us} * 1000u, steal, cold_token, adapt);
 		m_workers->plan_context = MakeBindingPlanContext(m_renderer);
 		LOGF("DrawPrep: parallel mode, window=%u workers=%u spin=%uus hot=%u wake_backlog=%u "
 		     "cold_spin=%uus cold_token=%d steal=%u steal_after=%uus cert=%s verify=%d adapt=%d "
@@ -2109,7 +2149,8 @@ Engine::Engine(RenderContext& renderer, std::function<void()> service_commands,
 		     wake_backlog, cold_spin_us, cold_token ? 1 : 0, steal.min_unclaimed, steal_us,
 		     GetCertMode() == CertMode::Log ? "log" : "value", VerifyMode(), AdaptOn() ? 1 : 0,
 		     adapt.spin_ns / 1000u, adapt.min_cap, adapt.max_cap,
-		     g_adapt_cap.load(std::memory_order_relaxed), g_adapt_lps.load(std::memory_order_relaxed));
+		     g_adapt_cap.load(std::memory_order_relaxed),
+		     g_adapt_lps.load(std::memory_order_relaxed));
 	}
 }
 
@@ -2146,7 +2187,7 @@ void Engine::FillSlot(Slot& slot, uint64_t submit_id, const DrawIndexArgs* index
 	slot.worker_prepared = false;
 	slot.after_stop      = 0;
 	slot.speculative     = false;
-	slot.code_epoch      = SyncEpoch::CurrentPublish();
+	slot.code_epoch            = SyncEpoch::CurrentPublish();
 	slot.segment.miss    = Segment::Miss::NotEncoded; // (until its preparing thread encodes it)
 	slot.repeat_packet   = RepeatTrace::Enabled() ? RepeatTrace::TakeDrawPacket() : 0;
 }
@@ -2347,7 +2388,8 @@ Engine::Slot& Engine::ReadyHead() {
 				g_bk_counters.Add(g_bk_counters.handover_checks);
 				ready = window.HeadDone();
 				if (!ready) {
-					Bookkeep::ReportMismatch(g_bk_counters.handover_mismatches, "handover", "head not done");
+					Bookkeep::ReportMismatch(g_bk_counters.handover_mismatches, "handover",
+					                         "head not done");
 					m_ready_run.Reset();
 				}
 			}
@@ -2426,7 +2468,7 @@ Engine::Slot& Engine::ReadyHead() {
 		const auto     wait_ns0   = NowNs();
 		uint64_t       parked_tsc = 0;
 		uint64_t       parks      = 0;
-		const auto stats = AwaitHead(
+		const auto     stats      = AwaitHead(
 		    m_workers->gate, window, m_workers->steal,
 		    [this](Slot& claimed, uint64_t seq) {
 			    Profiler::ScopedFrameWait steal_time(Profiler::FrameWait::DrawPrepSteal);
@@ -2436,7 +2478,8 @@ Engine::Slot& Engine::ReadyHead() {
 		    },
 		    [this, &window, park_after, &parked_tsc, &parks](uint32_t spins, uint64_t spin_start) {
 			    CpuRelax();
-			    if (park_after != UINT64_MAX && (spins & 15u) == 15u && NowNs() - spin_start >= park_after) {
+			    if (park_after != UINT64_MAX && (spins & 15u) == 15u &&
+			        NowNs() - spin_start >= park_after) {
 				    const auto park_tsc = PrepStats::Tsc();
 				    if (window.ParkHead()) {
 					    parks++;
@@ -2457,12 +2500,14 @@ Engine::Slot& Engine::ReadyHead() {
 			    // (The clock only at a guard look, as before.)
 			    const uint64_t waited  = (spins & 1023u) == 1023u ? NowNs() - spin_start : 0;
 			    const auto     service = HeadWaitServiceAt(spins, waited, ServeInHeadWait(),
-			                                           [] { return ServiceCommandsPending(); });
+			                                               [] { return ServiceCommandsPending(); });
 			    if (service == HeadWaitService::Serve) {
 				    Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepServedInWait);
 				    static uint64_t served = 0; // (the commit thread only)
 				    if ((++served & 0xfffu) == 1) {
-					    std::printf("ServeInWaits: %" PRIu64 " head waits served service commands\n", served);
+					    std::printf("ServeInWaits: %" PRIu64
+					                " head waits served service commands\n",
+					                served);
 					    std::fflush(stdout);
 				    }
 			    }
@@ -2472,14 +2517,15 @@ Engine::Slot& Engine::ReadyHead() {
 		    },
 		    [] { Profiler::CountFrameEvent(Profiler::FrameEvent::DrawPrepColdWakes); });
 		{
-			// The spin share of this wait in TSC ticks: its spin time (steals excluded) at the wait's
-			// own TSC rate, minus the time parked.
+			// The spin share of this wait in TSC ticks: its spin time (steals excluded) at the
+			// wait's own TSC rate, minus the time parked.
 			const auto wait_tsc = PrepStats::Tsc() - head_tsc;
 			const auto wait_ns  = std::max<uint64_t>(NowNs() - wait_ns0, 1);
-			const auto spin_tsc = static_cast<uint64_t>(static_cast<double>(stats.spin_ns) *
-			                                            static_cast<double>(wait_tsc) /
-			                                            static_cast<double>(wait_ns));
-			Common::SpinGate::NoteSpin(Site::CommitHead, spin_tsc > parked_tsc ? spin_tsc - parked_tsc : 0);
+			const auto spin_tsc =
+			    static_cast<uint64_t>(static_cast<double>(stats.spin_ns) *
+			                          static_cast<double>(wait_tsc) / static_cast<double>(wait_ns));
+			Common::SpinGate::NoteSpin(Site::CommitHead,
+			                           spin_tsc > parked_tsc ? spin_tsc - parked_tsc : 0);
 			if (parks != 0) {
 				Common::SpinGate::NotePark(Site::CommitHead, parks);
 			}
@@ -2524,8 +2570,9 @@ Engine::Slot& Engine::ReadyHead() {
 		// The head is ready: note the finished positions after it (one acquire load each), up to
 		// a segment's cap (32 draws).
 		constexpr uint32_t ReadyRunCap = 32;
-		const auto positions = m_ready_run.Extend(window.Head(), window.Tail(), ReadyRunCap,
-		                                          [&window](uint64_t seq) { return window.DoneAt(seq); });
+		const auto         positions =
+		    m_ready_run.Extend(window.Head(), window.Tail(), ReadyRunCap,
+		                       [&window](uint64_t seq) { return window.DoneAt(seq); });
 		if (positions != 0) {
 			g_bk_counters.Add(g_bk_counters.runs);
 			g_bk_counters.Add(g_bk_counters.run_positions, positions);
@@ -2738,9 +2785,9 @@ void PrintPrepStats(uint64_t now_ns) {
 	struct W {
 		uint64_t slots = 0, busy = 0, spin = 0, park = 0, parks = 0;
 	};
-	static W                                         last_w[PrepStats::MaxWorkers] {};
-	static PrepStats::Commit                         last_c {};
-	const auto                                       tsc = PrepStats::Tsc();
+	static W                 last_w[PrepStats::MaxWorkers] {};
+	static PrepStats::Commit last_c {};
+	const auto               tsc = PrepStats::Tsc();
 	if (last_ns == 0) {
 		last_ns  = now_ns;
 		last_tsc = tsc;
@@ -2750,64 +2797,86 @@ void PrintPrepStats(uint64_t now_ns) {
 		            sizeof(BindingPlan), sizeof(ReadSet));
 		return;
 	}
-	const double ticks_per_us = static_cast<double>(tsc - last_tsc) / (static_cast<double>(now_ns - last_ns) * 1e-3);
-	const double secs         = static_cast<double>(now_ns - last_ns) * 1e-9;
-	const auto   ms           = [&](uint64_t t) { return static_cast<double>(t) / ticks_per_us * 1e-3 / secs; };
-	const auto&  c            = PrepStats::g_commit;
-	const auto   heads        = c.heads - last_c.heads;
-	const auto   ready        = c.ready - last_c.ready;
-	std::string  workers;
-	W            sum;
+	const double ticks_per_us =
+	    static_cast<double>(tsc - last_tsc) / (static_cast<double>(now_ns - last_ns) * 1e-3);
+	const double secs = static_cast<double>(now_ns - last_ns) * 1e-9;
+	const auto ms = [&](uint64_t t) { return static_cast<double>(t) / ticks_per_us * 1e-3 / secs; };
+	const auto& c = PrepStats::g_commit;
+	const auto  heads = c.heads - last_c.heads;
+	const auto  ready = c.ready - last_c.ready;
+	std::string workers;
+	W           sum;
 	for (uint32_t i = 0; i < PrepStats::MaxWorkers; i++) {
 		const auto& g = PrepStats::g_workers[i];
-		W           v {g.slots.load(std::memory_order_relaxed), g.busy.load(std::memory_order_relaxed),
-                       g.spin.load(std::memory_order_relaxed), g.park.load(std::memory_order_relaxed),
-                       g.parks.load(std::memory_order_relaxed)};
-		W           d {v.slots - last_w[i].slots, v.busy - last_w[i].busy, v.spin - last_w[i].spin,
-                       v.park - last_w[i].park, v.parks - last_w[i].parks};
+		W v {g.slots.load(std::memory_order_relaxed), g.busy.load(std::memory_order_relaxed),
+		     g.spin.load(std::memory_order_relaxed), g.park.load(std::memory_order_relaxed),
+		     g.parks.load(std::memory_order_relaxed)};
+		W d {v.slots - last_w[i].slots, v.busy - last_w[i].busy, v.spin - last_w[i].spin,
+		     v.park - last_w[i].park, v.parks - last_w[i].parks};
 		last_w[i] = v;
 		if (d.slots == 0 && d.spin == 0 && d.park == 0) {
 			continue;
 		}
-		sum.slots += d.slots; sum.busy += d.busy; sum.spin += d.spin; sum.park += d.park; sum.parks += d.parks;
+		sum.slots += d.slots;
+		sum.busy += d.busy;
+		sum.spin += d.spin;
+		sum.park += d.park;
+		sum.parks += d.parks;
 		char text[160];
 		std::snprintf(text, sizeof(text), " w%u:%.0f/s,%.2fus,b%.0f,s%.0f,p%.0f,n%.0f", i,
 		              static_cast<double>(d.slots) / secs,
-		              d.slots != 0 ? static_cast<double>(d.busy) / ticks_per_us / static_cast<double>(d.slots) : 0.0,
+		              d.slots != 0 ? static_cast<double>(d.busy) / ticks_per_us /
+		                                 static_cast<double>(d.slots)
+		                           : 0.0,
 		              ms(d.busy), ms(d.spin), ms(d.park), static_cast<double>(d.parks) / secs);
 		workers += text;
 	}
-	std::printf("PrepStats %.0fs: tsc %.0f MHz | heads %.0f/s ready %.1f%% waited %.1f%% (%.2f ms/s) self %.1f%% "
-	            "(%.2f ms/s) | lead avg %.1f us hist %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
-	            "/%" PRIu64 " | occupancy %.1f | workers %.0f slots/s %.2f us/slot busy %.0f spin %.0f park %.0f "
-	            "ms/s parks %.0f/s |%s\n",
-	            secs, ticks_per_us, static_cast<double>(heads) / secs,
-	            heads != 0 ? 100.0 * static_cast<double>(ready) / static_cast<double>(heads) : 0.0,
-	            heads != 0 ? 100.0 * static_cast<double>(c.waited - last_c.waited) / static_cast<double>(heads) : 0.0,
-	            ms(c.wait_tsc - last_c.wait_tsc),
-	            heads != 0 ? 100.0 * static_cast<double>(c.self - last_c.self) / static_cast<double>(heads) : 0.0,
-	            ms(c.self_tsc - last_c.self_tsc),
-	            ready != 0 ? static_cast<double>(c.lead_tsc - last_c.lead_tsc) / ticks_per_us / static_cast<double>(ready) : 0.0,
-	            c.lead_hist[0] - last_c.lead_hist[0], c.lead_hist[1] - last_c.lead_hist[1],
-	            c.lead_hist[2] - last_c.lead_hist[2], c.lead_hist[3] - last_c.lead_hist[3],
-	            c.lead_hist[4] - last_c.lead_hist[4], c.lead_hist[5] - last_c.lead_hist[5],
-	            heads != 0 ? static_cast<double>(c.occupancy - last_c.occupancy) / static_cast<double>(heads) : 0.0,
-	            static_cast<double>(sum.slots) / secs,
-	            sum.slots != 0 ? static_cast<double>(sum.busy) / ticks_per_us / static_cast<double>(sum.slots) : 0.0,
-	            ms(sum.busy), ms(sum.spin), ms(sum.park), static_cast<double>(sum.parks) / secs, workers.c_str());
+	std::printf(
+	    "PrepStats %.0fs: tsc %.0f MHz | heads %.0f/s ready %.1f%% waited %.1f%% (%.2f ms/s) self "
+	    "%.1f%% "
+	    "(%.2f ms/s) | lead avg %.1f us hist %" PRIu64 "/%" PRIu64 "/%" PRIu64 "/%" PRIu64
+	    "/%" PRIu64 "/%" PRIu64
+	    " | occupancy %.1f | workers %.0f slots/s %.2f us/slot busy %.0f spin %.0f park %.0f "
+	    "ms/s parks %.0f/s |%s\n",
+	    secs, ticks_per_us, static_cast<double>(heads) / secs,
+	    heads != 0 ? 100.0 * static_cast<double>(ready) / static_cast<double>(heads) : 0.0,
+	    heads != 0
+	        ? 100.0 * static_cast<double>(c.waited - last_c.waited) / static_cast<double>(heads)
+	        : 0.0,
+	    ms(c.wait_tsc - last_c.wait_tsc),
+	    heads != 0 ? 100.0 * static_cast<double>(c.self - last_c.self) / static_cast<double>(heads)
+	               : 0.0,
+	    ms(c.self_tsc - last_c.self_tsc),
+	    ready != 0 ? static_cast<double>(c.lead_tsc - last_c.lead_tsc) / ticks_per_us /
+	                     static_cast<double>(ready)
+	               : 0.0,
+	    c.lead_hist[0] - last_c.lead_hist[0], c.lead_hist[1] - last_c.lead_hist[1],
+	    c.lead_hist[2] - last_c.lead_hist[2], c.lead_hist[3] - last_c.lead_hist[3],
+	    c.lead_hist[4] - last_c.lead_hist[4], c.lead_hist[5] - last_c.lead_hist[5],
+	    heads != 0
+	        ? static_cast<double>(c.occupancy - last_c.occupancy) / static_cast<double>(heads)
+	        : 0.0,
+	    static_cast<double>(sum.slots) / secs,
+	    sum.slots != 0
+	        ? static_cast<double>(sum.busy) / ticks_per_us / static_cast<double>(sum.slots)
+	        : 0.0,
+	    ms(sum.busy), ms(sum.spin), ms(sum.park), static_cast<double>(sum.parks) / secs,
+	    workers.c_str());
 	static PrepStats::CpIdle last_i {};
 	const auto&              i = PrepStats::g_cp_idle;
-	std::printf("PrepStats cp idle %.0fs: starved %.2f ms/s (%.0f/s) | outside slices: empty %.2f blocked %.2f "
+	std::printf("PrepStats cp idle %.0fs: starved %.2f ms/s (%.0f/s) | outside slices: empty %.2f "
+	            "blocked %.2f "
 	            "fence %.2f nowork %.2f ms/s\n",
-	            secs, ms(i.starved - last_i.starved), static_cast<double>(i.starved_n - last_i.starved_n) / secs,
-	            ms(i.empty - last_i.empty), ms(i.blocked - last_i.blocked), ms(i.fence - last_i.fence),
-	            ms(i.nowork - last_i.nowork));
-	last_i = i;
+	            secs, ms(i.starved - last_i.starved),
+	            static_cast<double>(i.starved_n - last_i.starved_n) / secs,
+	            ms(i.empty - last_i.empty), ms(i.blocked - last_i.blocked),
+	            ms(i.fence - last_i.fence), ms(i.nowork - last_i.nowork));
+	last_i                   = i;
 	static uint64_t last_seq = 0, last_rec = 0;
 	const auto      seq_spin = PrepStats::g_spin.sequencer.load(std::memory_order_relaxed);
 	const auto      rec_spin = PrepStats::g_spin.recorder.load(std::memory_order_relaxed);
-	std::printf("PrepStats spin %.0fs: workers %.0f sequencer %.0f recorder %.0f ms/s\n", secs, ms(sum.spin),
-	            ms(seq_spin - last_seq), ms(rec_spin - last_rec));
+	std::printf("PrepStats spin %.0fs: workers %.0f sequencer %.0f recorder %.0f ms/s\n", secs,
+	            ms(sum.spin), ms(seq_spin - last_seq), ms(rec_spin - last_rec));
 	last_seq = seq_spin;
 	last_rec = rec_spin;
 	// KYTY_DRAW_PREP_LEAN: the parts on now, and the digest cache's lookups (workers).
@@ -2818,13 +2887,17 @@ void PrintPrepStats(uint64_t now_ns) {
 		misses += g.digest_misses.load(std::memory_order_relaxed);
 		unc += g.digest_uncacheable.load(std::memory_order_relaxed);
 	}
-	std::printf("PrepStats lean %.0fs: parts 0x%x | digest hits %.0f/s misses %.0f/s uncacheable %.0f/s | verify "
-	            "%" PRIu64 " checks %" PRIu64 " mismatches (total) | adapt cap %u of %u lps, busy %.2f cores\n",
+	std::printf("PrepStats lean %.0fs: parts 0x%x | digest hits %.0f/s misses %.0f/s uncacheable "
+	            "%.0f/s | verify "
+	            "%" PRIu64 " checks %" PRIu64
+	            " mismatches (total) | adapt cap %u of %u lps, busy %.2f cores\n",
 	            secs, Lean::Parts(), static_cast<double>(hits - last_hits) / secs,
-	            static_cast<double>(misses - last_misses) / secs, static_cast<double>(unc - last_unc) / secs,
+	            static_cast<double>(misses - last_misses) / secs,
+	            static_cast<double>(unc - last_unc) / secs,
 	            g_lean_verify_checks.load(std::memory_order_relaxed),
 	            g_lean_verify_mismatches.load(std::memory_order_relaxed),
-	            g_adapt_cap.load(std::memory_order_relaxed), g_adapt_lps.load(std::memory_order_relaxed),
+	            g_adapt_cap.load(std::memory_order_relaxed),
+	            g_adapt_lps.load(std::memory_order_relaxed),
 	            static_cast<double>(g_adapt_busy_milli.load(std::memory_order_relaxed)) / 1000.0);
 	last_hits   = hits;
 	last_misses = misses;
@@ -2845,7 +2918,8 @@ void PrintDrawPrepSummary() {
 	// A live change of KYTY_DRAW_PREP_LEAN closes the period at once (same-boot A/B slots).
 	const bool forced = g_stats_due.load(std::memory_order_relaxed) &&
 	                    g_stats_due.exchange(false, std::memory_order_relaxed);
-	if (!forced && CpCommit::Enabled(CpCommit::Part::Draws) && last_ns != 0 && (++calls & 255u) != 0) {
+	if (!forced && CpCommit::Enabled(CpCommit::Part::Draws) && last_ns != 0 &&
+	    (++calls & 255u) != 0) {
 		return;
 	}
 	const auto now = NowNs();
@@ -2854,8 +2928,8 @@ void PrintDrawPrepSummary() {
 		return;
 	}
 	// KYTY_DRAW_PREP_STATS_PERIOD_S (default 10): the lines' period.
-	static const uint64_t period_ns = uint64_t {EnvUnsigned("KYTY_DRAW_PREP_STATS_PERIOD_S", 10, 1, 1000000)} *
-	                                  1'000'000'000ull;
+	static const uint64_t period_ns =
+	    uint64_t {EnvUnsigned("KYTY_DRAW_PREP_STATS_PERIOD_S", 10, 1, 1000000)} * 1'000'000'000ull;
 	if (!forced && now - last_ns < period_ns) {
 		return;
 	}
@@ -2910,7 +2984,8 @@ void PrintDrawPrepSummary() {
 	if (BindingsVerifyMode() != 0) {
 		auto& totals = GetBindingTotals();
 		dispatches += " | binding verify: " +
-		              std::to_string(totals.verify_checks.load(std::memory_order_relaxed)) + " checks, " +
+		              std::to_string(totals.verify_checks.load(std::memory_order_relaxed)) +
+		              " checks, " +
 		              std::to_string(totals.verify_mismatches.load(std::memory_order_relaxed)) +
 		              " mismatches (total)";
 	}
@@ -2928,25 +3003,30 @@ void PrintDrawPrepSummary() {
 	            dispatches.c_str());
 	if (const auto mode = SpecSegmentsMode(); mode != Segment::Mode::Off) {
 		// KYTY_SPEC_SEGMENTS: totals since the start (segment.h FormatLine).
-		std::printf("%s\n", Segment::FormatLine(g_segment_counters, mode == Segment::Mode::Verify ? "verify" : "on").c_str());
+		std::printf("%s\n", Segment::FormatLine(g_segment_counters,
+		                                        mode == Segment::Mode::Verify ? "verify" : "on")
+		                        .c_str());
 	}
 	{
 		// KYTY_BK_* (bookkeep.h): totals since the start, while any part is on or has counted.
-		const auto handover = BkHandoverMode();
-		const auto adopt    = BkAdoptMode();
-		const auto record   = BkRecordMode();
-		const auto lean     = BkLeanMode();
-		const auto& c       = g_bk_counters;
-		if (handover != Bookkeep::Mode::Off || adopt != Bookkeep::Mode::Off || record != Bookkeep::Mode::Off ||
-		    lean != Bookkeep::Mode::Off || c.heads.load(std::memory_order_relaxed) != 0 ||
-		    c.adopted.load(std::memory_order_relaxed) != 0 || c.record_checks.load(std::memory_order_relaxed) != 0 ||
+		const auto  handover = BkHandoverMode();
+		const auto  adopt    = BkAdoptMode();
+		const auto  record   = BkRecordMode();
+		const auto  lean     = BkLeanMode();
+		const auto& c        = g_bk_counters;
+		if (handover != Bookkeep::Mode::Off || adopt != Bookkeep::Mode::Off ||
+		    record != Bookkeep::Mode::Off || lean != Bookkeep::Mode::Off ||
+		    c.heads.load(std::memory_order_relaxed) != 0 ||
+		    c.adopted.load(std::memory_order_relaxed) != 0 ||
+		    c.record_checks.load(std::memory_order_relaxed) != 0 ||
 		    c.lean_rendering.load(std::memory_order_relaxed) != 0) {
 			std::printf("%s\n", Bookkeep::FormatLine(c, handover, adopt, record, lean).c_str());
 		}
 	}
 	if (BindingParts() != 0) {
-		// KYTY_DRAW_PREP_BINDINGS: how many committed plans carried a pipeline the commit could use.
-		auto&           totals = GetBindingTotals();
+		// KYTY_DRAW_PREP_BINDINGS: how many committed plans carried a pipeline the commit could
+		// use.
+		auto&           totals     = GetBindingTotals();
 		static uint64_t last_plans = 0, last_used = 0, last_pipes = 0, last_abstain = 0,
 		                last_busy = 0, last_fallback = 0;
 		const uint64_t  plans    = totals.plans.load(std::memory_order_relaxed);
@@ -2961,15 +3041,20 @@ void PrintDrawPrepSummary() {
 		            static_cast<double>(now - last_ns) * 1e-9, plans - last_plans, used - last_used,
 		            pipes - last_pipes, abstain - last_abstain, busy - last_busy,
 		            fallback - last_fallback);
-		last_plans = plans; last_used = used; last_pipes = pipes; last_abstain = abstain;
-		last_busy = busy; last_fallback = fallback;
+		last_plans    = plans;
+		last_used     = used;
+		last_pipes    = pipes;
+		last_abstain  = abstain;
+		last_busy     = busy;
+		last_fallback = fallback;
 		static std::array<uint64_t, 6> last_reasons {};
-		std::string reasons;
-		static const char* const reason_names[6] = {"topology", "index", "restart",
-		                                            "targets",  "key",   "absent"};
+		std::string                    reasons;
+		static const char* const       reason_names[6] = {"topology", "index", "restart",
+		                                                  "targets",  "key",   "absent"};
 		for (size_t i = 0; i < last_reasons.size(); i++) {
 			const auto value = totals.pipeline_abstain_reasons[i].load(std::memory_order_relaxed);
-			reasons += " " + std::string(reason_names[i]) + "=" + std::to_string(value - last_reasons[i]);
+			reasons +=
+			    " " + std::string(reason_names[i]) + "=" + std::to_string(value - last_reasons[i]);
 			last_reasons[i] = value;
 		}
 		std::printf("DrawPrep plan abstains %.0fs:%s\n", static_cast<double>(now - last_ns) * 1e-9,
@@ -3009,7 +3094,7 @@ void Engine::Commit(Slot& slot) {
 	CommitStats::StepMark(CommitStats::Step::Calib);
 	// KYTY_SPEC_SEGMENTS: the slot's encoded draw, for the continuation kernel (segment.h).
 	const bool segments = slot.kind == DrawKind::Index && SpecSegmentsMode() != Segment::Mode::Off;
-	executor.m_segment           = segments ? &slot.segment : nullptr;
+	executor.m_segment  = segments ? &slot.segment : nullptr;
 	executor.m_segment_validated = false;
 	if (slot.kind == DrawKind::Index) {
 		executor.DrawIndex(slot.submit_id, scheduler.Current(), slot.index_args);
@@ -3037,7 +3122,7 @@ void Engine::Commit(Slot& slot) {
 	executor.m_run_key          = 0;
 	executor.m_run_targets_key  = 0;
 	executor.m_run_swap_key     = 0;
-	executor.m_run_texfree_key  = 0;
+	executor.m_run_texfree_key   = 0;
 	executor.m_run_parts        = nullptr;
 	if (slot.plan.valid) {
 		CountCommittedPlan(executor.m_binding_plan_active);
@@ -3064,8 +3149,8 @@ void Engine::Commit(Slot& slot) {
 		m_after_commit(m_after_commit_context);
 	}
 	CommitStats::EndDraw();
-	// The 10 s lines. KYTY_BK_HANDOVER: their four period checks every 256th commit (or at once when
-	// a live change closes the A/B slot's period), not after every draw.
+	// The 10 s lines. KYTY_BK_HANDOVER: their four period checks every 256th commit (or at once
+	// when a live change closes the A/B slot's period), not after every draw.
 	static uint32_t printer_calls = 0; // (the commit thread only)
 	if (static_cast<Bookkeep::Mode>(g_bk_handover.Get()) == Bookkeep::Mode::Off ||
 	    (++printer_calls & 255u) == 0 || g_stats_due.load(std::memory_order_relaxed)) {

@@ -29,7 +29,8 @@ struct GraphicContext;
 // is 1, 2, 4, 8 or 16 bytes is supported.
 class DccClearHelper final {
 public:
-	// Codes in palette order. 0x10: the PS5 register clear (KYTY_DCC_CLEAR_KEY_10, textureCache.cpp).
+	// Codes in palette order. 0x10: the PS5 register clear (KYTY_DCC_CLEAR_KEY_10,
+	// textureCache.cpp).
 	static constexpr std::array<uint8_t, 6> ClearCodes {0x00, 0x20, 0x40, 0x80, 0xC0, 0x10};
 	// The CPU decoder's clear value per code in ClearCodes order; nullopt: the code is rejected.
 	using ClearValues = std::array<std::optional<vk::ClearColorValue>, ClearCodes.size()>;
@@ -53,8 +54,8 @@ public:
 	// the CPU fallback would. The image and canonical metadata buffer must remain alive through
 	// this scheduler tick. metadata_offset must be 4-byte aligned.
 	// keep_keys: the slice's bytes are left as they are after a clear (video-out bindings).
-	// decision_copy: the decision (4 bytes: the clear's group count, 0 = no clear) is copied to it at
-	// decision_offset behind the clear (verification).
+	// decision_copy: the decision (4 bytes: the clear's group count, 0 = no clear) is copied to it
+	// at decision_offset behind the clear (verification).
 	void RecordSlice(Image& image, vk::Format view_format, uint32_t layer, vk::Buffer metadata,
 	                 uint64_t metadata_offset, uint64_t metadata_size, const ClearValues& values,
 	                 bool keep_keys = false, vk::Buffer decision_copy = nullptr,
@@ -92,9 +93,9 @@ private:
 	std::unique_ptr<Buffer> m_scratch;
 	std::unique_ptr<Buffer> m_palette;
 	// KYTY_DCC_PALETTE_REUSE: what the palette buffer holds since the last RecordPalette.
-	bool                                              m_palette_valid  = false;
-	vk::Format                                        m_palette_format = vk::Format::eUndefined;
-	uint32_t                                          m_palette_mask   = 0;
+	bool       m_palette_valid  = false;
+	vk::Format m_palette_format = vk::Format::eUndefined;
+	uint32_t   m_palette_mask   = 0;
 	std::array<std::array<uint32_t, 4>, ClearCodes.size()> m_palette_bits {};
 	// One 1x1 image with a layer per clear code, per view format.
 	struct PaletteImages;

@@ -37,7 +37,8 @@ public:
 	void PrepareFlip(uint64_t request_id, Graphics::CommandBuffer& buffer);
 	void CompleteFlip(uint64_t request_id);
 	void WaitForSubmitSlot(int handle);
-	// `before` (KYTY_FLIP_WATERMARK): only flip requests with an id below it count (UINT64_MAX: all).
+	// `before` (KYTY_FLIP_WATERMARK): only flip requests with an id below it count (UINT64_MAX:
+	// all).
 	void WaitFlipDone(int handle, int index, uint64_t before = UINT64_MAX);
 	// Non-blocking form of WaitFlipDone: true while a flip of that buffer is still queued.
 	[[nodiscard]] bool IsFlipPending(int handle, int index, uint64_t before = UINT64_MAX);

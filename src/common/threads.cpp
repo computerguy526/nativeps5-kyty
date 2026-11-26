@@ -4,9 +4,9 @@
 #endif
 #include "common/cpuPlacement.h"
 #include "common/hangWatchdog.h"
-#include "common/threadQos.h"
 #include "common/liveSwitch.h"
 #include "common/spinRelax.h"
+#include "common/threadQos.h"
 #include "common/threads.h"
 
 #include <algorithm>
@@ -265,7 +265,7 @@ void NameCurrentThreadForOs(const char* name) {
 	if (!on || name == nullptr || name[0] == '\0') {
 		return;
 	}
-	using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+	using SetDescription  = HRESULT(WINAPI*)(HANDLE, PCWSTR);
 	static const auto set = reinterpret_cast<SetDescription>(reinterpret_cast<void*>(
 	    GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")));
 	if (set == nullptr) {
@@ -404,7 +404,7 @@ void CondVar::SignalAll() {
 void CondVar::Wait(Mutex* mutex) {
 	HangWatchdog::Scope wait("host-condvar", reinterpret_cast<uint64_t>(this),
 	                         reinterpret_cast<uint64_t>(mutex));
-	auto* callback = g_cond_wait_poll_callback;
+	auto*               callback = g_cond_wait_poll_callback;
 	if (callback == nullptr) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		SleepConditionVariableCS(ToCv(&m_cv), ToCs(mutex->m_cs), INFINITE);
@@ -465,7 +465,8 @@ bool CondVar::WaitFor(Mutex* mutex, uint32_t micros) {
 		return false;
 	}
 	LeaveCriticalSection(ToCs(mutex->m_cs));
-	SleepHighResolution100ns(static_cast<uint64_t>(std::min<int64_t>(remaining.count(), 500)) * 10u);
+	SleepHighResolution100ns(static_cast<uint64_t>(std::min<int64_t>(remaining.count(), 500)) *
+	                         10u);
 	EnterCriticalSection(ToCs(mutex->m_cs));
 	return std::chrono::steady_clock::now() < deadline;
 #else

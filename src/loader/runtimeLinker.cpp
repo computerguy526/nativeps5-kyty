@@ -758,7 +758,8 @@ static bool TryHandleGuestAccessFault(const Common::HostException::ExceptionInfo
 	// KYTY_TRANSIENT_UNMAP_RETRY: a guest range briefly unmapped while the emulator replaced its
 	// mapping: wait until it is mapped again, then retry the access unless the GPU tracking
 	// resolves the fault (0 at once while the switch is off).
-	const auto transient = Libs::LibKernel::Memory::WaitForTransientUnmap(info->access_violation_vaddr);
+	const auto transient =
+	    Libs::LibKernel::Memory::WaitForTransientUnmap(info->access_violation_vaddr);
 	if (HangTrace::Enabled()) {
 		char fault_thread[32] = "(host thread)";
 		if (auto self = Libs::LibKernel::PthreadSelfOrNull(); self != nullptr) {
@@ -813,20 +814,19 @@ static bool TryHandleGuestAccessFault(const Common::HostException::ExceptionInfo
 	    Libs::LibKernel::Memory::IsStoreInPlaceCandidate(info->access_violation_vaddr)) {
 		bool store_guest_code = false;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-		HMODULE module   = nullptr;
-		store_guest_code = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-		                                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-		                                      reinterpret_cast<LPCWSTR>(info->exception_address),
-		                                      &module) == 0;
+		HMODULE module = nullptr;
+		store_guest_code =
+		    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+		                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                       reinterpret_cast<LPCWSTR>(info->exception_address), &module) == 0;
 #endif
-		if (store_guest_code &&
-		    Loader::X64InstructionEmulator::TryEmulateStore(
-		        info->native_context, info->access_violation_vaddr,
-		        [](uint64_t pc, uint64_t fault_vaddr, uint64_t vaddr, const void* data,
-		           uint64_t size) {
-			        return Libs::LibKernel::Memory::TryStoreInPlace(pc, fault_vaddr, vaddr, data,
-			                                                        size);
-		        })) {
+		if (store_guest_code && Loader::X64InstructionEmulator::TryEmulateStore(
+		                            info->native_context, info->access_violation_vaddr,
+		                            [](uint64_t pc, uint64_t fault_vaddr, uint64_t vaddr,
+		                               const void* data, uint64_t size) {
+			                            return Libs::LibKernel::Memory::TryStoreInPlace(
+			                                pc, fault_vaddr, vaddr, data, size);
+		                            })) {
 			Common::DebugCounters::Add(Common::DebugCounters::Counter::GpuFaults);
 			if (HangTrace::Enabled()) {
 				HangTrace::ClearFaultContext();
@@ -836,7 +836,8 @@ static bool TryHandleGuestAccessFault(const Common::HostException::ExceptionInfo
 	}
 	bool handled = Libs::LibKernel::Memory::HandleGpuFault(access, info->access_violation_vaddr);
 	if (!handled && transient != 0 &&
-	    Libs::LibKernel::Memory::RetryTransientUnmapFault(info->access_violation_vaddr, transient)) {
+	    Libs::LibKernel::Memory::RetryTransientUnmapFault(info->access_violation_vaddr,
+	                                                      transient)) {
 		handled = true;
 	}
 	// KYTY_FAULT_AMM_WAIT_MS=N (default 5000; 0 off; after IDXTRI's Wolverine fix): an access to
@@ -847,7 +848,8 @@ static bool TryHandleGuestAccessFault(const Common::HostException::ExceptionInfo
 	    Libs::LibKernel::Memory::PendingAmmMapCovers(info->access_violation_vaddr)) {
 		static const int64_t wait_ms = [] {
 			const char* value = std::getenv("KYTY_FAULT_AMM_WAIT_MS");
-			return value != nullptr && value[0] != '\0' ? std::strtoll(value, nullptr, 10) : int64_t {5000};
+			return value != nullptr && value[0] != '\0' ? std::strtoll(value, nullptr, 10)
+			                                            : int64_t {5000};
 		}();
 		const auto start    = std::chrono::steady_clock::now();
 		const auto deadline = start + std::chrono::milliseconds(std::max<int64_t>(wait_ms, 0));
@@ -859,12 +861,13 @@ static bool TryHandleGuestAccessFault(const Common::HostException::ExceptionInfo
 		handled = !Libs::LibKernel::Memory::PendingAmmMapCovers(info->access_violation_vaddr);
 		static std::atomic<uint32_t> reported {0};
 		if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
-			std::printf("Host fault at 0x%016" PRIx64 ": waited %lld us for a queued AMM map: %s\n",
-			            info->access_violation_vaddr,
-			            static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
-			                                       std::chrono::steady_clock::now() - start)
-			                                       .count()),
-			            handled ? "retrying" : "still pending");
+			std::printf(
+			    "Host fault at 0x%016" PRIx64 ": waited %lld us for a queued AMM map: %s\n",
+			    info->access_violation_vaddr,
+			    static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+			                               std::chrono::steady_clock::now() - start)
+			                               .count()),
+			    handled ? "retrying" : "still pending");
 			std::fflush(stdout);
 		}
 	}
@@ -962,10 +965,10 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		if (code[0] == 0xcdu && code[1] == 0x41u) {
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 32u) {
-				Log::WriteToConsoleAndLog(fmt::format(
-				    "Guest assert trap (INT 0x41) at 0x{:016x} stepped over "
-				    "(KYTY_GUEST_ASSERT_CONTINUE)\n",
-				    info->exception_address));
+				Log::WriteToConsoleAndLog(
+				    fmt::format("Guest assert trap (INT 0x41) at 0x{:016x} stepped over "
+				                "(KYTY_GUEST_ASSERT_CONTINUE)\n",
+				                info->exception_address));
 			}
 			static_cast<CONTEXT*>(info->native_context)->Rip += 2;
 			return true;
@@ -1013,14 +1016,18 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 			append("fault address: 0x{:016x}\n", info->access_violation_vaddr);
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 			MEMORY_BASIC_INFORMATION mbi {};
-			if (VirtualQuery(reinterpret_cast<const void*>(info->access_violation_vaddr), &mbi, sizeof(mbi)) != 0) {
-				append("host page: base=0x{:x} alloc=0x{:x} size=0x{:x} state=0x{:x} protect=0x{:x} type=0x{:x}\n",
-				       reinterpret_cast<uint64_t>(mbi.BaseAddress), reinterpret_cast<uint64_t>(mbi.AllocationBase),
+			if (VirtualQuery(reinterpret_cast<const void*>(info->access_violation_vaddr), &mbi,
+			                 sizeof(mbi)) != 0) {
+				append("host page: base=0x{:x} alloc=0x{:x} size=0x{:x} state=0x{:x} "
+				       "protect=0x{:x} type=0x{:x}\n",
+				       reinterpret_cast<uint64_t>(mbi.BaseAddress),
+				       reinterpret_cast<uint64_t>(mbi.AllocationBase),
 				       static_cast<uint64_t>(mbi.RegionSize), static_cast<uint32_t>(mbi.State),
 				       static_cast<uint32_t>(mbi.Protect), static_cast<uint32_t>(mbi.Type));
 			}
 #endif
-			append("{}", Libs::LibKernel::Memory::DescribeAddressForCrash(info->access_violation_vaddr));
+			append("{}",
+			       Libs::LibKernel::Memory::DescribeAddressForCrash(info->access_violation_vaddr));
 		}
 		append("rax={:016x} rbx={:016x} rcx={:016x} rdx={:016x}\n"
 		       "rsi={:016x} rdi={:016x} rbp={:016x} rsp={:016x}\n"
@@ -1655,7 +1662,7 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	// initializers execute on the host stack too, so grow it before calling any guest code.
 	size_t expanded_size = 0;
 	while (expanded_size < static_cast<size_t>(768) * 1024) {
-		const auto stack = SysStackUsage();
+		const auto stack                               = SysStackUsage();
 		*reinterpret_cast<uint32_t*>(stack.guard_addr) = 0;
 		expanded_size += stack.guard_size;
 	}
@@ -2122,7 +2129,6 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 	// Charged only with KYTY_UPSTREAM_MEMORY_DEFAULTS=1 (0 otherwise).
 	program->flexible_size =
 	    Libs::LibKernel::Memory::ChargeFlexibleMemory(CalcFlexibleMemorySize(phdr, ehdr->e_phnum));
-
 
 	if (patch_guest_instructions) {
 		const auto trampoline_addr           = program->base_vaddr + program->base_size_aligned;

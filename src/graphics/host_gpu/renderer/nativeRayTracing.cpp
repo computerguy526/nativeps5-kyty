@@ -42,41 +42,42 @@ namespace {
 Live::Switch g_native("KYTY_RT_HW_NATIVE", Live::ParseDefaultOn);
 Live::Switch g_once_per_frame("KYTY_RT_HW_ONCE_PER_FRAME", Live::ParseDefaultOn);
 
-constexpr uint32_t QueueCapacity    = 1u << 16u;
-constexpr uint32_t InstanceCapacity = 1u << 16u;
-constexpr uint32_t TableEntries     = 1u << 17u;
-constexpr uint32_t SlotCapacity     = 1u << 15u;
-constexpr uint32_t MissingCapacity  = 256;
-constexpr uint32_t MaxJobs          = 512;
-constexpr uint32_t ChangedCapacity  = 1024;
-constexpr uint32_t PoolCapacity     = 1u << 24u;
-constexpr uint64_t PoolQueueMax     = uint64_t {1} << 20u;
-constexpr uint64_t BuildScratchSize = uint64_t {64} << 20u;
-constexpr uint32_t MaxRetries       = 8;
+constexpr uint32_t QueueCapacity     = 1u << 16u;
+constexpr uint32_t InstanceCapacity  = 1u << 16u;
+constexpr uint32_t TableEntries      = 1u << 17u;
+constexpr uint32_t SlotCapacity      = 1u << 15u;
+constexpr uint32_t MissingCapacity   = 256;
+constexpr uint32_t MaxJobs           = 512;
+constexpr uint32_t ChangedCapacity   = 1024;
+constexpr uint32_t PoolCapacity      = 1u << 24u;
+constexpr uint64_t PoolQueueMax      = uint64_t {1} << 20u;
+constexpr uint64_t BuildScratchSize  = uint64_t {64} << 20u;
+constexpr uint32_t MaxRetries        = 8;
 constexpr uint64_t LateRetryPrepares = 64;
-constexpr uint32_t DynamicPrepares  = 120;
-constexpr uint64_t EvictFrames      = 1800;
+constexpr uint32_t DynamicPrepares   = 120;
+constexpr uint64_t EvictFrames       = 1800;
 constexpr uint64_t EvictScanPrepares = 8;
-constexpr uint32_t MaxEvictions     = 256;
-constexpr uint64_t MaxSlotTriangles = uint64_t {1} << 21u;
-constexpr uint64_t MaxSlotBytes     = uint64_t {256} << 20u;
-constexpr uint64_t LruMinAge        = 60;
-constexpr uint64_t BudgetMin        = uint64_t {512} << 20u;
-constexpr uint64_t BudgetMax        = uint64_t {4096} << 20u;
-constexpr size_t   MaxRetryKeys     = 4096;
-constexpr uint64_t TableTombstone   = 1;
+constexpr uint32_t MaxEvictions      = 256;
+constexpr uint64_t MaxSlotTriangles  = uint64_t {1} << 21u;
+constexpr uint64_t MaxSlotBytes      = uint64_t {256} << 20u;
+constexpr uint64_t LruMinAge         = 60;
+constexpr uint64_t BudgetMin         = uint64_t {512} << 20u;
+constexpr uint64_t BudgetMax         = uint64_t {4096} << 20u;
+constexpr size_t   MaxRetryKeys      = 4096;
+constexpr uint64_t TableTombstone    = 1;
 // Gathered builds of a slot before it walks the guest BVH again.
 constexpr uint32_t MaxGathers = 30;
 // MODE_VERIFY reports a changed slot with this bit when its leaf count changed (not a refit).
 constexpr uint32_t ChangedTopology = 0x80000000u;
 
-constexpr uint32_t StateSize      = 96;
-constexpr uint32_t MissingStride  = 48;
-constexpr uint32_t JobStride      = 80;
-constexpr uint32_t SlotStride     = 64;
-constexpr uint32_t TableStride    = 16;
-constexpr uint32_t ContextStride  = 64;
-constexpr uint32_t ContextBytes   = NativeRayTracing::CountersOffset + NativeRayTracing::CounterCount * 4;
+constexpr uint32_t StateSize     = 96;
+constexpr uint32_t MissingStride = 48;
+constexpr uint32_t JobStride     = 80;
+constexpr uint32_t SlotStride    = 64;
+constexpr uint32_t TableStride   = 16;
+constexpr uint32_t ContextStride = 64;
+constexpr uint32_t ContextBytes =
+    NativeRayTracing::CountersOffset + NativeRayTracing::CounterCount * 4;
 constexpr uint32_t InstanceStride = 64;
 
 constexpr uint32_t ModeCount  = 0;
@@ -210,13 +211,16 @@ constexpr vk::BufferUsageFlags DataFlags =
     vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eShaderDeviceAddress |
     vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eTransferSrc |
     vk::BufferUsageFlagBits::eIndirectBuffer;
-constexpr vk::BufferUsageFlags AsFlags = DataFlags | vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR |
-                                         vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
+constexpr vk::BufferUsageFlags AsFlags =
+    DataFlags | vk::BufferUsageFlagBits::eAccelerationStructureStorageKHR |
+    vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
 
-constexpr vk::PipelineStageFlags2 AsBuildStage = vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+constexpr vk::PipelineStageFlags2 AsBuildStage =
+    vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
 
-void MemoryBarrier(vk::CommandBuffer command, vk::PipelineStageFlags2 src_stages, vk::AccessFlags2 src_access,
-                   vk::PipelineStageFlags2 dst_stages, vk::AccessFlags2 dst_access) {
+void MemoryBarrier(vk::CommandBuffer command, vk::PipelineStageFlags2 src_stages,
+                   vk::AccessFlags2 src_access, vk::PipelineStageFlags2 dst_stages,
+                   vk::AccessFlags2 dst_access) {
 	vk::MemoryBarrier2 barrier {};
 	barrier.srcStageMask  = src_stages;
 	barrier.srcAccessMask = src_access;
@@ -229,12 +233,14 @@ void MemoryBarrier(vk::CommandBuffer command, vk::PipelineStageFlags2 src_stages
 }
 
 // vkCmdUpdateBuffer of a small array (at most 64 KiB, dword multiples).
-void UpdateBuffer(vk::CommandBuffer command, vk::Buffer buffer, uint64_t offset, const void* data, uint32_t size) {
+void UpdateBuffer(vk::CommandBuffer command, vk::Buffer buffer, uint64_t offset, const void* data,
+                  uint32_t size) {
 	EXIT_IF(size == 0 || size > 65536 || (size & 3u) != 0 || (offset & 3u) != 0);
 	command.updateBuffer(buffer, offset, size, data);
 }
 
-void UpdateLarge(vk::CommandBuffer command, vk::Buffer buffer, uint64_t offset, const void* data, uint64_t size) {
+void UpdateLarge(vk::CommandBuffer command, vk::Buffer buffer, uint64_t offset, const void* data,
+                 uint64_t size) {
 	const auto* bytes = static_cast<const uint8_t*>(data);
 	for (uint64_t done = 0; done < size;) {
 		const auto chunk = static_cast<uint32_t>(std::min<uint64_t>(size - done, 65536));
@@ -245,20 +251,23 @@ void UpdateLarge(vk::CommandBuffer command, vk::Buffer buffer, uint64_t offset, 
 
 // BLASes the guest changed lately are rebuilt before every use: a fast build. Once they stop
 // changing they are built once more for tracing.
-constexpr vk::BuildAccelerationStructureFlagsKHR BlasFlags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
+constexpr vk::BuildAccelerationStructureFlagsKHR BlasFlags =
+    vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
 constexpr vk::BuildAccelerationStructureFlagsKHR FastBlasFlags =
     vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild;
 
 // Non-indexed triangles (3 floats per vertex): geometry 0 opaque, geometry 1 alpha tested. The
 // patched shaders trace with gl_RayFlagsNoOpaqueEXT, so both are candidates; the split keeps the
 // entry table layout of the original.
-vk::AccelerationStructureGeometryKHR TriangleGeometry(uint64_t address, uint32_t capacity, bool opaque) {
+vk::AccelerationStructureGeometryKHR TriangleGeometry(uint64_t address, uint32_t capacity,
+                                                      bool opaque) {
 	vk::AccelerationStructureGeometryKHR geometry {};
-	geometry.geometryType = vk::GeometryTypeKHR::eTriangles;
-	geometry.flags        = opaque ? vk::GeometryFlagBitsKHR::eOpaque : vk::GeometryFlagBitsKHR::eNoDuplicateAnyHitInvocation;
-	auto& triangles                    = geometry.geometry.triangles;
-	triangles.sType                    = vk::StructureType::eAccelerationStructureGeometryTrianglesDataKHR;
-	triangles.vertexFormat             = vk::Format::eR32G32B32Sfloat;
+	geometry.geometryType  = vk::GeometryTypeKHR::eTriangles;
+	geometry.flags         = opaque ? vk::GeometryFlagBitsKHR::eOpaque
+	                                : vk::GeometryFlagBitsKHR::eNoDuplicateAnyHitInvocation;
+	auto& triangles        = geometry.geometry.triangles;
+	triangles.sType        = vk::StructureType::eAccelerationStructureGeometryTrianglesDataKHR;
+	triangles.vertexFormat = vk::Format::eR32G32B32Sfloat;
 	triangles.vertexData.deviceAddress = address;
 	triangles.vertexStride             = 12;
 	triangles.maxVertex                = capacity * 3 - 1;
@@ -268,7 +277,8 @@ vk::AccelerationStructureGeometryKHR TriangleGeometry(uint64_t address, uint32_t
 
 } // namespace
 
-bool NativeRayTracing::FindTlasSource(const ShaderRecompiler::IR::ShaderInfo& info, TlasSource& source) noexcept {
+bool NativeRayTracing::FindTlasSource(const ShaderRecompiler::IR::ShaderInfo& info,
+                                      TlasSource&                             source) noexcept {
 	if (info.ray_query_sites == 0) {
 		return false;
 	}
@@ -279,7 +289,7 @@ bool NativeRayTracing::FindTlasSource(const ShaderRecompiler::IR::ShaderInfo& in
 
 NativeRayTracing::Allocation NativeRayTracing::Arena::Allocate(uint64_t size, uint64_t alignment) {
 	EXIT_IF(alignment == 0 || alignment > 256 || (256 % alignment) != 0);
-	size = (size + 255u) & ~uint64_t {255};
+	size             = (size + 255u) & ~uint64_t {255};
 	const auto carve = [&](Chunk& chunk, uint64_t offset, uint64_t length) {
 		chunk.free_ranges.erase(offset);
 		if (length > size) {
@@ -287,14 +297,16 @@ NativeRayTracing::Allocation NativeRayTracing::Arena::Allocate(uint64_t size, ui
 		}
 		chunk.free_bytes -= size;
 		m_used += size;
-		return Allocation {chunk.buffer.get(), offset, chunk.buffer->BufferDeviceAddress() + offset, size};
+		return Allocation {chunk.buffer.get(), offset, chunk.buffer->BufferDeviceAddress() + offset,
+		                   size};
 	};
 	if (size <= ChunkSize / 2) {
 		Chunk*   best        = nullptr;
 		uint64_t best_offset = 0;
 		uint64_t best_length = 0;
 		for (auto& chunk: m_chunks) {
-			if (chunk->dedicated || chunk->free_bytes < size || (best != nullptr && chunk->free_bytes >= best->free_bytes)) {
+			if (chunk->dedicated || chunk->free_bytes < size ||
+			    (best != nullptr && chunk->free_bytes >= best->free_bytes)) {
 				continue;
 			}
 			uint64_t offset = 0;
@@ -317,8 +329,8 @@ NativeRayTracing::Allocation NativeRayTracing::Arena::Allocate(uint64_t size, ui
 	}
 	auto chunk       = std::make_unique<Chunk>();
 	chunk->dedicated = size > ChunkSize / 2;
-	chunk->buffer    = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AsFlags,
-	                                            chunk->dedicated ? size : ChunkSize);
+	chunk->buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+	                                         AsFlags, chunk->dedicated ? size : ChunkSize);
 	chunk->free_ranges.emplace(0, chunk->buffer->Size());
 	chunk->free_bytes = chunk->buffer->Size();
 	m_reserved += chunk->buffer->Size();
@@ -330,8 +342,9 @@ void NativeRayTracing::Arena::Free(const Allocation& allocation) {
 	if (allocation.buffer == nullptr) {
 		return;
 	}
-	const auto it = std::find_if(m_chunks.begin(), m_chunks.end(),
-	                             [&](const auto& chunk) { return chunk->buffer.get() == allocation.buffer; });
+	const auto it = std::find_if(m_chunks.begin(), m_chunks.end(), [&](const auto& chunk) {
+		return chunk->buffer.get() == allocation.buffer;
+	});
 	EXIT_IF(it == m_chunks.end());
 	auto& chunk  = **it;
 	auto  offset = allocation.offset;
@@ -353,8 +366,9 @@ void NativeRayTracing::Arena::Free(const Allocation& allocation) {
 	}
 	chunk.free_ranges.emplace(offset, length);
 	if (chunk.free_bytes == chunk.buffer->Size()) {
-		const auto empty = std::count_if(m_chunks.begin(), m_chunks.end(),
-		                                 [](const auto& c) { return !c->dedicated && c->free_bytes == c->buffer->Size(); });
+		const auto empty = std::count_if(m_chunks.begin(), m_chunks.end(), [](const auto& c) {
+			return !c->dedicated && c->free_bytes == c->buffer->Size();
+		});
 		if (chunk.dedicated || empty > 1) {
 			m_reserved -= chunk.buffer->Size();
 			m_chunks.erase(it);
@@ -362,8 +376,10 @@ void NativeRayTracing::Arena::Free(const Allocation& allocation) {
 	}
 }
 
-NativeRayTracing::NativeRayTracing(GraphicContext& graphics, CommandScheduler& scheduler, BufferCache& buffer_cache)
-    : m_graphics(graphics), m_scheduler(scheduler), m_buffer_cache(buffer_cache), m_arena(graphics, scheduler) {
+NativeRayTracing::NativeRayTracing(GraphicContext& graphics, CommandScheduler& scheduler,
+                                   BufferCache& buffer_cache)
+    : m_graphics(graphics), m_scheduler(scheduler), m_buffer_cache(buffer_cache),
+      m_arena(graphics, scheduler) {
 	m_enabled = graphics.native_ray_tracing_enabled && ShaderRecompiler::GetCodegenOptions().rt_hw;
 	if (!m_enabled) {
 		return;
@@ -383,14 +399,17 @@ NativeRayTracing::NativeRayTracing(GraphicContext& graphics, CommandScheduler& s
 		}
 		m_budget = std::clamp(heap / 4, BudgetMin, BudgetMax);
 	}
-	if (const char* every = std::getenv("KYTY_RT_HW_CHECK_EVERY"); every != nullptr && every[0] != 0) {
-		m_verify_every = std::max<uint32_t>(1u, static_cast<uint32_t>(std::strtoul(every, nullptr, 10)));
+	if (const char* every = std::getenv("KYTY_RT_HW_CHECK_EVERY");
+	    every != nullptr && every[0] != 0) {
+		m_verify_every =
+		    std::max<uint32_t>(1u, static_cast<uint32_t>(std::strtoul(every, nullptr, 10)));
 	}
 	if (const char* every = std::getenv("KYTY_RT_HW_STATS"); every != nullptr && every[0] != 0) {
 		m_report_every = std::strtoull(every, nullptr, 10);
 	}
 	LOGF("NativeRayTracing: enabled, BLAS memory budget %llu MiB, verify %d\n",
-	     static_cast<unsigned long long>(m_budget >> 20u), ShaderRecompiler::GetCodegenOptions().rt_hw_verify ? 1 : 0);
+	     static_cast<unsigned long long>(m_budget >> 20u),
+	     ShaderRecompiler::GetCodegenOptions().rt_hw_verify ? 1 : 0);
 }
 
 NativeRayTracing::~NativeRayTracing() {
@@ -422,15 +441,16 @@ void NativeRayTracing::CreatePipelines() {
 	auto                                 device = m_graphics.device;
 	const vk::DescriptorSetLayoutBinding binding {0, vk::DescriptorType::eStorageBuffer, 1,
 	                                              vk::ShaderStageFlagBits::eCompute, nullptr};
-	vk::DescriptorSetLayoutCreateInfo layout_info {};
+	vk::DescriptorSetLayoutCreateInfo    layout_info {};
 	layout_info.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
 	layout_info.bindingCount = 1;
 	layout_info.pBindings    = &binding;
-	RequireVulkanSuccess(device.createDescriptorSetLayout(&layout_info, nullptr, &m_descriptor_layout),
-	                     "create native ray tracing descriptor layout");
-	const auto make = [&](std::span<const uint32_t> code, uint32_t push_size, vk::PipelineLayout& layout,
-	                      vk::Pipeline& pipeline, const char* name) {
-		const vk::PushConstantRange push {vk::ShaderStageFlagBits::eCompute, 0, push_size};
+	RequireVulkanSuccess(
+	    device.createDescriptorSetLayout(&layout_info, nullptr, &m_descriptor_layout),
+	    "create native ray tracing descriptor layout");
+	const auto make = [&](std::span<const uint32_t> code, uint32_t push_size,
+	                      vk::PipelineLayout& layout, vk::Pipeline& pipeline, const char* name) {
+		const vk::PushConstantRange  push {vk::ShaderStageFlagBits::eCompute, 0, push_size};
 		vk::PipelineLayoutCreateInfo info {};
 		info.setLayoutCount         = 1;
 		info.pSetLayouts            = &m_descriptor_layout;
@@ -438,7 +458,7 @@ void NativeRayTracing::CreatePipelines() {
 		info.pPushConstantRanges    = &push;
 		RequireVulkanSuccess(device.createPipelineLayout(&info, nullptr, &layout),
 		                     "create native ray tracing pipeline layout");
-		const auto module = CompileSPV(code, device);
+		const auto                        module = CompileSPV(code, device);
 		vk::PipelineShaderStageCreateInfo stage {};
 		stage.stage  = vk::ShaderStageFlagBits::eCompute;
 		stage.module = module;
@@ -446,7 +466,8 @@ void NativeRayTracing::CreatePipelines() {
 		vk::ComputePipelineCreateInfo pipeline_info {};
 		pipeline_info.stage  = stage;
 		pipeline_info.layout = layout;
-		const auto result    = device.createComputePipelines(nullptr, 1, &pipeline_info, nullptr, &pipeline);
+		const auto result =
+		    device.createComputePipelines(nullptr, 1, &pipeline_info, nullptr, &pipeline);
 		device.destroyShaderModule(module, nullptr);
 		RequireVulkanSuccess(result, "create native ray tracing pipeline");
 		SetVulkanObjectNameF(device, pipeline, "{}", name);
@@ -457,7 +478,8 @@ void NativeRayTracing::CreatePipelines() {
 
 void NativeRayTracing::CreateBuffers() {
 	const auto make = [&](uint64_t size, vk::BufferUsageFlags flags, const char* name) {
-		auto buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, flags, size);
+		auto buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+		                                       flags, size);
 		SetVulkanObjectNameF(m_graphics.device, buffer->Handle(), "{}", name);
 		return buffer;
 	};
@@ -475,7 +497,8 @@ void NativeRayTracing::CreateBuffers() {
 	m_jobs           = make(uint64_t {MaxJobs} * JobStride, DataFlags, "RT jobs");
 	m_build_scratch  = make(BuildScratchSize, AsFlags, "RT build scratch");
 	for (auto& readback: m_readbacks) {
-		readback.buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download, 0, AllFlags, ReadbackSize);
+		readback.buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Download,
+		                                           0, AllFlags, ReadbackSize);
 	}
 	m_context_address = m_context->BufferDeviceAddress();
 }
@@ -483,8 +506,9 @@ void NativeRayTracing::CreateBuffers() {
 void NativeRayTracing::CreateTlas(uint32_t capacity) {
 	auto                                 device = m_graphics.device;
 	vk::AccelerationStructureGeometryKHR geometry {};
-	geometry.geometryType                       = vk::GeometryTypeKHR::eInstances;
-	geometry.geometry.instances.sType           = vk::StructureType::eAccelerationStructureGeometryInstancesDataKHR;
+	geometry.geometryType = vk::GeometryTypeKHR::eInstances;
+	geometry.geometry.instances.sType =
+	    vk::StructureType::eAccelerationStructureGeometryInstancesDataKHR;
 	geometry.geometry.instances.arrayOfPointers = VK_FALSE;
 	vk::AccelerationStructureBuildGeometryInfoKHR info {};
 	info.type          = vk::AccelerationStructureTypeKHR::eTopLevel;
@@ -493,23 +517,26 @@ void NativeRayTracing::CreateTlas(uint32_t capacity) {
 	info.geometryCount = 1;
 	info.pGeometries   = &geometry;
 	vk::AccelerationStructureBuildSizesInfoKHR sizes {};
-	device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice, &info, &capacity, &sizes);
-	m_tlas_storage = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0, AsFlags,
-	                                          sizes.accelerationStructureSize);
+	device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice,
+	                                             &info, &capacity, &sizes);
+	m_tlas_storage = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, 0,
+	                                          AsFlags, sizes.accelerationStructureSize);
 	vk::AccelerationStructureCreateInfoKHR create {};
 	create.buffer = m_tlas_storage->Handle();
 	create.size   = sizes.accelerationStructureSize;
 	create.type   = vk::AccelerationStructureTypeKHR::eTopLevel;
-	RequireVulkanSuccess(device.createAccelerationStructureKHR(&create, nullptr, &m_tlas), "create native TLAS");
+	RequireVulkanSuccess(device.createAccelerationStructureKHR(&create, nullptr, &m_tlas),
+	                     "create native TLAS");
 	vk::AccelerationStructureDeviceAddressInfoKHR address_info {};
 	address_info.accelerationStructure = m_tlas;
-	m_tlas_address      = device.getAccelerationStructureAddressKHR(address_info);
-	m_tlas_scratch_size = sizes.buildScratchSize;
-	m_tlas_capacity     = capacity;
+	m_tlas_address                     = device.getAccelerationStructureAddressKHR(address_info);
+	m_tlas_scratch_size                = sizes.buildScratchSize;
+	m_tlas_capacity                    = capacity;
 	EXIT_IF(m_tlas_scratch_size > BuildScratchSize);
 }
 
-bool NativeRayTracing::ComputeSlotSizes(uint32_t opaque, uint32_t alpha, SlotSizes& sizes, bool exact) {
+bool NativeRayTracing::ComputeSlotSizes(uint32_t opaque, uint32_t alpha, SlotSizes& sizes,
+                                        bool exact) {
 	auto           device    = m_graphics.device;
 	const uint64_t capacity0 = exact ? opaque : uint64_t {opaque} + opaque / 8 + 16;
 	const uint64_t capacity1 = exact ? alpha : uint64_t {alpha} + alpha / 8 + 16;
@@ -518,7 +545,8 @@ bool NativeRayTracing::ComputeSlotSizes(uint32_t opaque, uint32_t alpha, SlotSiz
 	}
 	sizes.capacity0 = static_cast<uint32_t>(capacity0);
 	sizes.capacity1 = static_cast<uint32_t>(capacity1);
-	const std::array geometries {TriangleGeometry(0, sizes.capacity0, true), TriangleGeometry(0, sizes.capacity1, false)};
+	const std::array geometries {TriangleGeometry(0, sizes.capacity0, true),
+	                             TriangleGeometry(0, sizes.capacity1, false)};
 	const std::array counts {sizes.capacity0, sizes.capacity1};
 	vk::AccelerationStructureBuildGeometryInfoKHR info {};
 	info.type          = vk::AccelerationStructureTypeKHR::eBottomLevel;
@@ -527,21 +555,23 @@ bool NativeRayTracing::ComputeSlotSizes(uint32_t opaque, uint32_t alpha, SlotSiz
 	info.geometryCount = static_cast<uint32_t>(geometries.size());
 	info.pGeometries   = geometries.data();
 	vk::AccelerationStructureBuildSizesInfoKHR build {};
-	device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice, &info, counts.data(), &build);
+	device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice,
+	                                             &info, counts.data(), &build);
 	{
 		auto fast_info  = info;
 		fast_info.flags = FastBlasFlags;
 		vk::AccelerationStructureBuildSizesInfoKHR fast {};
-		device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice, &fast_info,
-		                                             counts.data(), &fast);
-		build.accelerationStructureSize = std::max(build.accelerationStructureSize, fast.accelerationStructureSize);
-		build.buildScratchSize          = std::max(build.buildScratchSize, fast.buildScratchSize);
+		device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice,
+		                                             &fast_info, counts.data(), &fast);
+		build.accelerationStructureSize =
+		    std::max(build.accelerationStructureSize, fast.accelerationStructureSize);
+		build.buildScratchSize = std::max(build.buildScratchSize, fast.buildScratchSize);
 	}
 	sizes.storage   = (build.accelerationStructureSize + 255u) & ~uint64_t {255};
 	sizes.vertices0 = (uint64_t {sizes.capacity0} * 36 + 255u) & ~uint64_t {255};
 	sizes.vertices1 = (uint64_t {sizes.capacity1} * 36 + 255u) & ~uint64_t {255};
-	sizes.entries   = ((uint64_t {sizes.capacity0} + sizes.capacity1) * 16 + 255u) & ~uint64_t {255};
-	sizes.scratch   = build.buildScratchSize;
+	sizes.entries = ((uint64_t {sizes.capacity0} + sizes.capacity1) * 16 + 255u) & ~uint64_t {255};
+	sizes.scratch = build.buildScratchSize;
 	if (sizes.scratch > BuildScratchSize || sizes.Total() > MaxSlotBytes) {
 		return false;
 	}
@@ -567,7 +597,8 @@ void NativeRayTracing::AllocateSlot(Slot& slot, const SlotSizes& sizes) {
 	create.offset = slot.storage.offset;
 	create.size   = sizes.storage;
 	create.type   = vk::AccelerationStructureTypeKHR::eBottomLevel;
-	RequireVulkanSuccess(device.createAccelerationStructureKHR(&create, nullptr, &slot.handle), "create native BLAS");
+	RequireVulkanSuccess(device.createAccelerationStructureKHR(&create, nullptr, &slot.handle),
+	                     "create native BLAS");
 	vk::AccelerationStructureDeviceAddressInfoKHR address_info {};
 	address_info.accelerationStructure = slot.handle;
 	slot.as_address                    = device.getAccelerationStructureAddressKHR(address_info);
@@ -622,8 +653,9 @@ void NativeRayTracing::RetireResources(Slot& slot, uint32_t slot_index) {
 void NativeRayTracing::DestroyRetired() {
 	auto device = m_graphics.device;
 	while (!m_retired.empty()) {
-		auto&      retired        = m_retired.front();
-		const bool readbacks_done = retired.slot == UINT32_MAX || m_prepare_id > retired.prepare_id + m_readbacks.size();
+		auto&      retired = m_retired.front();
+		const bool readbacks_done =
+		    retired.slot == UINT32_MAX || m_prepare_id > retired.prepare_id + m_readbacks.size();
 		if (!readbacks_done || !m_scheduler.IsFree(retired.tick)) {
 			break;
 		}
@@ -658,7 +690,8 @@ void NativeRayTracing::EvictSlot(uint32_t index) {
 void NativeRayTracing::EvictUnused(std::vector<uint32_t>& evicted) {
 	if (m_frame > EvictFrames) {
 		const auto limit = m_frame - EvictFrames;
-		for (uint32_t index = 0; index < m_slot_list.size() && evicted.size() < MaxEvictions; index++) {
+		for (uint32_t index = 0; index < m_slot_list.size() && evicted.size() < MaxEvictions;
+		     index++) {
 			auto* slot = m_slot_list[index].get();
 			if (slot == nullptr || slot->evicted || slot->last_use_frame >= limit) {
 				continue;
@@ -718,16 +751,16 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 	std::vector<Job>      jobs;
 	std::vector<uint32_t> slots;
 	std::vector<bool>     gathered;
-	uint64_t              scratch  = 0;
-	uint64_t              pool_use = 0;
+	uint64_t              scratch   = 0;
+	uint64_t              pool_use  = 0;
 	constexpr uint64_t    Alignment = 256;
-	const auto            gathers  = [&](const Slot* slot) {
+	const auto            gathers   = [&](const Slot* slot) {
 		return slot != nullptr && slot->built && slot->refit && slot->gathers < MaxGathers;
 	};
 	{
 		Common::LockGuard lock(m_mutex);
-		// The gathers (refit BLASes the frame traces: cheap, no walk) first, then the oldest builds;
-		// the queue is served from its end.
+		// The gathers (refit BLASes the frame traces: cheap, no walk) first, then the oldest
+		// builds; the queue is served from its end.
 		std::stable_sort(m_build_queue.begin(), m_build_queue.end(), [&](uint32_t a, uint32_t b) {
 			const auto* slot_a = m_slot_list[a].get();
 			const auto* slot_b = m_slot_list[b].get();
@@ -735,14 +768,16 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 				return !gathers(slot_a);
 			}
 			const auto age = [&](const Slot* slot) {
-				return slot == nullptr || slot->built_frame == UINT64_MAX ? uint64_t {0} : slot->built_frame;
+				return slot == nullptr || slot->built_frame == UINT64_MAX ? uint64_t {0}
+				                                                          : slot->built_frame;
 			};
 			return age(slot_a) > age(slot_b);
 		});
 		std::vector<uint32_t> deferred;
 		while (!m_build_queue.empty() && jobs.size() < MaxJobs) {
 			const auto index = m_build_queue.back();
-			if (m_slot_list[index] == nullptr || m_slot_list[index]->evicted || !m_slot_list[index]->needs_build) {
+			if (m_slot_list[index] == nullptr || m_slot_list[index]->evicted ||
+			    !m_slot_list[index]->needs_build) {
 				m_build_queue.pop_back();
 				continue;
 			}
@@ -752,10 +787,12 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 				break;
 			}
 			const bool     gather = gathers(&slot);
-			const uint64_t queue  = gather ? 0
-			                        : slot.leaf_count != 0
-			                            ? std::min<uint64_t>(uint64_t {slot.leaf_count} + slot.leaf_count / 2 + 64, PoolQueueMax)
-			                            : PoolQueueMax;
+			const uint64_t queue =
+			    gather ? 0
+			    : slot.leaf_count != 0
+			        ? std::min<uint64_t>(uint64_t {slot.leaf_count} + slot.leaf_count / 2 + 64,
+			                             PoolQueueMax)
+			        : PoolQueueMax;
 			m_build_queue.pop_back();
 			if (pool_use != 0 && pool_use + queue > PoolCapacity / 2) {
 				deferred.push_back(index);
@@ -798,8 +835,8 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 		walk_count = static_cast<uint32_t>(walk_jobs.size());
 		m_stats.gathers += gather_jobs.size();
 		m_stats.builds += walk_jobs.size();
-		jobs       = std::move(walk_jobs);
-		slots      = std::move(walk_slots);
+		jobs  = std::move(walk_jobs);
+		slots = std::move(walk_slots);
 		jobs.insert(jobs.end(), gather_jobs.begin(), gather_jobs.end());
 		slots.insert(slots.end(), gather_slots.begin(), gather_slots.end());
 	}
@@ -815,16 +852,17 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 		info.blas_va     = slot.blas_va;
 		info.root        = slot.root;
 		info.leaf_count  = slot.leaf_count;
-		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride, &info, sizeof(info));
+		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride, &info,
+		             sizeof(info));
 		if (slot.table_index != UINT32_MAX) {
 			const uint32_t encoded = index + 1;
-			UpdateBuffer(command, m_table->Handle(), uint64_t {slot.table_index} * TableStride + 8, &encoded,
-			             sizeof(encoded));
+			UpdateBuffer(command, m_table->Handle(), uint64_t {slot.table_index} * TableStride + 8,
+			             &encoded, sizeof(encoded));
 		}
 	}
 	UpdateLarge(command, m_jobs->Handle(), 0, jobs.data(), jobs.size() * JobStride);
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-	              vk::PipelineStageFlagBits2::eComputeShader,
+	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer,
+	              vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eComputeShader,
 	              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
 	const BlasPush push {m_jobs->BufferDeviceAddress(),
 	                     m_pool->BufferDeviceAddress(),
@@ -844,38 +882,41 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 		gather.jobs      = m_jobs->BufferDeviceAddress() + uint64_t {walk_count} * JobStride;
 		gather.mode      = ModeGather;
 		gather.job_count = static_cast<uint32_t>(jobs.size()) - walk_count;
-		command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(gather), &gather);
+		command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(gather),
+		                      &gather);
 		command.dispatch(gather.job_count, 1, 1);
-		command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push), &push);
+		command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
+		                      &push);
 	}
 	if (walk_count != 0) {
 		command.dispatch(walk_count, 1, 1);
 	}
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
+	MemoryBarrier(command, vk::PipelineStageFlagBits2::eComputeShader,
+	              vk::AccessFlagBits2::eShaderWrite,
 	              AsBuildStage | vk::PipelineStageFlagBits2::eTransfer,
 	              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead);
 	// One build per slot, all in one command (distinct scratch ranges).
-	const auto                                                     count = static_cast<uint32_t>(slots.size());
-	std::vector<vk::AccelerationStructureGeometryKHR>              geometries(count * 2);
+	const auto                                        count = static_cast<uint32_t>(slots.size());
+	std::vector<vk::AccelerationStructureGeometryKHR> geometries(count * 2);
 	std::vector<vk::AccelerationStructureBuildGeometryInfoKHR>     infos(count);
 	std::vector<vk::AccelerationStructureBuildRangeInfoKHR>        ranges(count * 2);
 	std::vector<const vk::AccelerationStructureBuildRangeInfoKHR*> range_pointers(count);
 	uint64_t                                                       scratch_offset = 0;
-	const auto                                                     scratch_base   = m_build_scratch->BufferDeviceAddress();
+	const auto scratch_base = m_build_scratch->BufferDeviceAddress();
 	for (uint32_t i = 0; i < count; i++) {
-		auto&      slot = *m_slot_list[slots[i]];
-		const bool fast = slot.dynamic_until != 0;
-		slot.fast_built = fast;
+		auto&      slot       = *m_slot_list[slots[i]];
+		const bool fast       = slot.dynamic_until != 0;
+		slot.fast_built       = fast;
 		geometries[i * 2]     = TriangleGeometry(slot.vertices0.address, slot.capacity0, true);
 		geometries[i * 2 + 1] = TriangleGeometry(slot.vertices1.address, slot.capacity1, false);
-		auto& info                     = infos[i];
-		info.type                      = vk::AccelerationStructureTypeKHR::eBottomLevel;
-		info.flags                     = fast ? FastBlasFlags : BlasFlags;
-		info.mode                      = vk::BuildAccelerationStructureModeKHR::eBuild;
-		info.dstAccelerationStructure  = slot.handle;
-		info.geometryCount             = 2;
-		info.pGeometries               = &geometries[i * 2];
-		info.scratchData.deviceAddress = scratch_base + scratch_offset;
+		auto& info            = infos[i];
+		info.type             = vk::AccelerationStructureTypeKHR::eBottomLevel;
+		info.flags            = fast ? FastBlasFlags : BlasFlags;
+		info.mode             = vk::BuildAccelerationStructureModeKHR::eBuild;
+		info.dstAccelerationStructure    = slot.handle;
+		info.geometryCount               = 2;
+		info.pGeometries                 = &geometries[i * 2];
+		info.scratchData.deviceAddress   = scratch_base + scratch_offset;
 		ranges[i * 2].primitiveCount     = slot.capacity0;
 		ranges[i * 2 + 1].primitiveCount = slot.capacity1;
 		range_pointers[i]                = &ranges[i * 2];
@@ -883,12 +924,16 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 	}
 	command.buildAccelerationStructuresKHR(count, infos.data(), range_pointers.data());
 	MemoryBarrier(command, AsBuildStage, vk::AccessFlagBits2::eAccelerationStructureWriteKHR,
-	              AsBuildStage | vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eTransfer,
-	              vk::AccessFlagBits2::eAccelerationStructureReadKHR | vk::AccessFlagBits2::eShaderRead |
-	                  vk::AccessFlagBits2::eAccelerationStructureWriteKHR | vk::AccessFlagBits2::eTransferWrite);
+	              AsBuildStage | vk::PipelineStageFlagBits2::eComputeShader |
+	                  vk::PipelineStageFlagBits2::eTransfer,
+	              vk::AccessFlagBits2::eAccelerationStructureReadKHR |
+	                  vk::AccessFlagBits2::eShaderRead |
+	                  vk::AccessFlagBits2::eAccelerationStructureWriteKHR |
+	                  vk::AccessFlagBits2::eTransferWrite);
 	constexpr uint32_t built = 1;
 	for (const auto index: slots) {
-		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride + offsetof(SlotInfo, state), &built,
+		UpdateBuffer(command, m_slots->Handle(),
+		             uint64_t {index} * SlotStride + offsetof(SlotInfo, state), &built,
 		             sizeof(built));
 		m_slot_list[index]->built       = true;
 		m_slot_list[index]->built_frame = m_frame;
@@ -897,8 +942,8 @@ void NativeRayTracing::RecordBuilds(vk::CommandBuffer command) {
 	readback.build_slots = std::move(slots);
 }
 
-void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer, const TlasSource& source,
-                               uint64_t frame, uint64_t header_hint) {
+void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
+                               const TlasSource& source, uint64_t frame, uint64_t header_hint) {
 	if (!m_enabled) {
 		return;
 	}
@@ -913,35 +958,38 @@ void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
 		}
 		// Patched shaders find the context through the BDA page table.
 		m_buffer_cache.EnsureBdaPageTableEntry(BufferCache::NATIVE_RT_CONTEXT_PAGE);
-		UpdateBuffer(command, page_table->Handle(), BufferCache::NATIVE_RT_CONTEXT_PAGE * sizeof(uint64_t),
-		             &m_context_address, sizeof(m_context_address));
-		MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-		              vk::PipelineStageFlagBits2::eAllCommands,
+		UpdateBuffer(command, page_table->Handle(),
+		             BufferCache::NATIVE_RT_CONTEXT_PAGE * sizeof(uint64_t), &m_context_address,
+		             sizeof(m_context_address));
+		MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer,
+		              vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eAllCommands,
 		              vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
 	}
 	if (!g_native.On()) {
 		// The shaders run their guest loops.
 		if (m_context_valid) {
 			m_context_valid = false;
-			MemoryBarrier(command, vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eMemoryRead,
-			              vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite);
+			MemoryBarrier(command, vk::PipelineStageFlagBits2::eAllCommands,
+			              vk::AccessFlagBits2::eMemoryRead, vk::PipelineStageFlagBits2::eTransfer,
+			              vk::AccessFlagBits2::eTransferWrite);
 			command.fillBuffer(m_context->Handle(), 0, ContextStride, 0);
-			MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-			              vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eMemoryRead);
+			MemoryBarrier(
+			    command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+			    vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eMemoryRead);
 		}
 		return;
 	}
-	// KYTY_RT_HW_ONCE_PER_FRAME (live, default 1): the TLAS of a header the host already prepared in
-	// this frame (Miles' two RT kernels trace the same one) is used again.
-	if (g_once_per_frame.On() && m_context_valid && header_hint != 0 && header_hint == m_prepared_header &&
-	    frame == m_prepared_frame) {
+	// KYTY_RT_HW_ONCE_PER_FRAME (live, default 1): the TLAS of a header the host already prepared
+	// in this frame (Miles' two RT kernels trace the same one) is used again.
+	if (g_once_per_frame.On() && m_context_valid && header_hint != 0 &&
+	    header_hint == m_prepared_header && frame == m_prepared_frame) {
 		m_stats.reused++;
 		return;
 	}
 	m_prepared_header = header_hint;
 	m_prepared_frame  = frame;
-	m_context_valid = true;
-	auto& readback  = m_readbacks[m_readback_index];
+	m_context_valid   = true;
+	auto& readback    = m_readbacks[m_readback_index];
 	if (readback.tick != 0) {
 		// The ring is full: the oldest readback must complete first (rare).
 		m_scheduler.Wait(readback.tick);
@@ -1040,38 +1088,44 @@ void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
 			return false;
 		});
 		const auto last = m_last_instance_counts[source_key];
-		tlas_count      = std::min(m_tlas_capacity, std::max(1024u, (last + last / 4 + 255u) & ~255u));
+		tlas_count = std::min(m_tlas_capacity, std::max(1024u, (last + last / 4 + 255u) & ~255u));
 	}
 	m_prepare_id++;
 
 	// Earlier guest work wrote the BVHs; earlier ray queries read the TLAS this rebuilds.
 	MemoryBarrier(command, vk::PipelineStageFlagBits2::eAllCommands,
 	              vk::AccessFlagBits2::eMemoryWrite | vk::AccessFlagBits2::eMemoryRead,
-	              vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eTransfer | AsBuildStage,
+	              vk::PipelineStageFlagBits2::eComputeShader |
+	                  vk::PipelineStageFlagBits2::eTransfer | AsBuildStage,
 	              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
-	                  vk::AccessFlagBits2::eTransferWrite | vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
+	                  vk::AccessFlagBits2::eTransferWrite |
+	                  vk::AccessFlagBits2::eAccelerationStructureWriteKHR);
 	const auto forget = [&](uint32_t table_index) {
 		const std::array<uint64_t, 2> tombstone {TableTombstone, 0};
-		UpdateBuffer(command, m_table->Handle(), uint64_t {table_index} * TableStride, tombstone.data(), sizeof(tombstone));
+		UpdateBuffer(command, m_table->Handle(), uint64_t {table_index} * TableStride,
+		             tombstone.data(), sizeof(tombstone));
 	};
 	for (const auto index: retry) {
 		forget(index);
 	}
 	for (const auto& [index, table_index]: evicted) {
 		constexpr SlotInfo cleared {};
-		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride, &cleared, sizeof(cleared));
+		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride, &cleared,
+		             sizeof(cleared));
 		if (table_index != UINT32_MAX) {
 			forget(table_index);
 		}
 	}
 	for (const auto& [index, info]: reallocated) {
-		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride, &info, sizeof(info));
+		UpdateBuffer(command, m_slots->Handle(), uint64_t {index} * SlotStride, &info,
+		             sizeof(info));
 	}
 	command.fillBuffer(m_state->Handle(), 0, StateSize, 0);
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-	              vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eTransfer,
-	              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
-	                  vk::AccessFlagBits2::eTransferWrite);
+	MemoryBarrier(
+	    command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+	    vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eTransfer,
+	    vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
+	        vk::AccessFlagBits2::eTransferWrite);
 
 	const vk::DescriptorBufferInfo page_info {page_table->Handle(), 0, page_table->Size()};
 	vk::WriteDescriptorSet         write {};
@@ -1084,23 +1138,23 @@ void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
 	RecordBuilds(command);
 
 	command.fillBuffer(m_instances->Handle(), 0, uint64_t {tlas_count} * InstanceStride, 0);
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-	              vk::PipelineStageFlagBits2::eComputeShader,
+	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer,
+	              vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eComputeShader,
 	              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
 	command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, m_tlas_layout, 0, 1, &write);
 	TlasPush tlas_push {};
-	tlas_push.user_ptr_va       = user_pointer;
-	tlas_push.state             = m_state->BufferDeviceAddress();
-	tlas_push.queue             = m_queue->BufferDeviceAddress();
-	tlas_push.instance_nodes    = m_instance_nodes->BufferDeviceAddress();
-	tlas_push.instances         = m_instances->BufferDeviceAddress();
-	tlas_push.table             = m_table->BufferDeviceAddress();
-	tlas_push.slots             = m_slots->BufferDeviceAddress();
-	tlas_push.missing           = m_missing->BufferDeviceAddress();
-	tlas_push.context           = m_context_address;
-	tlas_push.tlas_address      = m_tlas_address;
-	tlas_push.verify_list       = m_verify_list->BufferDeviceAddress();
-	tlas_push.header_hint       = header_hint;
+	tlas_push.user_ptr_va    = user_pointer;
+	tlas_push.state          = m_state->BufferDeviceAddress();
+	tlas_push.queue          = m_queue->BufferDeviceAddress();
+	tlas_push.instance_nodes = m_instance_nodes->BufferDeviceAddress();
+	tlas_push.instances      = m_instances->BufferDeviceAddress();
+	tlas_push.table          = m_table->BufferDeviceAddress();
+	tlas_push.slots          = m_slots->BufferDeviceAddress();
+	tlas_push.missing        = m_missing->BufferDeviceAddress();
+	tlas_push.context        = m_context_address;
+	tlas_push.tlas_address   = m_tlas_address;
+	tlas_push.verify_list    = m_verify_list->BufferDeviceAddress();
+	tlas_push.header_hint    = header_hint;
 	m_stats.hinted += header_hint != 0 ? 1u : 0u;
 	tlas_push.vsharp_offset     = source.vsharp_offset;
 	tlas_push.header_offset     = source.header_offset;
@@ -1114,10 +1168,13 @@ void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
 	// Every triangle is a candidate the guest leaf code tests for its facing: no host culling.
 	tlas_push.flip_parity = 0u;
 	command.bindPipeline(vk::PipelineBindPoint::eCompute, m_tlas_pipeline);
-	command.pushConstants(m_tlas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(tlas_push), &tlas_push);
+	command.pushConstants(m_tlas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(tlas_push),
+	                      &tlas_push);
 	command.dispatch(1, 1, 1);
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
-	              vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eDrawIndirect | AsBuildStage,
+	MemoryBarrier(command, vk::PipelineStageFlagBits2::eComputeShader,
+	              vk::AccessFlagBits2::eShaderWrite,
+	              vk::PipelineStageFlagBits2::eComputeShader |
+	                  vk::PipelineStageFlagBits2::eDrawIndirect | AsBuildStage,
 	              vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
 	                  vk::AccessFlagBits2::eIndirectCommandRead);
 
@@ -1135,38 +1192,42 @@ void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
 	                    ChangedCapacity,
 	                    m_prepare_id,
 	                    0};
-	command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(blas_push), &blas_push);
+	command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(blas_push),
+	                      &blas_push);
 	command.dispatchIndirect(m_state->Handle(), StateDispatch);
 	blas_push.jobs = m_verify_list->BufferDeviceAddress();
 	blas_push.mode = ModeVerify;
-	command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(blas_push), &blas_push);
+	command.pushConstants(m_blas_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(blas_push),
+	                      &blas_push);
 	command.dispatchIndirect(m_state->Handle(), StateVerify);
 
 	// The TLAS over the walk's instances (inactive ones have a null BLAS).
 	{
 		vk::AccelerationStructureGeometryKHR geometry {};
 		geometry.geometryType = vk::GeometryTypeKHR::eInstances;
-		geometry.geometry.instances.sType              = vk::StructureType::eAccelerationStructureGeometryInstancesDataKHR;
+		geometry.geometry.instances.sType =
+		    vk::StructureType::eAccelerationStructureGeometryInstancesDataKHR;
 		geometry.geometry.instances.arrayOfPointers    = VK_FALSE;
 		geometry.geometry.instances.data.deviceAddress = m_instances->BufferDeviceAddress();
 		vk::AccelerationStructureBuildGeometryInfoKHR info {};
-		info.type                      = vk::AccelerationStructureTypeKHR::eTopLevel;
-		info.flags                     = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild;
-		info.mode                      = vk::BuildAccelerationStructureModeKHR::eBuild;
-		info.dstAccelerationStructure  = m_tlas;
-		info.geometryCount             = 1;
-		info.pGeometries               = &geometry;
+		info.type                     = vk::AccelerationStructureTypeKHR::eTopLevel;
+		info.flags                    = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastBuild;
+		info.mode                     = vk::BuildAccelerationStructureModeKHR::eBuild;
+		info.dstAccelerationStructure = m_tlas;
+		info.geometryCount            = 1;
+		info.pGeometries              = &geometry;
 		info.scratchData.deviceAddress = m_build_scratch->BufferDeviceAddress();
 		vk::AccelerationStructureBuildRangeInfoKHR range {};
 		range.primitiveCount      = tlas_count;
 		const auto* range_pointer = &range;
 		command.buildAccelerationStructuresKHR(1, &info, &range_pointer);
 	}
-	MemoryBarrier(command, AsBuildStage | vk::PipelineStageFlagBits2::eComputeShader,
-	              vk::AccessFlagBits2::eAccelerationStructureWriteKHR | vk::AccessFlagBits2::eShaderWrite,
-	              vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eTransfer,
-	              vk::AccessFlagBits2::eAccelerationStructureReadKHR | vk::AccessFlagBits2::eShaderRead |
-	                  vk::AccessFlagBits2::eTransferRead);
+	MemoryBarrier(
+	    command, AsBuildStage | vk::PipelineStageFlagBits2::eComputeShader,
+	    vk::AccessFlagBits2::eAccelerationStructureWriteKHR | vk::AccessFlagBits2::eShaderWrite,
+	    vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eTransfer,
+	    vk::AccessFlagBits2::eAccelerationStructureReadKHR | vk::AccessFlagBits2::eShaderRead |
+	        vk::AccessFlagBits2::eTransferRead);
 
 	// Reads back the state, the counted missing BLASes, the build results, the changed slots, the
 	// used slots and the verify counters (then cleared).
@@ -1184,11 +1245,12 @@ void NativeRayTracing::Prepare(vk::CommandBuffer command, uint64_t user_pointer,
 	command.copyBuffer(m_changed->Handle(), readback.buffer->Handle(), 1, &regions[3]);
 	command.copyBuffer(m_verify_list->Handle(), readback.buffer->Handle(), 1, &regions[4]);
 	command.copyBuffer(m_context->Handle(), readback.buffer->Handle(), 1, &regions[5]);
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead,
-	              vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite);
+	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer,
+	              vk::AccessFlagBits2::eTransferRead, vk::PipelineStageFlagBits2::eTransfer,
+	              vk::AccessFlagBits2::eTransferWrite);
 	command.fillBuffer(m_context->Handle(), CountersOffset, uint64_t {CounterCount} * 4, 0);
-	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
-	              vk::PipelineStageFlagBits2::eAllCommands,
+	MemoryBarrier(command, vk::PipelineStageFlagBits2::eTransfer,
+	              vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eAllCommands,
 	              vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite);
 	readback.tick = m_scheduler.CurrentTick();
 	m_scheduler.DeferOperation([this, &readback] { ProcessReadback(readback); });
@@ -1209,8 +1271,8 @@ void NativeRayTracing::ProcessReadback(Readback& readback) {
 			ReportAgain(entry.blas_va, entry.root, entry.table_index);
 			continue;
 		}
-		m_new_slots.push_back(
-		    {entry.blas_va, entry.root, entry.table_index, entry.leaf_count, entry.opaque_count, entry.alpha_count});
+		m_new_slots.push_back({entry.blas_va, entry.root, entry.table_index, entry.leaf_count,
+		                       entry.opaque_count, entry.alpha_count});
 	}
 	for (uint32_t i = 0; i < readback.build_count && i < readback.build_slots.size(); i++) {
 		Job job {};
@@ -1244,7 +1306,8 @@ void NativeRayTracing::ProcessReadback(Readback& readback) {
 		uint32_t word = 0;
 		std::memcpy(&word, bytes + ReadbackChanged + uint64_t {i} * 4, sizeof(word));
 		const auto index = word & ~ChangedTopology;
-		if (index >= m_slot_list.size() || m_slot_list[index] == nullptr || m_slot_list[index]->evicted) {
+		if (index >= m_slot_list.size() || m_slot_list[index] == nullptr ||
+		    m_slot_list[index]->evicted) {
 			continue;
 		}
 		auto& slot = *m_slot_list[index];
@@ -1268,7 +1331,8 @@ void NativeRayTracing::ProcessReadback(Readback& readback) {
 	for (uint32_t i = 0; i < used; i++) {
 		uint32_t index = 0;
 		std::memcpy(&index, bytes + ReadbackUsed + uint64_t {i} * 4, sizeof(index));
-		if (index < m_slot_list.size() && m_slot_list[index] != nullptr && !m_slot_list[index]->evicted) {
+		if (index < m_slot_list.size() && m_slot_list[index] != nullptr &&
+		    !m_slot_list[index]->evicted) {
 			auto& slot          = *m_slot_list[index];
 			slot.last_use_frame = std::max(slot.last_use_frame, readback.frame);
 		}
@@ -1299,30 +1363,37 @@ void NativeRayTracing::ProcessReadback(Readback& readback) {
 }
 
 void NativeRayTracing::Report() {
-	const auto& s = m_stats;
+	const auto& s          = m_stats;
 	uint32_t    live_slots = 0;
 	for (const auto& slot: m_slot_list) {
 		live_slots += slot != nullptr && !slot->evicted ? 1u : 0u;
 	}
-	LOGF("NativeRayTracing: %" PRIu64 " prepares, instances/prepare %.0f (inactive %.0f, unknown BLAS %.0f), "
-	     "walk builds %" PRIu64 ", gathers %" PRIu64 ", changed %" PRIu64 ", missing %" PRIu64 ", overflows %" PRIu64
-	     ", header changes %u, no instances %" PRIu64 ", header from the host %" PRIu64 ", reused in the frame %" PRIu64 ", slots %u, arena %.0f/%.0f MiB, last header 0x%" PRIx64 "\n",
+	LOGF("NativeRayTracing: %" PRIu64
+	     " prepares, instances/prepare %.0f (inactive %.0f, unknown BLAS %.0f), "
+	     "walk builds %" PRIu64 ", gathers %" PRIu64 ", changed %" PRIu64 ", missing %" PRIu64
+	     ", overflows %" PRIu64 ", header changes %u, no instances %" PRIu64
+	     ", header from the host %" PRIu64 ", reused in the frame %" PRIu64
+	     ", slots %u, arena %.0f/%.0f MiB, last header 0x%" PRIx64 "\n",
 	     s.prepares, static_cast<double>(s.instances) / static_cast<double>(s.prepares),
 	     static_cast<double>(s.inactive) / static_cast<double>(s.prepares),
-	     static_cast<double>(s.unknown) / static_cast<double>(s.prepares), s.builds, s.gathers, s.changed, s.missing,
-	     s.overflow, s.headers, s.empty, s.hinted, s.reused, live_slots, static_cast<double>(m_arena.Used()) / 1048576.0,
+	     static_cast<double>(s.unknown) / static_cast<double>(s.prepares), s.builds, s.gathers,
+	     s.changed, s.missing, s.overflow, s.headers, s.empty, s.hinted, s.reused, live_slots,
+	     static_cast<double>(m_arena.Used()) / 1048576.0,
 	     static_cast<double>(m_arena.Reserved()) / 1048576.0, s.last_header);
 	if (s.counters[0] != 0) {
 		const auto rate = [&](uint32_t c) {
 			return 100.0 * static_cast<double>(s.counters[c]) / static_cast<double>(s.counters[0]);
 		};
-		LOGF("NativeRayTracing verify: rays %" PRIu64 ", native hits %.2f%%, guest hits %.2f%%, hit/miss mismatch %.4f%%, "
+		LOGF("NativeRayTracing verify: rays %" PRIu64
+		     ", native hits %.2f%%, guest hits %.2f%%, hit/miss mismatch %.4f%%, "
 		     "other instance %.4f%%, other triangle %.4f%%, distance %.4f%%, barycentrics %.4f%%\n",
 		     s.counters[0], rate(1), rate(2), rate(3), rate(4), rate(5), rate(6), rate(7));
 	}
 	if (s.counters[8] != 0) {
-		LOGF("NativeRayTracing lanes: %" PRIu64 " entered patched traversals, %" PRIu64 " natively (%.2f%%)\n", s.counters[8],
-		     s.counters[9], 100.0 * static_cast<double>(s.counters[9]) / static_cast<double>(s.counters[8]));
+		LOGF("NativeRayTracing lanes: %" PRIu64 " entered patched traversals, %" PRIu64
+		     " natively (%.2f%%)\n",
+		     s.counters[8], s.counters[9],
+		     100.0 * static_cast<double>(s.counters[9]) / static_cast<double>(s.counters[8]));
 	}
 	m_stats = Stats {.last_header = s.last_header};
 }
@@ -1332,7 +1403,7 @@ namespace {
 // The allocated (not free) regions of the low 1 TiB of the process (the guest address space).
 std::vector<std::pair<uint64_t, uint64_t>> UsedLowRegions() {
 	std::vector<std::pair<uint64_t, uint64_t>> regions;
-	uint64_t address = 0x10000;
+	uint64_t                                   address = 0x10000;
 	while (address < (uint64_t {1} << 40u)) {
 		MEMORY_BASIC_INFORMATION info {};
 		if (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) == 0) {
@@ -1367,11 +1438,14 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 		const auto region = reinterpret_cast<uint64_t>(info.BaseAddress);
 		// Reservations start at the 64 KiB allocation granularity.
 		const auto base = (region + 0xffffu) & ~uint64_t {0xffff};
-		const auto end  = std::min(region + static_cast<uint64_t>(info.RegionSize), uint64_t {256} << 30u);
+		const auto end =
+		    std::min(region + static_cast<uint64_t>(info.RegionSize), uint64_t {256} << 30u);
 		if (info.State == MEM_FREE && end > base) {
-			void* hold = VirtualAlloc(reinterpret_cast<void*>(base), end - base, MEM_RESERVE, PAGE_NOACCESS);
-			LOGF("NativeRayTracing: hold 0x%010llx-0x%010llx: %s (%lu)\n", static_cast<unsigned long long>(base),
-			     static_cast<unsigned long long>(end), hold != nullptr ? "ok" : "failed", hold != nullptr ? 0ul : GetLastError());
+			void* hold =
+			    VirtualAlloc(reinterpret_cast<void*>(base), end - base, MEM_RESERVE, PAGE_NOACCESS);
+			LOGF("NativeRayTracing: hold 0x%010llx-0x%010llx: %s (%lu)\n",
+			     static_cast<unsigned long long>(base), static_cast<unsigned long long>(end),
+			     hold != nullptr ? "ok" : "failed", hold != nullptr ? 0ul : GetLastError());
 			if (hold != nullptr) {
 				holds.push_back(hold);
 			}
@@ -1383,7 +1457,7 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 			VirtualFree(hold, 0, MEM_RELEASE);
 		}
 		holds.clear();
-	};	// Keeps the loader (and so the driver) loaded after the temporary device is gone.
+	}; // Keeps the loader (and so the driver) loaded after the temporary device is gone.
 	static vk::detail::DynamicLoader loader;
 	const auto get_proc = loader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
 	if (get_proc == nullptr) {
@@ -1403,11 +1477,12 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 		return false;
 	}
 	dispatch.init(instance);
-	uint32_t count = 0;
+	uint32_t                        count = 0;
 	std::vector<vk::PhysicalDevice> physicals;
 	if (instance.enumeratePhysicalDevices(&count, nullptr, dispatch) == vk::Result::eSuccess) {
 		physicals.resize(count);
-		if (instance.enumeratePhysicalDevices(&count, physicals.data(), dispatch) != vk::Result::eSuccess) {
+		if (instance.enumeratePhysicalDevices(&count, physicals.data(), dispatch) !=
+		    vk::Result::eSuccess) {
 			physicals.clear();
 		}
 	}
@@ -1416,7 +1491,7 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 		if (gpu_index >= 0 && index != static_cast<size_t>(gpu_index)) {
 			continue;
 		}
-		const auto physical = physicals[index];
+		const auto                                         physical = physicals[index];
 		vk::PhysicalDeviceAccelerationStructureFeaturesKHR as_features {};
 		vk::PhysicalDeviceRayQueryFeaturesKHR              rq_features {};
 		as_features.pNext = &rq_features;
@@ -1431,7 +1506,8 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 		std::vector<vk::QueueFamilyProperties> families(families_count);
 		physical.getQueueFamilyProperties(&families_count, families.data(), dispatch);
 		uint32_t family = 0;
-		while (family < families_count && !(families[family].queueFlags & vk::QueueFlagBits::eCompute)) {
+		while (family < families_count &&
+		       !(families[family].queueFlags & vk::QueueFlagBits::eCompute)) {
 			family++;
 		}
 		if (family == families_count) {
@@ -1453,14 +1529,15 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 		const std::array<const char*, 3> extensions {VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
 		                                             VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
 		                                             VK_KHR_RAY_QUERY_EXTENSION_NAME};
-		vk::DeviceCreateInfo device_info {};
+		vk::DeviceCreateInfo             device_info {};
 		device_info.pNext                   = &as;
 		device_info.queueCreateInfoCount    = 1;
 		device_info.pQueueCreateInfos       = &queue;
 		device_info.enabledExtensionCount   = static_cast<uint32_t>(extensions.size());
 		device_info.ppEnabledExtensionNames = extensions.data();
 		vk::Device device {};
-		if (physical.createDevice(&device_info, nullptr, &device, dispatch) == vk::Result::eSuccess) {
+		if (physical.createDevice(&device_info, nullptr, &device, dispatch) ==
+		    vk::Result::eSuccess) {
 			dispatch.init(device);
 			device.destroy(nullptr, dispatch);
 			warmed = true;
@@ -1471,8 +1548,10 @@ bool PrepareNativeRayTracingRuntime(int gpu_index) {
 	// The regions the driver runtime took (they stay out of the guest's reach).
 	for (const auto& [base, size]: UsedLowRegions()) {
 		// The large ones (the small ones are the driver's DLLs and heaps).
-		if (size >= (uint64_t {1} << 30u) && std::find(before.begin(), before.end(), std::pair {base, size}) == before.end()) {
-			LOGF("NativeRayTracing: driver runtime region 0x%010llx-0x%010llx\n", static_cast<unsigned long long>(base),
+		if (size >= (uint64_t {1} << 30u) &&
+		    std::find(before.begin(), before.end(), std::pair {base, size}) == before.end()) {
+			LOGF("NativeRayTracing: driver runtime region 0x%010llx-0x%010llx\n",
+			     static_cast<unsigned long long>(base),
 			     static_cast<unsigned long long>(base + size));
 		}
 	}
@@ -1490,23 +1569,27 @@ void PrepareNativeRayTracingDispatch(NativeRayTracing& rt, vk::CommandBuffer com
                                      std::span<const uint32_t> user_data, uint64_t frame,
                                      const std::function<bool(uint64_t, uint64_t)>& readable) {
 	NativeRayTracing::TlasSource source;
-	if (!rt.Enabled() || !NativeRayTracing::FindTlasSource(info, source) || source.user_sgpr + 1u >= user_data.size()) {
+	if (!rt.Enabled() || !NativeRayTracing::FindTlasSource(info, source) ||
+	    source.user_sgpr + 1u >= user_data.size()) {
 		return;
 	}
-	const uint64_t user_pointer = uint64_t {user_data[source.user_sgpr]} | (uint64_t {user_data[source.user_sgpr + 1u]} << 32u);
-	// The header address as the guest wrote it, when its memory holds no newer GPU writes (the table
-	// the shader reads it from is plain guest memory, which the walk on the GPU sees only where a
-	// buffer caches it); else the walk reads it.
-	const uint64_t user = user_pointer & 0xffffffffffffull;
+	const uint64_t user_pointer = uint64_t {user_data[source.user_sgpr]} |
+	                              (uint64_t {user_data[source.user_sgpr + 1u]} << 32u);
+	// The header address as the guest wrote it, when its memory holds no newer GPU writes (the
+	// table the shader reads it from is plain guest memory, which the walk on the GPU sees only
+	// where a buffer caches it); else the walk reads it.
+	const uint64_t user   = user_pointer & 0xffffffffffffull;
 	uint64_t       header = 0;
 	if (user != 0 && readable(user + source.vsharp_offset, 16)) {
 		uint32_t vsharp[2] {};
-		if (!LibKernel::Memory::TryReadGpuCleanBacking(user + source.vsharp_offset, vsharp, sizeof(vsharp))) {
+		if (!LibKernel::Memory::TryReadGpuCleanBacking(user + source.vsharp_offset, vsharp,
+		                                               sizeof(vsharp))) {
 			vsharp[0] = vsharp[1] = 0;
 		}
 		const uint64_t base = uint64_t {vsharp[0]} | (uint64_t {vsharp[1] & 0xffffu} << 32u);
 		if (base != 0 && readable(base + source.header_offset, 8)) {
-			if (!LibKernel::Memory::TryReadGpuCleanBacking(base + source.header_offset, &header, sizeof(header))) {
+			if (!LibKernel::Memory::TryReadGpuCleanBacking(base + source.header_offset, &header,
+			                                               sizeof(header))) {
 				header = 0;
 			}
 		}

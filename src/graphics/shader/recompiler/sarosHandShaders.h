@@ -1,12 +1,12 @@
 #pragma once
 
-// sarosshade: KYTY_SAROS_HANDSHADERS=1 (bring-up, default off). Hand-picked per-shader handling for the
-// bindless lighting kernels of SAROS (PPSA07631, UE5.5), keyed by the exact guest shader hash so no
-// other title can reach it. These programs take 5-8 T# per light/probe record from the bindless
-// descriptor heap (a V# in user data), the heap index read from a per-record constant buffer inside
-// a scalar loop (record = CB[i * 0xa0]). The general tracker refuses them ("computes a descriptor at
-// runtime that has no BDA path"), so their dispatches are dropped and indirect diffuse stays black.
-// With the switch, the listed hashes
+// sarosshade: KYTY_SAROS_HANDSHADERS=1 (bring-up, default off). Hand-picked per-shader handling for
+// the bindless lighting kernels of SAROS (PPSA07631, UE5.5), keyed by the exact guest shader hash
+// so no other title can reach it. These programs take 5-8 T# per light/probe record from the
+// bindless descriptor heap (a V# in user data), the heap index read from a per-record constant
+// buffer inside a scalar loop (record = CB[i * 0xa0]). The general tracker refuses them ("computes
+// a descriptor at runtime that has no BDA path"), so their dispatches are dropped and indirect
+// diffuse stays black. With the switch, the listed hashes
 //  - take the indirect-image plan (ResourceTracking TryMakeIndirectImage) with a loop-counter
 //    selector: the host reads every record's heap index before the dispatch and binds those images,
 //  - bypass the persistent program cache (pipelineCache.cpp), so the stored "skip" verdict is not
@@ -27,7 +27,8 @@ inline bool SarosHandShader(uint64_t hash) {
 	static const char* const value = std::getenv("KYTY_SAROS_HANDSHADERS");
 	if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return false;
 	bool listed = false;
-	for (const auto entry: List) listed = listed || entry == hash;
+	for (const auto entry: List)
+		listed = listed || entry == hash;
 	if (!listed) return false;
 	if (std::strcmp(value, "1") == 0) return true;
 	for (const char* cursor = value; *cursor != '\0';) {
@@ -40,31 +41,31 @@ inline bool SarosHandShader(uint64_t hash) {
 	return false;
 }
 
-// nps5 905bphi (port of one-kyty 0de8b9df3): SAROS light/probe culling CS 905b2e2c09c61a5d builds its constant
-// sampler (s36..s39) in the first light loop only and reads it in the second, so the SSA phi at the second loop is
-// [entry 0, constant]. ResolveInvariantPhi then ignores the entry's immediate-zero incoming for exactly this
-// guest hash (no other title or shader reaches it). On by default for that hash; KYTY_SAROS_905B_PHI=0 turns it
-// off. Needs no KYTY_SAROS_HANDSHADERS (the other six hand shaders translate on the rebased line without it).
+// nps5 905bphi (port of one-kyty 0de8b9df3): SAROS light/probe culling CS 905b2e2c09c61a5d builds
+// its constant sampler (s36..s39) in the first light loop only and reads it in the second, so the
+// SSA phi at the second loop is [entry 0, constant]. ResolveInvariantPhi then ignores the entry's
+// immediate-zero incoming for exactly this guest hash (no other title or shader reaches it). On by
+// default for that hash; KYTY_SAROS_905B_PHI=0 turns it off. Needs no KYTY_SAROS_HANDSHADERS (the
+// other six hand shaders translate on the rebased line without it).
 inline bool SarosPhiIgnoresEntryZero(uint64_t hash) {
 	if (hash != 0x905b2e2c09c61a5dull) return false;
 	const char* const value = std::getenv("KYTY_SAROS_905B_PHI");
 	return value == nullptr || std::strcmp(value, "0") != 0;
 }
 
-
 } // namespace Libs::Graphics::ShaderRecompiler
 
 namespace Libs::Graphics::ShaderRecompiler {
 
-// sarosnanite: KYTY_SAROS_NANITE_RAW=1 (bring-up, default off). SAROS's Nanite hardware raster pixel
-// shaders (mesh pipeline) find their triangle without SV_PrimitiveID: every vertex carries a 128-bit
-// mask of the cluster triangles that use it (mesh export param 1, built with DS_OR), and the pixel
-// shader ANDs the three raw vertices' masks (V_INTERP_MOV P0/P10/P20) and takes the lowest set bit
-// (V_FFBL) as the triangle index it writes into the visibility buffer (IMAGE_ATOMIC_UMAX, 64-bit).
-// KosmicKrisp has no per-vertex fragment inputs and Kyty's unpack replacement only links after an
-// ordinary vertex shader ("reads unpacked parameter fields after a mesh program: undefined"), so the
-// triangle index was garbage: the material pass then shaded each pixel with another triangle of the
-// cluster (per-triangle mosaic of normals / UVs / base colour).
+// sarosnanite: KYTY_SAROS_NANITE_RAW=1 (bring-up, default off). SAROS's Nanite hardware raster
+// pixel shaders (mesh pipeline) find their triangle without SV_PrimitiveID: every vertex carries a
+// 128-bit mask of the cluster triangles that use it (mesh export param 1, built with DS_OR), and
+// the pixel shader ANDs the three raw vertices' masks (V_INTERP_MOV P0/P10/P20) and takes the
+// lowest set bit (V_FFBL) as the triangle index it writes into the visibility buffer
+// (IMAGE_ATOMIC_UMAX, 64-bit). KosmicKrisp has no per-vertex fragment inputs and Kyty's unpack
+// replacement only links after an ordinary vertex shader ("reads unpacked parameter fields after a
+// mesh program: undefined"), so the triangle index was garbage: the material pass then shaded each
+// pixel with another triangle of the cluster (per-triangle mosaic of normals / UVs / base colour).
 // With the switch:
 //  - every mesh program also writes, per primitive, the AND of its three vertices' parameter
 //    dwords (uvec4, PerPrimitiveEXT) at location SarosNaniteRawLocation(parameter location);
@@ -77,10 +78,15 @@ inline const char* SarosNaniteRawValue() {
 	static const char* const value = std::getenv("KYTY_SAROS_NANITE_RAW");
 	return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0 ? value : nullptr;
 }
-inline bool SarosNaniteRawMesh() { return SarosNaniteRawValue() != nullptr; }
+inline bool SarosNaniteRawMesh() {
+	return SarosNaniteRawValue() != nullptr;
+}
 inline bool SarosNaniteRawPs(uint64_t hash) {
 	static constexpr uint64_t List[] = {
-	    0xda18f5091bbf4843ull, 0x034b248b0927c4a2ull, 0x75bce95a35765ef0ull, 0x865a72566b298994ull,
+	    0xda18f5091bbf4843ull,
+	    0x034b248b0927c4a2ull,
+	    0x75bce95a35765ef0ull,
+	    0x865a72566b298994ull,
 	};
 	const char* value = SarosNaniteRawValue();
 	if (value == nullptr) return false;
@@ -105,19 +111,25 @@ inline bool SarosNaniteRawPs(uint64_t hash) {
 // only what the listed pixel shaders read is forwarded.
 inline uint32_t SarosNaniteRawEnvMask(const char* name, uint32_t fallback) {
 	const char* value = std::getenv(name);
-	return value != nullptr && value[0] != '\0' ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0)) : fallback;
+	return value != nullptr && value[0] != '\0'
+	           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 0))
+	           : fallback;
 }
 inline bool SarosNaniteRawAnd(uint32_t location) {
 	static const uint32_t mask = SarosNaniteRawEnvMask("KYTY_SAROS_NANITE_RAW_AND", 0x2u);
-	return SarosNaniteRawValue() != nullptr && location < 32u && (mask >> location & 1u) != 0u; // only with KYTY_SAROS_NANITE_RAW
+	return SarosNaniteRawValue() != nullptr && location < 32u &&
+	       (mask >> location & 1u) != 0u; // only with KYTY_SAROS_NANITE_RAW
 }
 inline bool SarosNaniteRawVerts(uint32_t location) {
 	static const uint32_t mask = SarosNaniteRawEnvMask("KYTY_SAROS_NANITE_RAW_VERTS", 0x4u);
-	return SarosNaniteRawValue() != nullptr && location < 32u && (mask >> location & 1u) != 0u; // only with KYTY_SAROS_NANITE_RAW
+	return SarosNaniteRawValue() != nullptr && location < 32u &&
+	       (mask >> location & 1u) != 0u; // only with KYTY_SAROS_NANITE_RAW
 }
 // Per-primitive locations (spare: guest parameters use the low ones): the AND at 16 + location,
 // vertex k at 20 + 3 * (location & 3) + k.
-inline uint32_t SarosNaniteRawLocation(uint32_t location) { return 16u + (location & 3u); }
+inline uint32_t SarosNaniteRawLocation(uint32_t location) {
+	return 16u + (location & 3u);
+}
 inline uint32_t SarosNaniteRawVertexLocation(uint32_t location, uint32_t vertex) {
 	return 20u + 3u * (location & 3u) + vertex;
 }
@@ -126,9 +138,10 @@ inline uint32_t SarosNaniteRawVertexLocation(uint32_t location, uint32_t vertex)
 
 namespace Libs::Graphics::ShaderRecompiler {
 
-// sarosmip: KYTY_SAROS_SAMPLE_LOD0=<hex,hex,...>|all (bring-up experiment, default off). The listed shaders'
-// IMAGE_SAMPLE_D (explicit gradient) samples use an explicit LOD 0 instead of the gradients; "all" applies to
-// every shader. Discriminates "gradient/LOD picks the smallest mip" from "UV or texture content is flat".
+// sarosmip: KYTY_SAROS_SAMPLE_LOD0=<hex,hex,...>|all (bring-up experiment, default off). The listed
+// shaders' IMAGE_SAMPLE_D (explicit gradient) samples use an explicit LOD 0 instead of the
+// gradients; "all" applies to every shader. Discriminates "gradient/LOD picks the smallest mip"
+// from "UV or texture content is flat".
 inline bool SarosSampleLod0(uint64_t hash) {
 	static const char* const value = std::getenv("KYTY_SAROS_SAMPLE_LOD0");
 	if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return false;
@@ -142,8 +155,9 @@ inline bool SarosSampleLod0(uint64_t hash) {
 	return false;
 }
 
-// sarosuv: KYTY_SAROS_SAMPLE_DBG=<hex,hex,...>|all (bring-up experiment, default off): the listed pixel shaders'
-// 2D float image samples return (coord.x, coord.y, 0, 1) instead of the texel (spirvEmitterImage.cpp).
+// sarosuv: KYTY_SAROS_SAMPLE_DBG=<hex,hex,...>|all (bring-up experiment, default off): the listed
+// pixel shaders' 2D float image samples return (coord.x, coord.y, 0, 1) instead of the texel
+// (spirvEmitterImage.cpp).
 inline bool SarosSampleDbg(uint64_t hash) {
 	static const char* const value = std::getenv("KYTY_SAROS_SAMPLE_DBG");
 	if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return false;
@@ -157,8 +171,9 @@ inline bool SarosSampleDbg(uint64_t hash) {
 	return false;
 }
 
-// sarosaddr: KYTY_SAROS_SAMPLE_FRACT=<hex,..|all> (bring-up experiment, default off): the listed pixel shaders'
-// 2D float samples use fract(coord) (software wrap) to tell a host sampler wrap failure from wrong coordinates.
+// sarosaddr: KYTY_SAROS_SAMPLE_FRACT=<hex,..|all> (bring-up experiment, default off): the listed
+// pixel shaders' 2D float samples use fract(coord) (software wrap) to tell a host sampler wrap
+// failure from wrong coordinates.
 inline bool SarosSampleFract(uint64_t hash) {
 	static const char* const value = std::getenv("KYTY_SAROS_SAMPLE_FRACT");
 	if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return false;

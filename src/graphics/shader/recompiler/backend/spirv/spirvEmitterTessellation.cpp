@@ -16,8 +16,9 @@ uint32_t TessellationPointer(ValueEmitContext& ctx, const IR::Inst& inst) {
 	const auto  variable = state.tess_variables.at(static_cast<uint32_t>(kind));
 	EXIT_IF(variable == 0);
 	const auto input   = kind == Attribute::ControlInput || kind == Attribute::EvaluationInput ||
-	                   kind == Attribute::CarriedInput ||
-	                   (kind == Attribute::PatchOutput && state.program.stage == ShaderType::TessellationEvaluation);
+	                     kind == Attribute::CarriedInput ||
+	                     (kind == Attribute::PatchOutput &&
+	                      state.program.stage == ShaderType::TessellationEvaluation);
 	const auto storage = input ? spv::StorageClassInput : spv::StorageClassOutput;
 	const auto pointer = state.builder.AllocateId();
 	if (kind == Attribute::CarriedOutput || kind == Attribute::CarriedInput) {
@@ -29,10 +30,11 @@ uint32_t TessellationPointer(ValueEmitContext& ctx, const IR::Inst& inst) {
 		const auto component = ConstantU32(state, rank % 4u);
 		const auto type      = TypePointer(state, storage, TypeU32(state));
 		if (kind == Attribute::CarriedOutput) {
-			state.builder.AddFunction(spv::OpAccessChain, type, pointer, variable, attribute, component);
+			state.builder.AddFunction(spv::OpAccessChain, type, pointer, variable, attribute,
+			                          component);
 		} else {
-			state.builder.AddFunction(spv::OpAccessChain, type, pointer, variable, EmitLaneId(state),
-			                          attribute, component);
+			state.builder.AddFunction(spv::OpAccessChain, type, pointer, variable,
+			                          EmitLaneId(state), attribute, component);
 		}
 		return pointer;
 	}
@@ -75,15 +77,15 @@ uint32_t TessellationPointer(ValueEmitContext& ctx, const IR::Inst& inst) {
 		const bool write = inst.GetOpcode() == IR::ValueOpcode::SetTessellationAttribute;
 		auto       vertex =
 		    kind == Attribute::ControlOutput && (write || !GetCodegenOptions().tess_indexed)
-		              ? EmitLaneId(state)
-		              : EmitBinaryU32(state, spv::OpUDiv, address, ConstantU32(state, stride));
+		        ? EmitLaneId(state)
+		        : EmitBinaryU32(state, spv::OpUDiv, address, ConstantU32(state, stride));
 		if (GetCodegenOptions().tess_indexed && !(kind == Attribute::ControlOutput && write)) {
 			// KYTY_TESS_INDEXED (usa-ratt/KytyPS5-GT7 70341d775): an HS invocation writes its own
 			// control point and reads any of them back; a read's control point (a loaded index)
 			// is clamped to stay within the array.
 			const auto vertices = kind == Attribute::ControlInput ? tess.input_control_points
 			                                                      : tess.output_control_points;
-			vertex = EmitUMin32(state, vertex, ConstantU32(state, vertices - 1u));
+			vertex              = EmitUMin32(state, vertex, ConstantU32(state, vertices - 1u));
 		}
 		state.builder.AddFunction(spv::OpAccessChain, type, pointer, variable, vertex, attribute,
 		                          component);
@@ -102,7 +104,7 @@ void DefineTessellationInterfaces(EmitterState& state) {
 		return;
 	}
 	std::array<bool, IR::NumTessellationAttributes> used {};
-	uint32_t            patch_begin = UINT32_MAX, patch_end = 0;
+	uint32_t                                        patch_begin = UINT32_MAX, patch_end = 0;
 	for (const auto* block: state.program.blocks) {
 		for (const auto& inst: *block) {
 			if (inst.GetOpcode() != IR::ValueOpcode::GetTessellationAttribute &&
@@ -124,8 +126,8 @@ void DefineTessellationInterfaces(EmitterState& state) {
 	};
 	for (uint32_t index = 0; index < used.size(); index++) {
 		if (!used[index]) continue;
-		const auto kind    = static_cast<Attribute>(index);
-		const bool input   = kind == Attribute::ControlInput || kind == Attribute::EvaluationInput ||
+		const auto kind  = static_cast<Attribute>(index);
+		const bool input = kind == Attribute::ControlInput || kind == Attribute::EvaluationInput ||
 		                   kind == Attribute::CarriedInput ||
 		                   (kind == Attribute::PatchOutput &&
 		                    state.program.stage == ShaderType::TessellationEvaluation);
@@ -136,7 +138,8 @@ void DefineTessellationInterfaces(EmitterState& state) {
 			type = array(TypeF32(state), 4u);
 		} else if (carried) {
 			uint32_t count = 0;
-			for (const auto word: tess.carried_vgprs) count += static_cast<uint32_t>(std::popcount(word));
+			for (const auto word: tess.carried_vgprs)
+				count += static_cast<uint32_t>(std::popcount(word));
 			EXIT_IF(count == 0u);
 			type = array(TypeU32Vector(state, 4), (count + 3u) / 4u);
 			if (kind == Attribute::CarriedInput) type = array(type, tess.input_control_points);
@@ -171,11 +174,11 @@ void DefineTessellationInterfaces(EmitterState& state) {
 			state.builder.AddAnnotation(spv::OpDecorate, state.tess_inner_variable,
 			                            spv::DecorationPatch);
 		} else {
-			state.builder.AddAnnotation(
-			    spv::OpDecorate, variable, spv::DecorationLocation,
-			    kind == Attribute::PatchOutput ? (tess.hs_stride + 15u) / 16u
-			    : carried                      ? (tess.ls_stride + 15u) / 16u
-			                                   : 0u);
+			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationLocation,
+			                            kind == Attribute::PatchOutput
+			                                ? (tess.hs_stride + 15u) / 16u
+			                            : carried ? (tess.ls_stride + 15u) / 16u
+			                                      : 0u);
 		}
 		if (kind == Attribute::Factor || kind == Attribute::PatchOutput) {
 			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationPatch);
@@ -196,16 +199,15 @@ void DefineTessellationExecutionModes(EmitterState& state) {
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeOutputVertices,
 		                               tess.output_control_points);
 	} else {
-		state.builder.AddExecutionMode(state.main_func, tess.domain == 0u ? spv::ExecutionModeIsolines
-		                                                : tess.domain == 1u
-		                                                    ? spv::ExecutionModeTriangles
-		                                                    : spv::ExecutionModeQuads);
-		// Vulkan has no power-of-two spacing; equal spacing is its nearest integer mode.
 		state.builder.AddExecutionMode(state.main_func,
-		                               tess.partitioning == 2u ? spv::ExecutionModeSpacingFractionalOdd
-		                               : tess.partitioning == 3u
-		                                   ? spv::ExecutionModeSpacingFractionalEven
-		                                   : spv::ExecutionModeSpacingEqual);
+		                               tess.domain == 0u   ? spv::ExecutionModeIsolines
+		                               : tess.domain == 1u ? spv::ExecutionModeTriangles
+		                                                   : spv::ExecutionModeQuads);
+		// Vulkan has no power-of-two spacing; equal spacing is its nearest integer mode.
+		state.builder.AddExecutionMode(
+		    state.main_func, tess.partitioning == 2u   ? spv::ExecutionModeSpacingFractionalOdd
+		                     : tess.partitioning == 3u ? spv::ExecutionModeSpacingFractionalEven
+		                                               : spv::ExecutionModeSpacingEqual);
 		if (tess.output_topology == 0u) {
 			state.builder.AddExecutionMode(state.main_func, spv::ExecutionModePointMode);
 		} else if (tess.output_topology >= 2u) {
@@ -245,7 +247,7 @@ void EmitSetTessellationAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 				    ConstantF32Value(state, std::bit_cast<float>(tess.max_tess_level))});
 				const auto positive = Binary(state, spv::OpFOrdGreaterThan, TypeBool(state), value,
 				                             ConstantF32Value(state, 0.0f));
-				value = Select(state, TypeF32(state), positive, clamped, value);
+				value               = Select(state, TypeF32(state), positive, clamped, value);
 			}
 			if (tess.partitioning == 1u) {
 				// Power-of-two partitioning rounds each factor up to a power of two; with the
@@ -266,7 +268,7 @@ void EmitSetTessellationAttribute(ValueEmitContext& ctx, const IR::Inst& inst) {
 				    ext(GLSLstd450Exp2, ext(GLSLstd450Ceil, ext(GLSLstd450Log2, at_least_one)));
 				const auto positive = Binary(state, spv::OpFOrdGreaterThan, TypeBool(state), value,
 				                             ConstantF32Value(state, 0.0f));
-				value = Select(state, TypeF32(state), positive, rounded, value);
+				value               = Select(state, TypeF32(state), positive, rounded, value);
 			}
 		}
 		ctx.state.builder.AddFunction(spv::OpStore, TessellationPointer(ctx, inst), value);

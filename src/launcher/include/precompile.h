@@ -6,10 +6,10 @@
 #include <QString>
 #include <QtGlobal>
 
-// The game list's Precompile button: the emulator's prepare run (KYTY_PIPELINE_LIST_PREPARE=1) builds
-// the shaders and pipelines that a shader list (a .kyplst pipeline list) names for the game and saves
-// them in its caches, then exits. This is what the launcher knows about it without a window: where
-// the emulator looks for a game's list, and the lines the run prints.
+// The game list's Precompile button: the emulator's prepare run (KYTY_PIPELINE_LIST_PREPARE=1)
+// builds the shaders and pipelines that a shader list (a .kyplst pipeline list) names for the game
+// and saves them in its caches, then exits. This is what the launcher knows about it without a
+// window: where the emulator looks for a game's list, and the lines the run prints.
 namespace Precompile {
 
 inline constexpr char ENV_PREPARE[] = "KYTY_PIPELINE_LIST_PREPARE";
@@ -27,7 +27,8 @@ inline constexpr int EXIT_NO_LIST = 2;
 [[nodiscard]] bool IsValidGame(const QString& title_id, const QString& version);
 
 // The game's list in the emulator's folder, as the emulator looks for it:
-// PipelineLists/<title>_<version>.kyplst, else PipelineLists/<title>.kyplst. Empty when neither exists.
+// PipelineLists/<title>_<version>.kyplst, else PipelineLists/<title>.kyplst. Empty when neither
+// exists.
 [[nodiscard]] QString FindList(const QString& emulator_dir, const QString& title_id,
                                const QString& version);
 // Where a list chosen for the game goes: the versioned name (the title's alone without a version).
@@ -63,8 +64,9 @@ struct Progress {
 [[nodiscard]] int     ProgressPermille(const Progress& progress);
 [[nodiscard]] QString ProgressText(const Progress& progress);
 
-// The run's last line: "KYTY_EVENT: prepare-done ... seconds=<s> shaders=<n> pipelines=<n> known=<n>
-// compute=<n>", or the "Prepare shaders: done in ..." line of an emulator without the event.
+// The run's last line: "KYTY_EVENT: prepare-done ... seconds=<s> shaders=<n> pipelines=<n>
+// known=<n> compute=<n>", or the "Prepare shaders: done in ..." line of an emulator without the
+// event.
 struct Result {
 	double  seconds   = 0.0;
 	quint64 shaders   = 0;
@@ -75,8 +77,9 @@ struct Result {
 [[nodiscard]] bool    ParseDone(const QString& line, Result* result);
 [[nodiscard]] QString DoneText(const Result& result);
 
-// The emulator's lines about the list itself ("Pipeline list: ..."): the last one before exit code 2
-// says why the list was not used. Returns the text from "Pipeline list:" on, empty for other lines.
+// The emulator's lines about the list itself ("Pipeline list: ..."): the last one before exit code
+// 2 says why the list was not used. Returns the text from "Pipeline list:" on, empty for other
+// lines.
 [[nodiscard]] QString ListLine(const QString& line);
 
 } // namespace Precompile

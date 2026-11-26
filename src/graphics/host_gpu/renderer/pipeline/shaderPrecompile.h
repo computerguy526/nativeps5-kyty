@@ -293,9 +293,9 @@ public:
 		// source, from the constructor. The software ray-tracing kernels use it: their pipelines
 		// take seconds to build and the game needs them at its first lighting pass.
 		std::function<bool(const ShaderJournal::Source&)> priority_source;
-		// Entries this accepts (an earlier run's draws bound them) come next, in file order, then the
-		// rest in file order; with replay_unused false the rest is not replayed at all. Called once
-		// per entry, from the constructor.
+		// Entries this accepts (an earlier run's draws bound them) come next, in file order, then
+		// the rest in file order; with replay_unused false the rest is not replayed at all. Called
+		// once per entry, from the constructor.
 		std::function<bool(const ShaderJournal::Source&, const ShaderJournal::Entry&)> used_entry;
 		bool replay_unused = true;
 		// Called on each worker thread when it starts (name, priority).
@@ -308,7 +308,7 @@ public:
 		uint32_t progress_percent = 10;
 		uint64_t progress_ns      = 5'000'000'000ull;
 		// The lines also give the workers' CPU time (summed per entry from thread times; Windows).
-		bool     measure_cpu      = false;
+		bool measure_cpu = false;
 	};
 
 	struct Progress {
@@ -346,13 +346,14 @@ private:
 	uint64_t             m_total = 0;
 	uint64_t             m_begin_ns = 0;
 
-	// Replay order (indices into the journal's entries) when priority_source or used_entry reordered
-	// or dropped them.
+	// Replay order (indices into the journal's entries) when priority_source or used_entry
+	// reordered or dropped them.
 	std::vector<uint32_t> m_order;
 	uint64_t              m_used_entries = 0; // entries used_entry accepted
 	std::atomic<uint64_t> m_next {0};
 	std::atomic<bool>     m_stop {false};
-	std::atomic<uint64_t> m_done {0}, m_compiled {0}, m_present {0}, m_skipped {0}, m_failed {0}, m_reloaded {0};
+	std::atomic<uint64_t> m_done {0}, m_compiled {0}, m_present {0}, m_skipped {0}, m_failed {0},
+	    m_reloaded {0};
 	std::atomic<uint64_t> m_cpu_ns {0};
 	std::atomic<uint32_t> m_workers_running {0};
 

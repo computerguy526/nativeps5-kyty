@@ -25,8 +25,9 @@ namespace {
 const auto g_start = std::chrono::steady_clock::now();
 
 uint64_t ClockMs() {
-	return static_cast<uint64_t>(
-	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_start).count());
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                 std::chrono::steady_clock::now() - g_start)
+	                                 .count());
 }
 
 bool EnvOn(const char* name) {
@@ -60,8 +61,10 @@ GuestBuffers& Buffers() {
 }
 
 std::string GuestLine(int fd, std::string_view text, uint64_t frame, double seconds) {
-	while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) text.remove_suffix(1);
-	return fmt::format("GUEST: frame={} t={:.3f} |{} {}", frame, seconds, fd == 2 ? " [stderr]" : "", text);
+	while (!text.empty() && (text.back() == '\r' || text.back() == '\n'))
+		text.remove_suffix(1);
+	return fmt::format("GUEST: frame={} t={:.3f} |{} {}", frame, seconds,
+	                   fd == 2 ? " [stderr]" : "", text);
 }
 
 // Appends `data` to `partial` and moves the finished lines to `out`.
@@ -83,8 +86,8 @@ void Split(int fd, std::string& partial, std::string_view data, uint64_t frame, 
 }
 
 std::string EventLine(const char* name, uint64_t frame, uint64_t now_ms, const std::string& extra) {
-	return fmt::format("KYTY_EVENT: {} frame={} t={:.3f}{}{}", name, frame, static_cast<double>(now_ms) / 1000.0,
-	                   extra.empty() ? "" : " ", extra);
+	return fmt::format("KYTY_EVENT: {} frame={} t={:.3f}{}{}", name, frame,
+	                   static_cast<double>(now_ms) / 1000.0, extra.empty() ? "" : " ", extra);
 }
 
 void Print(const std::string& line) {
@@ -96,14 +99,16 @@ void Print(const std::string& line) {
 		}
 	}
 	Log::WriteToConsoleAndLog(line + "\n");
-	// KYTY_GUEST_PROBE_ARM_LOAD_END=<n> (diagnostic): arm the deferred ('^') guest probes at the n-th
-	// loading-end event (Ghost of Yotei: 1 = title menu, 2 = gameplay), so per-frame probes do not slow the load.
+	// KYTY_GUEST_PROBE_ARM_LOAD_END=<n> (diagnostic): arm the deferred ('^') guest probes at the
+	// n-th loading-end event (Ghost of Yotei: 1 = title menu, 2 = gameplay), so per-frame probes do
+	// not slow the load.
 	static const unsigned long arm_at = [] {
 		const char* v = std::getenv("KYTY_GUEST_PROBE_ARM_LOAD_END");
 		return v != nullptr ? std::strtoul(v, nullptr, 10) : 0ul;
 	}();
 	static unsigned long load_ends = 0;
-	if (arm_at != 0 && line.find("KYTY_EVENT: loading-end") != std::string::npos && ++load_ends == arm_at) {
+	if (arm_at != 0 && line.find("KYTY_EVENT: loading-end") != std::string::npos &&
+	    ++load_ends == arm_at) {
 		Common::GuestProbe::ArmDeferred("loading-end");
 	}
 }
@@ -116,10 +121,13 @@ void MonitorThread() {
 	params.load_on_mbps  = EnvDouble("KYTY_EVENTS_LOAD_ON_MBPS", params.load_on_mbps);
 	params.load_off_mbps = EnvDouble("KYTY_EVENTS_LOAD_OFF_MBPS", params.load_off_mbps);
 	params.min_fps       = EnvDouble("KYTY_EVENTS_MIN_FPS", params.min_fps);
-	params.hold_ms       = static_cast<uint64_t>(EnvDouble("KYTY_EVENTS_HOLD_MS", static_cast<double>(params.hold_ms)));
-	params.idle_ms       = static_cast<uint64_t>(EnvDouble("KYTY_EVENTS_IDLE_MS", static_cast<double>(params.idle_ms)));
-	params.idle_min      = static_cast<uint64_t>(EnvDouble("KYTY_EVENTS_IDLE_MIN_BUILDS", static_cast<double>(params.idle_min)));
-	const bool trace     = std::getenv("KYTY_EVENTS_TRACE") != nullptr && EnvOn("KYTY_EVENTS_TRACE");
+	params.hold_ms       = static_cast<uint64_t>(
+	    EnvDouble("KYTY_EVENTS_HOLD_MS", static_cast<double>(params.hold_ms)));
+	params.idle_ms = static_cast<uint64_t>(
+	    EnvDouble("KYTY_EVENTS_IDLE_MS", static_cast<double>(params.idle_ms)));
+	params.idle_min = static_cast<uint64_t>(
+	    EnvDouble("KYTY_EVENTS_IDLE_MIN_BUILDS", static_cast<double>(params.idle_min)));
+	const bool trace = std::getenv("KYTY_EVENTS_TRACE") != nullptr && EnvOn("KYTY_EVENTS_TRACE");
 	Detector   detector(params);
 	uint64_t   last_trace_ms = 0;
 	for (;;) {
@@ -127,17 +135,21 @@ void MonitorThread() {
 		try {
 			const auto now    = ClockMs();
 			const auto frames = g_frames.load(std::memory_order_relaxed);
-			const auto lines  = detector.Step(now, frames, g_read_bytes.load(std::memory_order_relaxed),
-			                                  g_builds_started.load(std::memory_order_relaxed),
-			                                  g_builds_in_flight.load(std::memory_order_relaxed));
-			for (const auto& line: lines) Print(line);
+			const auto lines =
+			    detector.Step(now, frames, g_read_bytes.load(std::memory_order_relaxed),
+			                  g_builds_started.load(std::memory_order_relaxed),
+			                  g_builds_in_flight.load(std::memory_order_relaxed));
+			for (const auto& line: lines)
+				Print(line);
 			if (trace && now - last_trace_ms >= 1000) {
 				last_trace_ms = now;
-				Print(fmt::format("KYTY_EVENT_TRACE: frame={} t={:.3f} fps={:.1f} read_mbps={:.1f} builds_in_flight={} "
-				                  "builds_started={} loading={}",
-				                  frames, static_cast<double>(now) / 1000.0, detector.Fps(), detector.ReadMbps(),
-				                  g_builds_in_flight.load(std::memory_order_relaxed),
-				                  g_builds_started.load(std::memory_order_relaxed), detector.Loading() ? 1 : 0));
+				Print(fmt::format(
+				    "KYTY_EVENT_TRACE: frame={} t={:.3f} fps={:.1f} read_mbps={:.1f} "
+				    "builds_in_flight={} "
+				    "builds_started={} loading={}",
+				    frames, static_cast<double>(now) / 1000.0, detector.Fps(), detector.ReadMbps(),
+				    g_builds_in_flight.load(std::memory_order_relaxed),
+				    g_builds_started.load(std::memory_order_relaxed), detector.Loading() ? 1 : 0));
 			}
 		} catch (...) {
 			// Logging must never change emulation.
@@ -192,10 +204,12 @@ void GuestWrite(int fd, const void* data, size_t size) {
 		{
 			auto&            buffers = Buffers();
 			std::scoped_lock lock(buffers.mutex);
-			Split(fd, buffers.partial[fd - 1], std::string_view(static_cast<const char*>(data), size), Frames(),
-			      Seconds(), lines);
+			Split(fd, buffers.partial[fd - 1],
+			      std::string_view(static_cast<const char*>(data), size), Frames(), Seconds(),
+			      lines);
 		}
-		for (const auto& line: lines) Print(line);
+		for (const auto& line: lines)
+			Print(line);
 	} catch (...) {
 	}
 }
@@ -224,12 +238,14 @@ std::vector<std::string> Detector::Step(uint64_t now_ms, uint64_t frames, uint64
 
 	m_samples.push_back({now_ms, frames, read_bytes});
 	// Keep a window of at least one second.
-	while (m_samples.size() > 2 && now_ms - m_samples[1].ms >= 1000) m_samples.erase(m_samples.begin());
+	while (m_samples.size() > 2 && now_ms - m_samples[1].ms >= 1000)
+		m_samples.erase(m_samples.begin());
 	const auto& first = m_samples.front();
 	const auto  span  = now_ms - first.ms;
 	if (span > 0) {
-		m_read_mbps = static_cast<double>(read_bytes - first.bytes) * 1000.0 / static_cast<double>(span) / 1048576.0;
-		m_fps       = static_cast<double>(frames - first.frames) * 1000.0 / static_cast<double>(span);
+		m_read_mbps = static_cast<double>(read_bytes - first.bytes) * 1000.0 /
+		              static_cast<double>(span) / 1048576.0;
+		m_fps = static_cast<double>(frames - first.frames) * 1000.0 / static_cast<double>(span);
 	}
 
 	if (!m_first_flip && frames > 0) {
@@ -244,7 +260,8 @@ std::vector<std::string> Detector::Step(uint64_t now_ms, uint64_t frames, uint64
 				m_load_start_ms  = first.ms;
 				m_load_bytes0    = first.bytes;
 				m_quiet_since_ms = UINT64_MAX;
-				out.push_back(EventLine("loading-start", frames, now_ms, fmt::format("read_mbps={:.1f}", m_read_mbps)));
+				out.push_back(EventLine("loading-start", frames, now_ms,
+				                        fmt::format("read_mbps={:.1f}", m_read_mbps)));
 			}
 		} else {
 			const bool quiet = m_read_mbps < m_params.load_off_mbps && m_fps >= m_params.min_fps;
@@ -271,9 +288,10 @@ std::vector<std::string> Detector::Step(uint64_t now_ms, uint64_t frames, uint64
 			m_idle_since_ms = now_ms;
 		} else if (now_ms - m_idle_since_ms >= m_params.idle_ms) {
 			if (builds_started - m_builds_reported >= m_params.idle_min) {
-				out.push_back(EventLine("shader-compile-idle", frames, now_ms,
-				                        fmt::format("builds={} idle_since={:.3f}", builds_started - m_builds_reported,
-				                                    static_cast<double>(m_idle_since_ms) / 1000.0)));
+				out.push_back(EventLine(
+				    "shader-compile-idle", frames, now_ms,
+				    fmt::format("builds={} idle_since={:.3f}", builds_started - m_builds_reported,
+				                static_cast<double>(m_idle_since_ms) / 1000.0)));
 			}
 			m_builds_reported = builds_started;
 			m_idle_since_ms   = UINT64_MAX;
@@ -282,7 +300,8 @@ std::vector<std::string> Detector::Step(uint64_t now_ms, uint64_t frames, uint64
 	return out;
 }
 
-std::vector<std::string> SplitForTest(int fd, const std::string& text, uint64_t frame, double seconds) {
+std::vector<std::string> SplitForTest(int fd, const std::string& text, uint64_t frame,
+                                      double seconds) {
 	std::string              partial;
 	std::vector<std::string> out;
 	Split(fd, partial, text, frame, seconds, out);

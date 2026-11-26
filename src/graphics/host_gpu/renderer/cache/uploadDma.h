@@ -76,18 +76,18 @@ class Buffer;
 // observe early (labels written at CP time, WRITE_DATA, flip labels: NoteGuestWrite), because the
 // guest may then rewrite memory an earlier upload still reads; that closed the residual losses
 // (verify-all plus a 2 ms delayed worker, 0 of 5 instead of 4 of 6) but costs about 4% on Sky
-// Garden (as slow as KYTY_DEFER_PROTECTS=0). =all (diagnostic) does that for every write. KYTY_UPLOAD_DMA_WRITE_DRAIN_LOG=1 logs the
-// first drains and a running count.
-// =frame (chenxiao07/KytyPS5 5c6f80faf, adapted): as =1, and a flip (the frame boundary) also makes
-// every queued host copy first. Once a frame's submissions are consumed the guest may rewrite what
-// that frame's work read (the frame after next, double buffered), and a copy still queued then
-// would take those bytes. A frame's drain costs little: the worker has usually caught up by then.
-// =defer (the "labels after the copies" variant): as =frame, and a label the command processor
-// would write at once (an end-of-pipe or release label it does not defer otherwise) while host
-// copies are queued is written at its tick's completion instead (CommandProcessor::TryDeferLabel,
-// with its interrupt after it). That tick's submission waits for the transfer the worker submits
-// after its host copies, so the guest sees the label only after the copies read their bytes,
-// without the command processor making them (=labels) or waiting.
+// Garden (as slow as KYTY_DEFER_PROTECTS=0). =all (diagnostic) does that for every write.
+// KYTY_UPLOAD_DMA_WRITE_DRAIN_LOG=1 logs the first drains and a running count. =frame
+// (chenxiao07/KytyPS5 5c6f80faf, adapted): as =1, and a flip (the frame boundary) also makes every
+// queued host copy first. Once a frame's submissions are consumed the guest may rewrite what that
+// frame's work read (the frame after next, double buffered), and a copy still queued then would
+// take those bytes. A frame's drain costs little: the worker has usually caught up by then. =defer
+// (the "labels after the copies" variant): as =frame, and a label the command processor would write
+// at once (an end-of-pipe or release label it does not defer otherwise) while host copies are
+// queued is written at its tick's completion instead (CommandProcessor::TryDeferLabel, with its
+// interrupt after it). That tick's submission waits for the transfer the worker submits after its
+// host copies, so the guest sees the label only after the copies read their bytes, without the
+// command processor making them (=labels) or waiting.
 [[nodiscard]] bool UploadDmaWriteDrainEnabled();
 // KYTY_UPLOAD_DMA_HELP=1 (default off): a lock-free waiter does a queued batch itself.
 [[nodiscard]] bool UploadDmaHelpEnabled();
@@ -136,9 +136,10 @@ public:
 	// memory [address, address + size), waits until the worker has made every queued host copy
 	// that reads those bytes. Returns true when it waited.
 	// `all`: the write may be observed by the guest (a label), which may then rewrite memory any
-	// queued host copy still reads: makes every queued host copy (KYTY_UPLOAD_DMA_WRITE_DRAIN=labels;
-	// =1 only the overlapping ones; =all every one always). Copies are taken from the worker.
-	// `frame`: a frame boundary (a flip); =frame then makes every queued host copy.
+	// queued host copy still reads: makes every queued host copy
+	// (KYTY_UPLOAD_DMA_WRITE_DRAIN=labels; =1 only the overlapping ones; =all every one always).
+	// Copies are taken from the worker. `frame`: a frame boundary (a flip); =frame then makes every
+	// queued host copy.
 	bool DrainHostCopies(uint64_t address, uint64_t size, bool all = false, bool frame = false);
 	// KYTY_UPLOAD_DMA_WRITE_DRAIN=defer, recording thread: host copies are queued that a label
 	// written now could overtake (the label is then written at its tick's completion instead).

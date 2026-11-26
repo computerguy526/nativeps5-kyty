@@ -1,26 +1,28 @@
 #include "graphics/host_gpu/renderer/occlusion.h"
-#include "common/staticOnce.h"
-#include "common/hangTrace.h"
+
 #include "common/alignment.h"
-#include "common/profiler.h"
+#include "common/hangTrace.h"
 #include "common/liveSwitch.h"
+#include "common/profiler.h"
+#include "common/staticOnce.h"
 #include "gpu_dcc_shaders/gpu_dcc_occlusion_batch_spv.h"
 #include "gpu_dcc_shaders/gpu_dcc_occlusion_spv.h"
 #include "graphics/host_gpu/coherenceLog.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/memory.h"
-#include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+
 #include <algorithm>
 #include <array>
 #include <cinttypes>
 #include <cstdarg>
-#include <filesystem>
-#include <mutex>
-#include <string>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <mutex>
+#include <string>
 
 namespace Libs::Graphics {
 namespace {
@@ -42,7 +44,8 @@ bool DebugLogConfigured() {
 		g_debug_trigger = std::string(value) + ".on";
 		return g_debug_log != nullptr;
 	};
-	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(configured_init())>> configured_once;
+	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(configured_init())>>
+	            configured_once;
 	const bool& configured = configured_once.Get(configured_init);
 	return configured;
 }
@@ -733,11 +736,12 @@ bool OcclusionCounter::Dump(uint64_t address) {
 		m_context.PrepareHostBackingWrite(address, 248, RenderContext::HostWriter::Occlusion);
 		for (uint32_t db = 0; db < 16u; db++) {
 			if (db == 0 && bias != 0) {
-				// KYTY_SKIP_OCCLUSION_VISIBLE: the samples of skipped draws so far, below the ready bit.
+				// KYTY_SKIP_OCCLUSION_VISIBLE: the samples of skipped draws so far, below the ready
+				// bit.
 				uint64_t value = 0;
 				std::memcpy(&value, source, sizeof(value));
 				constexpr uint64_t Ready = 1ull << 63u;
-				value = (value & Ready) | (((value & ~Ready) + bias) & ~Ready);
+				value                    = (value & Ready) | (((value & ~Ready) + bias) & ~Ready);
 				(void)LibKernel::Memory::TryWriteBacking(address, &value, sizeof(value));
 				continue;
 			}

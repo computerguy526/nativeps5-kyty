@@ -37,9 +37,9 @@ public:
 	// that tick and returns what the dispatch wrote. overflow: more pages than the list holds
 	// (the bits past it are lost; the caller must settle conservatively).
 	// stores (KYTY_BDA_STORE_LOG): the store log, in log order; log_overflow: stores past its
-	// capacity (also counted in dropped). log_tail: entries the device log holds past the downloaded
-	// prefix (BufferCache::BDA_STORE_LOG_PREFIX): CollectBdaWrites fetches them (then 0); after
-	// ParseBdaWrites alone they are not in stores, and the caller counts them as dropped.
+	// capacity (also counted in dropped). log_tail: entries the device log holds past the
+	// downloaded prefix (BufferCache::BDA_STORE_LOG_PREFIX): CollectBdaWrites fetches them (then
+	// 0); after ParseBdaWrites alone they are not in stores, and the caller counts them as dropped.
 	struct BdaStore {
 		uint32_t address_low  = 0;
 		uint32_t address_high = 0;
@@ -62,8 +62,8 @@ public:
 	// into one of BdaSlots download slots (the caller keeps at most BdaSlots unparsed) and returns
 	// it; ParseBdaWrites reads a slot once the recording's tick completed.
 	static constexpr uint32_t BdaSlots = 8;
-	[[nodiscard]] uint32_t  RecordBdaWrites();
-	[[nodiscard]] BdaWrites ParseBdaWrites(uint32_t slot);
+	[[nodiscard]] uint32_t    RecordBdaWrites();
+	[[nodiscard]] BdaWrites   ParseBdaWrites(uint32_t slot);
 
 private:
 	GraphicContext&                            m_graphics;
@@ -77,18 +77,18 @@ private:
 	vk::Pipeline                               m_fault_process_pipeline = nullptr;
 	vk::PipelineLayout                         m_fault_process_pipeline_layout = nullptr;
 	// KYTY_FAULT_SCAN_MAPPED: the same scan created with DISPATCH_BASE (created on first use).
-	vk::Pipeline                               m_fault_process_pipeline_base = nullptr;
+	vk::Pipeline m_fault_process_pipeline_base = nullptr;
 	// KYTY_BDA_WRITES only (created on first use).
 	vk::Pipeline                               m_bda_pages_pipeline = nullptr;
 	std::array<std::unique_ptr<Buffer>, BdaSlots> m_bda_downloads;
 	// The store log past its downloaded prefix (created on first use, FetchBdaStoreLogTail).
 	std::unique_ptr<Buffer>                    m_bda_tail_download;
 	void                                       FetchBdaStoreLogTail(BdaWrites& writes);
-	uint32_t                                   m_bda_next_slot = 0;
+	uint32_t                                   m_bda_next_slot      = 0;
 	bool                                       m_bda_region_cleared = false;
 	// KYTY_BDA_TAGS_GPU_COUNT (diagnostic): the counters' copies per area and their last values.
-	std::unique_ptr<Buffer>                    m_tag_count_download;
-	std::array<uint32_t, 3>                    m_tag_count_last {};
+	std::unique_ptr<Buffer> m_tag_count_download;
+	std::array<uint32_t, 3> m_tag_count_last {};
 };
 
 } // namespace Libs::Graphics

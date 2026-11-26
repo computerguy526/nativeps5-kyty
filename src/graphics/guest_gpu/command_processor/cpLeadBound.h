@@ -60,7 +60,7 @@ namespace Libs::Graphics::CpLeadBound {
 
 // How long one bound wait may block: the bound plus 50 ms. The tick waited for is already older
 // than the bound, so a normal wait is a few ms; longer means a long GPU job or a hang.
-inline constexpr uint64_t kWaitSlackNs = 50'000'000u;
+inline constexpr uint64_t        kWaitSlackNs = 50'000'000u;
 [[nodiscard]] constexpr uint64_t WaitTimeoutNs(int64_t limit_ms) noexcept {
 	const auto ms = static_cast<uint64_t>(std::clamp<int64_t>(limit_ms, 0, 200));
 	return ms * 1'000'000u + kWaitSlackNs;
@@ -137,8 +137,8 @@ private:
 		m_count--;
 	}
 	std::array<Entry, kCapacity> m_entries {};
-	size_t                       m_head  = 0;
-	size_t                       m_count = 0;
+	size_t                       m_head      = 0;
+	size_t                       m_count     = 0;
 	uint64_t                     m_hold_tick = 0; // Abandon: no wait until this tick completes
 };
 

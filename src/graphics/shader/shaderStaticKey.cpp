@@ -1,6 +1,5 @@
-#include "graphics/shader/shaderCompiler.h"
-
 #include "common/assert.h"
+#include "graphics/shader/shaderCompiler.h"
 
 #include <algorithm>
 #include <bit>
@@ -74,19 +73,19 @@ void BuildStageStaticKey(const ShaderVertexInputInfo& info, std::vector<uint32_t
 		const auto& mesh = info.mesh;
 		// The translator reads all three workgroup dimensions (PrepareProgram sets y and z to 1).
 		key.insert(key.end(), {mesh.threads_num[1], mesh.threads_num[2]});
-		key.insert(key.end(), {mesh.wave_size, mesh.host_subgroup_size, mesh.lds_size_dwords,
-		                       mesh.scratch_size_dwords, mesh.input_primitive,
-		                       mesh.primitives_per_group, mesh.vertices_per_group,
-		                       mesh.max_vertices, mesh.max_primitives, mesh.provoking_vertex,
-		                       mesh.split_groups, static_cast<uint32_t>(mesh.fast_launch),
-		                       mesh.passes});
+		key.insert(key.end(),
+		           {mesh.wave_size, mesh.host_subgroup_size, mesh.lds_size_dwords,
+		            mesh.scratch_size_dwords, mesh.input_primitive, mesh.primitives_per_group,
+		            mesh.vertices_per_group, mesh.max_vertices, mesh.max_primitives,
+		            mesh.provoking_vertex, mesh.split_groups,
+		            static_cast<uint32_t>(mesh.fast_launch), mesh.passes});
 	}
 	key.push_back(info.tess.input_control_points);
 	if (info.tess.input_control_points != 0) {
 		const auto& tess = info.tess;
 		key.insert(key.end(), {tess.output_control_points, tess.ls_stride, tess.hs_stride,
-		                       tess.domain, tess.partitioning, tess.output_topology, tess.min_tess_level,
-		                       tess.max_tess_level});
+		                       tess.domain, tess.partitioning, tess.output_topology,
+		                       tess.min_tess_level, tess.max_tess_level});
 		// KYTY_TESS_INDEXED: the patch-constant range both stages declare (0 without the switch).
 		if (tess.patch_size != 0u) key.insert(key.end(), {tess.patch_base, tess.patch_size});
 		// KYTY_TESS_MERGED_CARRY: the carried VGPR set (empty for every pair without it).
@@ -145,7 +144,8 @@ void BuildStageStaticKey(const ShaderPixelInputInfo& info, std::vector<uint32_t>
 	}
 	if ((info.target_uint_mask | info.target_sint_mask) != 0) {
 		// KYTY_INT_MRT_OUTPUTS (upstream 26ca60923): integer-typed MRT outputs; only when set.
-		key.push_back(0x494e0000u | (uint32_t {info.target_sint_mask} << 8u) | info.target_uint_mask);
+		key.push_back(0x494e0000u | (uint32_t {info.target_sint_mask} << 8u) |
+		              info.target_uint_mask);
 	}
 	if (const auto mask = info.target_shader_mask; mask != UINT32_MAX) {
 		// KYTY_CB_SHADER_MASK_EXPORTS: which targets are written decides export locations.

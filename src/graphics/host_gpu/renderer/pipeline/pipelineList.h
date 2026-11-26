@@ -86,7 +86,8 @@ enum class SectionId : uint32_t {
 
 // The file a shader's code is read from.
 // 0 is the game's executable (/app0/eboot.bin); n >= 1 is File::files[n - 1], a data file of the
-// game (path relative to /app0, '/' separated): Insomniac titles keep most shader code in d/material.
+// game (path relative to /app0, '/' separated): Insomniac titles keep most shader code in
+// d/material.
 enum class CodeFile : uint32_t {
 	Executable = 0,
 };
@@ -102,17 +103,17 @@ struct Info {
 	uint64_t                created_unix = 0;
 	// The renderer's pipeline state format the pipelines were recorded with (StateFormat of the
 	// producer; 0: a list older than the field). A list of another format keeps its shaders (the
-	// precompile is still exact) but its pipelines are not replayed: they would describe create infos
-	// this build no longer makes.
+	// precompile is still exact) but its pipelines are not replayed: they would describe create
+	// infos this build no longer makes.
 	uint32_t state_format = 0;
 };
 // Bump when CreatePipelineInternal (pipeline/shaders.cpp) or GraphicsPipelineSnapshot changes the
 // graphics pipeline create infos it makes for the same draw state (released lists then keep only
 // their shaders until they are re-recorded).
 inline constexpr uint32_t StateFormat = 1;
-// Format 0 is a list older than the stamp (every v1.3.x list). The stamp was introduced together with
-// format 1 and the pipeline create infos did not change with it, so such a list replays as format 1;
-// any other value is another renderer's state and is not replayed.
+// Format 0 is a list older than the stamp (every v1.3.x list). The stamp was introduced together
+// with format 1 and the pipeline create infos did not change with it, so such a list replays as
+// format 1; any other value is another renderer's state and is not replayed.
 [[nodiscard]] inline constexpr uint32_t NormalizedStateFormat(uint32_t format) {
 	return format == 0 ? StateFormat : format;
 }
@@ -183,21 +184,23 @@ struct File {
 [[nodiscard]] bool RewriteSnapshotModules(std::span<uint32_t> words, const std::function<uint64_t(uint32_t)>& hash_for);
 
 // The values of a stored snapshot that come from the recording device, not from the draw: the
-// dynamic state VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT (present when the device enabled
-// attachment feedback loops, shaders.cpp) and each stage's required subgroup size
+// dynamic state VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT (present when the device
+// enabled attachment feedback loops, shaders.cpp) and each stage's required subgroup size
 // (GraphicContext::GraphicsSubgroupSize). The run-time pipeline key holds the running device's own
 // values, so a pipeline recorded on another device would be built and never found.
 //
-// Canonical stored form (what the exporter and the merge write): the feedback-loop state absent, every
-// stage's required subgroup size 0. The loader applies this device's values to a list pipeline
-// before it builds it. `subgroup_for` gets the stage's VkShaderStageFlags word and its index in the
-// snapshot; null means 0 for every stage. `words` are a pipeline's words (snapshot words, then the
-// layout signature length and the signature), `snapshot_words` the snapshot's part, which grows or
-// shrinks by one word with the state. False (nothing changed) when the words are not a snapshot.
-inline constexpr uint32_t DynamicStateAttachmentFeedbackLoop = 1000524000u; // VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT
+// Canonical stored form (what the exporter and the merge write): the feedback-loop state absent,
+// every stage's required subgroup size 0. The loader applies this device's values to a list
+// pipeline before it builds it. `subgroup_for` gets the stage's VkShaderStageFlags word and its
+// index in the snapshot; null means 0 for every stage. `words` are a pipeline's words (snapshot
+// words, then the layout signature length and the signature), `snapshot_words` the snapshot's part,
+// which grows or shrinks by one word with the state. False (nothing changed) when the words are not
+// a snapshot.
+inline constexpr uint32_t DynamicStateAttachmentFeedbackLoop =
+    1000524000u; // VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT
 using SubgroupSizeFn = std::function<uint32_t(uint32_t stage_flags, uint32_t stage_index)>;
-[[nodiscard]] bool ApplySnapshotDeviceState(std::vector<uint32_t>& words, uint32_t& snapshot_words, bool feedback_loop,
-                                            const SubgroupSizeFn& subgroup_for);
+[[nodiscard]] bool ApplySnapshotDeviceState(std::vector<uint32_t>& words, uint32_t& snapshot_words,
+                                            bool feedback_loop, const SubgroupSizeFn& subgroup_for);
 // The canonical form (above) of `pipeline`.
 [[nodiscard]] bool NormalizePipelineDeviceState(Pipeline& pipeline);
 
@@ -246,9 +249,10 @@ public:
 	                 const std::vector<PipelineJournal::Record>& pipelines, const LocateFn& locate, ExportStats& stats);
 	// The data file named `path` (relative to /app0) as a CodeFile, added to the list's table once.
 	CodeFile AddFile(const std::string& path);
-	// Another list (merge). `normalize_pipelines` false (a list of pipeline state format 0, which carries no stamp): its records
-	// keep their words as recorded, so two records that differ only in the values NormalizePipelineDeviceState erases stay two
-	// (the coarse identity collapsed 4,892 pipelines to 2,446; the replay builds both, 4,844 of 4,892 built in a cold prepare).
+	// Another list (merge). `normalize_pipelines` false (a list of pipeline state format 0, which
+	// carries no stamp): its records keep their words as recorded, so two records that differ only
+	// in the values NormalizePipelineDeviceState erases stay two (the coarse identity collapsed
+	// 4,892 pipelines to 2,446; the replay builds both, 4,844 of 4,892 built in a cold prepare).
 	void AddList(const File& other, ExportStats& stats, bool normalize_pipelines = true);
 
 	[[nodiscard]] File Finish() const { return m_file; }
@@ -290,7 +294,8 @@ struct Resolved {
 	std::vector<uint32_t>             entry_permutation;
 	// Per list permutation: index into `entries`, or UINT32_MAX when unusable.
 	std::vector<uint32_t> permutation_entry;
-	// Per list shader, where its code (and a merged stage's back half) sits in the file read; usable only.
+	// Per list shader, where its code (and a merged stage's back half) sits in the file read;
+	// usable only.
 	std::vector<uint64_t> offsets, back_offsets;
 };
 
@@ -298,9 +303,9 @@ struct Resolved {
                                const ReadImageFn& read_image, ResolveStats& stats);
 
 // A stored vertex input info layout of an earlier release and the fields this build added to it:
-// `bytes` go in at byte `at` of the old layout (inserts in ascending order). A shader whose dword at
-// `skip_if_nonzero_at` (old layout) is not zero keeps its old bytes, so Resolve counts it as another
-// input layout (fields that cannot be filled in without the guest registers).
+// `bytes` go in at byte `at` of the old layout (inserts in ascending order). A shader whose dword
+// at `skip_if_nonzero_at` (old layout) is not zero keeps its old bytes, so Resolve counts it as
+// another input layout (fields that cannot be filled in without the guest registers).
 struct VertexLayoutUpgrade {
 	struct Insert {
 		uint32_t             at = 0;
@@ -315,11 +320,12 @@ struct UpgradeStats {
 };
 // Rewrites the vertex input infos of `upgrade.from_size` bytes to `to_size` bytes; nothing when the
 // inserts do not add up to `to_size`.
-void UpgradeVertexInputInfos(File& file, const VertexLayoutUpgrade& upgrade, uint32_t to_size, UpgradeStats& stats);
+void UpgradeVertexInputInfos(File& file, const VertexLayoutUpgrade& upgrade, uint32_t to_size,
+                             UpgradeStats& stats);
 
-// Retargeting: the list re-stamped for another copy of the game (another version or SKU) whose shaders
-// `resolved` found. Shaders not found are dropped with their permutations and pipelines; the offsets are the
-// new ones. The caller sets the title and version in `info`.
+// Retargeting: the list re-stamped for another copy of the game (another version or SKU) whose
+// shaders `resolved` found. Shaders not found are dropped with their permutations and pipelines;
+// the offsets are the new ones. The caller sets the title and version in `info`.
 struct RetargetStats {
 	uint64_t shaders = 0, same_offset = 0, moved = 0, missing = 0;
 	uint64_t pipelines = 0, pipelines_kept = 0;

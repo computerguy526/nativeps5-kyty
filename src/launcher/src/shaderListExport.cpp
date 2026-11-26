@@ -51,13 +51,15 @@ Journals FindJournals(const QString& emulator_dir, const QString& title_id) {
 	const QDir      cache(QDir(emulator_dir).filePath(QStringLiteral("_PipelineCache")));
 	const QFileInfo shaders(cache.filePath(title_id + QStringLiteral(".shaders.journal")));
 	const QFileInfo pipelines(cache.filePath(title_id + QStringLiteral(".pipelines.journal")));
-	const auto found = [](const QFileInfo& file) {
-		return file.isFile() && file.size() != 0 ? QDir::cleanPath(file.absoluteFilePath()) : QString();
+	const auto      found = [](const QFileInfo& file) {
+		return file.isFile() && file.size() != 0 ? QDir::cleanPath(file.absoluteFilePath())
+		                                         : QString();
 	};
 	return {found(shaders), found(pipelines)};
 }
 
-QString BaseList(const QString& emulator_dir, const QString& title_id, const QString& version, const QString& setting) {
+QString BaseList(const QString& emulator_dir, const QString& title_id, const QString& version,
+                 const QString& setting) {
 	if (setting == QLatin1String("0")) {
 		return {};
 	}
@@ -69,7 +71,8 @@ QString BaseList(const QString& emulator_dir, const QString& title_id, const QSt
 	return Precompile::FindList(emulator_dir, title_id, version);
 }
 
-QString DefaultOutput(const QString& emulator_dir, const QString& title_id, const QString& version) {
+QString DefaultOutput(const QString& emulator_dir, const QString& title_id,
+                      const QString& version) {
 	if (!Precompile::IsValidGame(title_id, version)) {
 		return {};
 	}
@@ -85,12 +88,14 @@ QString PartialPath(const QString& out) {
 QStringList ExportArguments(const QString& partial, const QString& game, const QString& executable,
                             const Journals& journals, const QString& base_list) {
 	// The tool takes the journals in pairs; "none" stands for the one a session did not write.
-	const auto journal = [](const QString& path) { return path.isEmpty() ? QStringLiteral("none") : Native(path); };
+	const auto journal = [](const QString& path) {
+		return path.isEmpty() ? QStringLiteral("none") : Native(path);
+	};
 	QStringList args {QStringLiteral("export"), QStringLiteral("--out"), Native(partial)};
 	AddGame(&args, game, executable);
-	args << QStringLiteral("--shaders") << journal(journals.shaders) << QStringLiteral("--pipelines")
-	     << journal(journals.pipelines) << QStringLiteral("--producer") << QLatin1String(PRODUCER)
-	     << QStringLiteral("--scan");
+	args << QStringLiteral("--shaders") << journal(journals.shaders)
+	     << QStringLiteral("--pipelines") << journal(journals.pipelines)
+	     << QStringLiteral("--producer") << QLatin1String(PRODUCER) << QStringLiteral("--scan");
 	if (!base_list.isEmpty()) {
 		args << QStringLiteral("--base") << Native(base_list);
 	}
@@ -109,7 +114,8 @@ QStringList VerifyArguments(const QString& partial, const QString& game, const Q
 
 bool ParseWritten(const QString& output, Written* written) {
 	static const QRegularExpression line(
-	    QStringLiteral("^wrote .*: [0-9]+ bytes, ([0-9]+) shaders, ([0-9]+) permutations, ([0-9]+) pipelines"),
+	    QStringLiteral(
+	        "^wrote .*: [0-9]+ bytes, ([0-9]+) shaders, ([0-9]+) permutations, ([0-9]+) pipelines"),
 	    QRegularExpression::MultilineOption);
 	QRegularExpressionMatch last;
 	for (auto it = line.globalMatch(output); it.hasNext();) {
@@ -126,7 +132,8 @@ bool ParseWritten(const QString& output, Written* written) {
 
 bool ParseAdded(const QString& output, Written* added) {
 	static const QRegularExpression line(
-	    QStringLiteral("^new since the base list: ([0-9]+) shaders, ([0-9]+) permutations, ([0-9]+) pipelines"),
+	    QStringLiteral("^new since the base list: ([0-9]+) shaders, ([0-9]+) permutations, "
+	                   "([0-9]+) pipelines"),
 	    QRegularExpression::MultilineOption);
 	QRegularExpressionMatch last;
 	for (auto it = line.globalMatch(output); it.hasNext();) {
@@ -142,9 +149,10 @@ bool ParseAdded(const QString& output, Written* added) {
 }
 
 bool ParseScan(const QString& line, Scan* scan) {
-	static const QRegularExpression pattern(QStringLiteral(
-	    "^scan: ([0-9]+) of ([0-9]+) files, ([0-9]+(?:\\.[0-9]+)?) of ([0-9]+(?:\\.[0-9]+)?) GB read, "
-	    "([0-9]+) of ([0-9]+) codes located"));
+	static const QRegularExpression pattern(
+	    QStringLiteral("^scan: ([0-9]+) of ([0-9]+) files, ([0-9]+(?:\\.[0-9]+)?) of "
+	                   "([0-9]+(?:\\.[0-9]+)?) GB read, "
+	                   "([0-9]+) of ([0-9]+) codes located"));
 	const auto match = pattern.match(line.trimmed());
 	if (!match.hasMatch()) {
 		return false;
@@ -160,13 +168,16 @@ bool ParseScan(const QString& line, Scan* scan) {
 
 int ScanPermille(const Scan& scan) {
 	const double bytes = scan.total_gb > 0.0 ? scan.read_gb / scan.total_gb : 0.0;
-	const double files = scan.files_total != 0 ? static_cast<double>(scan.files) / static_cast<double>(scan.files_total) : 0.0;
+	const double files = scan.files_total != 0 ? static_cast<double>(scan.files) /
+	                                                 static_cast<double>(scan.files_total)
+	                                           : 0.0;
 	return qBound(0, static_cast<int>((bytes + files) * 500.0), 999);
 }
 
 QString ScanText(const Scan& scan) {
-	return QStringLiteral("Searching the game's files for %1 shaders that are not in its executable:\n"
-	                      "%5 of %6 files, %2 of %3 GB read, %4 found. It stops when all are found.")
+	return QStringLiteral(
+	           "Searching the game's files for %1 shaders that are not in its executable:\n"
+	           "%5 of %6 files, %2 of %3 GB read, %4 found. It stops when all are found.")
 	    .arg(scan.wanted)
 	    .arg(scan.read_gb, 0, 'f', 1)
 	    .arg(scan.total_gb, 0, 'f', 1)
@@ -192,7 +203,8 @@ bool Keep(const QString& partial, const QString& out, QString* error) {
 
 QString Tail(const QString& output, int count) {
 	QStringList lines;
-	for (const auto& line: output.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts)) {
+	for (const auto& line:
+	     output.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts)) {
 		if (!line.trimmed().isEmpty()) {
 			lines.append(line.trimmed());
 		}

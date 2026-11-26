@@ -29,11 +29,11 @@
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -837,22 +837,24 @@ void GraphicContext::ReportVramStats() {
 		                ToMiB(static_cast<uint64_t>(stats.blockBytes)), stats.blockCount,
 		                ToMiB(static_cast<uint64_t>(stats.allocationBytes)), stats.allocationCount);
 	}
-	// Block census (from Erlou93/KytyPS5-Yotei v0.1.5 texture relocation, measurement only): VMA frees a
-	// block only when its last allocation goes, so a few residents can keep a nearly empty block. Per
-	// device-local, not host-visible memory type: blocks, those at least half empty (Erlou's relocation
-	// candidates) with their size, free space and allocations, and the free space of all blocks (their
-	// trigger: >= 1 GiB). Read from VMA's default block lists (no public API; as Erlou's CollectBlocks).
+	// Block census (from Erlou93/KytyPS5-Yotei v0.1.5 texture relocation, measurement only): VMA
+	// frees a block only when its last allocation goes, so a few residents can keep a nearly empty
+	// block. Per device-local, not host-visible memory type: blocks, those at least half empty
+	// (Erlou's relocation candidates) with their size, free space and allocations, and the free
+	// space of all blocks (their trigger: >= 1 GiB). Read from VMA's default block lists (no public
+	// API; as Erlou's CollectBlocks).
 	for (uint32_t type = 0; type < properties.memoryTypeCount; type++) {
 		const auto flags = properties.memoryTypes[type].propertyFlags;
-		if (!(flags & vk::MemoryPropertyFlagBits::eDeviceLocal) || (flags & vk::MemoryPropertyFlagBits::eHostVisible)) {
+		if (!(flags & vk::MemoryPropertyFlagBits::eDeviceLocal) ||
+		    (flags & vk::MemoryPropertyFlagBits::eHostVisible)) {
 			continue;
 		}
 		VmaBlockVector* vector = allocator->m_pBlockVectors[type];
 		if (vector == nullptr) {
 			continue;
 		}
-		uint64_t blocks = 0, size = 0, free = 0, empty_blocks = 0, half = 0, half_size = 0, half_free = 0,
-		         half_allocs = 0;
+		uint64_t blocks = 0, size = 0, free = 0, empty_blocks = 0, half = 0, half_size = 0,
+		         half_free = 0, half_allocs = 0;
 		{
 			VmaMutexLockRead lock(vector->GetMutex(), allocator->m_UseMutex);
 			for (size_t i = 0; i < vector->GetBlockCount(); i++) {
@@ -876,11 +878,12 @@ void GraphicContext::ReportVramStats() {
 		if (blocks == 0) {
 			continue;
 		}
-		VramStats::Line("block census type %u: blocks=%llu (%.1f MiB) free=%.1f MiB empty_blocks=%llu | "
-		                ">=50%% empty: %llu blocks %.1f MiB, free %.1f MiB, %llu allocations",
-		                type, static_cast<unsigned long long>(blocks), ToMiB(size), ToMiB(free),
-		                static_cast<unsigned long long>(empty_blocks), static_cast<unsigned long long>(half),
-		                ToMiB(half_size), ToMiB(half_free), static_cast<unsigned long long>(half_allocs));
+		VramStats::Line(
+		    "block census type %u: blocks=%llu (%.1f MiB) free=%.1f MiB empty_blocks=%llu | "
+		    ">=50%% empty: %llu blocks %.1f MiB, free %.1f MiB, %llu allocations",
+		    type, static_cast<unsigned long long>(blocks), ToMiB(size), ToMiB(free),
+		    static_cast<unsigned long long>(empty_blocks), static_cast<unsigned long long>(half),
+		    ToMiB(half_size), ToMiB(half_free), static_cast<unsigned long long>(half_allocs));
 	}
 	std::string kinds;
 	for (size_t index = 0; index < static_cast<size_t>(VramStats::Kind::Count); index++) {

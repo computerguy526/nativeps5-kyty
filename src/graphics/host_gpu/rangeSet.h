@@ -144,7 +144,8 @@ public:
 		static std::atomic_uint overflow_count {0};
 		auto&                   count = empty ? empty_count : overflow_count;
 		if (count.fetch_add(1, std::memory_order_relaxed) < 4u) {
-			LOGF("RangeSet: temporary: ignoring %s range at 0x%016" PRIx64 " size 0x%016" PRIx64 "\n",
+			LOGF("RangeSet: temporary: ignoring %s range at 0x%016" PRIx64 " size 0x%016" PRIx64
+			     "\n",
 			     empty ? "empty" : "overflowing", address, size);
 		}
 		return true;

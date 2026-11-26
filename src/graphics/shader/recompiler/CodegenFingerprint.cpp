@@ -4,8 +4,8 @@
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/ir/BindlessBindings.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
+#include "graphics/shader/recompiler/ir/BindlessBindings.h"
 #include "kytyCodegenVersion.h"
 
 #include <cstdlib>
@@ -22,12 +22,12 @@ constexpr const char* kSwitches[] = {KYTY_CODEGEN_SWITCH_LIST nullptr};
 constexpr size_t      kSwitchCount = std::size(kSwitches) - 1;
 
 #if defined(_MSC_VER) && defined(_WIN64) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL == 0
-// Members: the bools and enums of both the Yotei/Insomniac and the GT7 lines (int22 merge), MadMode,
-// PsLiveExec, Wave32Clusters, LdsWaitcntBarrier, LdsDeviceBuffer, loop_guard_budget, loop_guard_shaders,
-// bda_force_shaders, dispatcher_cap, rt_node_budget, rt_function, lds_limit_override, call_loop_cap.
-// Add a new member to the fingerprint below, then update this size (a new bool can fill padding
-// and leave it).
-static_assert(sizeof(CodegenOptions) == 256,"CodegenOptions changed: update CodegenFingerprint");
+// Members: the bools and enums of both the Yotei/Insomniac and the GT7 lines (int22 merge),
+// MadMode, PsLiveExec, Wave32Clusters, LdsWaitcntBarrier, LdsDeviceBuffer, loop_guard_budget,
+// loop_guard_shaders, bda_force_shaders, dispatcher_cap, rt_node_budget, rt_function,
+// lds_limit_override, call_loop_cap. Add a new member to the fingerprint below, then update this
+// size (a new bool can fill padding and leave it).
+static_assert(sizeof(CodegenOptions) == 256, "CodegenOptions changed: update CodegenFingerprint");
 #endif
 
 class Bytes {
@@ -52,7 +52,8 @@ private:
 } // namespace
 
 std::string_view FingerprintSwitchValue(std::string_view name, std::string_view value) {
-	// Path-valued switches: the list's CONTENT is in the fingerprint (fast_math_acl); where the file lives is not codegen.
+	// Path-valued switches: the list's CONTENT is in the fingerprint (fast_math_acl); where the
+	// file lives is not codegen.
 	if (name == "KYTY_FAST_MATH_DENY" || name == "KYTY_FAST_MATH_ALLOW") return {};
 	return value;
 }
@@ -144,11 +145,13 @@ std::vector<uint8_t> CodegenFingerprint() {
 	b.U8(options.volatile_loads ? 1u : 0u);
 	b.U8(static_cast<uint8_t>(options.wave32_clusters));
 	b.U8(static_cast<uint8_t>(options.lds_waitcnt_barrier));
-	if (const char* tree = std::getenv("KYTY_DISPATCHER_TREE"); tree != nullptr && std::strcmp(tree, "1") == 0) {
+	if (const char* tree = std::getenv("KYTY_DISPATCHER_TREE");
+	    tree != nullptr && std::strcmp(tree, "1") == 0) {
 		b.Text("dispatcher_tree"); // nps5 memtrk: only when on
 	}
 	if (StoreCompletionFence()) {
-		b.Text("store_completion_fence/2"); // nps5 memtrk: only when on (off keeps the fingerprint); /2: split waves keep the barrier
+		b.Text("store_completion_fence/2"); // nps5 memtrk: only when on (off keeps the
+		                                    // fingerprint); /2: split waves keep the barrier
 	}
 	b.U8(static_cast<uint8_t>(options.lds_device_buffer));
 	b.U32(options.lds_limit_override);
@@ -177,15 +180,19 @@ std::vector<uint8_t> CodegenFingerprint() {
 	}
 	if (options.indirect_format_compact) {
 		b.Text("indirect_format_compact");
-		if (const char* table = std::getenv("KYTY_INDIRECT_FORMAT_COMPACT_TABLE"); table != nullptr) b.Text(table);
-		if (const char* control = std::getenv("KYTY_INDIRECT_FORMAT_COMPACT_CONTROL"); control != nullptr) b.Text(control);
+		if (const char* table = std::getenv("KYTY_INDIRECT_FORMAT_COMPACT_TABLE"); table != nullptr)
+			b.Text(table);
+		if (const char* control = std::getenv("KYTY_INDIRECT_FORMAT_COMPACT_CONTROL");
+		    control != nullptr)
+			b.Text(control);
 	}
 	if (options.indirect_format_inline) {
 		b.Text("indirect_format_inline");
 	}
 	if (options.indirect_format_fast) {
 		b.Text("indirect_format_fast");
-		if (const char* fast = std::getenv("KYTY_INDIRECT_FORMAT_FAST"); fast != nullptr) b.Text(fast);
+		if (const char* fast = std::getenv("KYTY_INDIRECT_FORMAT_FAST"); fast != nullptr)
+			b.Text(fast);
 	}
 	// KYTY_INDIRECT_FORMAT_INLINE_HASHES: these programs inline the full decoder.
 	if (const char* hashes = std::getenv("KYTY_INDIRECT_FORMAT_INLINE_HASHES"); hashes != nullptr) {
@@ -193,11 +200,13 @@ std::vector<uint8_t> CodegenFingerprint() {
 		b.Text(hashes);
 	}
 	// KYTY_INDIRECT_FORMAT_COUNT: the counter buffer's address is baked into the modules.
-	if (const char* count = std::getenv("KYTY_INDIRECT_FORMAT_COUNT"); count != nullptr && count[0] == '1') {
+	if (const char* count = std::getenv("KYTY_INDIRECT_FORMAT_COUNT");
+	    count != nullptr && count[0] == '1') {
 		b.Text("indirect_format_count");
 		b.Text(std::to_string(Spirv::IndirectFormatCountAddress()));
 		// KYTY_INDIRECT_FORMAT_COMPARE: both decoders, mismatches counted (diagnostic).
-		if (const char* compare = std::getenv("KYTY_INDIRECT_FORMAT_COMPARE"); compare != nullptr && (compare[0] == '1' || compare[0] == '2')) {
+		if (const char* compare = std::getenv("KYTY_INDIRECT_FORMAT_COMPARE");
+		    compare != nullptr && (compare[0] == '1' || compare[0] == '2')) {
 			b.Text("indirect_format_compare");
 			b.Text(compare);
 		}
@@ -481,7 +490,8 @@ std::vector<uint8_t> CodegenFingerprint() {
 	if (options.lane_local) {
 		b.Text("lane_local");
 		b.U8(GetHostComputeSubgroups32() ? 1u : 0u);
-		if (const char* nops = std::getenv("KYTY_LANE_LOCAL_NOPS"); nops != nullptr && nops[0] == '1') {
+		if (const char* nops = std::getenv("KYTY_LANE_LOCAL_NOPS");
+		    nops != nullptr && nops[0] == '1') {
 			b.Text("lane_local_nops");
 		}
 	}
@@ -574,7 +584,8 @@ std::vector<uint8_t> CodegenFingerprint() {
 	b.U8(static_cast<uint8_t>(shader_clock.scope));
 	b.U32(static_cast<uint32_t>(shader_clock.shift));
 	if (shader_clock.divisor > 1u) {
-		b.U32(shader_clock.divisor); // KYTY_MEMREALTIME_EXACT (absent otherwise: fingerprints unchanged)
+		b.U32(shader_clock
+		          .divisor); // KYTY_MEMREALTIME_EXACT (absent otherwise: fingerprints unchanged)
 	}
 	const auto wave_clusters = Spirv::GetHostWaveClusters();
 	b.U8(wave_clusters.vertex ? 1u : 0u);

@@ -83,13 +83,14 @@ public:
 	[[nodiscard]] int  StreamScore() const noexcept { return stream_score; }
 	void               Flush(uint64_t offset, uint64_t size);
 	void               Invalidate(uint64_t offset, uint64_t size);
-	// nps5 faultcost (KYTY_FAULT_HOST_READBACK): read a device buffer on the host. KosmicKrisp has one
-	// memory type (host-visible, coherent, device-local: Metal shared storage), so a device buffer can
-	// be mapped. Maps the allocation, calls sink(offset, bytes, size) for each (offset, size) range and
-	// unmaps. false without a call when the buffer is sparse, imported, zero-copy or not host-visible.
-	// The caller guarantees that every GPU writer of the ranges has completed.
-	[[nodiscard]] bool ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&             ranges,
-	                                  const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const;
+	// nps5 faultcost (KYTY_FAULT_HOST_READBACK): read a device buffer on the host. KosmicKrisp has
+	// one memory type (host-visible, coherent, device-local: Metal shared storage), so a device
+	// buffer can be mapped. Maps the allocation, calls sink(offset, bytes, size) for each (offset,
+	// size) range and unmaps. false without a call when the buffer is sparse, imported, zero-copy
+	// or not host-visible. The caller guarantees that every GPU writer of the ranges has completed.
+	[[nodiscard]] bool
+	     ReadHostRanges(const std::vector<std::pair<uint64_t, uint64_t>>&              ranges,
+	                    const std::function<void(uint64_t, const uint8_t*, uint64_t)>& sink) const;
 	void CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t source_offset,
 	              uint64_t destination_offset, uint64_t size,
 	              vk::AccessFlags source_before      = vk::AccessFlagBits::eMemoryWrite,
@@ -102,7 +103,8 @@ public:
 	              bool            batch              = false);
 	// Several non-overlapping regions from `source` in one copy command, with one barrier pair over
 	// the spans the regions cover (KYTY_BDA_LIVE_BATCH page-table entry writes).
-	void CopyRegionsFrom(CommandBuffer& command, const Buffer& source, std::span<const vk::BufferCopy> regions,
+	void CopyRegionsFrom(CommandBuffer& command, const Buffer& source,
+	                     std::span<const vk::BufferCopy> regions,
 	                     vk::AccessFlags source_before = vk::AccessFlagBits::eMemoryWrite);
 	// batch: the caller records nothing through a native handle obtained before this call until the
 	// next barrier flush point, so KYTY_DMA_BARRIER_BATCH may leave the after barriers queued.
@@ -139,7 +141,7 @@ private:
 	vk::DeviceAddress             m_device_address = 0;
 	vk::Buffer                    m_buffer     = nullptr;
 	VmaAllocation                 m_allocation = nullptr;
-	vk::DeviceMemory              m_imported_memory = nullptr;
+	vk::DeviceMemory              m_imported_memory  = nullptr;
 	uint64_t                      m_size;
 	bool                          m_coherent = false;
 	bool                          m_sparse   = false;

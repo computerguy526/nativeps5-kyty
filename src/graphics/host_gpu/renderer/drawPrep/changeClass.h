@@ -5,8 +5,8 @@
 
 #include <cstdint>
 
-// KYTY_CP_COMMIT_STATS: the change classes of a committed draw against the previous recorded draw of
-// the same frame (StartPhases/Steps reasons, ChangeMasks). Header-only for the unit tests.
+// KYTY_CP_COMMIT_STATS: the change classes of a committed draw against the previous recorded draw
+// of the same frame (StartPhases/Steps reasons, ChangeMasks). Header-only for the unit tests.
 namespace Libs::Graphics::CommitStats::ChangeClass {
 
 // The actual draw-run decision (a continuation, by the continuation kernel's outcome), and for a
@@ -33,8 +33,9 @@ enum Reason : uint32_t {
 	ReasonCount
 };
 inline constexpr const char* kReasonNames[ReasonCount] = {
-    "cont.taken", "cont.left", "cont.declined", "cont.noentry", "first",  "pass",    "programs", "pipestate",
-    "textures",   "samplers",  "texsamp",       "dynamic",      "writes", "runmiss", "other"};
+    "cont.taken", "cont.left", "cont.declined", "cont.noentry", "first",
+    "pass",       "programs",  "pipestate",     "textures",     "samplers",
+    "texsamp",    "dynamic",   "writes",        "runmiss",      "other"};
 
 // Every difference at once (ChangeMasks).
 enum ChangeBit : uint32_t {
@@ -58,8 +59,8 @@ inline constexpr char kChangeLetters[] = "IPLXMDWF";
 	}
 	const auto& a    = *previous;
 	uint32_t    mask = 0;
-	if (a.rendering_serial == 0 || a.rendering_serial != b.rendering_serial || a.command != b.command ||
-	    a.attachments != b.attachments) {
+	if (a.rendering_serial == 0 || a.rendering_serial != b.rendering_serial ||
+	    a.command != b.command || a.attachments != b.attachments) {
 		mask |= ChangePass;
 	}
 	mask |= a.programs != b.programs ? ChangePrograms : 0u;
@@ -84,7 +85,8 @@ inline constexpr char kChangeLetters[] = "IPLXMDWF";
 	if ((mask & ChangePass) != 0) return ReasonPass;
 	if ((mask & ChangePrograms) != 0) return ReasonPrograms;
 	if ((mask & ChangePipeline) != 0) return ReasonPipeState;
-	if ((mask & (ChangeTextures | ChangeSamplers)) == (ChangeTextures | ChangeSamplers)) return ReasonTexSamp;
+	if ((mask & (ChangeTextures | ChangeSamplers)) == (ChangeTextures | ChangeSamplers))
+		return ReasonTexSamp;
 	if ((mask & ChangeTextures) != 0) return ReasonTextures;
 	if ((mask & ChangeSamplers) != 0) return ReasonSamplers;
 	if ((mask & ChangeDynamic) != 0) return ReasonDynamic;

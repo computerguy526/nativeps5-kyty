@@ -234,25 +234,25 @@ public:
 	AttribScope(const AttribScope&)            = delete;
 	AttribScope& operator=(const AttribScope&) = delete;
 
-	void SetKind(AttribKind kind) noexcept { m_kind = kind; }
-	void SetAddress(uint64_t address) noexcept { m_address = address; }
-	void AddFlags(uint32_t flags) noexcept { m_flags |= flags; }
-	void SetReason(uint8_t reason) noexcept { m_reason = reason; }
+	void               SetKind(AttribKind kind) noexcept { m_kind = kind; }
+	void               SetAddress(uint64_t address) noexcept { m_address = address; }
+	void               AddFlags(uint32_t flags) noexcept { m_flags |= flags; }
+	void               SetReason(uint8_t reason) noexcept { m_reason = reason; }
 	[[nodiscard]] bool Active() const noexcept { return m_active; }
 
 private:
 	friend struct AttribAccess;
 	static constexpr uint32_t Frames = 28;
-	void*        m_frames[Frames] {};
-	AttribScope* m_parent    = nullptr;
-	uint64_t     m_start_ns  = 0;
-	uint64_t     m_nested_ns = 0;
-	uint64_t     m_address   = 0;
-	uint32_t     m_flags     = 0;
-	uint16_t     m_count     = 0;
-	uint8_t      m_reason    = 0;
-	AttribKind   m_kind      = AttribKind::Count;
-	bool         m_active    = false;
+	void*                     m_frames[Frames] {};
+	AttribScope*              m_parent    = nullptr;
+	uint64_t                  m_start_ns  = 0;
+	uint64_t                  m_nested_ns = 0;
+	uint64_t                  m_address   = 0;
+	uint32_t                  m_flags     = 0;
+	uint16_t                  m_count     = 0;
+	uint8_t                   m_reason    = 0;
+	AttribKind                m_kind      = AttribKind::Count;
+	bool                      m_active    = false;
 };
 class AttribReadbackScope {
 public:
@@ -266,14 +266,15 @@ private:
 	AttribPath m_prev_path    = AttribPath::None;
 	bool       m_active       = false;
 };
-// The tracker made [vaddr, vaddr + size) GPU-owned (any thread): site 0 a writable binding's upload,
-// 1 the same with the late copy, 2 another transition.
+// The tracker made [vaddr, vaddr + size) GPU-owned (any thread): site 0 a writable binding's
+// upload, 1 the same with the late copy, 2 another transition.
 void AttribNoteProducer(uint64_t vaddr, uint64_t size, uint8_t site) noexcept;
 // The command processor's current op, for producers (set by the renderer; GPU thread).
 using OpDescriber = const char* (*)();
 void SetOpDescriber(OpDescriber describer) noexcept;
 // The guest mapping containing vaddr (start, size, name), for the report (set by the renderer).
-using RangeDescriber = bool (*)(uint64_t vaddr, uint64_t* start, uint64_t* size, char* name, uint64_t name_size);
+using RangeDescriber = bool (*)(uint64_t vaddr, uint64_t* start, uint64_t* size, char* name,
+                                uint64_t name_size);
 void SetRangeDescriber(RangeDescriber describer) noexcept;
 
 } // namespace Libs::Graphics::FaultCost

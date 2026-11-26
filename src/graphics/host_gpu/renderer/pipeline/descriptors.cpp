@@ -1,10 +1,5 @@
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 
-#include "graphics/host_gpu/renderer/image/gbCopyRemap.h"
-#include "graphics/host_gpu/renderer/image/mipClamp.h"
-
-#include <dlfcn.h> // nps5 decalfix: KYTY_GBCOPY_REMAP=auto reads the recomp patch choices
-
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/common.h"
@@ -29,11 +24,6 @@
 #include "graphics/guest_gpu/tile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/hostMemory.h"
-#include "graphics/host_gpu/renderer/colorRenderTarget.h"
-#include "graphics/host_gpu/renderer/passTrace.h"
-#include "graphics/host_gpu/renderer/mipStream.h"
-#include "graphics/host_gpu/renderer/flightRecDraw.h"
-#include "graphics/host_gpu/renderer/inputProfileDraw.h"
 #include "graphics/host_gpu/renderer/cache/bufferLookupStats.h"
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
 #include "graphics/host_gpu/renderer/cpCommit.h"
@@ -48,10 +38,14 @@
 #include "graphics/host_gpu/renderer/drawPrep/xframeReuse.h"
 #include "graphics/host_gpu/renderer/flightRecDraw.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "graphics/host_gpu/renderer/image/gbCopyRemap.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
+#include "graphics/host_gpu/renderer/image/mipClamp.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/image/tilerTrace.h"
+#include "graphics/host_gpu/renderer/inputProfileDraw.h"
 #include "graphics/host_gpu/renderer/lodStats.h"
+#include "graphics/host_gpu/renderer/mipStream.h"
 #include "graphics/host_gpu/renderer/passTrace.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptorEncode.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
@@ -70,7 +64,6 @@
 #include "graphics/shader/shader.h"
 #include "kernel/memory.h"
 
-#include <filesystem>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -80,15 +73,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h> // nps5 decalfix: KYTY_GBCOPY_REMAP=auto reads the recomp patch choices
 #include <filesystem>
 #include <fmt/format.h>
 #include <limits>
 #include <map>
-#include <tuple>
 #include <mutex>
 #include <set>
 #include <span>
 #include <string>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 #include <xxhash.h>
@@ -106,13 +100,15 @@ namespace {
 
 using BindingKind = ShaderRecompiler::IR::DescriptorBindingKind;
 
-// Texture edge cases adapted from Erlou93/KytyPS5-Yotei (descriptors.cpp; the PPSA26344 preset turns
-// them on, default off). Each one binds a T# the strict checks below bound as null:
-//   KYTY_TEXTURE_MIN_LOD_CLAMP=1: a MIN_LOD past the last mip (streaming textures publish 4095 before
+// Texture edge cases adapted from Erlou93/KytyPS5-Yotei (descriptors.cpp; the PPSA26344 preset
+// turns them on, default off). Each one binds a T# the strict checks below bound as null:
+//   KYTY_TEXTURE_MIN_LOD_CLAMP=1: a MIN_LOD past the last mip (streaming textures publish 4095
+//   before
 //     their mips are resident) is clamped to the last level, as the sampler does.
-//   KYTY_TEXTURE_BASE_LAYER_CLAMP=1: a 1D/2D view of a one-layer image whose BASE_ARRAY names a layer
-//     the image does not have reads layer 0 (RDNA2 ISA table 45 lists BASE_ARRAY for array, 3D, cube
-//     and MSAA resources only).
+//   KYTY_TEXTURE_BASE_LAYER_CLAMP=1: a 1D/2D view of a one-layer image whose BASE_ARRAY names a
+//   layer
+//     the image does not have reads layer 0 (RDNA2 ISA table 45 lists BASE_ARRAY for array, 3D,
+//     cube and MSAA resources only).
 //   KYTY_TEXTURE_MISALIGNED_BASE=1: a base less aligned than its swizzle block but 256-byte aligned
 //     (the T# base is only required to be 256-byte aligned) is bound at its address.
 //   KYTY_DEPTH_ENCODING_FIELDS=1: a sampled depth T# that differs from the known encoding only in
@@ -135,9 +131,10 @@ uint32_t ImageCompareFuncs(const ShaderRecompiler::IR::CompiledShaderInfo& progr
 	if (index >= images.size() || !images[index].depth_compare) {
 		return 0u;
 	}
-	const auto root = images[index].indirect_root != ShaderRecompiler::IR::ImageResource::NoIndirectImage
-	                      ? images[index].indirect_root
-	                      : index;
+	const auto root =
+	    images[index].indirect_root != ShaderRecompiler::IR::ImageResource::NoIndirectImage
+	        ? images[index].indirect_root
+	        : index;
 	const auto& samplers = program.info.samplers;
 	uint32_t    funcs    = 0;
 	for (const auto& pair: program.info.sampled_pairs) {
@@ -159,8 +156,9 @@ bool TextureClampLastLevel() {
 	return on;
 }
 
-// KYTY_DCC_NO_META_RAW=1 (Erlou93/KytyPS5-Yotei DIAG_TEXTURE_DCC_WITHOUT_METADATA): a DCC-compressed T#
-// with META_ADDR 0 is sampled from its raw data, without metadata (else null, "invalid DCC metadata").
+// KYTY_DCC_NO_META_RAW=1 (Erlou93/KytyPS5-Yotei DIAG_TEXTURE_DCC_WITHOUT_METADATA): a
+// DCC-compressed T# with META_ADDR 0 is sampled from its raw data, without metadata (else null,
+// "invalid DCC metadata").
 bool DccNoMetaRaw() {
 	static const bool on = EnvFlag("KYTY_DCC_NO_META_RAW");
 	return on;
@@ -206,8 +204,8 @@ uint32_t DepthEncodingFieldsMode() {
 	return mode;
 }
 
-// A view's BASE_ARRAY past the image's layers: true when KYTY_TEXTURE_BASE_LAYER_CLAMP reads layer 0
-// instead (a 1D/2D view of a one-layer image).
+// A view's BASE_ARRAY past the image's layers: true when KYTY_TEXTURE_BASE_LAYER_CLAMP reads layer
+// 0 instead (a 1D/2D view of a one-layer image).
 bool ClampsBaseLayer(ShaderRecompiler::Decoder::ImageDimension dimension, uint32_t image_layers) {
 	using Dim = ShaderRecompiler::Decoder::ImageDimension;
 	return TextureBaseLayerClamp() && image_layers == 1u &&
@@ -236,8 +234,9 @@ vk::DescriptorType NativeDescriptorType(BindingKind kind) {
 		case BindingKind::FlattenedSrt:
 		case BindingKind::ShaderData:
 			// KYTY_SRT_UNIFORM: the emitter declares both tables as uniform blocks.
-			return ShaderRecompiler::Spirv::SrtUniformEnabled() ? vk::DescriptorType::eUniformBuffer
-			                                                    : vk::DescriptorType::eStorageBuffer;
+			return ShaderRecompiler::Spirv::SrtUniformEnabled()
+			           ? vk::DescriptorType::eUniformBuffer
+			           : vk::DescriptorType::eStorageBuffer;
 		case BindingKind::Count: EXIT("invalid native descriptor binding kind");
 	}
 	EXIT("invalid native descriptor binding kind");
@@ -339,7 +338,8 @@ static uint64_t StorageRangeCap(const GraphicContext& graphics) {
 	const auto mode = static_cast<int>(Common::Once(mode_once, [] {
 		const auto* value = std::getenv("KYTY_STORAGE_RANGE_CAP");
 		if (value == nullptr || *value == '\0' || std::strcmp(value, "auto") == 0) {
-			// KYTY_STORAGE_LENGTH_ZERO=1 makes shaders survive the zero length: bind the whole range.
+			// KYTY_STORAGE_LENGTH_ZERO=1 makes shaders survive the zero length: bind the whole
+			// range.
 			const auto* length_zero = std::getenv("KYTY_STORAGE_LENGTH_ZERO");
 			return length_zero != nullptr && std::strcmp(length_zero, "0") != 0 ? int64_t {0}
 			                                                                    : int64_t {2};
@@ -460,15 +460,15 @@ NativeStorageBuffer(RenderContext& context, const PreparedBindings::BufferSource
 	if (size > 0x7ffffffcu) {
 		// Bindings of 2 GiB or more (KYTY_STORAGE_RANGE_CAP / KYTY_STORAGE_LENGTH_ZERO): each guest
 		// range once, at most 64 lines.
-		static std::mutex                             logged_mutex;
+		static std::mutex                              logged_mutex;
 		static std::set<std::pair<uint64_t, uint64_t>> logged;
-		std::scoped_lock                              lock {logged_mutex};
+		std::scoped_lock                               lock {logged_mutex};
 		if (logged.size() < 64 && logged.emplace(address, size).second) {
-			std::printf("Storage binding over 2 GiB: %s slot=%u guest=0x%016" PRIx64 " size=0x%" PRIx64
-			            " host range=0x%" PRIx64 " read=%d written=%d formatted=%d\n",
-			            ShaderStageResourceName(stage), slot, address, size,
-			            static_cast<uint64_t>(range), resource.read ? 1 : 0, resource.written ? 1 : 0,
-			            resource.formatted ? 1 : 0);
+			std::printf(
+			    "Storage binding over 2 GiB: %s slot=%u guest=0x%016" PRIx64 " size=0x%" PRIx64
+			    " host range=0x%" PRIx64 " read=%d written=%d formatted=%d\n",
+			    ShaderStageResourceName(stage), slot, address, size, static_cast<uint64_t>(range),
+			    resource.read ? 1 : 0, resource.written ? 1 : 0, resource.formatted ? 1 : 0);
 		}
 	}
 	descriptor_scope.Stop();
@@ -548,7 +548,7 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor, bo
 	if (!descriptor.MetaCompress()) {
 		return true;
 	}
-	constexpr uint32_t htile_control = pipe_aligned | 1u << 21u;
+	constexpr uint32_t htile_control     = pipe_aligned | 1u << 21u;
 	const uint32_t expected_control  = htile_control | (descriptor.MsaaDepth() ? (1u << 10u) : 0u);
 	const auto     metadata_addr     = descriptor.MetaAddr() << 8u;
 	return metadata_control == expected_control && metadata_addr != 0 &&
@@ -602,7 +602,7 @@ uint32_t DepthEncodingFieldsVerdict(const ShaderTextureResource& descriptor, boo
 	const bool compressed = descriptor.MetaCompress();
 	used.fields[4]        = 0;
 	used.fields[5]        = (static_cast<uint32_t>(descriptor.PerfMod5()) << 20u) |
-	                 (static_cast<uint32_t>(descriptor.MaxMip()) << 4u);
+	                        (static_cast<uint32_t>(descriptor.MaxMip()) << 4u);
 	if (!compressed) {
 		used.fields[6] = 0;
 		used.fields[7] = 0;
@@ -631,14 +631,15 @@ static bool ValidateSampledDepthBinding(const ShaderRecompiler::IR::ImageResourc
 		if (verdict == 1u || mode == 2u) {
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
-				std::printf("Depth T# bound with %s (KYTY_DEPTH_ENCODING_FIELDS=%u): addr=0x%016" PRIx64
-				            " dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-				            verdict == 1u   ? "fields the texture unit does not use"
-				            : verdict == 2u ? "CORNER_SAMPLES set (approximation)"
-				                            : "an unknown encoding (approximation)",
-				            mode, descriptor.Base40(), descriptor.fields[0], descriptor.fields[1],
-				            descriptor.fields[2], descriptor.fields[3], descriptor.fields[4],
-				            descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+				std::printf(
+				    "Depth T# bound with %s (KYTY_DEPTH_ENCODING_FIELDS=%u): addr=0x%016" PRIx64
+				    " dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+				    verdict == 1u   ? "fields the texture unit does not use"
+				    : verdict == 2u ? "CORNER_SAMPLES set (approximation)"
+				                    : "an unknown encoding (approximation)",
+				    mode, descriptor.Base40(), descriptor.fields[0], descriptor.fields[1],
+				    descriptor.fields[2], descriptor.fields[3], descriptor.fields[4],
+				    descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
 			}
 			return true;
 		}
@@ -741,8 +742,8 @@ static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::Imag
 	const bool supported_swizzle =
 	    IsValidImageSwizzle(swizzle) &&
 	    (swizzle == DstSel(4, 5, 6, 7) || !resource.read || resource.atomic);
-	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) &&
-	       supported_tile && descriptor.BaseLevel() <= descriptor.LastLevel() &&
+	return (is_1d || is_1d_array || is_2d || is_2d_array || is_3d) && supported_tile &&
+	       descriptor.BaseLevel() <= descriptor.LastLevel() &&
 	       // A 4.8 fixed-point MIN_LOD at or below BASE_LEVEL clamps no level of the view.
 	       descriptor.MinLod() <= descriptor.BaseLevel() * 256u && supported_swizzle &&
 	       descriptor.BCSwizzle() == 0 && !descriptor.MsaaDepth();
@@ -761,10 +762,10 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	    ShaderRecompiler::GetCodegenOptions().raw_small_sint_storage &&
 	    (format == Prospero::BufferFormat::k16SInt || format == Prospero::BufferFormat::k8SInt) &&
 	    uint_resource && resource.written && !resource.read && !resource.atomic;
-	const bool raw_sint_storage = raw_small_sint_storage ||
-	                              (format == Prospero::BufferFormat::k32SInt && uint_resource &&
-	                               resource.written &&
-	                               (resource.atomic ? !resource.atomic64 : !resource.read));
+	const bool raw_sint_storage =
+	    raw_small_sint_storage ||
+	    (format == Prospero::BufferFormat::k32SInt && uint_resource && resource.written &&
+	     (resource.atomic ? !resource.atomic64 : !resource.read));
 	const auto numeric_class = Prospero::SampledTextureNumericClass(format);
 	const bool raw_float_atomic = format == Prospero::BufferFormat::k32Float && uint_resource &&
 	                              resource.atomic && !resource.atomic64;
@@ -814,22 +815,26 @@ bool ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	return false;
 }
 
-// nps5 decalfix: KYTY_GBCOPY_REMAP (default unset = off; on for ASTRO BOT through its profile / the RC launcher).
-// The game's G-buffer copy (an A2B10G10R10 texture written texel for texel by a compute from C1/C2 and sampled by the
-// G-buffer decals, wet decal PS 665a7b15 among them, with the UV fragcoord / depth size) is allocated at the game's
-// NATIVE dynamic-resolution level size (1920x1080 level 0, 2432x1368 level 1), while the recomp patch profile's
-// "upscaling" / "render_scale" choices make the G-buffer and depth smaller (1280x720 / 960x540). The decals then read
-// the copy at 1.5x / 2.53x the right position (the yellow/red tint and stripes on wet Astro). This remaps the extent of
-// every A2B10G10R10 2D single-level texture/storage T# of a native level size to the scaled size (pitch and
-// footprint follow), so writer and readers see a G-buffer-sized image as on PS5. Only that format: the post chain
-// at 2432x1368 (RGBA16F) is untouched. Values:
-//   auto                  pairs from the running program's patch choices (nps5_choices_*, exported by the recomp
-//                         runtime): for each {width,height} value site of "upscaling" and "render_scale", native =
-//                         the game's own (largest) option value, scaled = the chosen option; no pair when the chosen
-//                         option is the native size (Upscaling off, Render scale 720p) or the choices are not found.
+// nps5 decalfix: KYTY_GBCOPY_REMAP (default unset = off; on for ASTRO BOT through its profile / the
+// RC launcher). The game's G-buffer copy (an A2B10G10R10 texture written texel for texel by a
+// compute from C1/C2 and sampled by the G-buffer decals, wet decal PS 665a7b15 among them, with the
+// UV fragcoord / depth size) is allocated at the game's NATIVE dynamic-resolution level size
+// (1920x1080 level 0, 2432x1368 level 1), while the recomp patch profile's "upscaling" /
+// "render_scale" choices make the G-buffer and depth smaller (1280x720 / 960x540). The decals then
+// read the copy at 1.5x / 2.53x the right position (the yellow/red tint and stripes on wet Astro).
+// This remaps the extent of every A2B10G10R10 2D single-level texture/storage T# of a native level
+// size to the scaled size (pitch and footprint follow), so writer and readers see a G-buffer-sized
+// image as on PS5. Only that format: the post chain at 2432x1368 (RGBA16F) is untouched. Values:
+//   auto                  pairs from the running program's patch choices (nps5_choices_*, exported
+//   by the recomp
+//                         runtime): for each {width,height} value site of "upscaling" and
+//                         "render_scale", native = the game's own (largest) option value, scaled =
+//                         the chosen option; no pair when the chosen option is the native size
+//                         (Upscaling off, Render scale 720p) or the choices are not found.
 //   <W>x<H>=<w>x<h>,...   explicit pairs (override).
 //   0 / unset             off.
-// The proper fix is the copy's allocation in the recomp render_scale profile. Runtime only (no codegen change).
+// The proper fix is the copy's allocation in the recomp render_scale profile. Runtime only (no
+// codegen change).
 namespace GbCopyChoices {
 static void Derive(std::vector<GbCopyRemap>& out) {
 	auto count = reinterpret_cast<CountFn>(dlsym(RTLD_DEFAULT, "nps5_choices_count"));
@@ -841,7 +846,7 @@ static void Derive(std::vector<GbCopyRemap>& out) {
 static const std::vector<GbCopyRemap>& GbCopyRemaps() {
 	static const std::vector<GbCopyRemap> remaps = [] {
 		std::vector<GbCopyRemap> out;
-		const char* value = std::getenv("KYTY_GBCOPY_REMAP");
+		const char*              value = std::getenv("KYTY_GBCOPY_REMAP");
 		if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
 			return out;
 		}
@@ -851,7 +856,8 @@ static const std::vector<GbCopyRemap>& GbCopyRemaps() {
 			(void)ParseGbCopyPairs(value, out);
 		}
 		for (const auto& r: out) {
-			std::printf("[decalfix] KYTY_GBCOPY_REMAP on: A2B10G10R10 textures %ux%u -> %ux%u (G-buffer copy)\n",
+			std::printf("[decalfix] KYTY_GBCOPY_REMAP on: A2B10G10R10 textures %ux%u -> %ux%u "
+			            "(G-buffer copy)\n",
 			            r.from_w, r.from_h, r.to_w, r.to_h);
 		}
 		return out;
@@ -869,8 +875,8 @@ static void GbCopyRemapExtent(Prospero::BufferFormat format, bool plain_2d, uint
 	if (ApplyGbCopyRemap(remaps, width, height)) {
 		static std::atomic_uint32_t logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
-			std::printf("[decalfix] remap A2B10G10R10 addr=0x%010" PRIx64 " %ux%u -> %ux%u\n", address, from_w,
-			            from_h, width, height);
+			std::printf("[decalfix] remap A2B10G10R10 addr=0x%010" PRIx64 " %ux%u -> %ux%u\n",
+			            address, from_w, from_h, width, height);
 		}
 	}
 }
@@ -881,7 +887,8 @@ TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::ImageResourc
 	switch (resource.numeric_class) {
 		case Prospero::TextureNumericClass::Float:
 			// KYTY_NULL_TEXTURE_ZERO (Erlou93/KytyPS5-Yotei): a sampled null float texture is the
-			// RGBA32F null image, cleared to (0, 0, 0, 0) (textureCache.cpp GetNullImage). Storage: R32F.
+			// RGBA32F null image, cleared to (0, 0, 0, 0) (textureCache.cpp GetNullImage). Storage:
+			// R32F.
 			desc.info.guest_format = NullTextureZeroEnabled() &&
 			                                 binding == TextureCache::BindingType::Texture &&
 			                                 !resource.depth_compare
@@ -897,9 +904,9 @@ TextureCache::ImageDesc NullTextureDesc(const ShaderRecompiler::IR::ImageResourc
 			break;
 		default: EXIT("null image has unsupported numeric class\n");
 	}
-	// KYTY_NULL_COMPARE_DEPTH (Erlou NullCompareBinding): a 1x1 D16 holding the depth that fails the
-	// S#'s comparison; before, a D32 that was never written (undefined compare result).
-	const bool compare_d16    = resource.depth_compare && NullCompareDepthEnabled() &&
+	// KYTY_NULL_COMPARE_DEPTH (Erlou NullCompareBinding): a 1x1 D16 holding the depth that fails
+	// the S#'s comparison; before, a D32 that was never written (undefined compare result).
+	const bool compare_d16 = resource.depth_compare && NullCompareDepthEnabled() &&
 	                         binding == TextureCache::BindingType::Texture;
 	if (compare_d16) {
 		desc.info.guest_format = Prospero::BufferFormat::k16UNorm;
@@ -999,10 +1006,13 @@ static void PopulateTextureMipLayout(ImageInfo& info) {
 // first bytes of its own. False where that does not hold byte for byte (every level's offset, size
 // and padding compared). (chenxiao07/KytyPS5 080986b3f, c965985ff.)
 static bool TextureFromLevel(const ImageInfo& full, uint32_t first, ImageInfo& out) {
-	if (first == 0 || first >= full.resources.levels || full.resources.levels > full.mip_layout.size()) {
+	if (first == 0 || first >= full.resources.levels ||
+	    full.resources.levels > full.mip_layout.size()) {
 		return false;
 	}
-	const auto shift = [&](uint32_t value) { return std::max((value + (1u << first) - 1u) >> first, 1u); };
+	const auto shift = [&](uint32_t value) {
+		return std::max((value + (1u << first) - 1u) >> first, 1u);
+	};
 	out                  = full;
 	out.extent.width     = shift(full.extent.width);
 	out.extent.height    = shift(full.extent.height);
@@ -1011,7 +1021,8 @@ static bool TextureFromLevel(const ImageInfo& full, uint32_t first, ImageInfo& o
 	if (TileSurfaceLayout probe {};
 	    full.tile_mode != Prospero::TileMode::kLinear &&
 	    !TileGetTiledTextureLayout({full.guest_format, full.tile_mode, TileSurfaceDimension::Dim2D,
-	                                out.extent.width, out.extent.height, 1, out.resources.levels, 1},
+	                                out.extent.width, out.extent.height, 1, out.resources.levels,
+	                                1},
 	                               probe)) {
 		return false;
 	}
@@ -1032,7 +1043,8 @@ static bool TextureFromLevel(const ImageInfo& full, uint32_t first, ImageInfo& o
 	PopulateTextureMipLayout(out);
 	for (uint32_t level = 0; level < out.resources.levels; ++level) {
 		const auto& mip = out.mip_layout[level];
-		if (mip != full.mip_layout[first + level] || mip.size == 0 || mip.offset + mip.size > out.data.size) {
+		if (mip != full.mip_layout[first + level] || mip.size == 0 ||
+		    mip.offset + mip.size > out.data.size) {
 			return false;
 		}
 	}
@@ -1050,10 +1062,11 @@ static bool TexturePrefixEnabled() {
 }
 
 // KYTY_TEXTURE_REDUCE=0|1|2 (default 0 here; chenxiao's default 1 below 12 GiB of video memory):
-// a sampled 2D block-compressed texture (or array of them) of at least 1024 texels on a side is held
-// without its 1 or 2 largest levels (TextureFromLevel): the left-out levels take no video memory
-// and are not uploaded when the game writes them. Shaders then sample the smaller texture (a little
-// blur). Demon's Souls also streams none of those levels (loader/demonsSoulsTextureMips.cpp).
+// a sampled 2D block-compressed texture (or array of them) of at least 1024 texels on a side is
+// held without its 1 or 2 largest levels (TextureFromLevel): the left-out levels take no video
+// memory and are not uploaded when the game writes them. Shaders then sample the smaller texture (a
+// little blur). Demon's Souls also streams none of those levels
+// (loader/demonsSoulsTextureMips.cpp).
 uint32_t TextureReduceLevels() {
 	static const uint32_t levels = [] {
 		const char*    value  = std::getenv("KYTY_TEXTURE_REDUCE");
@@ -1061,9 +1074,10 @@ uint32_t TextureReduceLevels() {
 		                            ? static_cast<uint32_t>(std::clamp(std::atoi(value), 0, 2))
 		                            : 0u;
 		if (chosen != 0) {
-			std::printf("Textures: large block-compressed textures held without their %u largest level(s) "
-			            "(KYTY_TEXTURE_REDUCE)\n",
-			            chosen);
+			std::printf(
+			    "Textures: large block-compressed textures held without their %u largest level(s) "
+			    "(KYTY_TEXTURE_REDUCE)\n",
+			    chosen);
 			std::fflush(stdout);
 		}
 		return chosen;
@@ -1079,19 +1093,21 @@ static void HoldFromBaseLevel(TextureCache& cache, TextureCache::ImageDesc& desc
 	// the GPU wrote).
 	const auto reduce = TextureReduceLevels();
 	const auto drop   = reduce != 0 && full.IsBlock() &&
-	                          std::max(full.extent.width, full.extent.height) >= 1024u &&
-	                          full.resources.levels > reduce && last >= reduce &&
-	                          !cache.IsRegionGpuModified(full.data.address, full.data.size) &&
-	                          !cache.HasGpuWrittenImageOverlap(full.data.address, full.data.size)
+	                            std::max(full.extent.width, full.extent.height) >= 1024u &&
+	                            full.resources.levels > reduce && last >= reduce &&
+	                            !cache.IsRegionGpuModified(full.data.address, full.data.size) &&
+	                            !cache.HasGpuWrittenImageOverlap(full.data.address, full.data.size)
 	                        ? reduce
 	                        : 0u;
 	// The first level held: the T#'s base, or past the levels left out.
 	const auto first_held = std::max(base, drop);
-	// (An array only for the levels left out: one held from its T#'s later base level is not tried.)
+	// (An array only for the levels left out: one held from its T#'s later base level is not
+	// tried.)
 	if (first_held == 0 || (drop == 0 && (!TexturePrefixEnabled() || full.resources.layers > 1)) ||
-	    full.resources.layers == 0 || full.samples != 1 || full.type != Prospero::ImageType::kColor2D ||
-	    full.IsVolume() || full.IsDepth() || full.HasMetadata() || full.HasStencil() ||
-	    full.tile_mode == Prospero::TileMode::kLinear || full.tile_mode == Prospero::TileMode::kDepth ||
+	    full.resources.layers == 0 || full.samples != 1 ||
+	    full.type != Prospero::ImageType::kColor2D || full.IsVolume() || full.IsDepth() ||
+	    full.HasMetadata() || full.HasStencil() || full.tile_mode == Prospero::TileMode::kLinear ||
+	    full.tile_mode == Prospero::TileMode::kDepth ||
 	    full.tile_mode == Prospero::TileMode::kRenderTarget || cache.HoldsImage(full)) {
 		return;
 	}
@@ -1126,7 +1142,8 @@ static bool TextureLayerRangeEnabled() {
 	return enabled;
 }
 
-static void HoldLayerRange(TextureCache& cache, TextureCache::ImageDesc& desc, uint32_t max_layers) {
+static void HoldLayerRange(TextureCache& cache, TextureCache::ImageDesc& desc,
+                           uint32_t max_layers) {
 	constexpr uint64_t LayerRangeLeftOut = uint64_t {64} << 20u;
 	const auto&        full              = desc.info;
 	const auto         first             = desc.view_info.base_layer;
@@ -1157,12 +1174,13 @@ static void HoldLayerRange(TextureCache& cache, TextureCache::ImageDesc& desc, u
 	if (full.data.size >= (uint64_t {256} << 20u)) {
 		static std::atomic<uint32_t> reports {0};
 		if (reports.fetch_add(1, std::memory_order_relaxed) < 16) {
-			std::printf("TextureCache: array view held as layers %u..%u of %u (0x%llx, %llu of %llu MiB; "
-			            "KYTY_TEXTURE_LAYER_RANGE)\n",
-			            first, first + count - 1, full.resources.layers,
-			            static_cast<unsigned long long>(from.data.address),
-			            static_cast<unsigned long long>(from.data.size >> 20u),
-			            static_cast<unsigned long long>(full.data.size >> 20u));
+			std::printf(
+			    "TextureCache: array view held as layers %u..%u of %u (0x%llx, %llu of %llu MiB; "
+			    "KYTY_TEXTURE_LAYER_RANGE)\n",
+			    first, first + count - 1, full.resources.layers,
+			    static_cast<unsigned long long>(from.data.address),
+			    static_cast<unsigned long long>(from.data.size >> 20u),
+			    static_cast<unsigned long long>(full.data.size >> 20u));
 		}
 	}
 	desc.info                 = from;
@@ -1170,11 +1188,13 @@ static void HoldLayerRange(TextureCache& cache, TextureCache::ImageDesc& desc, u
 }
 
 // A sampled array's view: its layers from the base, no more than the shader can reach
-// (ImageResource::max_array_index, computed with KYTY_TEXTURE_LAYER_BOUND=1 only; chenxiao07/KytyPS5
-// d44e93d81). Demon's Souls' texture-pool views read 256 of up to 2,255 layers.
-static uint32_t ArrayViewLayers(const ShaderRecompiler::IR::ImageResource& resource, uint32_t layers) {
+// (ImageResource::max_array_index, computed with KYTY_TEXTURE_LAYER_BOUND=1 only;
+// chenxiao07/KytyPS5 d44e93d81). Demon's Souls' texture-pool views read 256 of up to 2,255 layers.
+static uint32_t ArrayViewLayers(const ShaderRecompiler::IR::ImageResource& resource,
+                                uint32_t                                   layers) {
 	// (A cube array's layer coordinate counts cubes, its faces six layers each: never bounded.)
-	return !resource.cube && resource.max_array_index < layers ? resource.max_array_index + 1u : layers;
+	return !resource.cube && resource.max_array_index < layers ? resource.max_array_index + 1u
+	                                                           : layers;
 }
 
 static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& resource,
@@ -1190,7 +1210,8 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 		EXIT("texture minimum LOD exceeds last mip level: min_lod=%u last_level=%u\n",
 		     descriptor.MinLod(), descriptor.LastLevel());
 	}
-	// KYTY_TEXTURE_MIN_LOD_CLAMP: the sampler clamps a minimum LOD past the last level to that level.
+	// KYTY_TEXTURE_MIN_LOD_CLAMP: the sampler clamps a minimum LOD past the last level to that
+	// level.
 	const auto min_lod  = std::min<uint32_t>(descriptor.MinLod(), descriptor.LastLevel() * 256u);
 	const auto base_lod = view.base_level * 256u;
 	if (min_lod > base_lod) {
@@ -1222,7 +1243,8 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 		case ShaderRecompiler::Decoder::ImageDimension::Dim2DMsaa:
 			view.type       = vk::ImageViewType::e2D;
 			view.base_layer = descriptor.BaseArray5();
-			if (view.base_layer >= image_layers && ClampsBaseLayer(resource.dimension, image_layers)) {
+			if (view.base_layer >= image_layers &&
+			    ClampsBaseLayer(resource.dimension, image_layers)) {
 				view.base_layer = 0;
 			}
 			if (view.base_layer >= image_layers) {
@@ -1238,8 +1260,8 @@ static ImageViewInfo TextureViewInfo(const ShaderRecompiler::IR::ImageResource& 
 // view_source: the T#'s chain when `description` is not it (a view rebased past MAX_MIP);
 // otherwise the view is `description` with `levels` levels.
 static bool ResolveTextureMipView(const TileSurfaceDescription& description, bool metadata,
-                                   uint32_t view_levels, uint32_t& levels, uint32_t& base_level,
-                                   const TileSurfaceDescription* view_source = nullptr) {
+                                  uint32_t view_levels, uint32_t& levels, uint32_t& base_level,
+                                  const TileSurfaceDescription* view_source = nullptr) {
 	TileSurfaceLayout physical {};
 	TileSurfaceLayout view {};
 	auto              view_description = view_source != nullptr ? *view_source : description;
@@ -1323,9 +1345,9 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	// IMAGE_STORE addresses BASE_LEVEL; only IMAGE_STORE_MIP selects other view mips.
 	const bool single_storage_mip =
 	    storage && resource.mip_mode != ShaderRecompiler::IR::ImageMipMode::Dynamic;
-	auto       view_levels = multisampled || single_storage_mip
-	                             ? 1u
-	                             : static_cast<uint32_t>(last_level - base_level) + 1u;
+	auto view_levels = multisampled || single_storage_mip
+	                       ? 1u
+	                       : static_cast<uint32_t>(last_level - base_level) + 1u;
 	auto levels =
 	    multisampled ? 1u : std::max(physical_levels, base_level + view_levels);
 	const auto tile       = descriptor.TileMode();
@@ -1357,15 +1379,17 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	const auto depth          = static_cast<uint32_t>(descriptor.Depth()) + 1u;
 	// KYTY_DEPTH_BITS_READ (upstream aafe014d0): a raw load of a kDepth k16UInt T# binds the D16
 	// surface as UNorm (ShaderRecompiler::IR::ReadsDepthBits; the shader converts back).
-	const auto format         = ShaderRecompiler::IR::ReadsDepthBits(resource)
-	                                ? Prospero::BufferFormat::k16UNorm
-	                                : descriptor.Format();
-	// nps5 decalfix (KYTY_GBCOPY_REMAP, off by default): before pitch / footprint / view are derived.
-	GbCopyRemapExtent(format, !multisampled && type == Prospero::ImageType::kColor2D && max_mip == 0, address,
-	                  width, height);
+	const auto format = ShaderRecompiler::IR::ReadsDepthBits(resource)
+	                        ? Prospero::BufferFormat::k16UNorm
+	                        : descriptor.Format();
+	// nps5 decalfix (KYTY_GBCOPY_REMAP, off by default): before pitch / footprint / view are
+	// derived.
+	GbCopyRemapExtent(format,
+	                  !multisampled && type == Prospero::ImageType::kColor2D && max_mip == 0,
+	                  address, width, height);
 	// KYTY_CLAMP_MIP_TO_EXTENT (mipClamp.h): a T# naming more levels than its extent holds would
 	// abort Metal at texture creation. Clamp before the image, views and mip_layout are derived.
-	uint32_t   clamp_base = base_level;
+	uint32_t       clamp_base        = base_level;
 	const uint32_t declared_physical = physical_levels; // the guest layout keeps the declared count
 	bool           mip_clamped       = false;
 	if (!multisampled && MipClamp::Enabled()) {
@@ -1375,10 +1399,11 @@ static TextureCache::ImageDesc BuildTextureDescription(
 		    base_level + view_levels > max_levels) {
 			static std::atomic_bool logged {false};
 			if (Common::LogOnce(logged)) {
-				std::printf("Warning: texture mip levels clamped to extent (KYTY_CLAMP_MIP_TO_EXTENT; "
-				            "logged once): %ux%u depth=%u physical=%u levels=%u view=%u+%u max=%u\n",
-				            width, height, depth, physical_levels, levels, base_level, view_levels,
-				            max_levels);
+				std::printf(
+				    "Warning: texture mip levels clamped to extent (KYTY_CLAMP_MIP_TO_EXTENT; "
+				    "logged once): %ux%u depth=%u physical=%u levels=%u view=%u+%u max=%u\n",
+				    width, height, depth, physical_levels, levels, base_level, view_levels,
+				    max_levels);
 			}
 			physical_levels = std::min(physical_levels, max_levels);
 			levels          = std::min(levels, max_levels);
@@ -1408,7 +1433,7 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	const bool    layered      = type == Prospero::ImageType::kColor1DArray ||
 	                             type == Prospero::ImageType::kColor2DArray ||
 	                             type == Prospero::ImageType::kColor2DMsaaArray;
-	auto          image_layers = layered ? depth : 1u;
+	auto image_layers = layered ? depth : 1u;
 	// A cube holds six faces even when DEPTH, its last face slice, ends before them (upstream
 	// cdd44764d).
 	if (descriptor.Type() == Prospero::ImageType::kCube) {
@@ -1423,10 +1448,10 @@ static TextureCache::ImageDesc BuildTextureDescription(
 		bool       resolved = false;
 		if (base_level >= physical_levels && tile != Prospero::TileMode::kLinear && !volume &&
 		    TextureRebasePastMaxMip()) {
-			auto rebased   = physical;
-			rebased.width  = std::max(width >> base_level, 1u);
-			rebased.height = std::max(height >> base_level, 1u);
-			rebased.levels = view_levels;
+			auto rebased        = physical;
+			rebased.width       = std::max(width >> base_level, 1u);
+			rebased.height      = std::max(height >> base_level, 1u);
+			rebased.levels      = view_levels;
 			auto rebased_levels = levels;
 			auto rebased_base   = static_cast<uint32_t>(base_level);
 			if (ResolveTextureMipView(rebased, metadata, view_levels, rebased_levels, rebased_base,
@@ -1443,10 +1468,10 @@ static TextureCache::ImageDesc BuildTextureDescription(
 			resolved = ResolveTextureMipView(physical, metadata, view_levels, levels, view_base);
 		}
 		if (!resolved && TextureClampLastLevel()) {
-			// KYTY_TEXTURE_CLAMP_LAST_LEVEL (Erlou93/KytyPS5-Yotei FIX_TEXTURE_CLAMP_LAST_LEVEL, logged
-			// APPROXIMATION there): a view whose LAST_LEVEL exceeds the allocated MAX_MIP (partially
-			// resident streaming textures) keeps only the allocated mips; a BASE_LEVEL beyond MAX_MIP
-			// views the last allocated mip. Before: bound as null.
+			// KYTY_TEXTURE_CLAMP_LAST_LEVEL (Erlou93/KytyPS5-Yotei FIX_TEXTURE_CLAMP_LAST_LEVEL,
+			// logged APPROXIMATION there): a view whose LAST_LEVEL exceeds the allocated MAX_MIP
+			// (partially resident streaming textures) keeps only the allocated mips; a BASE_LEVEL
+			// beyond MAX_MIP views the last allocated mip. Before: bound as null.
 			static std::atomic_uint32_t clamp_logged {0};
 			if (clamp_logged.fetch_add(1, std::memory_order_relaxed) < 8u) {
 				std::printf("KYTY_TEXTURE_CLAMP_LAST_LEVEL: base=%u last=%u max=%u extent=%ux%u\n",
@@ -1493,18 +1518,20 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	}
 	// KYTY_TEXTURE_MISALIGNED_BASE: a 256-byte aligned base below its swizzle block's alignment is
 	// bound at its address (the swizzle offsets are base-relative). Erlou logged only SW_4KB_S
-	// textures at mip-tail positions (Ghost of Yotei's small RGBA16F mips written and read per level).
+	// textures at mip-tail positions (Ghost of Yotei's small RGBA16F mips written and read per
+	// level).
 	const bool misaligned_base = TextureMisalignedBase() && size.size != 0 && size.align != 0 &&
 	                             (address & (static_cast<uint64_t>(size.align) - 1u)) != 0 &&
 	                             (address & 0xffu) == 0;
 	if (misaligned_base) {
 		static std::atomic<uint32_t> logged {0};
-		const auto n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
+		const auto                   n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
 		if (n <= 8u || std::has_single_bit(n)) {
-			std::printf("Texture misaligned base #%u (KYTY_TEXTURE_MISALIGNED_BASE): addr=0x%016" PRIx64
-			            " align=0x%x %ux%u format=%u tile=%u size=0x%x %s\n",
-			            n, address, size.align, width, height, static_cast<uint32_t>(format),
-			            static_cast<uint32_t>(tile), size.size, storage ? "storage" : "sampled");
+			std::printf(
+			    "Texture misaligned base #%u (KYTY_TEXTURE_MISALIGNED_BASE): addr=0x%016" PRIx64
+			    " align=0x%x %ux%u format=%u tile=%u size=0x%x %s\n",
+			    n, address, size.align, width, height, static_cast<uint32_t>(format),
+			    static_cast<uint32_t>(tile), size.size, storage ? "storage" : "sampled");
 		}
 	}
 	if (!misaligned_base && (size.size == 0 || size.align == 0 ||
@@ -1550,22 +1577,24 @@ static TextureCache::ImageDesc BuildTextureDescription(
 			pixel_format = depth_format->depth_attachment_format;
 		}
 	}
-	// KYTY_RAW_SMALL_SINT_STORAGE: the uint view of a 16/8-bit SINT storage image (Erlou93/KytyPS5-Yotei).
-	const bool small_sint_view = storage && ShaderRecompiler::GetCodegenOptions().raw_small_sint_storage &&
+	// KYTY_RAW_SMALL_SINT_STORAGE: the uint view of a 16/8-bit SINT storage image
+	// (Erlou93/KytyPS5-Yotei).
+	const bool small_sint_view = storage &&
+	                             ShaderRecompiler::GetCodegenOptions().raw_small_sint_storage &&
 	                             resource.numeric_class == Prospero::TextureNumericClass::Uint;
-	const auto storage_view_format = resource.atomic64 ? vk::Format::eR64Uint
-	                                 : storage && (resource.atomic ||
-	                                               format == Prospero::BufferFormat::k32SInt)
-	                                     ? vk::Format::eR32Uint
-	                                 : small_sint_view && format == Prospero::BufferFormat::k16SInt
-	                                     ? vk::Format::eR16Uint
-	                                 : small_sint_view && format == Prospero::BufferFormat::k8SInt
-	                                     ? vk::Format::eR8Uint
-	                                     : SrgbUnormViewFormat(pixel_format);
-	auto view_format = storage && storage_view_format != vk::Format::eUndefined ? storage_view_format
-	                                                                            : pixel_format;
-	// KYTY_SRGB8_VIEW: a sampled 8 sRGB texture reads its R8_UNORM image (MUTABLE_FORMAT) through an
-	// R8_SRGB view: the sampler decodes before filtering, as the PS5 does.
+	const auto storage_view_format =
+	    resource.atomic64 ? vk::Format::eR64Uint
+	    : storage && (resource.atomic || format == Prospero::BufferFormat::k32SInt)
+	        ? vk::Format::eR32Uint
+	    : small_sint_view && format == Prospero::BufferFormat::k16SInt ? vk::Format::eR16Uint
+	    : small_sint_view && format == Prospero::BufferFormat::k8SInt
+	        ? vk::Format::eR8Uint
+	        : SrgbUnormViewFormat(pixel_format);
+	auto view_format = storage && storage_view_format != vk::Format::eUndefined
+	                       ? storage_view_format
+	                       : pixel_format;
+	// KYTY_SRGB8_VIEW: a sampled 8 sRGB texture reads its R8_UNORM image (MUTABLE_FORMAT) through
+	// an R8_SRGB view: the sampler decodes before filtering, as the PS5 does.
 	if (!storage && !resource.depth_compare && format == Prospero::BufferFormat::k8Srgb &&
 	    pixel_format == vk::Format::eR8Unorm && Prospero::Srgb8ViewActive()) {
 		view_format = vk::Format::eR8Srgb;
@@ -1623,8 +1652,8 @@ static TextureCache::ImageDesc BuildTextureDescription(
 		// a T# read after its reuse. Bound as null (a bindless key stays on its placeholder).
 		if (descriptor.MinLod() > descriptor.LastLevel() * 256u && !TextureMinLodClamp()) {
 			static std::atomic_bool logged {false};
-			return SkipTextureDescriptor(resource, descriptor, "texture minimum LOD past its last mip",
-			                             logged);
+			return SkipTextureDescriptor(resource, descriptor,
+			                             "texture minimum LOD past its last mip", logged);
 		}
 		if (resource.dimension != ShaderRecompiler::Decoder::ImageDimension::Dim3D &&
 		    descriptor.BaseArray5() >= desc.info.resources.layers &&
@@ -1647,26 +1676,28 @@ static TextureCache::ImageDesc BuildTextureDescription(
 	desc.type = storage ? TextureCache::BindingType::Storage : TextureCache::BindingType::Texture;
 	const auto first_layer = desc.view_info.base_layer;
 	if (ArrayViewSubrange() && layered && !storage && first_layer != 0 &&
-	    first_layer < desc.info.resources.layers && desc.info.resources.levels == 1 && samples == 1 &&
-	    desc.info.metadata.kind == ImageMetadataKind::None &&
+	    first_layer < desc.info.resources.layers && desc.info.resources.levels == 1 &&
+	    samples == 1 && desc.info.metadata.kind == ImageMetadataKind::None &&
 	    desc.info.data.size % desc.info.resources.layers == 0) {
 		const auto slice  = desc.info.data.size / desc.info.resources.layers;
 		const auto layers = desc.info.resources.layers - first_layer;
 		// The layers' bytes are one slice each (one level), so the sub-array is a contiguous range
 		// with the whole array's slice layout.
-		if (desc.info.mip_layout[0].offset == 0 && desc.info.mip_layout[0].size == desc.info.data.size &&
+		if (desc.info.mip_layout[0].offset == 0 &&
+		    desc.info.mip_layout[0].size == desc.info.data.size &&
 		    (slice & (static_cast<uint64_t>(size.align) - 1u)) == 0) {
-			desc.info.data             = {address + slice * first_layer, slice * layers};
-			desc.info.resources.layers = layers;
+			desc.info.data               = {address + slice * first_layer, slice * layers};
+			desc.info.resources.layers   = layers;
 			desc.info.mip_layout[0].size = slice * layers;
-			desc.view_info.base_layer  = 0;
-			desc.view_info.layer_count = std::min(desc.view_info.layer_count, layers);
+			desc.view_info.base_layer    = 0;
+			desc.view_info.layer_count   = std::min(desc.view_info.layer_count, layers);
 			static std::atomic<uint32_t> logged {0};
-			const auto n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
+			const auto                   n = logged.fetch_add(1, std::memory_order_relaxed) + 1u;
 			if (n <= 4u || std::has_single_bit(n)) {
 				std::printf("Array view subrange #%u (KYTY_ARRAY_VIEW_SUBRANGE): addr=0x%016" PRIx64
 				            " %ux%u layers %u..%u slice=0x%" PRIx64 "\n",
-				            n, address, width, height, first_layer, first_layer + layers - 1u, slice);
+				            n, address, width, height, first_layer, first_layer + layers - 1u,
+				            slice);
 			}
 		}
 	}
@@ -1717,8 +1748,8 @@ void RenderExecutor::ResolveTexture(const ShaderRecompiler::IR::ImageResource&  
 	auto&      texture_cache     = m_context.GetTextureCache();
 	// KYTY_NULL_COMPARE_DEPTH: a null depth-compare binding depends on the S#s, which the memo key
 	// does not hold, so depth-compare bindings are not memoized.
-	const bool memo              = TextureBindingMemo::Enabled() &&
-	                  !(resource.depth_compare && NullCompareDepthEnabled());
+	const bool memo =
+	    TextureBindingMemo::Enabled() && !(resource.depth_compare && NullCompareDepthEnabled());
 	const bool description_cache =
 	    Common::RendererBatchEnabled() && resource.indirect_resources.size() <= 256u;
 	TextureBindingMemo::Key memo_key;
@@ -1834,14 +1865,12 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 	}
 
 	if (description_cache) {
-		const TextureDescriptionKey key {resource.resource_class, resource.numeric_class,
-		                                 resource.dimension,      resource.mip_mode,
-		                                 resource.mip_count,      resource.conversion_format,
-		                                 resource.shader_swizzle, resource.read,
-		                                 resource.written,        resource.atomic,
-		                                 resource.depth_compare,  resource.cube,
-		                                 resource.r128,           resource.atomic64,
-		                                 resource.max_array_index};
+		const TextureDescriptionKey key {
+		    resource.resource_class, resource.numeric_class, resource.dimension,
+		    resource.mip_mode,       resource.mip_count,     resource.conversion_format,
+		    resource.shader_swizzle, resource.read,          resource.written,
+		    resource.atomic,         resource.depth_compare, resource.cube,
+		    resource.r128,           resource.atomic64,      resource.max_array_index};
 		// TextureBindingMemo::Hash is this cache's hash of the dwords and key.
 		auto& entry = m_texture_descriptions[hash % m_texture_descriptions.size()];
 		if (entry.valid && entry.key == key &&
@@ -1873,7 +1902,9 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 		HoldFromBaseLevel(texture_cache, desc);
 	}
 	if (!storage && TextureLayerRangeEnabled()) {
-		HoldLayerRange(texture_cache, desc, m_context.GetGraphics().GetPhysicalDeviceProperties().limits.maxImageArrayLayers);
+		HoldLayerRange(
+		    texture_cache, desc,
+		    m_context.GetGraphics().GetPhysicalDeviceProperties().limits.maxImageArrayLayers);
 	}
 	// Only descriptor-derived geometry is retained. FindImage may alter the local
 	// description and must still resolve ownership, aliases, uploads and metadata.
@@ -1895,16 +1926,18 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 	// cached image it resolved to (several images can share one address).
 	if (WatchRange::Enabled()) {
 		const auto& found_image = texture_cache.GetImage(id);
-		WatchRange::Note(fmt::format("bind {} T# fmt {} {}x{} view {} -> image {}:{} {} {}x{} depth_id {} meta {} 0x{:x}+0x{:x}",
-		                             storage ? "storage" : "texture",
-		                             static_cast<uint32_t>(descriptor.Format()), desc.info.extent.width,
-		                             desc.info.extent.height, vk::to_string(desc.view_info.format), id.index,
-		                             id.generation, vk::to_string(found_image.backing.format),
-		                             found_image.backing.extent.width, found_image.backing.extent.height,
-		                             found_image.depth_id ? 1 : 0, static_cast<uint32_t>(desc.info.metadata.kind),
-		                             desc.info.metadata.range.address, desc.info.metadata.range.size)
-		                     .c_str(),
-		                 desc.info.data.address, desc.info.data.size);
+		WatchRange::Note(
+		    fmt::format("bind {} T# fmt {} {}x{} view {} -> image {}:{} {} {}x{} depth_id {} meta "
+		                "{} 0x{:x}+0x{:x}",
+		                storage ? "storage" : "texture", static_cast<uint32_t>(descriptor.Format()),
+		                desc.info.extent.width, desc.info.extent.height,
+		                vk::to_string(desc.view_info.format), id.index, id.generation,
+		                vk::to_string(found_image.backing.format), found_image.backing.extent.width,
+		                found_image.backing.extent.height, found_image.depth_id ? 1 : 0,
+		                static_cast<uint32_t>(desc.info.metadata.kind),
+		                desc.info.metadata.range.address, desc.info.metadata.range.size)
+		        .c_str(),
+		    desc.info.data.address, desc.info.data.size);
 	}
 	const auto found               = id;
 	auto*      image               = &texture_cache.GetImage(id);
@@ -1938,7 +1971,8 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 		copy_binding = true; // not memoized: the plane's depth image is looked up each time
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
-			LOGF("KYTY_STENCIL_READ_DEPTH: plane 0x%012" PRIx64 " read as the stencil of depth 0x%012" PRIx64 "\n",
+			LOGF("KYTY_STENCIL_READ_DEPTH: plane 0x%012" PRIx64
+			     " read as the stencil of depth 0x%012" PRIx64 "\n",
 			     texture_cache.GetImage(found).info.data.address, image->info.data.address);
 		}
 		// KYTY_STENCIL_READ_PARTNER: the plane the depth image swapped away from (Erlou parity).
@@ -1956,7 +1990,8 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 				}
 				static std::atomic<uint32_t> partner_logged {0};
 				if (partner_logged.fetch_add(1, std::memory_order_relaxed) < 4) {
-					LOGF("KYTY_STENCIL_READ_PARTNER: plane 0x%012" PRIx64 " read as plane 0x%012" PRIx64 " (%s)\n",
+					LOGF("KYTY_STENCIL_READ_PARTNER: plane 0x%012" PRIx64
+					     " read as plane 0x%012" PRIx64 " (%s)\n",
 					     plane_address, texture_cache.GetImage(partner).info.data.address,
 					     plane_copy ? "saved copy" : "held");
 				}
@@ -1978,7 +2013,8 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 			}
 		}
 		if (storage && !copy_binding) {
-			// A storage view of a depth/stencil image's stencil aspect (Erlou: STENCIL_STORAGE_SHADOW).
+			// A storage view of a depth/stencil image's stencil aspect (Erlou:
+			// STENCIL_STORAGE_SHADOW).
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 				std::printf("Stencil plane bound as a storage image: plane 0x%012" PRIx64
@@ -1987,18 +2023,21 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 				            image->info.data.address, image->backing.extent.width,
 				            image->backing.extent.height, static_cast<int>(image->backing.format));
 			}
-			// KYTY_STENCIL_STORAGE_NULL=1 (Erlou93/KytyPS5-Yotei DIAG_DEPTH_STORAGE_NULL): a storage
-			// view of the depth/stencil image is invalid Vulkan (D32S8 has no storage usage), so a
-			// null storage image takes the write (not memoized: the next resolution logs again).
+			// KYTY_STENCIL_STORAGE_NULL=1 (Erlou93/KytyPS5-Yotei DIAG_DEPTH_STORAGE_NULL): a
+			// storage view of the depth/stencil image is invalid Vulkan (D32S8 has no storage
+			// usage), so a null storage image takes the write (not memoized: the next resolution
+			// logs again).
 			if (StencilStorageNull()) {
 				desc             = NullTextureDesc(resource, TextureCache::BindingType::Storage);
 				binding.image_id = texture_cache.FindImage(desc);
 				return;
 			}
 		} else if (TextureCache::PreserveStencilEnabled() &&
-		           (!TextureCache::StencilReadDepthEnabled() || TextureCache::StencilReadHeldEnabled())) {
-			// KYTY_PRESERVE_STENCIL: a plane the depth image does not hold is read from its saved copy
-			// (KYTY_STENCIL_READ_DEPTH with KYTY_STENCIL_READ_HELD=0: the depth image's stencil instead).
+		           (!TextureCache::StencilReadDepthEnabled() ||
+		            TextureCache::StencilReadHeldEnabled())) {
+			// KYTY_PRESERVE_STENCIL: a plane the depth image does not hold is read from its saved
+			// copy (KYTY_STENCIL_READ_DEPTH with KYTY_STENCIL_READ_HELD=0: the depth image's
+			// stencil instead).
 			bool       plane_copy = false;
 			const auto reader     = texture_cache.StencilPlaneReader(record_id, plane_copy);
 			if (plane_copy) {
@@ -2046,11 +2085,12 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 			PassCensus::Null("sampled texture over an image it cannot view");
 			static std::atomic_bool logged {false};
 			if (Common::LogOnce(logged)) {
-				std::printf("Warning: sampled texture over an image it cannot view (image format %d, "
-				            "view format %d, swizzle 0x%x) bound as null (KYTY_SKIP_INVALID; logged "
-				            "once): addr=0x%016" PRIx64 "\n",
-				            static_cast<int>(image->info.pixel_format), static_cast<int>(pixel_format),
-				            descriptor.DstSelXYZW(), descriptor.Base40());
+				std::printf(
+				    "Warning: sampled texture over an image it cannot view (image format %d, "
+				    "view format %d, swizzle 0x%x) bound as null (KYTY_SKIP_INVALID; logged "
+				    "once): addr=0x%016" PRIx64 "\n",
+				    static_cast<int>(image->info.pixel_format), static_cast<int>(pixel_format),
+				    descriptor.DstSelXYZW(), descriptor.Base40());
 			}
 			desc             = NullTextureDesc(resource, TextureCache::BindingType::Texture);
 			binding.image_id = texture_cache.FindImage(desc);
@@ -2088,8 +2128,8 @@ void RenderExecutor::ResolveTextureFull(const ShaderRecompiler::IR::ImageResourc
 			     image->info.IsDepth() ? "a depth image" : "a colour image",
 			     stencil_association ? " (its stencil)" : "");
 		}
-		desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
-		                                         : TextureCache::BindingType::Texture);
+		desc             = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                                     : TextureCache::BindingType::Texture);
 		binding.image_id = texture_cache.FindImage(desc);
 		return;
 	}
@@ -2278,9 +2318,10 @@ static bool SrtGpuFillDiag() {
 // the buffer that holds the GPU-written bytes, behind the writes that produced them and before
 // the command that reads the table. A dword that stopped being GPU-written since the walk (or a
 // rebind off the command processor) is read on the host instead, as the walk would have.
-static vk::DescriptorBufferInfo UploadFlatWithGpuFills(RenderContext&                    context,
-                                                       const ShaderRecompiler::IR::ResourceSnapshot& snapshot,
-                                                       std::span<const uint32_t> flat_words) {
+static vk::DescriptorBufferInfo
+UploadFlatWithGpuFills(RenderContext&                                context,
+                       const ShaderRecompiler::IR::ResourceSnapshot& snapshot,
+                       std::span<const uint32_t>                     flat_words) {
 	struct Copy {
 		vk::Buffer source;
 		uint64_t   source_offset;
@@ -2312,26 +2353,28 @@ static vk::DescriptorBufferInfo UploadFlatWithGpuFills(RenderContext&           
 	if (!copies.empty()) {
 		auto& command = context.GetCommandScheduler().Current();
 		command.EndRendering();
-		const auto      native = command.HelperSink();
+		const auto        native = command.HelperSink();
 		vk::MemoryBarrier before {};
-		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite |
+		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite |
+		                       vk::AccessFlagBits::eTransferWrite |
 		                       vk::AccessFlagBits::eMemoryWrite;
-		before.dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite;
+		before.dstAccessMask =
+		    vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite;
 		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 		                       vk::PipelineStageFlagBits::eTransfer, {}, 1, &before, 0, nullptr, 0,
 		                       nullptr);
 		for (const auto& copy: copies) {
-			const vk::BufferCopy region {copy.source_offset,
-			                             flat.offset + uint64_t {copy.flat_offset} * sizeof(uint32_t),
-			                             sizeof(uint32_t)};
+			const vk::BufferCopy region {
+			    copy.source_offset, flat.offset + uint64_t {copy.flat_offset} * sizeof(uint32_t),
+			    sizeof(uint32_t)};
 			native.copyBuffer(copy.source, flat.buffer, 1, &region);
 		}
 		vk::MemoryBarrier after {};
 		after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
 		after.dstAccessMask = vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eUniformRead;
 		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-		                       vk::PipelineStageFlagBits::eAllCommands, {}, 1, &after, 0, nullptr, 0,
-		                       nullptr);
+		                       vk::PipelineStageFlagBits::eAllCommands, {}, 1, &after, 0, nullptr,
+		                       0, nullptr);
 	}
 	// KYTY_SRT_GPU_FILL_DIAG=1: one console line every 10 s while fills happen.
 	if (!SrtGpuFillDiag()) {
@@ -2344,17 +2387,17 @@ static vk::DescriptorBufferInfo UploadFlatWithGpuFills(RenderContext&           
 	tables.fetch_add(1, std::memory_order_relaxed);
 	filled.fetch_add(copies.size(), std::memory_order_relaxed);
 	read_host.fetch_add(host_reads, std::memory_order_relaxed);
-	const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-	                     std::chrono::steady_clock::now().time_since_epoch())
-	                     .count();
-	auto last = last_ms.load(std::memory_order_relaxed);
+	const auto now  = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                      std::chrono::steady_clock::now().time_since_epoch())
+	                      .count();
+	auto       last = last_ms.load(std::memory_order_relaxed);
 	if (last == 0) {
 		last_ms.store(now, std::memory_order_relaxed);
 	} else if (now - last >= 10000 && last_ms.compare_exchange_strong(last, now)) {
 		std::printf("SrtGpuFill %.0fs: %" PRIu64 " flat tables, %" PRIu64
 		            " dwords copied on the GPU, %" PRIu64 " read on the host\n",
-		            static_cast<double>(now - last) / 1000.0, tables.exchange(0), filled.exchange(0),
-		            read_host.exchange(0));
+		            static_cast<double>(now - last) / 1000.0, tables.exchange(0),
+		            filled.exchange(0), read_host.exchange(0));
 	}
 	return flat;
 }
@@ -2363,7 +2406,7 @@ static vk::DescriptorBufferInfo UploadFlatWithGpuFills(RenderContext&           
 // KYTY_RENDERER_BATCH=1).
 static bool UploadDedupEnabled() {
 	static std::atomic<int64_t> enabled_once {Common::OnceUnset};
-	const auto enabled = static_cast<bool>(Common::Once(enabled_once, [] {
+	const auto                  enabled = static_cast<bool>(Common::Once(enabled_once, [] {
 		const auto* value = std::getenv("KYTY_UPLOAD_DEDUP");
 		return value == nullptr || std::strcmp(value, "0") != 0;
 	}));
@@ -2563,7 +2606,7 @@ bool RenderExecutor::RepeatStageTextures(const ShaderRecompiler::IR::CompiledSha
 	}
 	auto&      totals  = m_draw_sequence_totals;
 	bool       xframe  = false; // the set came from the cross-frame store
-	const auto matches = [&](const ShaderRecompiler::IR::CompiledShaderInfo*  set_program,
+	const auto matches = [&](const ShaderRecompiler::IR::CompiledShaderInfo*           set_program,
 	                         const std::vector<ShaderRecompiler::IR::DescriptorValue>& words) {
 		return set_program == &program && std::ranges::equal(words, snapshot.images);
 	};
@@ -2572,7 +2615,7 @@ bool RenderExecutor::RepeatStageTextures(const ShaderRecompiler::IR::CompiledSha
 	} else {
 		auto&      history = prepared.texture_history;
 		const auto found   = std::ranges::find_if(
-            history, [&](const auto& set) { return matches(set.program, set.words); });
+		    history, [&](const auto& set) { return matches(set.program, set.words); });
 		CommitStats::AddItems(found == history.end() ? CommitStats::Item::TexSetMiss
 		                                             : CommitStats::Item::TexSetHistory,
 		                      1);
@@ -2649,8 +2692,8 @@ bool RenderExecutor::RepeatStageTextures(const ShaderRecompiler::IR::CompiledSha
 			if (xframe_verify) {
 				XFrameReuse::GetTotals().verify_checks.fetch_add(1, std::memory_order_relaxed);
 				if (binding.image_id != claimed_image || binding.memo_tag != claimed_tag) {
-					XFrameReuse::ReportMismatch(binding.image_id != claimed_image ? "image" : "memo entry",
-					                            i);
+					XFrameReuse::ReportMismatch(
+					    binding.image_id != claimed_image ? "image" : "memo entry", i);
 				}
 			} else if (binding.image_id != claimed_image || binding.memo_tag != claimed_tag) {
 				totals.verify_mismatches++;
@@ -2680,7 +2723,7 @@ bool RenderExecutor::RepeatStageTextures(const ShaderRecompiler::IR::CompiledSha
 
 bool RenderExecutor::TakeStoredTextureSet(const ShaderRecompiler::IR::CompiledShaderInfo& program,
                                           const ShaderRecompiler::IR::ResourceSnapshot&   snapshot,
-                                          PreparedBindings&                               prepared) {
+                                          PreparedBindings& prepared) {
 	auto& totals = XFrameReuse::GetTotals();
 	totals.new_sets.fetch_add(1, std::memory_order_relaxed);
 	if (!m_xframe_sets) {
@@ -2692,8 +2735,9 @@ bool RenderExecutor::TakeStoredTextureSet(const ShaderRecompiler::IR::CompiledSh
 		totals.stored.fetch_add(1, std::memory_order_relaxed);
 	}
 	const std::span<const ShaderRecompiler::IR::DescriptorValue> words(snapshot.images);
-	const bool found = store.Take(&program, words, XFrameTextureSets::Hash(&program, words),
-	                              prepared.texture_program, prepared.texture_words, prepared.images);
+	const bool                                                   found =
+	    store.Take(&program, words, XFrameTextureSets::Hash(&program, words),
+	               prepared.texture_program, prepared.texture_words, prepared.images);
 	totals.used.store(store.Used(), std::memory_order_relaxed);
 	totals.evictions.store(store.Evictions(), std::memory_order_relaxed);
 	if (found) {
@@ -2722,11 +2766,13 @@ struct BindlessEngineStats {
 	std::atomic<uint64_t> resettled {0};
 	std::atomic<uint64_t> requested {0}; // keys draws asked for through feedback
 	std::atomic<uint64_t> kept_old {0};  // changed T# not resolvable yet: the old view stays
-	std::atomic<uint64_t> record_retries {0}; // record T# not written yet (KYTY_BINDLESS_RECORD_RETRY)
-	std::atomic<uint64_t> record_unfilled {0}; // record keys read with a null pointer or an all-zero T#
-	std::atomic<uint64_t> record_filled {0};   // unfilled records found filled on a later read
-	std::atomic<uint64_t> host_ns {0};         // CPU time in ResolveBindlessRequests + ProcessRecordHeap
-	std::atomic<uint64_t> reresolved {0};      // keys settled again after their image was freed
+	std::atomic<uint64_t> record_retries {
+	    0}; // record T# not written yet (KYTY_BINDLESS_RECORD_RETRY)
+	std::atomic<uint64_t> record_unfilled {
+	    0}; // record keys read with a null pointer or an all-zero T#
+	std::atomic<uint64_t> record_filled {0}; // unfilled records found filled on a later read
+	std::atomic<uint64_t> host_ns {0};    // CPU time in ResolveBindlessRequests + ProcessRecordHeap
+	std::atomic<uint64_t> reresolved {0}; // keys settled again after their image was freed
 };
 BindlessEngineStats g_bindless_engine_stats;
 // Per call table (record heaps): keys taken from feedback and keys settled on a slot (GPU thread).
@@ -2738,10 +2784,11 @@ std::map<std::string_view, uint64_t> g_bindless_resolve_outcomes;
 struct BindlessHostTimer {
 	std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 	~BindlessHostTimer() {
-		g_bindless_engine_stats.host_ns.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-		                                              std::chrono::steady_clock::now() - start)
-		                                              .count()),
-		                                          std::memory_order_relaxed);
+		g_bindless_engine_stats.host_ns.fetch_add(
+		    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                              std::chrono::steady_clock::now() - start)
+		                              .count()),
+		    std::memory_order_relaxed);
 	}
 };
 
@@ -2765,8 +2812,8 @@ bool BindlessCommitVerify() {
 // T# bits that select a view of the same texture (RDNA 2 ISA 8.2.6): min LOD; dst_sel, base and
 // last level, BC swizzle; base array; min LOD warning, perf mod, mip-stats enable; mip-stats slot
 // and cache policy. Everything else describes the texture itself.
-constexpr std::array<uint32_t, 8> BindlessViewMask {0u,          0x000fff00u, 0u,          0x0e0fffffu,
-                                                    0x1fff0000u, 0x027fff00u, 0x000003ffu, 0u};
+constexpr std::array<uint32_t, 8> BindlessViewMask {
+    0u, 0x000fff00u, 0u, 0x0e0fffffu, 0x1fff0000u, 0x027fff00u, 0x000003ffu, 0u};
 
 // The T#s of keys [first, first + count) of a plain heap whose keys' T#s are `stride` bytes apart
 // from `table` on: one read when they are contiguous, one read of the covering span otherwise (a
@@ -2781,7 +2828,7 @@ bool ReadHeapDescriptors(uint64_t table, uint32_t stride, uint64_t first, uint64
 		return LibKernel::Memory::TryReadBacking(table + first * 32u, out, count * 32u);
 	}
 	thread_local std::vector<uint8_t> span;
-	const uint64_t bytes = (count - 1u) * stride + 32u;
+	const uint64_t                    bytes = (count - 1u) * stride + 32u;
 	span.resize(bytes);
 	if (!LibKernel::Memory::TryReadBacking(table + first * stride, span.data(), bytes)) {
 		return false;
@@ -2803,9 +2850,9 @@ uint64_t HeapEntriesInSpan(uint64_t span, uint32_t stride) {
 void SurveyBindlessHeap(const ShaderRecompiler::IR::BindlessHeapUse& use) {
 	constexpr uint64_t MaxEntries = 1u << 20u;
 	const uint64_t     span       = use.size > use.table_offset ? use.size - use.table_offset : 0;
-	const uint64_t     entries = std::min<uint64_t>(HeapEntriesInSpan(span, use.stride), MaxEntries);
-	uint64_t           valid = 0, bytes = 0, unreadable = 0;
-	std::array<uint64_t, 16> types {};
+	const uint64_t entries = std::min<uint64_t>(HeapEntriesInSpan(span, use.stride), MaxEntries);
+	uint64_t       valid = 0, bytes = 0, unreadable = 0;
+	std::array<uint64_t, 16>             types {};
 	std::vector<std::array<uint32_t, 8>> chunk(1024u);
 	for (uint64_t first = 0; first < entries; first += chunk.size()) {
 		const auto count = std::min<uint64_t>(chunk.size(), entries - first);
@@ -2891,7 +2938,8 @@ bool BindlessCompatible(const ShaderTextureResource& descriptor, uint32_t bindin
 		case Prospero::ImageType::kCube:
 			return binding == ShaderRecompiler::IR::BindlessImagesCube ||
 			       binding == ShaderRecompiler::IR::BindlessImages2DArray;
-		case Prospero::ImageType::kColor3D: return binding == ShaderRecompiler::IR::BindlessImages3D;
+		case Prospero::ImageType::kColor3D:
+			return binding == ShaderRecompiler::IR::BindlessImages3D;
 		default: return false;
 	}
 }
@@ -2931,8 +2979,8 @@ void LogBindlessHeapStats(BindlessTable& table, uint64_t frame) {
 		const auto n = std::strtoull(value, nullptr, 10);
 		return n > 1 ? n : uint64_t {300};
 	}();
-	const bool enabled = interval != 0;
-	static uint64_t   next    = 0;
+	const bool      enabled = interval != 0;
+	static uint64_t next    = 0;
 	if (!enabled || frame < next) {
 		return;
 	}
@@ -2949,8 +2997,10 @@ void LogBindlessHeapStats(BindlessTable& table, uint64_t frame) {
 				const auto value = translation[heap.region + key];
 				if (value == ShaderRecompiler::IR::BindlessPending) {
 					// Never-sampled keys are pending too: count only the ones a shader asked for.
-					if (heap.settled[key] == 0 && heap.slots[key] == 0 && key < heap.descriptors.size() &&
-					    heap.descriptors[key] != std::array<uint32_t, 8> {}) counts[0]++;
+					if (heap.settled[key] == 0 && heap.slots[key] == 0 &&
+					    key < heap.descriptors.size() &&
+					    heap.descriptors[key] != std::array<uint32_t, 8> {})
+						counts[0]++;
 				} else if (value == 0u) {
 					counts[2]++;
 				} else {
@@ -2960,8 +3010,9 @@ void LogBindlessHeapStats(BindlessTable& table, uint64_t frame) {
 		}
 		for (const auto& [base, counts]: tables) {
 			auto& flow = g_bindless_table_flow[base];
-			LOGF("Bindless record table: frame=%" PRIu64 " base=0x%" PRIx64 " heaps=%" PRIu64 " re-pending=%" PRIu64
-			     " on_slot=%" PRIu64 " on_zero=%" PRIu64 " taken=%" PRIu64 " settled=%" PRIu64 "\n",
+			LOGF("Bindless record table: frame=%" PRIu64 " base=0x%" PRIx64 " heaps=%" PRIu64
+			     " re-pending=%" PRIu64 " on_slot=%" PRIu64 " on_zero=%" PRIu64 " taken=%" PRIu64
+			     " settled=%" PRIu64 "\n",
 			     frame, base, counts[3], counts[0], counts[1], counts[2], flow[0], flow[1]);
 			flow = {};
 		}
@@ -2973,9 +3024,10 @@ void LogBindlessHeapStats(BindlessTable& table, uint64_t frame) {
 		LOGF("Bindless record resolves: frame=%" PRIu64 "%s\n", frame, outcomes.c_str());
 	}
 	static std::unordered_map<const BindlessHeap*, std::vector<std::array<uint32_t, 8>>> previous;
-	std::vector<std::array<uint32_t, 8>> words;
+	std::vector<std::array<uint32_t, 8>>                                                 words;
 	for (const auto& heap: table.Heaps()) {
-		const auto entries = std::min(heap.guest_entries, static_cast<uint32_t>(heap.settled.size()));
+		const auto entries =
+		    std::min(heap.guest_entries, static_cast<uint32_t>(heap.settled.size()));
 		if (entries == 0 || heap.record_pointer != UINT32_MAX || heap.runtime) {
 			continue;
 		}
@@ -3008,10 +3060,11 @@ void LogBindlessHeapStats(BindlessTable& table, uint64_t frame) {
 			}
 			valid++;
 			mip_stats += descriptor.MipStatsCntEn() ? 1u : 0u;
-			const auto first = std::max<uint32_t>(descriptor.BaseLevel(), descriptor.MinLod() >> 8u);
-			auto&      texture = textures[descriptor.Base40()];
-			texture.all        = std::max(texture.all, BindlessMipChainBytes(descriptor, 0));
-			texture.resident   = std::max(texture.resident, BindlessMipChainBytes(descriptor, first));
+			const auto first =
+			    std::max<uint32_t>(descriptor.BaseLevel(), descriptor.MinLod() >> 8u);
+			auto& texture    = textures[descriptor.Base40()];
+			texture.all      = std::max(texture.all, BindlessMipChainBytes(descriptor, 0));
+			texture.resident = std::max(texture.resident, BindlessMipChainBytes(descriptor, first));
 			texture.sampled |= heap.settled[key] != 0;
 		}
 		uint64_t all = 0, resident = 0, sampled = 0, sampled_textures = 0;
@@ -3037,11 +3090,17 @@ void LogBindlessHeapStats(BindlessTable& table, uint64_t frame) {
 	const auto scans   = table.TakeScanCounts();
 	LOGF("Bindless engine stats: frame=%" PRIu64 " syncs=%" PRIu64 " written=%" PRIu64
 	     " KiB view=%" PRIu64 " resource=%" PRIu64 " resettled=%" PRIu64 " requested=%" PRIu64
-	     " unregistered_keys=%" PRIu64 " kept_old=%" PRIu64 " record_retries=%" PRIu64 " record_unfilled=%" PRIu64 " record_filled=%" PRIu64 " reresolved=%" PRIu64 " host_ms=%.1f snapshot_words=%u snapshot_kib=%" PRIu64 " flagged_chunks=%" PRIu64 " scanned=%" PRIu64 " nonzero=%" PRIu64 "\n",
+	     " unregistered_keys=%" PRIu64 " kept_old=%" PRIu64 " record_retries=%" PRIu64
+	     " record_unfilled=%" PRIu64 " record_filled=%" PRIu64 " reresolved=%" PRIu64
+	     " host_ms=%.1f snapshot_words=%u snapshot_kib=%" PRIu64 " flagged_chunks=%" PRIu64
+	     " scanned=%" PRIu64 " nonzero=%" PRIu64 "\n",
 	     frame, stats.syncs.exchange(0), stats.written_bytes.exchange(0) >> 10u,
 	     stats.view_changes.exchange(0), stats.resource_changes.exchange(0),
 	     stats.resettled.exchange(0), stats.requested.exchange(0), table.TakeUnregisteredKeys(),
-	     stats.kept_old.exchange(0), stats.record_retries.exchange(0), stats.record_unfilled.exchange(0), stats.record_filled.exchange(0), stats.reresolved.exchange(0), static_cast<double>(stats.host_ns.exchange(0)) / 1e6, table.UsedEntries(), traffic.first >> 10u, traffic.second, scans.first, scans.second);
+	     stats.kept_old.exchange(0), stats.record_retries.exchange(0),
+	     stats.record_unfilled.exchange(0), stats.record_filled.exchange(0),
+	     stats.reresolved.exchange(0), static_cast<double>(stats.host_ns.exchange(0)) / 1e6,
+	     table.UsedEntries(), traffic.first >> 10u, traffic.second, scans.first, scans.second);
 }
 
 } // namespace
@@ -3075,15 +3134,16 @@ static bool ReadBindlessEntry(const BindlessHeap& heap, uint32_t key, uint32_t* 
 		return true;
 	}
 	if (heap.record_pointer == UINT32_MAX) {
-		if (!LibKernel::Memory::TryReadBacking(
-		        heap.base + heap.table_offset + static_cast<uint64_t>(key) * heap.stride, words, 32u)) {
+		if (!LibKernel::Memory::TryReadBacking(heap.base + heap.table_offset +
+		                                           static_cast<uint64_t>(key) * heap.stride,
+		                                       words, 32u)) {
 			return false;
 		}
 		MaskR128HeapWords(heap, words);
 		return true;
 	}
-	const bool nested = heap.nested_vsharp != UINT32_MAX && heap.nested_keys != 0;
-	const auto record = nested ? key / heap.nested_keys : key;
+	const bool              nested = heap.nested_vsharp != UINT32_MAX && heap.nested_keys != 0;
+	const auto              record = nested ? key / heap.nested_keys : key;
 	std::array<uint32_t, 2> pointer {};
 	if (!LibKernel::Memory::TryReadBacking(heap.base + static_cast<uint64_t>(record) * heap.stride +
 	                                           heap.record_pointer,
@@ -3116,34 +3176,37 @@ static bool ReadBindlessEntry(const BindlessHeap& heap, uint32_t key, uint32_t* 
 		    static_cast<uint64_t>(vsharp[0]) | (static_cast<uint64_t>(vsharp[1] & 0xffffu) << 32u);
 		const auto end = static_cast<uint64_t>(heap.table_offset) + uint64_t {inner} * 32u + 32u;
 		return heap_base != 0 && end <= vsharp[2] &&
-		       LibKernel::Memory::TryReadBacking(heap_base + heap.table_offset +
-		                                             uint64_t {inner} * 32u,
-		                                         words, 32u);
+		       LibKernel::Memory::TryReadBacking(
+		           heap_base + heap.table_offset + uint64_t {inner} * 32u, words, 32u);
 	}
 	return LibKernel::Memory::TryReadBacking(address + heap.table_offset, words, 32u);
 }
 
 // KYTY_BINDLESS_RESOLVE_BUDGET=<n> (live, default 128; 0 = no limit): keys settled per frame (new
-// ones and changed ones); flagged keys over the budget stay pending (placeholder) until a later frame.
-static Live::Switch g_bindless_resolve_budget("KYTY_BINDLESS_RESOLVE_BUDGET", [](const char* value) -> int64_t {
-	return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 10)) : 128;
-});
+// ones and changed ones); flagged keys over the budget stay pending (placeholder) until a later
+// frame.
+static Live::Switch
+    g_bindless_resolve_budget("KYTY_BINDLESS_RESOLVE_BUDGET", [](const char* value) -> int64_t {
+	    return value != nullptr ? static_cast<int64_t>(std::strtoul(value, nullptr, 10)) : 128;
+    });
 static uint32_t BindlessResolveBudget() {
 	const auto budget = g_bindless_resolve_budget.Get();
 	return budget <= 0 ? UINT32_MAX : static_cast<uint32_t>(std::min<int64_t>(budget, UINT32_MAX));
 }
 // KYTY_BINDLESS_RECORD_RETRY (live; ResolveBindlessKey).
-static Live::Switch g_bindless_record_retry("KYTY_BINDLESS_RECORD_RETRY", [](const char* value) -> int64_t {
-	return value != nullptr && value[0] != '\0' && value[0] != '0' ? 1 : 0;
-});
+static Live::Switch
+    g_bindless_record_retry("KYTY_BINDLESS_RECORD_RETRY", [](const char* value) -> int64_t {
+	    return value != nullptr && value[0] != '\0' && value[0] != '0' ? 1 : 0;
+    });
 
-// KYTY_BINDLESS_SHARE_SLOTS=1 (startup, default off): every key resolved through ResolveBindlessKey (feedback,
-// resettle, prefill) shares the slot of an earlier key with the same T# words and view binding
-// (BindlessTable::FindSharedSlot / NoteSharedSlot, the KYTY_BINDLESS_PREFILL bookkeeping, refcounted in FreeSlot)
-// instead of taking a new slot. Ghost of Yotei builds new per-frame heaps of the same textures: each resolve took
-// a new slot, ~400 slots/s on the menu (KYTY_BINDLESS_SLOT_LOG); with KYTY_BINDLESS_SLOT_REUSE=0 binding 0 was full
-// (65536) after ~160 s and the menu broke right after (leaf band, grey floor, red hilt); with reuse the slots
-// recycle continuously.
+// KYTY_BINDLESS_SHARE_SLOTS=1 (startup, default off): every key resolved through ResolveBindlessKey
+// (feedback, resettle, prefill) shares the slot of an earlier key with the same T# words and view
+// binding (BindlessTable::FindSharedSlot / NoteSharedSlot, the KYTY_BINDLESS_PREFILL bookkeeping,
+// refcounted in FreeSlot) instead of taking a new slot. Ghost of Yotei builds new per-frame heaps
+// of the same textures: each resolve took a new slot, ~400 slots/s on the menu
+// (KYTY_BINDLESS_SLOT_LOG); with KYTY_BINDLESS_SLOT_REUSE=0 binding 0 was full (65536) after ~160 s
+// and the menu broke right after (leaf band, grey floor, red hilt); with reuse the slots recycle
+// continuously.
 static bool BindlessTouchImages() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_BINDLESS_TOUCH");
@@ -3163,10 +3226,10 @@ static bool BindlessShareSlots() {
 bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	auto&                                 table = m_context.GetBindlessTable();
 	ShaderRecompiler::IR::DescriptorValue value {};
-	value.dword_count             = 8u;
-	m_bindless_transient_failure  = false;
-	heap.settled[key]             = 1;
-	heap.descriptors[key]         = {};
+	value.dword_count            = 8u;
+	m_bindless_transient_failure = false;
+	heap.settled[key]            = 1;
+	heap.descriptors[key]        = {};
 	// KYTY_BINDLESS_WATCH_KEY: each resolve of that key, with its T# address (behind the record
 	// pointer), whether the GPU wrote it, the words read and the outcome.
 	const bool watched = key == BindlessTable::WatchKey();
@@ -3175,18 +3238,23 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 		uint64_t address = 0;
 		if (heap.record_pointer != UINT32_MAX && heap.nested_vsharp == UINT32_MAX) {
 			std::array<uint32_t, 2> pointer {};
-			if (LibKernel::Memory::TryReadBacking(heap.base + uint64_t {key} * heap.stride + heap.record_pointer,
+			if (LibKernel::Memory::TryReadBacking(heap.base + uint64_t {key} * heap.stride +
+			                                          heap.record_pointer,
 			                                      pointer.data(), 8u)) {
-				address = (static_cast<uint64_t>(pointer[0]) | (static_cast<uint64_t>(pointer[1] & 0xffffu) << 32u)) +
+				address = (static_cast<uint64_t>(pointer[0]) |
+				           (static_cast<uint64_t>(pointer[1] & 0xffffu) << 32u)) +
 				          heap.table_offset;
 			}
 		}
-		const bool dirty = address != 0 && m_context.GetBufferCache().HasGpuDirtyBytes(address, 32u);
-		LOGF("Bindless watch resolve: frame=%" PRIu64 " heap 0x%" PRIx64 "+%u b%u key %u T# at 0x%" PRIx64
+		const bool dirty =
+		    address != 0 && m_context.GetBufferCache().HasGpuDirtyBytes(address, 32u);
+		LOGF("Bindless watch resolve: frame=%" PRIu64 " heap 0x%" PRIx64
+		     "+%u b%u key %u T# at 0x%" PRIx64
 		     "%s words %08x %08x %08x %08x %08x %08x %08x %08x: %s\n",
-		     BindlessFrame(), heap.base, heap.table_offset, heap.binding, key, address, dirty ? " (gpu-dirty)" : "",
-		     value.dwords[0], value.dwords[1], value.dwords[2], value.dwords[3], value.dwords[4], value.dwords[5],
-		     value.dwords[6], value.dwords[7], outcome);
+		     BindlessFrame(), heap.base, heap.table_offset, heap.binding, key, address,
+		     dirty ? " (gpu-dirty)" : "", value.dwords[0], value.dwords[1], value.dwords[2],
+		     value.dwords[3], value.dwords[4], value.dwords[5], value.dwords[6], value.dwords[7],
+		     outcome);
 	};
 	struct WatchExit {
 		const decltype(watch)& log;
@@ -3197,15 +3265,16 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 			if (record) g_bindless_resolve_outcomes[outcome]++;
 		}
 	} watch_exit {watch, heap.record_pointer != UINT32_MAX};
-	// KYTY_BINDLESS_RECORD_RETRY=0 (default 1, live): a record pointer heap's key whose pointer is null or
-	// unreadable, or whose T# reads as all zeros, may be a record the guest has not filled yet rather
-	// than a final answer. The key samples the placeholder (or keeps its old view, ResettleBindlessKey)
-	// and is read again 4, 8, 16, 32 and 64 frames later (m_bindless_record_retry); its descriptor is
-	// left as zeros, so revalidation also catches a T# written later. Miles Morales rebuilds its two
-	// ping-pong call tables with new material pointers; the T# behind a moved pointer read as zeros,
-	// the key stayed on the placeholder (revalidation compared against the stored zeros only when its
-	// window came round), and the RT reflection of the sky went dark in every other frame.
-	const bool record_retry = g_bindless_record_retry.Get() != 0;
+	// KYTY_BINDLESS_RECORD_RETRY=0 (default 1, live): a record pointer heap's key whose pointer is
+	// null or unreadable, or whose T# reads as all zeros, may be a record the guest has not filled
+	// yet rather than a final answer. The key samples the placeholder (or keeps its old view,
+	// ResettleBindlessKey) and is read again 4, 8, 16, 32 and 64 frames later
+	// (m_bindless_record_retry); its descriptor is left as zeros, so revalidation also catches a T#
+	// written later. Miles Morales rebuilds its two ping-pong call tables with new material
+	// pointers; the T# behind a moved pointer read as zeros, the key stayed on the placeholder
+	// (revalidation compared against the stored zeros only when its window came round), and the RT
+	// reflection of the sky went dark in every other frame.
+	const bool record_retry    = g_bindless_record_retry.Get() != 0;
 	m_bindless_record_unfilled = false;
 	const auto not_written_yet = [&](const char* outcome) {
 		watch_exit.outcome           = outcome;
@@ -3218,40 +3287,46 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	};
 	const bool record_heap = heap.record_pointer != UINT32_MAX && !heap.runtime;
 	if (!ReadBindlessEntry(heap, key, value.dwords.data())) {
-		if (record_heap) g_bindless_engine_stats.record_unfilled.fetch_add(1, std::memory_order_relaxed);
+		if (record_heap)
+			g_bindless_engine_stats.record_unfilled.fetch_add(1, std::memory_order_relaxed);
 		if (record_retry && record_heap) {
 			return not_written_yet("unreadable (retry later)");
 		}
-		watch_exit.outcome = "unreadable";
-		static const bool log_unreadable = std::getenv("KYTY_BINDLESS_KEY_LOG") != nullptr;
+		watch_exit.outcome                  = "unreadable";
+		static const bool log_unreadable    = std::getenv("KYTY_BINDLESS_KEY_LOG") != nullptr;
 		static std::atomic<uint32_t> logged = 0;
 		if (log_unreadable && logged.fetch_add(1, std::memory_order_relaxed) < 32) {
-			LOGF("Bindless key: heap 0x%016" PRIx64 " key %u: entry unreadable (placeholder)\n", heap.base, key);
+			LOGF("Bindless key: heap 0x%016" PRIx64 " key %u: entry unreadable (placeholder)\n",
+			     heap.base, key);
 		}
 		table.SetTranslation(heap, key, 0u);
 		return false;
 	}
-	if (record_heap &&
-	    std::ranges::all_of(value.dwords.begin(), value.dwords.begin() + 8, [](uint32_t w) { return w == 0u; })) {
+	if (record_heap && std::ranges::all_of(value.dwords.begin(), value.dwords.begin() + 8,
+	                                       [](uint32_t w) { return w == 0u; })) {
 		g_bindless_engine_stats.record_unfilled.fetch_add(1, std::memory_order_relaxed);
 		if (record_retry) return not_written_yet("zero T# (retry later)");
 	}
 	std::copy_n(value.dwords.data(), 8, heap.descriptors[key].begin());
 	// KYTY_BINDLESS_SHARE_SLOTS: a T# another key already resolved shares that key's slot.
 	if (BindlessShareSlots() && !heap.runtime) {
-		if (const auto* found = table.FindSharedSlot(heap.binding, heap.descriptors[key], heap.view_key); found != nullptr) {
+		if (const auto* found =
+		        table.FindSharedSlot(heap.binding, heap.descriptors[key], heap.view_key);
+		    found != nullptr) {
 			const auto id    = found->image;
 			const auto entry = found->entry;
 			auto*      image = m_context.GetTextureCache().m_slot_images.try_get(id);
 			if (image != nullptr && image->registered && image->bindless_pinned) {
 				heap.slots[key]  = entry;
 				heap.images[key] = id;
-				if (std::find(heap.resolved.begin(), heap.resolved.end(), id) == heap.resolved.end()) {
+				if (std::find(heap.resolved.begin(), heap.resolved.end(), id) ==
+				    heap.resolved.end()) {
 					heap.resolved.push_back(id);
 				}
 				heap.unchecked.push_back(id);
 				table.AddImageReference(id, heap, key);
-				table.AddSharedSlotRef(BindlessTable::SlotBinding(heap, entry), BindlessTable::SlotIndex(entry));
+				table.AddSharedSlotRef(BindlessTable::SlotBinding(heap, entry),
+				                       BindlessTable::SlotIndex(entry));
 				table.SetTranslation(heap, key, entry);
 				watch_exit.outcome = "shared slot";
 				return true;
@@ -3262,10 +3337,11 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	// A 1D image instruction's heap (it shares the 2D binding) has no view of a 2D texture: such a
 	// key stays on the placeholder instead of reaching an invalid 1D view of a 2D image (a call
 	// table's record T#s, Miles Morales, once their heaps got translation regions).
-	const auto dimension    = heap.resource.dimension;
-	const bool one_d_heap   = dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1D ||
-	                          dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1DArray;
-	const bool integer_views = heap.runtime && ShaderRecompiler::GetCodegenOptions().runtime_int_images;
+	const auto dimension  = heap.resource.dimension;
+	const bool one_d_heap = dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1D ||
+	                        dimension == ShaderRecompiler::Decoder::ImageDimension::Dim1DArray;
+	const bool integer_views =
+	    heap.runtime && ShaderRecompiler::GetCodegenOptions().runtime_int_images;
 	if (one_d_heap || !BindlessCompatible(descriptor, heap.binding, integer_views)) {
 		// KYTY_BINDLESS_INCOMPATIBLE_LOG=<n> (diagnostic): the first n keys left on the placeholder
 		// because their T# does not fit the binding's view type.
@@ -3275,12 +3351,15 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 		}();
 		static std::atomic<uint32_t> logged = 0;
 		if (logged.fetch_add(1, std::memory_order_relaxed) < log_limit) {
-			LOGF("Bindless: key %u of heap 0x%016" PRIx64 " (binding %u) incompatible: T# base 0x%" PRIx64
+			LOGF("Bindless: key %u of heap 0x%016" PRIx64
+			     " (binding %u) incompatible: T# base 0x%" PRIx64
 			     " type %u format %u %ux%u depth %u null %d\n",
-			     key, heap.base, heap.binding, descriptor.Base40(), static_cast<uint32_t>(descriptor.Type()),
-			     static_cast<uint32_t>(descriptor.Format()), static_cast<uint32_t>(descriptor.Width5()) + 1u,
-			     static_cast<uint32_t>(descriptor.Height5()) + 1u, static_cast<uint32_t>(descriptor.Depth()),
-			     descriptor.IsNull() ? 1 : 0);
+			     key, heap.base, heap.binding, descriptor.Base40(),
+			     static_cast<uint32_t>(descriptor.Type()),
+			     static_cast<uint32_t>(descriptor.Format()),
+			     static_cast<uint32_t>(descriptor.Width5()) + 1u,
+			     static_cast<uint32_t>(descriptor.Height5()) + 1u,
+			     static_cast<uint32_t>(descriptor.Depth()), descriptor.IsNull() ? 1 : 0);
 		}
 		watch_exit.outcome = one_d_heap ? "1D heap" : "incompatible";
 		table.SetTranslation(heap, key, 0u);
@@ -3289,9 +3368,9 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	// KYTY_BINDLESS_3D_AS_ARRAY (adapted from KytyPS5-Frank fed216ce8): the GPU addresses by the
 	// T# type, so a 3D instruction's 2D or 2D-array texture is a 2D array at layer round(z). It
 	// lives in the 2D-array binding; the translation entry's flag tells the shader.
-	const bool as_array = heap.binding == ShaderRecompiler::IR::BindlessImages3D &&
-	                      (descriptor.Type() == Prospero::ImageType::kColor2D ||
-	                       descriptor.Type() == Prospero::ImageType::kColor2DArray);
+	const bool     as_array = heap.binding == ShaderRecompiler::IR::BindlessImages3D &&
+	                          (descriptor.Type() == Prospero::ImageType::kColor2D ||
+	                           descriptor.Type() == Prospero::ImageType::kColor2DArray);
 	const uint32_t slot_binding =
 	    as_array ? ShaderRecompiler::IR::BindlessImages2DArray : heap.binding;
 	auto resource = heap.resource;
@@ -3318,9 +3397,10 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 		return env != nullptr && env[0] == '1';
 	}();
 	if (hold_extent) {
-		const auto desc       = BuildTextureDescription(resource, descriptor);
-		const bool conversion = TextureGetSurfaceFormatInfo(descriptor.Format()).conversion_format !=
-		                        Prospero::BufferFormat::kInvalid;
+		const auto desc = BuildTextureDescription(resource, descriptor);
+		const bool conversion =
+		    TextureGetSurfaceFormatInfo(descriptor.Format()).conversion_format !=
+		    Prospero::BufferFormat::kInvalid;
 		if (texture_cache.HeapExtentHeld(desc.info, conversion)) {
 			heap.settled[key]            = 0;
 			m_bindless_transient_failure = true;
@@ -3337,25 +3417,27 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	}
 	// KYTY_BINDLESS_CLASS_LOG=<n> (diagnostic, default 0): the first n keys whose T# holds an
 	// integer format while the heap's image resource samples float (the bindless arrays have one
-	// numeric class per resource; Erlou93/KytyPS5-Yotei KYTY_PERF_BINDLESS_CLASSES: Ghost of Yotei's
-	// terrain tile records hold 8_UINT material maps among float textures).
+	// numeric class per resource; Erlou93/KytyPS5-Yotei KYTY_PERF_BINDLESS_CLASSES: Ghost of
+	// Yotei's terrain tile records hold 8_UINT material maps among float textures).
 	{
 		static const uint32_t class_log_limit = [] {
 			const char* env = std::getenv("KYTY_BINDLESS_CLASS_LOG");
 			return env != nullptr ? static_cast<uint32_t>(std::strtoul(env, nullptr, 10)) : 0u;
 		}();
 		if (class_log_limit != 0u) {
-			const auto type = ShaderRecompiler::Format::GetFormatInfo(descriptor.Format()).type;
+			const auto type    = ShaderRecompiler::Format::GetFormatInfo(descriptor.Format()).type;
 			const bool integer = type == ShaderRecompiler::Format::ComponentType::Uint ||
 			                     type == ShaderRecompiler::Format::ComponentType::Sint;
 			static std::atomic<uint32_t> class_logged = 0;
 			if (integer && resource.numeric_class != Prospero::TextureNumericClass::Uint &&
 			    resource.numeric_class != Prospero::TextureNumericClass::Sint &&
 			    class_logged.fetch_add(1, std::memory_order_relaxed) < class_log_limit) {
-				LOGF("Bindless class: key %u of heap 0x%016" PRIx64 " (binding %u, record pointer %u, table offset %u) "
+				LOGF("Bindless class: key %u of heap 0x%016" PRIx64
+				     " (binding %u, record pointer %u, table offset %u) "
 				     "holds integer T# format %u %ux%u; the resource samples numeric class %u\n",
 				     key, heap.base, heap.binding, heap.record_pointer, heap.table_offset,
-				     static_cast<uint32_t>(descriptor.Format()), static_cast<uint32_t>(descriptor.Width5()) + 1u,
+				     static_cast<uint32_t>(descriptor.Format()),
+				     static_cast<uint32_t>(descriptor.Width5()) + 1u,
 				     static_cast<uint32_t>(descriptor.Height5()) + 1u,
 				     static_cast<uint32_t>(resource.numeric_class));
 			}
@@ -3363,7 +3445,7 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	}
 	TextureBinding binding;
 	ResolveTexture(resource, value, binding);
-	auto* image         = texture_cache.m_slot_images.try_get(binding.image_id);
+	auto* image = texture_cache.m_slot_images.try_get(binding.image_id);
 	if (image == nullptr || image->info.data.Empty()) {
 		watch_exit.outcome = "no image";
 		table.SetTranslation(heap, key, 0u);
@@ -3388,13 +3470,14 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 	}
 	const auto slot = table.AllocateSlot(slot_binding);
 	if (slot == 0) {
-		m_bindless_transient_failure = true;
-		watch_exit.outcome           = "no slot";
+		m_bindless_transient_failure          = true;
+		watch_exit.outcome                    = "no slot";
 		static std::atomic<uint32_t> reported = 0;
 		if (reported.fetch_add(1) < 8) {
-			LOGF("Bindless: binding %u has no free slot (%u per array); key %u of heap 0x%016" PRIx64
-			     " samples the placeholder\n",
-			     slot_binding, table.ImagesPerArray(), key, heap.base);
+			LOGF(
+			    "Bindless: binding %u has no free slot (%u per array); key %u of heap 0x%016" PRIx64
+			    " samples the placeholder\n",
+			    slot_binding, table.ImagesPerArray(), key, heap.base);
 		}
 		table.SetTranslation(heap, key, 0u);
 		return false;
@@ -3410,20 +3493,25 @@ bool RenderExecutor::ResolveBindlessKey(BindlessHeap& heap, uint32_t key) {
 		}();
 		static std::atomic<uint32_t> logged = 0;
 		if (logged.fetch_add(1, std::memory_order_relaxed) < log_limit) {
-			LOGF("Bindless key: heap 0x%016" PRIx64 " key %u binding %u slot %u: T# base 0x%" PRIx64
-			     " type %u format %u %ux%u depth %u mips %u-%u -> image %u (%ux%u vk%u layers %u)\n",
-			     heap.base, key, slot_binding, slot, descriptor.Base40(), static_cast<uint32_t>(descriptor.Type()),
-			     static_cast<uint32_t>(descriptor.Format()), static_cast<uint32_t>(descriptor.Width5()) + 1u,
-			     static_cast<uint32_t>(descriptor.Height5()) + 1u, static_cast<uint32_t>(descriptor.Depth()),
-			     static_cast<uint32_t>(descriptor.BaseLevel()), static_cast<uint32_t>(descriptor.LastLevel()),
-			     binding.image_id.index, image->info.extent.width, image->info.extent.height,
-			     static_cast<uint32_t>(image->backing.format), image->info.resources.layers);
+			LOGF(
+			    "Bindless key: heap 0x%016" PRIx64 " key %u binding %u slot %u: T# base 0x%" PRIx64
+			    " type %u format %u %ux%u depth %u mips %u-%u -> image %u (%ux%u vk%u layers %u)\n",
+			    heap.base, key, slot_binding, slot, descriptor.Base40(),
+			    static_cast<uint32_t>(descriptor.Type()),
+			    static_cast<uint32_t>(descriptor.Format()),
+			    static_cast<uint32_t>(descriptor.Width5()) + 1u,
+			    static_cast<uint32_t>(descriptor.Height5()) + 1u,
+			    static_cast<uint32_t>(descriptor.Depth()),
+			    static_cast<uint32_t>(descriptor.BaseLevel()),
+			    static_cast<uint32_t>(descriptor.LastLevel()), binding.image_id.index,
+			    image->info.extent.width, image->info.extent.height,
+			    static_cast<uint32_t>(image->backing.format), image->info.resources.layers);
 		}
 	}
-	const uint32_t entry = as_array ? (slot | ShaderRecompiler::IR::BindlessSlotArrayFlag) : slot;
-	heap.slots[key]         = entry;
-	heap.images[key]        = binding.image_id;
-	image->bindless_pinned  = true;
+	const uint32_t entry   = as_array ? (slot | ShaderRecompiler::IR::BindlessSlotArrayFlag) : slot;
+	heap.slots[key]        = entry;
+	heap.images[key]       = binding.image_id;
+	image->bindless_pinned = true;
 	image->bindless_self_id = binding.image_id;
 	image->usage.texture    = true;
 	if (std::find(heap.resolved.begin(), heap.resolved.end(), binding.image_id) ==
@@ -3460,8 +3548,9 @@ static uint32_t BindlessPrefillMode() {
 static uint32_t BindlessPrefillMax() {
 	static const uint32_t max = [] {
 		const char* value = std::getenv("KYTY_BINDLESS_PREFILL_MAX");
-		return value != nullptr && value[0] != '\0' ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
-		                                            : 256u;
+		return value != nullptr && value[0] != '\0'
+		           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
+		           : 256u;
 	}();
 	return max;
 }
@@ -3492,7 +3581,9 @@ static bool BindlessRefillEnabled() {
 static uint32_t BindlessRefillMax() {
 	static const uint32_t max = [] {
 		const char* value = std::getenv("KYTY_BINDLESS_REFILL_MAX");
-		return value != nullptr && value[0] != '\0' ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 4096u;
+		return value != nullptr && value[0] != '\0'
+		           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
+		           : 4096u;
 	}();
 	return max;
 }
@@ -3502,10 +3593,11 @@ void RenderExecutor::RefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
 	if (heap.refill_tick == tick || entries == 0 || heap.stride == 0) {
 		return;
 	}
-	heap.refill_tick  = tick;
-	const auto bytes  = uint64_t {entries - 1u} * heap.stride + 32u;
+	heap.refill_tick = tick;
+	const auto bytes = uint64_t {entries - 1u} * heap.stride + 32u;
 	m_bindless_refill_bytes.resize(bytes);
-	if (!LibKernel::Memory::TryReadBacking(heap.base + heap.table_offset, m_bindless_refill_bytes.data(), bytes)) {
+	if (!LibKernel::Memory::TryReadBacking(heap.base + heap.table_offset,
+	                                       m_bindless_refill_bytes.data(), bytes)) {
 		return;
 	}
 	const auto digest = XXH3_64bits(m_bindless_refill_bytes.data(), bytes);
@@ -3518,13 +3610,14 @@ void RenderExecutor::RefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
 }
 
 void RenderExecutor::PrefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
-	auto&          table   = m_context.GetBindlessTable();
-	auto&          cache   = m_context.GetTextureCache();
-	const uint32_t keys    = std::min({entries, heap.entries, static_cast<uint32_t>(heap.settled.size())});
-	uint32_t       shared  = 0;
-	uint32_t       made    = 0;
-	uint32_t       failed  = 0;
-	uint32_t       skipped = 0;
+	auto&          table = m_context.GetBindlessTable();
+	auto&          cache = m_context.GetTextureCache();
+	const uint32_t keys =
+	    std::min({entries, heap.entries, static_cast<uint32_t>(heap.settled.size())});
+	uint32_t shared  = 0;
+	uint32_t made    = 0;
+	uint32_t failed  = 0;
+	uint32_t skipped = 0;
 	// New textures per heap (each may upload and detile); the rest wait for feedback as before.
 	constexpr uint32_t Budget = 64;
 	for (uint32_t key = 0; key < keys; key++) {
@@ -3537,7 +3630,8 @@ void RenderExecutor::PrefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
 			skipped++;
 			continue;
 		}
-		if (const auto* found = table.FindSharedSlot(heap.binding, words, heap.view_key); found != nullptr) {
+		if (const auto* found = table.FindSharedSlot(heap.binding, words, heap.view_key);
+		    found != nullptr) {
 			const auto id    = found->image;
 			const auto entry = found->entry;
 			auto*      image = cache.m_slot_images.try_get(id);
@@ -3546,12 +3640,14 @@ void RenderExecutor::PrefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
 				heap.images[key]      = id;
 				heap.settled[key]     = 1;
 				heap.descriptors[key] = words;
-				if (std::find(heap.resolved.begin(), heap.resolved.end(), id) == heap.resolved.end()) {
+				if (std::find(heap.resolved.begin(), heap.resolved.end(), id) ==
+				    heap.resolved.end()) {
 					heap.resolved.push_back(id);
 				}
 				heap.unchecked.push_back(id);
 				table.AddImageReference(id, heap, key);
-				table.AddSharedSlotRef(BindlessTable::SlotBinding(heap, entry), BindlessTable::SlotIndex(entry));
+				table.AddSharedSlotRef(BindlessTable::SlotBinding(heap, entry),
+				                       BindlessTable::SlotIndex(entry));
 				table.SetTranslation(heap, key, entry);
 				shared++;
 				continue;
@@ -3573,11 +3669,14 @@ void RenderExecutor::PrefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
 					value.dword_count = 8u;
 					std::copy_n(words.begin(), 8, value.dwords.begin());
 					const auto descriptor = DecodeNativeDescriptor<ShaderTextureResource>(value);
-					LOGF("Bindless prefill failed: frame=%" PRIu64 " heap 0x%" PRIx64 "+%u key %u: T# base 0x%" PRIx64
+					LOGF("Bindless prefill failed: frame=%" PRIu64 " heap 0x%" PRIx64
+					     "+%u key %u: T# base 0x%" PRIx64
 					     " type %u format %u %ux%u transient %d slot 0x%x\n",
 					     BindlessFrame(), heap.base, heap.table_offset, key, descriptor.Base40(),
-					     static_cast<uint32_t>(descriptor.Type()), static_cast<uint32_t>(descriptor.Format()),
-					     static_cast<uint32_t>(descriptor.Width5()) + 1u, static_cast<uint32_t>(descriptor.Height5()) + 1u,
+					     static_cast<uint32_t>(descriptor.Type()),
+					     static_cast<uint32_t>(descriptor.Format()),
+					     static_cast<uint32_t>(descriptor.Width5()) + 1u,
+					     static_cast<uint32_t>(descriptor.Height5()) + 1u,
 					     m_bindless_transient_failure ? 1 : 0, heap.slots[key]);
 				}
 			}
@@ -3588,10 +3687,11 @@ void RenderExecutor::PrefillBindlessHeap(BindlessHeap& heap, uint32_t entries) {
 		const auto                   n = logged.fetch_add(1, std::memory_order_relaxed);
 		// Mode 3: every heap.
 		if (n < 64u || (n & 1023u) == 0u || BindlessPrefillMode() >= 3u) {
-			LOGF("Bindless prefill: frame=%" PRIu64 " heap 0x%" PRIx64 "+%u stride %u binding %u keys %u: shared %u "
+			LOGF("Bindless prefill: frame=%" PRIu64 " heap 0x%" PRIx64
+			     "+%u stride %u binding %u keys %u: shared %u "
 			     "resolved %u failed %u skipped %u forgotten %" PRIu64 " (#%u)\n",
-			     BindlessFrame(), heap.base, heap.table_offset, heap.stride, heap.binding, keys, shared, made,
-			     failed, skipped, table.SharedSlotsForgotten(), n);
+			     BindlessFrame(), heap.base, heap.table_offset, heap.stride, heap.binding, keys,
+			     shared, made, failed, skipped, table.SharedSlotsForgotten(), n);
 		}
 	}
 }
@@ -3602,7 +3702,8 @@ static uint64_t BindlessRecordRetryId(const BindlessHeap& heap, uint32_t key) {
 
 void RenderExecutor::QueueBindlessRecordRetry(BindlessHeap& heap, uint32_t key, uint32_t attempt) {
 	constexpr uint32_t Attempts = 5; // after 4, 8, 16, 32 and 64 frames
-	if (attempt >= Attempts || !m_bindless_record_queued.insert(BindlessRecordRetryId(heap, key)).second) {
+	if (attempt >= Attempts ||
+	    !m_bindless_record_queued.insert(BindlessRecordRetryId(heap, key)).second) {
 		return;
 	}
 	m_bindless_record_retry.push_back({&heap, key, attempt, BindlessFrame() + (4ull << attempt)});
@@ -3635,13 +3736,16 @@ bool RenderExecutor::ResettleBindlessKey(BindlessHeap& heap, uint32_t key) {
 		heap.settled[key] = 1;
 		// The old T#: the key stays "changed" for the retry below. An unfilled record keeps zeros
 		// (revalidation sees the T# once written) and is read again by m_bindless_record_retry.
-		heap.descriptors[key] = m_bindless_record_unfilled ? std::array<uint32_t, 8> {} : old_descriptor;
-		if (std::find(heap.resolved.begin(), heap.resolved.end(), old_image) == heap.resolved.end()) {
+		heap.descriptors[key] =
+		    m_bindless_record_unfilled ? std::array<uint32_t, 8> {} : old_descriptor;
+		if (std::find(heap.resolved.begin(), heap.resolved.end(), old_image) ==
+		    heap.resolved.end()) {
 			heap.resolved.push_back(old_image);
 		}
 		table.AddImageReference(old_image, heap, key);
 		table.SetTranslation(heap, key, old_slot);
-		if (!m_bindless_record_unfilled && std::find(m_bindless_retry.begin(), m_bindless_retry.end(),
+		if (!m_bindless_record_unfilled &&
+		    std::find(m_bindless_retry.begin(), m_bindless_retry.end(),
 		              std::pair<BindlessHeap*, uint32_t> {&heap, key}) == m_bindless_retry.end()) {
 			m_bindless_retry.emplace_back(&heap, key);
 		}
@@ -3649,7 +3753,8 @@ bool RenderExecutor::ResettleBindlessKey(BindlessHeap& heap, uint32_t key) {
 		return false;
 	}
 	if (keep) {
-		table.FreeSlot(BindlessTable::SlotBinding(heap, old_slot), BindlessTable::SlotIndex(old_slot));
+		table.FreeSlot(BindlessTable::SlotBinding(heap, old_slot),
+		               BindlessTable::SlotIndex(old_slot));
 	}
 	if (no_refs && image != nullptr && image->bindless_pinned && old_image != heap.images[key]) {
 		// No key refers to it any more: the texture cache may collect it again.
@@ -3677,9 +3782,12 @@ void RenderExecutor::SyncBindlessHeaps() {
 // KYTY_BINDLESS_SYNC_INDEX (live, default off): see SyncWrittenBindlessEntries.
 static Live::Switch g_bindless_sync_index("KYTY_BINDLESS_SYNC_INDEX", Live::ParseDefaultOff);
 // KYTY_BINDLESS_SYNC_RETIRE=<frames> (live, default 0): see SyncWrittenBindlessEntries.
-static Live::Switch g_bindless_sync_retire("KYTY_BINDLESS_SYNC_RETIRE", [](const char* value) -> int64_t {
-	return value != nullptr ? static_cast<int64_t>(std::min(std::strtoull(value, nullptr, 10), 1000000ull)) : 0;
-});
+static Live::Switch
+    g_bindless_sync_retire("KYTY_BINDLESS_SYNC_RETIRE", [](const char* value) -> int64_t {
+	    return value != nullptr
+	               ? static_cast<int64_t>(std::min(std::strtoull(value, nullptr, 10), 1000000ull))
+	               : 0;
+    });
 static std::atomic<uint64_t> g_bindless_retired_skips {0};
 static std::atomic<uint64_t> g_bindless_retired_rechecks {0};
 
@@ -3716,27 +3824,28 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 	// again. Every entry in them is compared with the T# its key was settled from.
 	table.TakeWrittenRanges(m_bindless_written);
 	uint32_t view_changes = 0, resource_changes = 0, resettled = 0;
-	// KYTY_BINDLESS_SYNC_INDEX=1 (live, default 0; PPSA26344 preset): only the heaps whose key tables can
-	// reach a written range are compared, found through 1 MiB address buckets of the heaps' key
-	// spans (filled incrementally: new heaps, and heaps whose region was reallocated). Ghost of
-	// Yotei creates ~100k small heaps in 10 minutes (KYTY_BINDLESS_SMALL_HEAPS, never freed) and
-	// every sync walked all of them for every written range (CPU profile: ~24% of the command
-	// processor thread at the village). Same comparisons, same order per heap.
+	// KYTY_BINDLESS_SYNC_INDEX=1 (live, default 0; PPSA26344 preset): only the heaps whose key
+	// tables can reach a written range are compared, found through 1 MiB address buckets of the
+	// heaps' key spans (filled incrementally: new heaps, and heaps whose region was reallocated).
+	// Ghost of Yotei creates ~100k small heaps in 10 minutes (KYTY_BINDLESS_SMALL_HEAPS, never
+	// freed) and every sync walked all of them for every written range (CPU profile: ~24% of the
+	// command processor thread at the village). Same comparisons, same order per heap.
 	const bool sync_index = g_bindless_sync_index.Get() != 0;
-	auto& heaps = table.Heaps();
-	auto& candidates = m_bindless_heap_candidates;
+	auto&      heaps      = table.Heaps();
+	auto&      candidates = m_bindless_heap_candidates;
 	candidates.clear();
 	const bool use_index = sync_index;
 	if (use_index) {
 		constexpr uint32_t BucketShift = 20u;
-		const auto add = [&](uint32_t serial) {
-			const auto& heap  = heaps[serial];
+		const auto         add         = [&](uint32_t serial) {
+			const auto& heap = heaps[serial];
 			if (heap.record_pointer != UINT32_MAX || heap.runtime) {
 				return; // not compared here (see below)
 			}
-			const auto  begin = heap.base + heap.table_offset;
-			const auto  end   = begin + uint64_t {heap.entries} * std::max(heap.stride, 32u) + 32u;
-			for (uint64_t bucket = begin >> BucketShift; bucket <= (end - 1u) >> BucketShift; bucket++) {
+			const auto begin = heap.base + heap.table_offset;
+			const auto end   = begin + uint64_t {heap.entries} * std::max(heap.stride, 32u) + 32u;
+			for (uint64_t bucket = begin >> BucketShift; bucket <= (end - 1u) >> BucketShift;
+			     bucket++) {
 				m_bindless_heap_buckets[bucket].push_back(serial);
 			}
 		};
@@ -3764,14 +3873,16 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 			if (end <= begin) {
 				continue;
 			}
-			for (uint64_t bucket = begin >> BucketShift; bucket <= (end - 1u) >> BucketShift; bucket++) {
+			for (uint64_t bucket = begin >> BucketShift; bucket <= (end - 1u) >> BucketShift;
+			     bucket++) {
 				buckets.push_back(static_cast<uint32_t>(bucket));
 			}
 		}
 		std::sort(buckets.begin(), buckets.end());
 		buckets.erase(std::unique(buckets.begin(), buckets.end()), buckets.end());
 		for (const auto bucket: buckets) {
-			if (const auto found = m_bindless_heap_buckets.find(bucket); found != m_bindless_heap_buckets.end()) {
+			if (const auto found = m_bindless_heap_buckets.find(bucket);
+			    found != m_bindless_heap_buckets.end()) {
 				for (const auto serial: found->second) {
 					marks[serial >> 6u] |= uint64_t {1} << (serial & 63u);
 				}
@@ -3779,7 +3890,8 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 		}
 		for (size_t word = 0; word < marks.size(); word++) {
 			for (auto bits = marks[word]; bits != 0; bits &= bits - 1u) {
-				candidates.push_back(static_cast<uint32_t>(word * 64u + static_cast<size_t>(std::countr_zero(bits))));
+				candidates.push_back(static_cast<uint32_t>(
+				    word * 64u + static_cast<size_t>(std::countr_zero(bits))));
 			}
 		}
 	} else {
@@ -3793,9 +3905,9 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 	// tens of thousands of dead heaps over memory it keeps rewriting (material records at moving
 	// addresses), and comparing them made each sync slower with play time (uProf: the sync and
 	// its guest reads grew from 330 s to 670 s of one boot).
-	const auto retire  = static_cast<uint64_t>(g_bindless_sync_retire.Get());
-	const auto frame   = BindlessFrame();
-	uint64_t   retired = 0;
+	const auto retire     = static_cast<uint64_t>(g_bindless_sync_retire.Get());
+	const auto frame      = BindlessFrame();
+	uint64_t   retired    = 0;
 	const auto heap_count = use_index ? candidates.size() : heaps.size();
 	for (size_t heap_index = 0; heap_index < heap_count; heap_index++) {
 		auto& heap = heaps[use_index ? candidates[heap_index] : heap_index];
@@ -3805,8 +3917,7 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 		const auto heap_begin = heap.base + heap.table_offset;
 		const auto keys = std::min(heap.guest_entries, static_cast<uint32_t>(heap.settled.size()));
 		const auto stride   = heap.stride; // 32, or a record's (KYTY_BINDLESS_STRIDE)
-		const auto heap_end =
-		    heap_begin + (keys == 0 ? 0 : uint64_t {keys - 1u} * stride + 32u);
+		const auto heap_end = heap_begin + (keys == 0 ? 0 : uint64_t {keys - 1u} * stride + 32u);
 		for (const auto& [begin, end]: m_bindless_written) {
 			const auto from = std::max(begin, heap_begin);
 			const auto to   = std::min(end, heap_end);
@@ -3832,15 +3943,18 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 	g_bindless_retired_skips.fetch_add(retired, std::memory_order_relaxed);
 	if (retire != 0 || sync_index) {
 		// Every 10 s while either switch is on: what the sync did (log only).
-		static auto last_line = std::chrono::steady_clock::now();
+		static auto     last_line = std::chrono::steady_clock::now();
 		static uint64_t syncs = 0, candidate_sum = 0;
 		syncs++;
 		candidate_sum += use_index ? candidates.size() : heaps.size();
-		if (const auto now = std::chrono::steady_clock::now(); now - last_line >= std::chrono::seconds(10)) {
+		if (const auto now = std::chrono::steady_clock::now();
+		    now - last_line >= std::chrono::seconds(10)) {
 			last_line = now;
-			LOGF("BindlessSync 10s: syncs=%" PRIu64 " heaps=%zu compared_per_sync=%.0f retired_skips=%" PRIu64
+			LOGF("BindlessSync 10s: syncs=%" PRIu64
+			     " heaps=%zu compared_per_sync=%.0f retired_skips=%" PRIu64
 			     " stale_rechecks=%" PRIu64 " refills=%" PRIu64 "\n",
-			     syncs, heaps.size(), syncs != 0 ? static_cast<double>(candidate_sum) / static_cast<double>(syncs) : 0.0,
+			     syncs, heaps.size(),
+			     syncs != 0 ? static_cast<double>(candidate_sum) / static_cast<double>(syncs) : 0.0,
 			     g_bindless_retired_skips.exchange(0), g_bindless_retired_rechecks.exchange(0),
 			     g_bindless_refills.exchange(0));
 			syncs = candidate_sum = 0;
@@ -3858,15 +3972,16 @@ void RenderExecutor::SyncWrittenBindlessEntries() {
 	stats.resettled.fetch_add(resettled, std::memory_order_relaxed);
 }
 
-// KYTY_BINDLESS_RECORD_LAZY=0 (default 1, live): record pointer heaps are handled with the others once a
-// frame (at its first bindless dispatch). On, each is handled at its own first use in the frame
-// (ProcessRecordHeap): Miles Morales alternates two call tables and rebuilds the idle one while the
-// GPU works through the other, so reading the idle table's records then saw records half written
-// (all-zero T#s behind new pointers) and settled keys from them.
-static Live::Switch g_bindless_record_lazy("KYTY_BINDLESS_RECORD_LAZY", [](const char* value) -> int64_t {
-	return value == nullptr || value[0] != '0' ? 1 : 0;
-});
-static bool BindlessRecordLazy() {
+// KYTY_BINDLESS_RECORD_LAZY=0 (default 1, live): record pointer heaps are handled with the others
+// once a frame (at its first bindless dispatch). On, each is handled at its own first use in the
+// frame (ProcessRecordHeap): Miles Morales alternates two call tables and rebuilds the idle one
+// while the GPU works through the other, so reading the idle table's records then saw records half
+// written (all-zero T#s behind new pointers) and settled keys from them.
+static Live::Switch g_bindless_record_lazy("KYTY_BINDLESS_RECORD_LAZY",
+                                           [](const char* value) -> int64_t {
+	                                           return value == nullptr || value[0] != '0' ? 1 : 0;
+                                           });
+static bool         BindlessRecordLazy() {
 	return g_bindless_record_lazy.Get() != 0;
 }
 
@@ -3876,9 +3991,8 @@ uint32_t RenderExecutor::RevalidateBindlessKeys(uint32_t budget) {
 	// their records, not the T#s they point at.
 	const bool pointers_only = BindlessEngineEnabled() && !BindlessEngineVerify();
 	if (pointers_only &&
-	    std::ranges::none_of(m_context.GetBindlessTable().Heaps(), [](const auto& heap) {
-		    return heap.record_pointer != UINT32_MAX;
-	    })) {
+	    std::ranges::none_of(m_context.GetBindlessTable().Heaps(),
+	                         [](const auto& heap) { return heap.record_pointer != UINT32_MAX; })) {
 		return 0; // the write watch reports rewritten entries (SyncBindlessHeaps)
 	}
 	// The guest rewrites heap entries as it streams textures out and others in. A key settled
@@ -3926,7 +4040,7 @@ uint32_t RenderExecutor::RevalidateBindlessHeap(BindlessHeap& heap, uint32_t bud
 				MaskR128HeapWords(heap, words.data());
 			}
 		}
-		uint32_t   next     = begin + count;
+		uint32_t next = begin + count;
 		for (uint32_t i = 0; readable && i < count; i++) {
 			const auto key = begin + i;
 			if (heap.settled[key] == 0 || heap.descriptors[key] == m_bindless_window[i]) {
@@ -3986,14 +4100,16 @@ uint32_t RenderExecutor::RetryBindlessRecords(BindlessHeap* heap, uint64_t frame
 }
 
 // The flagged keys of one heap (from the snapshot consumed this frame), within the budget.
-uint32_t RenderExecutor::ResolveFlaggedKeys(BindlessHeap& heap, uint32_t budget, uint32_t* requested) {
+uint32_t RenderExecutor::ResolveFlaggedKeys(BindlessHeap& heap, uint32_t budget,
+                                            uint32_t* requested) {
 	auto&    table    = m_context.GetBindlessTable();
 	uint32_t resolved = 0;
 	m_bindless_requests.clear();
 	table.TakeRequests(heap, m_bindless_requests);
 	*requested += static_cast<uint32_t>(m_bindless_requests.size());
-	// KYTY_BINDLESS_REQ_LOG=<n> (diagnostic, default off): the first n lines "Bindless requests": per
-	// heap and frame, how many unresolved keys shaders sampled (feedback), with the heap's identity.
+	// KYTY_BINDLESS_REQ_LOG=<n> (diagnostic, default off): the first n lines "Bindless requests":
+	// per heap and frame, how many unresolved keys shaders sampled (feedback), with the heap's
+	// identity.
 	static const uint32_t req_log = [] {
 		const char* value = std::getenv("KYTY_BINDLESS_REQ_LOG");
 		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 0u;
@@ -4005,11 +4121,12 @@ uint32_t RenderExecutor::ResolveFlaggedKeys(BindlessHeap& heap, uint32_t budget,
 			for (const auto key: m_bindless_requests) {
 				unsettled += key < heap.settled.size() && heap.settled[key] == 0 ? 1u : 0u;
 			}
-			LOGF("Bindless requests: frame=%" PRIu64 " heap 0x%" PRIx64 "+%u stride %u binding %u entries %u record %d "
+			LOGF("Bindless requests: frame=%" PRIu64 " heap 0x%" PRIx64
+			     "+%u stride %u binding %u entries %u record %d "
 			     "runtime %d requested %zu unsettled %u first_key %u\n",
-			     BindlessFrame(), heap.base, heap.table_offset, heap.stride, heap.binding, heap.entries,
-			     heap.record_pointer != UINT32_MAX ? 1 : 0, heap.runtime ? 1 : 0, m_bindless_requests.size(),
-			     unsettled, m_bindless_requests.front());
+			     BindlessFrame(), heap.base, heap.table_offset, heap.stride, heap.binding,
+			     heap.entries, heap.record_pointer != UINT32_MAX ? 1 : 0, heap.runtime ? 1 : 0,
+			     m_bindless_requests.size(), unsettled, m_bindless_requests.front());
 		}
 	}
 	for (const auto key: m_bindless_requests) {
@@ -4030,8 +4147,8 @@ uint32_t RenderExecutor::ResolveFlaggedKeys(BindlessHeap& heap, uint32_t budget,
 }
 
 // KYTY_BINDLESS_UNMAP_RERESOLVE: keys whose image the texture cache freed (a partial unmap of a
-// streamed texture) are settled again at once, from the T# they were settled from (re-read), instead
-// of sampling the placeholder until a shader flags them and the flag comes round.
+// streamed texture) are settled again at once, from the T# they were settled from (re-read),
+// instead of sampling the placeholder until a shader flags them and the flag comes round.
 void RenderExecutor::ReresolveUnregisteredKeys(BindlessHeap& heap) {
 	if (!BindlessTable::UnmapReresolve()) {
 		return;
@@ -4048,7 +4165,7 @@ void RenderExecutor::ReresolveUnregisteredKeys(BindlessHeap& heap) {
 }
 void RenderExecutor::ProcessRecordHeap(BindlessHeap& heap) {
 	const BindlessHostTimer timer;
-	const auto              frame = BindlessFrame();
+	const auto              frame  = BindlessFrame();
 	const uint32_t          Budget = BindlessResolveBudget();
 	if (m_bindless_budget_frame != frame) {
 		m_bindless_budget_frame = frame;
@@ -4068,21 +4185,21 @@ void RenderExecutor::ProcessRecordHeap(BindlessHeap& heap) {
 	if (heap.processed_frame != frame) {
 		heap.processed_frame = frame;
 		ReresolveUnregisteredKeys(heap);
-		auto spent           = RetryBindlessRecords(&heap, frame, m_bindless_budget_left);
+		auto spent = RetryBindlessRecords(&heap, frame, m_bindless_budget_left);
 		m_bindless_budget_left -= std::min(m_bindless_budget_left, spent);
 		spent = RevalidateBindlessHeap(heap, m_bindless_budget_left);
 		m_bindless_budget_left -= std::min(m_bindless_budget_left, spent);
 	}
 }
 // KYTY_BINDLESS_IDLE_RELEASE=<frames> (startup, default 0 = off; PPSA26344 preset 300; ported from
-// Erlou93/KytyPS5-Yotei v0.1.4 ReleaseUnusedBindlessSlots): a guest heap no draw or dispatch used for
-// that many frames releases its resolved keys: their slots go back to the free lists and their images
-// lose the heap's references; an image no key refers to any more is unpinned, so the texture cache may
-// collect it (KYTY_BINDLESS_GUEST_DROP_FRAMES frees it). Without it every resolved key of every heap
-// stays: Ghost of Yotei creates ~100k small heaps per 10 minutes (per-frame terrain and material
-// tables), each holding its images pinned for the rest of the session (VRAM growth over a long
-// session). A released heap used again resolves its keys again (prefill, or feedback). Runtime and
-// record pointer heaps are left alone. 512 heaps are looked at per frame, round robin.
+// Erlou93/KytyPS5-Yotei v0.1.4 ReleaseUnusedBindlessSlots): a guest heap no draw or dispatch used
+// for that many frames releases its resolved keys: their slots go back to the free lists and their
+// images lose the heap's references; an image no key refers to any more is unpinned, so the texture
+// cache may collect it (KYTY_BINDLESS_GUEST_DROP_FRAMES frees it). Without it every resolved key of
+// every heap stays: Ghost of Yotei creates ~100k small heaps per 10 minutes (per-frame terrain and
+// material tables), each holding its images pinned for the rest of the session (VRAM growth over a
+// long session). A released heap used again resolves its keys again (prefill, or feedback). Runtime
+// and record pointer heaps are left alone. 512 heaps are looked at per frame, round robin.
 void RenderExecutor::ReleaseIdleBindlessHeaps(uint64_t frame) {
 	static const uint64_t idle = [] {
 		const char* value = std::getenv("KYTY_BINDLESS_IDLE_RELEASE");
@@ -4098,7 +4215,7 @@ void RenderExecutor::ReleaseIdleBindlessHeaps(uint64_t frame) {
 	if (count == 0 || frame < idle) {
 		return;
 	}
-	static uint64_t released_heaps = 0, released_keys = 0, unpinned = 0, logged_frame = 0;
+	static uint64_t    released_heaps = 0, released_keys = 0, unpinned = 0, logged_frame = 0;
 	constexpr uint32_t HeapBudget = 512;
 	for (uint32_t n = 0; n < HeapBudget && n < count; n++) {
 		if (m_bindless_idle_cursor >= count) {
@@ -4116,7 +4233,8 @@ void RenderExecutor::ReleaseIdleBindlessHeaps(uint64_t frame) {
 			}
 			released_keys++;
 			if (table.ReleaseKey(heap, key, true) && id) {
-				if (auto* image = cache.m_slot_images.try_get(id); image != nullptr && image->bindless_pinned) {
+				if (auto* image = cache.m_slot_images.try_get(id);
+				    image != nullptr && image->bindless_pinned) {
 					NoteBindlessStateChange(*image);
 					image->bindless_pinned = false;
 					cache.ReleaseDroppedByGuest(id);
@@ -4131,8 +4249,8 @@ void RenderExecutor::ReleaseIdleBindlessHeaps(uint64_t frame) {
 	}
 	if (released_heaps != 0 && frame >= logged_frame + 600u) {
 		logged_frame = frame;
-		LOGF("Bindless idle release: frame=%" PRIu64 " heaps %" PRIu64 " keys %" PRIu64 " images unpinned %" PRIu64
-		     " (KYTY_BINDLESS_IDLE_RELEASE=%" PRIu64 ", %zu heaps)\n",
+		LOGF("Bindless idle release: frame=%" PRIu64 " heaps %" PRIu64 " keys %" PRIu64
+		     " images unpinned %" PRIu64 " (KYTY_BINDLESS_IDLE_RELEASE=%" PRIu64 ", %zu heaps)\n",
 		     frame, released_heaps, released_keys, unpinned, idle, count);
 	}
 }
@@ -4140,7 +4258,7 @@ void RenderExecutor::ReleaseIdleBindlessHeaps(uint64_t frame) {
 void RenderExecutor::ResolveBindlessRequests() {
 	KYTY_PROFILER_FUNCTION();
 	const BindlessHostTimer timer;
-	const auto frame = BindlessFrame();
+	const auto              frame = BindlessFrame();
 	if (frame == m_bindless_frame) {
 		return;
 	}
@@ -4162,9 +4280,9 @@ void RenderExecutor::ResolveBindlessRequests() {
 	ReleaseIdleBindlessHeaps(frame);
 	const auto snapshot_frame = m_bindless_snapshot_frame;
 	// Each texture may upload and detile; spread first sight of a scene over a few frames.
-	const uint32_t     Budget    = BindlessResolveBudget();
-	uint32_t           resolved  = RevalidateBindlessKeys(Budget);
-	uint32_t           requested = 0;
+	const uint32_t Budget    = BindlessResolveBudget();
+	uint32_t       resolved  = RevalidateBindlessKeys(Budget);
+	uint32_t       requested = 0;
 	if (!BindlessRecordLazy()) {
 		resolved += RetryBindlessRecords(nullptr, frame, Budget - std::min(Budget, resolved));
 	}
@@ -4189,7 +4307,7 @@ void RenderExecutor::ResolveBindlessRequests() {
 	const bool                   log_frame     = frames_logged.fetch_add(1) < 12;
 	if (const auto word0 = table.TakeWordZero(); word0 != 0) {
 		// KYTY_BINDLESS_OOR_LOG=<n> (default 64): how many of these lines are logged.
-		static const uint32_t        keys_limit  = [] {
+		static const uint32_t keys_limit = [] {
 			const char* env = std::getenv("KYTY_BINDLESS_OOR_LOG");
 			return env != nullptr ? static_cast<uint32_t>(std::strtoul(env, nullptr, 10)) : 64u;
 		}();
@@ -4234,7 +4352,8 @@ void RenderExecutor::ResolveBindlessRequests() {
 						keys += heap->runtime_next_key;
 					}
 				}
-				LOGF("Bindless runtime images: frame=%" PRIu64 " requested=%u resolved=%u (%u T#s so "
+				LOGF("Bindless runtime images: frame=%" PRIu64
+				     " requested=%u resolved=%u (%u T#s so "
 				     "far)\n",
 				     frame, runtime_requested, runtime_resolved, keys);
 			}
@@ -4248,8 +4367,8 @@ void RenderExecutor::ResolveBindlessRequests() {
 		const auto before = requested;
 		resolved += ResolveFlaggedKeys(heap, Budget - std::min(Budget, resolved), &requested);
 		if (log_frame) {
-			LOGF("Bindless feedback: frame=%" PRIu64 " binding=%u region=%u flagged=%u\n", frame, heap.binding,
-			     heap.region, requested - before);
+			LOGF("Bindless feedback: frame=%" PRIu64 " binding=%u region=%u flagged=%u\n", frame,
+			     heap.binding, heap.region, requested - before);
 		}
 	}
 	m_bindless_budget_left = Budget - std::min(Budget, resolved);
@@ -4275,10 +4394,12 @@ static bool BindlessPatchLogTake() {
 	};
 	static const Request request = [] {
 		Request parsed;
-		if (const char* value = std::getenv("KYTY_BINDLESS_USE_LOG"); value != nullptr && value[0] != '\0') {
+		if (const char* value = std::getenv("KYTY_BINDLESS_USE_LOG");
+		    value != nullptr && value[0] != '\0') {
 			std::string text(value);
 			if (const auto bar = text.find('|'); bar != std::string::npos) {
-				parsed.count = static_cast<uint32_t>(std::strtoul(text.c_str() + bar + 1, nullptr, 10));
+				parsed.count =
+				    static_cast<uint32_t>(std::strtoul(text.c_str() + bar + 1, nullptr, 10));
 				text.resize(bar);
 			}
 			parsed.path = text;
@@ -4345,9 +4466,9 @@ void RenderExecutor::UpdateBindlessUsageProbe(uint64_t frame, uint64_t snapshot_
 		}
 		m_bindless_unused.clear();
 		table.CollectUnusedImages(m_bindless_unused);
-		const auto bytes       = texture_cache.SetBindlessEvictable(m_bindless_unused);
-		m_bindless_probe_frame = 0;
-		m_bindless_next_probe  = frame + ProbeInterval;
+		const auto bytes                    = texture_cache.SetBindlessEvictable(m_bindless_unused);
+		m_bindless_probe_frame              = 0;
+		m_bindless_next_probe               = frame + ProbeInterval;
 		static std::atomic<uint32_t> logged = 0;
 		if (logged.fetch_add(1) < 32) {
 			LOGF("Bindless probe: frame=%" PRIu64 " unused=%zu (%" PRIu64
@@ -4386,9 +4507,9 @@ void RenderExecutor::PrepareBindlessSamplers(const ShaderStageRuntime& runtime,
 		std::copy_n(ShaderRecompiler::IR::BindlessDefaultSampler, 4u, stand_in.fields);
 		table.WriteDefaultSampler(cache.GetSampler(stand_in, false));
 	}
-	const auto         frame      = BindlessFrame();
-	constexpr uint64_t MaxRecords = 1024;
-	constexpr uint64_t MaxBytes   = 256u * 1024u;
+	const auto                           frame      = BindlessFrame();
+	constexpr uint64_t                   MaxRecords = 1024;
+	constexpr uint64_t                   MaxBytes   = 256u * 1024u;
 	std::vector<std::array<uint32_t, 4>> records;
 	for (const auto& use: snapshot.bindless_sampler_heaps) {
 		if (use.sampler >= program.info.samplers.size() || use.stride < 16u) {
@@ -4397,27 +4518,27 @@ void RenderExecutor::PrepareBindlessSamplers(const ShaderStageRuntime& runtime,
 		const auto&    sampler = program.info.samplers[use.sampler];
 		const bool     cube    = CubeEdgeClamp() && SamplesCubesOnly(program, use.sampler);
 		const uint32_t flags   = (sampler.depth_compare ? 1u : 0u) |
-		                       (sampler.force_point_filtering ? 2u : 0u) |
-		                       (sampler.integer_border ? 4u : 0u) | (cube ? 8u : 0u);
+		                         (sampler.force_point_filtering ? 2u : 0u) |
+		                         (sampler.integer_border ? 4u : 0u) | (cube ? 8u : 0u);
 		auto& heap = table.FindOrCreateSamplerHeap(use.base, use.table_offset, use.stride, flags);
 		if (heap.checked_frame != frame) {
-			heap.checked_frame       = frame;
-			const uint64_t available = use.size > use.table_offset
-			                               ? (use.size - use.table_offset + use.stride - 16u) / use.stride
-			                               : 0u;
+			heap.checked_frame = frame;
+			const uint64_t available =
+			    use.size > use.table_offset
+			        ? (use.size - use.table_offset + use.stride - 16u) / use.stride
+			        : 0u;
 			records.resize(std::min({available, MaxRecords, MaxBytes / use.stride}));
 			const uint64_t address = use.base + use.table_offset;
 			const uint64_t bytes =
 			    records.empty() ? 0u : (records.size() - 1u) * use.stride + sizeof(records[0]);
-			bool read = !records.empty() &&
-			            !m_context.GetBufferCache().HasGpuDirtyBytes(address, bytes);
+			bool read =
+			    !records.empty() && !m_context.GetBufferCache().HasGpuDirtyBytes(address, bytes);
 			if (read && use.stride == sizeof(records[0])) {
 				read = LibKernel::Memory::TryReadBacking(address, records.data(), bytes);
 			} else {
 				for (size_t key = 0; read && key < records.size(); key++) {
-					read = LibKernel::Memory::TryReadBacking(address + key * use.stride,
-					                                         records[key].data(),
-					                                         sizeof(records[key]));
+					read = LibKernel::Memory::TryReadBacking(
+					    address + key * use.stride, records[key].data(), sizeof(records[key]));
 				}
 			}
 			if (read) {
@@ -4431,7 +4552,8 @@ void RenderExecutor::PrepareBindlessSamplers(const ShaderStageRuntime& runtime,
 				(void)table.MirrorSamplerHeap(heap, records, make);
 			}
 		}
-		const uint32_t entries = heap.region != 0u ? static_cast<uint32_t>(heap.records.size()) : 0u;
+		const uint32_t entries =
+		    heap.region != 0u ? static_cast<uint32_t>(heap.records.size()) : 0u;
 		prepared.bindless_patches.push_back({use.mapping_offset, heap.region, entries});
 	}
 }
@@ -4475,65 +4597,72 @@ void RenderExecutor::PrepareBindlessHeaps(const ShaderStageRuntime& runtime,
 		if (use.image >= program.info.images.size()) {
 			continue;
 		}
-		const auto&    resource = program.info.images[use.image];
+		const auto& resource = program.info.images[use.image];
 		if (use.runtime) {
 			// KYTY_RUNTIME_IMAGES: the runtime heap of the image's binding; its resolved images
 			// must be readable. Nothing to patch.
 			auto* heap = table.RuntimeHeap(BindlessBindingFor(resource), &resource);
-			if (heap != nullptr && std::find(prepared.bindless_heaps.begin(),
-			                                 prepared.bindless_heaps.end(),
-			                                 heap) == prepared.bindless_heaps.end()) {
+			if (heap != nullptr &&
+			    std::find(prepared.bindless_heaps.begin(), prepared.bindless_heaps.end(), heap) ==
+			        prepared.bindless_heaps.end()) {
 				prepared.bindless_heaps.push_back(heap);
 			}
 			continue;
 		}
 		const bool     pointers = use.record_pointer != UINT32_MAX;
-		const uint64_t span     = pointers                    ? use.size
+		const uint64_t span     = pointers                      ? use.size
 		                          : use.size > use.table_offset ? use.size - use.table_offset
 		                                                        : 0;
 		const uint64_t keys_per_record =
 		    use.nested_vsharp != UINT32_MAX && use.nested_keys != 0 ? use.nested_keys : 1u;
-		// KYTY_BINDLESS_RECORD_KEYS=<n> (default 0 = the whole table, up to 512 Ki keys): the keys of a
-		// heap read through record pointers (a call table's material records). Each (table, T# offset,
-		// view type) is a heap of its own; Miles Morales' ray-tracing callees use about fifty of them
-		// over two call tables of 273064 records, and sample material keys up to at least 151749
-		// (H view over the river): with 65536 keys per heap those samples read the out-of-range
-		// placeholder (black), in some frames and not others. The whole table needs the larger
-		// translation buffer (KYTY_BINDLESS_TRANSLATION_MI, default 16).
+		// KYTY_BINDLESS_RECORD_KEYS=<n> (default 0 = the whole table, up to 512 Ki keys): the keys
+		// of a heap read through record pointers (a call table's material records). Each (table, T#
+		// offset, view type) is a heap of its own; Miles Morales' ray-tracing callees use about
+		// fifty of them over two call tables of 273064 records, and sample material keys up to at
+		// least 151749 (H view over the river): with 65536 keys per heap those samples read the
+		// out-of-range placeholder (black), in some frames and not others. The whole table needs
+		// the larger translation buffer (KYTY_BINDLESS_TRANSLATION_MI, default 16).
 		static const uint64_t record_keys = [] {
 			const char* value = std::getenv("KYTY_BINDLESS_RECORD_KEYS");
-			return value != nullptr && value[0] != '\0' ? std::strtoull(value, nullptr, 0) : uint64_t {0};
+			return value != nullptr && value[0] != '\0' ? std::strtoull(value, nullptr, 0)
+			                                            : uint64_t {0};
 		}();
-		const uint64_t key_cap   = pointers ? uint64_t {1u << 19u} : uint64_t {1u << 18u};
-		const uint64_t key_limit = pointers && record_keys != 0 ? std::min(record_keys, key_cap) : key_cap;
-		const auto     entries   = static_cast<uint32_t>(std::min<uint64_t>(
-            (pointers ? span / std::max(use.stride, 1u) : HeapEntriesInSpan(span, use.stride)) * keys_per_record,
-            key_limit));
-		auto* heap = table.FindOrCreateHeap(use.base, use.table_offset, BindlessBindingFor(resource),
-		                                    entries, resource, use.stride, use.record_pointer,
-		                                    use.nested_vsharp, use.nested_heap, use.nested_keys);
+		const uint64_t key_cap = pointers ? uint64_t {1u << 19u} : uint64_t {1u << 18u};
+		const uint64_t key_limit =
+		    pointers && record_keys != 0 ? std::min(record_keys, key_cap) : key_cap;
+		const auto entries = static_cast<uint32_t>(std::min<uint64_t>(
+		    (pointers ? span / std::max(use.stride, 1u) : HeapEntriesInSpan(span, use.stride)) *
+		        keys_per_record,
+		    key_limit));
+		auto*      heap    = table.FindOrCreateHeap(
+		    use.base, use.table_offset, BindlessBindingFor(resource), entries, resource, use.stride,
+		    use.record_pointer, use.nested_vsharp, use.nested_heap, use.nested_keys);
 		if (BindlessPatchLogTake()) {
 			LOGF("Bindless use: frame=%" PRIu64 " hash=0x%016" PRIx64 " image=%u base=0x%" PRIx64
-			     " size=0x%" PRIx64 " offset=%u stride=%u record_pointer=%d entries=%u -> %s region=%u "
+			     " size=0x%" PRIx64
+			     " offset=%u stride=%u record_pointer=%d entries=%u -> %s region=%u "
 			     "heap_entries=%u\n",
-			     BindlessFrame(), program.shader_hash, use.image, use.base, use.size, use.table_offset,
-			     use.stride, use.record_pointer == UINT32_MAX ? -1 : static_cast<int>(use.record_pointer),
+			     BindlessFrame(), program.shader_hash, use.image, use.base, use.size,
+			     use.table_offset, use.stride,
+			     use.record_pointer == UINT32_MAX ? -1 : static_cast<int>(use.record_pointer),
 			     entries, heap == nullptr ? "NO HEAP" : "heap", heap != nullptr ? heap->region : 0u,
 			     heap != nullptr ? heap->entries : 0u);
 		}
 		if (heap == nullptr) {
 			continue; // region 0, count 0: every key samples the placeholder
 		}
-		// KYTY_BINDLESS_TOUCH (default on): the images this heap's keys resolved are in use this frame.
-		// Bindless sampling never reached TextureCache::TouchImage, so such an image kept its creation
-		// frame as its last access: the idle collectors (KYTY_VRAM_IDLE_FRAMES, the partially resident
-		// retire) freed it while draws sampled it, its slots went to the placeholder and its keys
-		// re-resolved, over and over (Ghost of Yotei's menu: black foliage, grey floor, red hilt).
+		// KYTY_BINDLESS_TOUCH (default on): the images this heap's keys resolved are in use this
+		// frame. Bindless sampling never reached TextureCache::TouchImage, so such an image kept
+		// its creation frame as its last access: the idle collectors (KYTY_VRAM_IDLE_FRAMES, the
+		// partially resident retire) freed it while draws sampled it, its slots went to the
+		// placeholder and its keys re-resolved, over and over (Ghost of Yotei's menu: black
+		// foliage, grey floor, red hilt).
 		if (BindlessTouchImages() && heap->touched_frame != BindlessFrame()) {
 			heap->touched_frame = BindlessFrame();
 			auto& cache         = m_context.GetTextureCache();
 			for (const auto id: heap->resolved) {
-				if (auto* image = cache.m_slot_images.try_get(id); image != nullptr && image->registered) {
+				if (auto* image = cache.m_slot_images.try_get(id);
+				    image != nullptr && image->registered) {
 					cache.TouchImage(*image);
 				}
 			}
@@ -4543,8 +4672,9 @@ void RenderExecutor::PrepareBindlessHeaps(const ShaderStageRuntime& runtime,
 		heap->sync_used_frame = BindlessFrame();
 		if (heap->sync_stale) {
 			heap->sync_stale = false;
-			const auto keys  = std::min(heap->guest_entries, static_cast<uint32_t>(heap->settled.size()));
-			uint32_t   view = 0, resource_changes = 0, resettled = 0;
+			const auto keys =
+			    std::min(heap->guest_entries, static_cast<uint32_t>(heap->settled.size()));
+			uint32_t view = 0, resource_changes = 0, resettled = 0;
 			if (keys != 0 && heap->record_pointer == UINT32_MAX && !heap->runtime) {
 				RecheckBindlessKeys(*heap, 0, keys, view, resource_changes, resettled);
 			}
@@ -4564,11 +4694,12 @@ void RenderExecutor::PrepareBindlessHeaps(const ShaderStageRuntime& runtime,
 		}
 		// KYTY_BINDLESS_REFILL: a heap's table whose bytes changed has its new keys settled before
 		// this draw or dispatch reads them.
-		if (BindlessRefillEnabled() && !pointers && !heap->runtime && heap->nested_vsharp == UINT32_MAX &&
-		    entries <= BindlessRefillMax()) {
+		if (BindlessRefillEnabled() && !pointers && !heap->runtime &&
+		    heap->nested_vsharp == UINT32_MAX && entries <= BindlessRefillMax()) {
 			RefillBindlessHeap(*heap, std::min(entries, heap->entries));
 		}
-		// KYTY_BINDLESS_REFRESH: the heap's resolved keys follow the texture cache (CPU writes, aliases).
+		// KYTY_BINDLESS_REFRESH: the heap's resolved keys follow the texture cache (CPU writes,
+		// aliases).
 		if (g_bindless_refresh.Get() != 0 && !heap->runtime) {
 			RefreshBindlessHeap(*heap, std::min(entries, heap->entries));
 		}
@@ -4654,8 +4785,9 @@ void RenderExecutor::RefreshBindlessHeap(BindlessHeap& heap, uint32_t keys) {
 				gpu += state.gpu_written ? 1u : 0u;
 			}
 		}
-		LOGF("Bindless refresh: frame=%" PRIu64 " lookups %" PRIu64 " per-draw %" PRIu64 " remapped %" PRIu64
-		     " view-changed %" PRIu64 " unpinned %" PRIu64 " failed %" PRIu64 " gpu-written slots %u\n",
+		LOGF("Bindless refresh: frame=%" PRIu64 " lookups %" PRIu64 " per-draw %" PRIu64
+		     " remapped %" PRIu64 " view-changed %" PRIu64 " unpinned %" PRIu64 " failed %" PRIu64
+		     " gpu-written slots %u\n",
 		     frame, st.lookups.exchange(0), st.draw_lookups.exchange(0), st.remapped.exchange(0),
 		     st.view_changed.exchange(0), st.unpinned.exchange(0), st.failed.exchange(0), gpu);
 	}
@@ -4663,7 +4795,8 @@ void RenderExecutor::RefreshBindlessHeap(BindlessHeap& heap, uint32_t keys) {
 
 // One lookup of a resolved key (KYTY_BINDLESS_REFRESH). False when the key has no usable lookup now
 // (left as it is: OnImageUnregistered and revalidation deal with such keys).
-bool RenderExecutor::RefreshBindlessSlot(BindlessHeap& heap, uint32_t key, BindlessRefreshState& state) {
+bool RenderExecutor::RefreshBindlessSlot(BindlessHeap& heap, uint32_t key,
+                                         BindlessRefreshState& state) {
 	auto&       table         = m_context.GetBindlessTable();
 	auto&       texture_cache = m_context.GetTextureCache();
 	const auto  entry         = heap.slots[key];
@@ -4678,8 +4811,10 @@ bool RenderExecutor::RefreshBindlessSlot(BindlessHeap& heap, uint32_t key, Bindl
 	value.dword_count = 8u;
 	std::copy_n(words.begin(), 8, value.dwords.begin());
 	auto resource = heap.resource;
-	if ((entry & ShaderRecompiler::IR::BindlessSlotFlagMask) == ShaderRecompiler::IR::BindlessSlotArrayFlag) {
-		resource.dimension = ShaderRecompiler::Decoder::ImageDimension::Dim2DArray; // KYTY_BINDLESS_3D_AS_ARRAY
+	if ((entry & ShaderRecompiler::IR::BindlessSlotFlagMask) ==
+	    ShaderRecompiler::IR::BindlessSlotArrayFlag) {
+		resource.dimension =
+		    ShaderRecompiler::Decoder::ImageDimension::Dim2DArray; // KYTY_BINDLESS_3D_AS_ARRAY
 	}
 	TextureBinding binding;
 	ResolveTexture(resource, value, binding);
@@ -4716,10 +4851,13 @@ bool RenderExecutor::RefreshBindlessSlot(BindlessHeap& heap, uint32_t key, Bindl
 	image->usage.texture    = true;
 	const auto layout       = image->info.IsDepth() ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
 	                                                : vk::ImageLayout::eShaderReadOnlyOptimal;
-	const bool no_refs = table.RemapSlotImage(slot_binding, slot, old_id, binding.image_id, view, layout);
+	const bool no_refs =
+	    table.RemapSlotImage(slot_binding, slot, old_id, binding.image_id, view, layout);
 	if (no_refs) {
-		if (auto* old = texture_cache.m_slot_images.try_get(old_id); old != nullptr && old->bindless_pinned) {
-			// No key refers to it any more: the texture cache may collect it again (ResettleBindlessKey).
+		if (auto* old = texture_cache.m_slot_images.try_get(old_id);
+		    old != nullptr && old->bindless_pinned) {
+			// No key refers to it any more: the texture cache may collect it again
+			// (ResettleBindlessKey).
 			NoteBindlessStateChange(*old);
 			old->bindless_pinned = false;
 			texture_cache.ReleaseDroppedByGuest(old_id);
@@ -4741,7 +4879,8 @@ void RenderExecutor::MakeBindlessImagesReadable(std::span<BindlessHeap* const> h
 	};
 	const auto skipped = [](const Image& image) {
 		return !image.registered || image.binding.is_target || image.info.data.Empty() ||
-		       (image.binding.is_bound && (image.binding.shader_write || image.binding.force_general));
+		       (image.binding.is_bound &&
+		        (image.binding.shader_write || image.binding.force_general));
 	};
 	const auto needs_transition = [&](const Image& image) {
 		return image.backing.state.layout != readable_layout(image) ||
@@ -4757,7 +4896,8 @@ void RenderExecutor::MakeBindlessImagesReadable(std::span<BindlessHeap* const> h
 			    !needs_transition(*image)) {
 				return;
 			}
-			image->Transit(readable_layout(*image), vk::AccessFlagBits2::eShaderRead, {}, target, true);
+			image->Transit(readable_layout(*image), vk::AccessFlagBits2::eShaderRead, {}, target,
+			               true);
 		};
 		for (auto* heap: heaps) {
 			for (const auto id: heap->unchecked) {
@@ -4781,11 +4921,11 @@ void RenderExecutor::MakeBindlessImagesReadable(std::span<BindlessHeap* const> h
 	for (auto* heap: heaps) {
 		heap->unchecked.clear();
 		const auto& resolved = heap->resolved;
-		const auto  skip     = heap->checked_generation ==
-		                          g_bindless_state_generation.load(std::memory_order_relaxed) &&
-		                      heap->checked_count <= resolved.size()
-		                          ? heap->checked_count
-		                          : size_t {0};
+		const auto skip = heap->checked_generation ==
+		                              g_bindless_state_generation.load(std::memory_order_relaxed) &&
+		                          heap->checked_count <= resolved.size()
+		                      ? heap->checked_count
+		                      : size_t {0};
 		for (size_t i = verify ? 0 : skip; i < resolved.size(); i++) {
 			auto* image = cache.m_slot_images.try_get(resolved[i]);
 			if (image == nullptr || skipped(*image) || !needs_transition(*image)) {
@@ -4796,7 +4936,8 @@ void RenderExecutor::MakeBindlessImagesReadable(std::span<BindlessHeap* const> h
 				     " changed layout without a state generation change\n",
 				     static_cast<uint32_t>(i), heap->base);
 			}
-			image->Transit(readable_layout(*image), vk::AccessFlagBits2::eShaderRead, {}, target, true);
+			image->Transit(readable_layout(*image), vk::AccessFlagBits2::eShaderRead, {}, target,
+			               true);
 		}
 		// After the transitions above, which bump the generation themselves.
 		heap->checked_generation = g_bindless_state_generation.load(std::memory_order_relaxed);
@@ -4956,9 +5097,9 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 		planned_samplers += sampler != nullptr ? 1u : 0u;
 		if (sampler == nullptr || verify) {
 			// Native filtering/border variants share their source sampler's snapshot entry.
-			const auto serial =
-			    NativeSampler(program, i, snapshot.samplers[program.info.samplers[i].snapshot_index],
-			                  prepared.normalize_unnormalized);
+			const auto serial = NativeSampler(
+			    program, i, snapshot.samplers[program.info.samplers[i].snapshot_index],
+			    prepared.normalize_unnormalized);
 			if (sampler != nullptr) {
 				DrawPrep::CountBindingVerifyCheck();
 				if (sampler != serial) {
@@ -5010,16 +5151,17 @@ void RenderExecutor::PrepareBindings(const ShaderStageRuntime& runtime,
 // KYTY_CONT_KERNEL (renderDraw.cpp): PrepareBindings(keep_images) of a continuation, whose
 // record excluded GDS and bindless heaps (the same programs), without the verify paths.
 void RenderExecutor::PrepareBindingsContinuation(const ShaderStageRuntime& runtime,
-                                                 PreparedBindings& prepared, DrawPrep::StagePlan* plan) {
-	const auto& program      = *runtime.program;
+                                                 PreparedBindings&         prepared,
+                                                 DrawPrep::StagePlan*      plan) {
+	const auto& program = *runtime.program;
 	ImgSide::Count(ImgSide::C::StagesKept);
 	prepared.runtime             = &runtime;
 	prepared.xframe_verify_views = false;
 	prepared.plan                = plan;
 	prepared.plan_shader_data    = false;
-	prepared.flattened_srt      = {};
-	prepared.shader_data_buffer = {};
-	prepared.shared_memory      = {};
+	prepared.flattened_srt       = {};
+	prepared.shader_data_buffer  = {};
+	prepared.shared_memory       = {};
 	prepared.buffer_sources.clear();
 	prepared.buffers.clear();
 	const auto dwords = program.bindings.ShaderDataDwords();
@@ -5096,7 +5238,7 @@ struct BufferPeekConfig {
 static const BufferPeekConfig& GetBufferPeekConfig() {
 	static constexpr auto config_init = [] {
 		BufferPeekConfig c;
-		const char* v = std::getenv("KYTY_BUFFER_PEEK");
+		const char*      v = std::getenv("KYTY_BUFFER_PEEK");
 		if (v == nullptr) {
 			return c;
 		}
@@ -5121,7 +5263,7 @@ static void BufferPeek(uint64_t shader_hash, uint32_t index, uint64_t address, u
 		return;
 	}
 	static std::atomic<uint32_t> calls {0};
-	const auto n = calls.fetch_add(1, std::memory_order_relaxed);
+	const auto                   n = calls.fetch_add(1, std::memory_order_relaxed);
 	if (config.end != 0) {
 		if (n >= 200) {
 			return;
@@ -5129,7 +5271,7 @@ static void BufferPeek(uint64_t shader_hash, uint32_t index, uint64_t address, u
 	} else if (n >= 8 && (n % 300u) != 0u) {
 		return;
 	}
-	const auto bytes = std::min<uint64_t>(size, 32);
+	const auto  bytes = std::min<uint64_t>(size, 32);
 	std::string text;
 	if (Libs::LibKernel::Memory::ClampRangeSizeQuiet(address, bytes) == bytes) {
 		for (uint64_t k = 0; k + 4 <= bytes; k += 4) {
@@ -5269,8 +5411,9 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
 					serial_size = requested_size;
 				}
 				if (serial_size != requested_size && program.info.buffers[i].written) {
-					serial_size = SparseWriteSize(program.shader_hash, serial_address, requested_size,
-					                              serial_size, unbounded_read_limit);
+					serial_size =
+					    SparseWriteSize(program.shader_hash, serial_address, requested_size,
+					                    serial_size, unbounded_read_limit);
 				}
 				if (serial_size == 0) {
 					// An unmapped V# (typically left over from a skipped shader's output): bind
@@ -5316,8 +5459,8 @@ void RenderExecutor::FindBuffers(PreparedBindings& prepared) {
 		if (const auto& resource = program.info.buffers[i]; !resource.written && !resource.formatted) {
 			// KYTY_CP_BINDING_BATCH_PREFETCH=find (BufferCache::PrefetchReadBinding).
 			cache.PrefetchReadBinding(address, size, true);
-			// KYTY_LAZY_FIND_BUFFER (PrepareGraphicsBindings): the buffer is found by the lookup that
-			// needs one (a binding-memo miss); a hit never reads the id.
+			// KYTY_LAZY_FIND_BUFFER (PrepareGraphicsBindings): the buffer is found by the lookup
+			// that needs one (a binding-memo miss); a hit never reads the id.
 			if (m_lazy_find) {
 				prepared.buffer_sources.push_back({address, size, BufferId {}});
 				continue;
@@ -5365,7 +5508,7 @@ uint32_t SpecializedPackedStride(const ShaderBufferResource& descriptor) {
 
 // KYTY_SRT_GPU_FILL: whether the write-range program reads a flat dword the refresh left to the
 // GPU (its snapshot word is a placeholder).
-static bool WriteRangesReadGpuFills(const ShaderRecompiler::IR::WriteRangeProgram& ranges,
+static bool WriteRangesReadGpuFills(const ShaderRecompiler::IR::WriteRangeProgram&    ranges,
                                     std::span<const ShaderRecompiler::IR::SrtGpuFill> fills) {
 	for (const auto& node: ranges.nodes) {
 		if (node.op != ShaderRecompiler::IR::WriteRangeNode::Op::FlatSrt) {
@@ -5389,10 +5532,10 @@ static void NoteGpuFillWriteRange(bool whole) {
 	static std::atomic<uint64_t> host_count {0};
 	static std::atomic<int64_t>  last_ms {0};
 	(whole ? whole_count : host_count).fetch_add(1, std::memory_order_relaxed);
-	const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-	                     std::chrono::steady_clock::now().time_since_epoch())
-	                     .count();
-	auto last = last_ms.load(std::memory_order_relaxed);
+	const auto now  = std::chrono::duration_cast<std::chrono::milliseconds>(
+	                      std::chrono::steady_clock::now().time_since_epoch())
+	                      .count();
+	auto       last = last_ms.load(std::memory_order_relaxed);
 	if (last == 0) {
 		last_ms.store(now, std::memory_order_relaxed);
 	} else if (now - last >= 10000 && last_ms.compare_exchange_strong(last, now)) {
@@ -5521,13 +5664,14 @@ static const std::vector<GuestRange>* ResolveWrittenRanges(RenderContext&       
 }
 
 // KYTY_BINDING_SAME_STATS=1 (diagnostic, KYTY_CP_DIAGNOSTICS builds only): per binding class, how
-// often a buffer binding's source (address, size, cache id) equals the previous RebindBuffers' of the
-// same program at the same slot, how often KYTY_KEEP_BINDINGS could keep it (keepable: its check
-// passes; the normal path runs and verify compares), and the TSC time of NativeStorageBuffer for
-// same / different ones. One console line every 2^20 bindings. GPU thread only.
+// often a buffer binding's source (address, size, cache id) equals the previous RebindBuffers' of
+// the same program at the same slot, how often KYTY_KEEP_BINDINGS could keep it (keepable: its
+// check passes; the normal path runs and verify compares), and the TSC time of NativeStorageBuffer
+// for same / different ones. One console line every 2^20 bindings. GPU thread only.
 namespace BindingSame {
 enum Class : uint32_t { VsRead, VsTexel, PsRead, PsTexel, Written, ClassCount };
-constexpr const char* kNames[ClassCount] = {"vs-read", "vs-texel", "ps-read", "ps-texel", "written"};
+constexpr const char* kNames[ClassCount] = {"vs-read", "vs-texel", "ps-read", "ps-texel",
+                                            "written"};
 constexpr uint32_t    kSlots             = 64;
 struct Stage {
 	const void*                                        program = nullptr;
@@ -5557,9 +5701,10 @@ void Print(Totals& t) {
 	std::string line = "BindingSame:";
 	for (uint32_t c = 0; c < ClassCount; c++) {
 		const double total = static_cast<double>(std::max<uint64_t>(1, t.total[c]));
-		line += fmt::format(" {} {} same {:.1f}% keepable {:.1f}% ticks same {} diff {} |", kNames[c], t.total[c],
-		                    100.0 * static_cast<double>(t.same[c]) / total,
-		                    100.0 * static_cast<double>(t.keepable[c]) / total, t.same_ticks[c], t.diff_ticks[c]);
+		line += fmt::format(" {} {} same {:.1f}% keepable {:.1f}% ticks same {} diff {} |",
+		                    kNames[c], t.total[c], 100.0 * static_cast<double>(t.same[c]) / total,
+		                    100.0 * static_cast<double>(t.keepable[c]) / total, t.same_ticks[c],
+		                    t.diff_ticks[c]);
 	}
 	std::printf("%s\n", line.c_str());
 	std::fflush(stdout);
@@ -5571,26 +5716,27 @@ void Print(Totals& t) {
 }
 } // namespace BindingSame
 
-// KYTY_KEEP_BINDINGS (live, default 0; 1 on, 2 verify): a vertex or pixel stage's read buffer binding
-// (not written, not a texel read, not synchronized with images) whose source (address, size, cache
-// id) and uniform view equal the binding kept at its slot, while BufferCache::KeepValid holds (no
-// region serial anywhere, sync epoch or buffer structure moved since the kept lookup began), takes the
-// kept descriptor and offset: the binding memo would hit the same entry, so the lookup, the range
-// signature and the descriptor arithmetic are skipped (the hit's touch is repeated). Idea from
-// chenxiao07's KYTY_TABLE_GATHER_MEMO (a V# unchanged at its index keeps its resolved entry, his
-// fe9f2e4ff / 7de6fd9e7), here with an exact validity check instead of word equality alone.
-// 2 = verify: the normal path runs and its descriptor and offset are compared ("KeepBindings verify").
-// Per thread (GPU thread): the kept state is valid for any executor, as its checks are the cache's.
+// KYTY_KEEP_BINDINGS (live, default 0; 1 on, 2 verify): a vertex or pixel stage's read buffer
+// binding (not written, not a texel read, not synchronized with images) whose source (address,
+// size, cache id) and uniform view equal the binding kept at its slot, while BufferCache::KeepValid
+// holds (no region serial anywhere, sync epoch or buffer structure moved since the kept lookup
+// began), takes the kept descriptor and offset: the binding memo would hit the same entry, so the
+// lookup, the range signature and the descriptor arithmetic are skipped (the hit's touch is
+// repeated). Idea from chenxiao07's KYTY_TABLE_GATHER_MEMO (a V# unchanged at its index keeps its
+// resolved entry, his fe9f2e4ff / 7de6fd9e7), here with an exact validity check instead of word
+// equality alone. 2 = verify: the normal path runs and its descriptor and offset are compared
+// ("KeepBindings verify"). Per thread (GPU thread): the kept state is valid for any executor, as
+// its checks are the cache's.
 static Live::Switch g_keep_bindings("KYTY_KEEP_BINDINGS", [](const char* value) -> int64_t {
 	return value != nullptr ? std::strtoll(value, nullptr, 10) : 0;
 });
 namespace KeepBindings {
 constexpr uint32_t kSlots = 64;
 struct Stage {
-	std::array<BufferCache::KeptRead, kSlots>     reads {};
+	std::array<BufferCache::KeptRead, kSlots>    reads {};
 	std::array<vk::DescriptorBufferInfo, kSlots> infos {};
-	std::array<uint32_t, kSlots>                  offsets {};
-	std::array<bool, kSlots>                      uniform {};
+	std::array<uint32_t, kSlots>                 offsets {};
+	std::array<bool, kSlots>                     uniform {};
 };
 struct State {
 	std::array<Stage, 2> stages {};
@@ -5602,8 +5748,8 @@ State& Get() {
 }
 void Note(State& s) {
 	if ((++s.lookups & 0x3fffffu) == 0) {
-		std::printf("KeepBindings: lookups %" PRIu64 " kept %" PRIu64 " captured %" PRIu64 " verify checks %" PRIu64
-		            " mismatches %" PRIu64 "\n",
+		std::printf("KeepBindings: lookups %" PRIu64 " kept %" PRIu64 " captured %" PRIu64
+		            " verify checks %" PRIu64 " mismatches %" PRIu64 "\n",
 		            s.lookups, s.kept, s.captures, s.checks, s.mismatches);
 		std::fflush(stdout);
 	}
@@ -5739,8 +5885,8 @@ void TracePass(TextureCache& cache, const char* kind, std::span<PreparedBindings
 
 void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	KYTY_PROFILER_FUNCTION();
-	auto*      pass       = CpGaps::CurrentDrawPassSample();
-	const auto pass_start = pass != nullptr ? CpGaps::Tsc() : 0;
+	auto*      pass                 = CpGaps::CurrentDrawPassSample();
+	const auto pass_start           = pass != nullptr ? CpGaps::Tsc() : 0;
 	prepared.write_preparation_tick = BufferCache::ShaderWriteRetickEnabled()
 	                                      ? m_context.GetCommandScheduler().CurrentTick()
 	                                      : UINT64_MAX;
@@ -5766,16 +5912,16 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		const auto shift = (index % 4u) * 8u;
 		prepared.shader_data[dword] |= offset << shift;
 	};
-	// KYTY_REBIND_LEAN (live, default 0): the per-call parts of this loop hoisted out of the bindings:
-	// the write-range scratch and the keep state (thread-locals) only when used, the uniform-view
-	// test as a bit mask built once instead of a binary search per binding, and the object-name
-	// gate checked once (no name is set unless the debug dump, RenderDoc or the address-binding
-	// report wants one). Results are the same.
-	const bool lean = g_rebind_lean.On();
-	WriteRangeScratch* write_scratch = lean ? nullptr : &ThreadWriteRangeScratch();
+	// KYTY_REBIND_LEAN (live, default 0): the per-call parts of this loop hoisted out of the
+	// bindings: the write-range scratch and the keep state (thread-locals) only when used, the
+	// uniform-view test as a bit mask built once instead of a binary search per binding, and the
+	// object-name gate checked once (no name is set unless the debug dump, RenderDoc or the
+	// address-binding report wants one). Results are the same.
+	const bool         lean                   = g_rebind_lean.On();
+	WriteRangeScratch* write_scratch          = lean ? nullptr : &ThreadWriteRangeScratch();
 	bool  write_ranges_evaluated = false;
-	const bool object_names = !lean || Config::GraphicsDebugDumpEnabled() || Config::RenderDocEnabled() ||
-	                          AddressBindingReportActive();
+	const bool         object_names = !lean || Config::GraphicsDebugDumpEnabled() ||
+	                                  Config::RenderDocEnabled() || AddressBindingReportActive();
 	// All bindings' uploads share one barrier pair (KYTY_UPLOAD_BATCH).
 	const BufferCache::UploadBatch upload_batch(m_context.GetBufferCache());
 	// KYTY_CP_BINDING_BATCH_PREFETCH: the memo slots of every read binding first, so their cache
@@ -5795,17 +5941,18 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	// KYTY_KEEP_BINDINGS (above): which read bindings may keep the previous identical one.
 	const int  keep_mode  = static_cast<int>(g_keep_bindings.Get());
 	const bool keep_probe = BindingSame::Enabled(); // diagnostics: how often a keep would apply
-	const bool keep_stage = (keep_mode != 0 || keep_probe) &&
-	                        (program.stage == ShaderType::Vertex || program.stage == ShaderType::Pixel) &&
-	                        !BufferCache::RawReadImageSyncEnabled();
+	const bool keep_stage =
+	    (keep_mode != 0 || keep_probe) &&
+	    (program.stage == ShaderType::Vertex || program.stage == ShaderType::Pixel) &&
+	    !BufferCache::RawReadImageSyncEnabled();
 	const bool keep_sync_reads = keep_stage && Config::SyncRawImageBuffersEnabled();
 	if (keep_stage && !RegionManager::AnySerialEnabled()) {
 		RegionManager::EnableAnySerial();
 	}
 	static KeepBindings::State unused_keep_state; // (never touched: keep_stage is false)
-	auto& keep_state = !lean || keep_stage ? KeepBindings::Get() : unused_keep_state;
-	auto& keep_slots = keep_state.stages[program.stage == ShaderType::Pixel ? 1 : 0];
-	auto& cache      = m_context.GetBufferCache();
+	auto&    keep_state   = !lean || keep_stage ? KeepBindings::Get() : unused_keep_state;
+	auto&    keep_slots   = keep_state.stages[program.stage == ShaderType::Pixel ? 1 : 0];
+	auto&    cache        = m_context.GetBufferCache();
 	uint64_t uniform_mask = 0;
 	bool     uniform_wide = false; // an index past the mask: binary search as before
 	if (lean && uniform_binding != nullptr) {
@@ -5823,10 +5970,10 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		if (write_scratch == nullptr && program.info.buffers[i].written) {
 			write_scratch = &ThreadWriteRangeScratch();
 		}
-		const auto* written      = write_scratch == nullptr
-		                               ? nullptr
-		                               : ResolveWrittenRanges(m_context, *prepared.runtime, prepared, i,
-		                                                      write_ranges_evaluated, *write_scratch);
+		const auto* written = write_scratch == nullptr
+		                          ? nullptr
+		                          : ResolveWrittenRanges(m_context, *prepared.runtime, prepared, i,
+		                                                 write_ranges_evaluated, *write_scratch);
 		if (ranges_start != 0) {
 			BufferLookupStats::AddPart(BufferLookupStats::Part::WriteRanges,
 			                           BufferLookupStats::Now() - ranges_start);
@@ -5837,15 +5984,18 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		                               : std::ranges::binary_search(uniform_binding->resources, i));
 		const auto& source      = prepared.buffer_sources[i];
 		const auto& res         = program.info.buffers[i];
-		const bool  same_stats  = BindingSame::Enabled() && i < BindingSame::kSlots &&
-		                          (program.stage == ShaderType::Vertex || program.stage == ShaderType::Pixel);
-		const auto  same_start  = same_stats ? CommitStats::Now() : 0;
-		const bool  keep_slot   = keep_stage && i < KeepBindings::kSlots && !res.written && !res.formatted &&
-		                          !(res.read && keep_sync_reads) && source.address != 0 && source.size != 0;
-		bool        keep_valid  = false;
+		const bool  same_stats =
+		    BindingSame::Enabled() && i < BindingSame::kSlots &&
+		    (program.stage == ShaderType::Vertex || program.stage == ShaderType::Pixel);
+		const auto same_start = same_stats ? CommitStats::Now() : 0;
+		const bool keep_slot  = keep_stage && i < KeepBindings::kSlots && !res.written &&
+		                        !res.formatted && !(res.read && keep_sync_reads) &&
+		                        source.address != 0 && source.size != 0;
+		bool       keep_valid = false;
 		if (keep_slot) {
-			keep_valid = keep_slots.uniform[i] == uniform_view &&
-			             cache.KeepValid(keep_slots.reads[i], source.address, source.size, source.id);
+			keep_valid =
+			    keep_slots.uniform[i] == uniform_view &&
+			    cache.KeepValid(keep_slots.reads[i], source.address, source.size, source.id);
 		}
 		if (keep_valid && keep_mode == 1) {
 			// The previous identical binding's descriptor and offset.
@@ -5855,21 +6005,23 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		} else {
 			const auto stamp = keep_slot ? cache.KeepBegin() : BufferCache::KeepStamp {};
 			std::pair<Buffer*, uint64_t> obtained {nullptr, 0};
-			const auto info = NativeStorageBuffer(m_context, source, res, program.stage, i, buffer_offset, written,
-			                                      uniform_view, keep_slot ? &obtained : nullptr, object_names);
+			const auto info = NativeStorageBuffer(m_context, source, res, program.stage, i,
+			                                      buffer_offset, written, uniform_view,
+			                                      keep_slot ? &obtained : nullptr, object_names);
 			if (keep_valid) {
 				// Verify (2) or the diagnostics' probe: what the keep would have bound.
 				keep_state.checks++;
 				if (info != keep_slots.infos[i] || buffer_offset != keep_slots.offsets[i]) {
 					if (keep_state.mismatches++ < 8) {
-						std::printf("KeepBindings verify: mismatch stage=%s slot=%u guest=0x%016" PRIx64
-						            " size=0x%" PRIx64 "\n",
-						            ShaderStageResourceName(program.stage), i, source.address, source.size);
+						std::printf(
+						    "KeepBindings verify: mismatch stage=%s slot=%u guest=0x%016" PRIx64
+						    " size=0x%" PRIx64 "\n",
+						    ShaderStageResourceName(program.stage), i, source.address, source.size);
 					}
 				}
 			}
-			if (keep_slot && cache.KeepCapture(keep_slots.reads[i], stamp, source.address, source.size,
-			                                   source.id, obtained)) {
+			if (keep_slot && cache.KeepCapture(keep_slots.reads[i], stamp, source.address,
+			                                   source.size, source.id, obtained)) {
 				keep_slots.infos[i]   = info;
 				keep_slots.offsets[i] = buffer_offset;
 				keep_slots.uniform[i] = uniform_view;
@@ -5881,16 +6033,16 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 			KeepBindings::Note(keep_state);
 		}
 		if (same_stats) {
-			const auto ticks    = CommitStats::Now() - same_start;
-			auto&      totals   = BindingSame::Get();
-			const bool pixel    = program.stage == ShaderType::Pixel;
-			auto&      stage    = totals.stages[pixel ? 1 : 0];
-			const auto& kept    = stage.sources[i];
-			const auto  cls     = res.written     ? BindingSame::Written
-			                      : res.formatted ? (pixel ? BindingSame::PsTexel : BindingSame::VsTexel)
-			                                      : (pixel ? BindingSame::PsRead : BindingSame::VsRead);
-			const bool  same    = stage.program == &program && kept.address == source.address &&
-			                      kept.size == source.size && kept.id == source.id;
+			const auto  ticks  = CommitStats::Now() - same_start;
+			auto&       totals = BindingSame::Get();
+			const bool  pixel  = program.stage == ShaderType::Pixel;
+			auto&       stage  = totals.stages[pixel ? 1 : 0];
+			const auto& kept   = stage.sources[i];
+			const auto cls = res.written     ? BindingSame::Written
+			                 : res.formatted ? (pixel ? BindingSame::PsTexel : BindingSame::VsTexel)
+			                                 : (pixel ? BindingSame::PsRead : BindingSame::VsRead);
+			const bool same = stage.program == &program && kept.address == source.address &&
+			                  kept.size == source.size && kept.id == source.id;
 			totals.total[cls]++;
 			totals.same[cls] += same ? 1 : 0;
 			totals.keepable[cls] += keep_valid ? 1 : 0;
@@ -5934,12 +6086,13 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 	                                : WriteMipStatsFields(program, snapshot, prepared.shader_data);
 	// nps5 mipstream: which textures the counters of this draw measure (command order).
 	if (prepared.mip_stats_active && MipStream::Active()) {
-		const auto count = std::min<size_t>(program.bindings.mip_stats_count, snapshot.images.size());
+		const auto count =
+		    std::min<size_t>(program.bindings.mip_stats_count, snapshot.images.size());
 		// KYTY_TEX_MIP_AUTO_PROXY: the widest counter texture of the draw stands in for its
 		// no-counter textures, offset by their width ratio (same mesh, assumed same UVs).
-		uint32_t proxy_counter = 0xffffffffu;
-		int      proxy_log2    = 0;
-		const auto width_log2 = [](const uint32_t* t) {
+		uint32_t   proxy_counter = 0xffffffffu;
+		int        proxy_log2    = 0;
+		const auto width_log2    = [](const uint32_t* t) {
 			const uint32_t width = (((t[1] >> 30u) & 0x3u) | ((t[2] & 0xfffu) << 2u)) + 1u;
 			return 31 - __builtin_clz(width);
 		};
@@ -5958,12 +6111,14 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 		if (proxy_counter != 0xffffffffu && MipStream::Get().proxy) {
 			for (uint32_t i = 0; i < snapshot.images.size(); i++) {
 				const auto* tsharp = snapshot.images[i].dwords.data();
-				if (snapshot.images[i].dword_count < 8 || (i < count && ((tsharp[5] >> 25u) & 1u) != 0u) ||
+				if (snapshot.images[i].dword_count < 8 ||
+				    (i < count && ((tsharp[5] >> 25u) & 1u) != 0u) ||
 				    MipStream::TsharpAddress(tsharp) == 0) {
 					continue;
 				}
 				const int offset = std::clamp(width_log2(tsharp) - proxy_log2, -7, 7);
-				MipStream::NoteAssociation(proxy_counter | (static_cast<uint32_t>(offset + 8) << 8u) | 0x1000u,
+				MipStream::NoteAssociation(proxy_counter |
+				                               (static_cast<uint32_t>(offset + 8) << 8u) | 0x1000u,
 				                           MipStream::TsharpAddress(tsharp));
 			}
 		}
@@ -5992,7 +6147,8 @@ void RenderExecutor::RebindBuffers(PreparedBindings& prepared) {
 					if (fill.flat_offset == offset || fill.flat_offset == offset + 1u) {
 						static std::atomic<uint32_t> reported {0};
 						if (reported.fetch_add(1, std::memory_order_relaxed) < 32) {
-							LOGF("Bindless patch: hash=0x%016" PRIx64 " offset=%u is overwritten by a GPU fill "
+							LOGF("Bindless patch: hash=0x%016" PRIx64
+							     " offset=%u is overwritten by a GPU fill "
 							     "(word %u from 0x%" PRIx64 ")\n",
 							     program.shader_hash, offset, fill.flat_offset, fill.address);
 						}
@@ -6077,7 +6233,8 @@ static void ResetSparseDepthHoles(TextureCache& texture_cache, const PreparedBin
 				break;
 			}
 			float passing = 0.0f;
-			switch (DecodeNativeDescriptor<ShaderSamplerResource>(snapshot.samplers[sampler.snapshot_index])
+			switch (DecodeNativeDescriptor<ShaderSamplerResource>(
+			            snapshot.samplers[sampler.snapshot_index])
 			            .DepthCompareFunc()) {
 				case 1: // LESS
 				case 3: // LEQUAL
@@ -6350,10 +6507,10 @@ void NoteBdaUser(const char* kind, uint32_t stage, uint64_t hash, bool bda_write
 			       std::tie(o.kind, o.stage, o.hash, o.width, o.height, o.writes);
 		}
 	};
-	static std::mutex                 mutex;
-	static std::map<Key, uint64_t>    counts;
+	static std::mutex                            mutex;
+	static std::map<Key, uint64_t>               counts;
 	static std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
-	std::scoped_lock                  lock(mutex);
+	std::scoped_lock                             lock(mutex);
 	++counts[Key {kind, stage, hash, width, height, bda_writes}];
 	const auto now = std::chrono::steady_clock::now();
 	if (now - last < std::chrono::seconds(10)) {
@@ -6362,13 +6519,13 @@ void NoteBdaUser(const char* kind, uint32_t stage, uint64_t hash, bool bda_write
 	const double secs = std::chrono::duration<double>(now - last).count();
 	last              = now;
 	for (const auto& [key, count]: counts) {
-		std::printf("BdaUser: %s stage=%u hash=0x%016" PRIx64 " pass=%ux%u bda_writes=%d count_per_s=%.1f\n",
-		            key.kind.c_str(), key.stage, key.hash, key.width, key.height, key.writes ? 1 : 0,
-		            static_cast<double>(count) / secs);
+		std::printf("BdaUser: %s stage=%u hash=0x%016" PRIx64
+		            " pass=%ux%u bda_writes=%d count_per_s=%.1f\n",
+		            key.kind.c_str(), key.stage, key.hash, key.width, key.height,
+		            key.writes ? 1 : 0, static_cast<double>(count) / secs);
 	}
 	counts.clear();
 }
-
 
 void PrefaultDmaPointers(BufferCache& buffers, const ShaderStageRuntime& stage) {
 	static const uint64_t span = [] {
@@ -6423,8 +6580,8 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	// buffers up front only for operations with device-address reads): the read-only, unformatted
 	// V#s of a draw without device-address reads leave their buffer to the binding lookup, which
 	// finds it only on a memo miss. A buffer that lookup creates may join one an earlier binding of
-	// the draw resolved: the draw then resolves its buffers again (the KYTY_REBIND_AFTER_JOIN check,
-	// on for such draws).
+	// the draw resolved: the draw then resolves its buffers again (the KYTY_REBIND_AFTER_JOIN
+	// check, on for such draws).
 	m_lazy_find = !uses_dma && g_lazy_find_buffer.On();
 	for (auto* stage: stages) {
 		FindBuffers(*stage);
@@ -6439,7 +6596,8 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 			if (info.uses_dma) {
 				const auto extent = colors.empty() ? vk::Extent2D {} : colors[0].Extent();
 				NoteBdaUser("draw", static_cast<uint32_t>(stage->runtime->program->stage),
-				            stage->runtime->program->shader_hash, info.bda_writes, extent.width, extent.height);
+				            stage->runtime->program->shader_hash, info.bda_writes, extent.width,
+				            extent.height);
 			}
 		}
 		const BufferLookupStats::PartScope stats_scope(BufferLookupStats::Part::PrepareBda);
@@ -6448,7 +6606,8 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 		size_t                                      count = 0;
 		for (auto* stage: stages) {
 			if (count < reach.size()) {
-				reach[count] = {.runtime = stage->runtime, .bindless_patches = stage->bindless_patches};
+				reach[count] = {.runtime          = stage->runtime,
+				                .bindless_patches = stage->bindless_patches};
 				if (stage->runtime != nullptr && stage->runtime->program != nullptr &&
 				    stage->runtime->program->stage == ShaderType::Mesh) {
 					reach[count].mesh_index_known = m_bda_mesh_known;
@@ -6459,7 +6618,8 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 			}
 		}
 		if (count == stages.size()) {
-			m_context.PrepareBda(std::span<const RenderContext::BdaReachStage>(reach.data(), count));
+			m_context.PrepareBda(
+			    std::span<const RenderContext::BdaReachStage>(reach.data(), count));
 		} else {
 			m_context.PrepareBda();
 		}
@@ -6764,12 +6924,13 @@ private:
 
 } // namespace
 
-// nps5 memtrk: KYTY_CS_CAPTURE=<hex hash>[,<hex hash>...] with KYTY_CS_CAPTURE_AFTER_S=<s> (default 180)
-// and KYTY_CS_CAPTURE_DIR=<dir>: the first dispatch of each listed compute program after that many
-// seconds is captured once for a standalone replay. Before the dispatch (the inputs), the descriptor
-// writes' buffer ranges (each up to 64 MiB) are copied to host buffers; when the submission completes,
-// <dir>/<hash>/ receives meta.txt (bindings: binding, type, array index, size, file; image formats and
-// extents; push data in hex) and buf_<binding>_<index>.bin. Diagnostic only.
+// nps5 memtrk: KYTY_CS_CAPTURE=<hex hash>[,<hex hash>...] with KYTY_CS_CAPTURE_AFTER_S=<s> (default
+// 180) and KYTY_CS_CAPTURE_DIR=<dir>: the first dispatch of each listed compute program after that
+// many seconds is captured once for a standalone replay. Before the dispatch (the inputs), the
+// descriptor writes' buffer ranges (each up to 64 MiB) are copied to host buffers; when the
+// submission completes, <dir>/<hash>/ receives meta.txt (bindings: binding, type, array index,
+// size, file; image formats and extents; push data in hex) and buf_<binding>_<index>.bin.
+// Diagnostic only.
 void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderInfo& program,
                                     const PreparedBindings& prepared, const uint32_t* push_dwords,
                                     size_t push_bytes) {
@@ -6786,7 +6947,7 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 	if (list.empty() || std::find(list.begin(), list.end(), program.shader_hash) == list.end()) {
 		return;
 	}
-	static const auto start = std::chrono::steady_clock::now();
+	static const auto   start = std::chrono::steady_clock::now();
 	static const double after = [] {
 		const char* v = std::getenv("KYTY_CS_CAPTURE_AFTER_S");
 		return v != nullptr ? std::atof(v) : 180.0;
@@ -6802,10 +6963,11 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 			return;
 		}
 	}
-	const char* dir_env = std::getenv("KYTY_CS_CAPTURE_DIR");
-	const std::string dir = fmt::format("{}/{:016x}", dir_env != nullptr ? dir_env : "/tmp/kyty_cs_capture",
-	                                    program.shader_hash);
-	std::string meta = fmt::format("hash {:016x}\npush_bytes {}\npush", program.shader_hash, push_bytes);
+	const char*       dir_env = std::getenv("KYTY_CS_CAPTURE_DIR");
+	const std::string dir     = fmt::format(
+	    "{}/{:016x}", dir_env != nullptr ? dir_env : "/tmp/kyty_cs_capture", program.shader_hash);
+	std::string meta =
+	    fmt::format("hash {:016x}\npush_bytes {}\npush", program.shader_hash, push_bytes);
 	for (size_t i = 0; i < push_bytes / 4; i++) {
 		meta += fmt::format(" {:08x}", push_dwords[i]);
 	}
@@ -6819,13 +6981,14 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 	std::vector<vk::BufferCopy> regions;
 	std::vector<vk::Buffer>     sources;
 	uint64_t                    total = 0;
-	// int22's draw-encode split builds descriptors in a context-free builder: the per-dispatch write list
-	// is no longer a member, so the buffer part of KYTY_CS_CAPTURE records nothing on this base (diagnostic).
+	// int22's draw-encode split builds descriptors in a context-free builder: the per-dispatch
+	// write list is no longer a member, so the buffer part of KYTY_CS_CAPTURE records nothing on
+	// this base (diagnostic).
 	static const std::vector<vk::WriteDescriptorSet> kNoWrites;
 	for (const auto& write: kNoWrites) {
 		const auto type = write.descriptorType;
-		meta += fmt::format("write binding {} type {} count {}\n", write.dstBinding, vk::to_string(type),
-		                    write.descriptorCount);
+		meta += fmt::format("write binding {} type {} count {}\n", write.dstBinding,
+		                    vk::to_string(type), write.descriptorCount);
 		if (write.pBufferInfo == nullptr) {
 			continue;
 		}
@@ -6852,35 +7015,40 @@ void RenderExecutor::CsCaptureMaybe(const ShaderRecompiler::IR::CompiledShaderIn
 			continue;
 		}
 		const auto& image = m_context.GetTextureCache().GetImage(binding.image_id);
-		meta += fmt::format("image {} format {} extent {}x{}x{} levels {} layers {} storage {}\n", i,
-		                    vk::to_string(image.backing.format), image.backing.extent.width,
-		                    image.backing.extent.height, image.backing.extent.depth, image.backing.mip_levels,
-		                    image.backing.layers,
+		meta += fmt::format("image {} format {} extent {}x{}x{} levels {} layers {} storage {}\n",
+		                    i, vk::to_string(image.backing.format), image.backing.extent.width,
+		                    image.backing.extent.height, image.backing.extent.depth,
+		                    image.backing.mip_levels, image.backing.layers,
 		                    binding.desc.type == TextureCache::BindingType::Storage ? 1 : 0);
 	}
 	std::shared_ptr<Buffer> host;
 	if (total != 0) {
 		host = std::make_shared<Buffer>(m_context.GetGraphics(), m_context.GetCommandScheduler(),
-		                                MemoryUsage::Download, 0, vk::BufferUsageFlagBits::eTransferDst, total);
+		                                MemoryUsage::Download, 0,
+		                                vk::BufferUsageFlagBits::eTransferDst, total);
 		auto              native = m_context.GetCommandScheduler().Current().HelperSink();
 		vk::MemoryBarrier before {};
-		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite |
-		                       vk::AccessFlagBits::eHostWrite;
+		before.srcAccessMask = vk::AccessFlagBits::eShaderWrite |
+		                       vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eHostWrite;
 		before.dstAccessMask = vk::AccessFlagBits::eTransferRead;
-		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer, {}, 1,
-		                       &before, 0, nullptr, 0, nullptr);
+		native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+		                       vk::PipelineStageFlagBits::eTransfer, {}, 1, &before, 0, nullptr, 0,
+		                       nullptr);
 		for (size_t i = 0; i < regions.size(); i++) {
 			native.copyBuffer(sources[i], host->Handle(), 1, &regions[i]);
 		}
 		vk::MemoryBarrier after {};
 		after.srcAccessMask = vk::AccessFlagBits::eTransferRead;
 		after.dstAccessMask = vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eShaderRead;
-		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {}, 1,
-		                       &after, 0, nullptr, 0, nullptr);
+		native.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+		                       vk::PipelineStageFlagBits::eAllCommands, {}, 1, &after, 0, nullptr,
+		                       0, nullptr);
 	}
-	std::fprintf(stderr, "[memtrk] KYTY_CS_CAPTURE: CS %016llx captured (%zu buffer ranges, %llu bytes) -> %s\n",
-	             static_cast<unsigned long long>(program.shader_hash), copies.size(),
-	             static_cast<unsigned long long>(total), dir.c_str());
+	std::fprintf(
+	    stderr,
+	    "[memtrk] KYTY_CS_CAPTURE: CS %016llx captured (%zu buffer ranges, %llu bytes) -> %s\n",
+	    static_cast<unsigned long long>(program.shader_hash), copies.size(),
+	    static_cast<unsigned long long>(total), dir.c_str());
 	m_context.GetCommandScheduler().DeferOperation([host, copies, meta, dir]() mutable {
 		std::filesystem::create_directories(dir);
 		if (std::FILE* f = std::fopen((dir + "/meta.txt").c_str(), "wb")) {
@@ -6909,7 +7077,8 @@ static bool ImageWrittenByAnyBinding(std::span<PreparedBindings* const> stages, 
 			return true; // not matched one to one: assume a write
 		}
 		for (uint32_t j = 0; j < images.size(); j++) {
-			if ((images[j].written || images[j].atomic || images[j].atomic64) && stage->images[j].image_id == id) {
+			if ((images[j].written || images[j].atomic || images[j].atomic64) &&
+			    stage->images[j].image_id == id) {
 				return true;
 			}
 		}
@@ -6921,9 +7090,10 @@ static bool ImageWrittenByAnyBinding(std::span<PreparedBindings* const> stages, 
 // and content revisions, the GDS dependency, the image transitions and the bindless table. None of
 // it depends on the encode, and the encode reads only what it leaves behind (the bindings'
 // layouts), so it runs first for every stage.
-void RenderExecutor::CommitBindingsSideEffects(CommandBuffer& buffer, const PipelineCache::Pipeline& pipeline,
+void RenderExecutor::CommitBindingsSideEffects(CommandBuffer&                     buffer,
+                                               const PipelineCache::Pipeline&     pipeline,
                                                std::span<PreparedBindings* const> prepared_bindings,
-                                               bool keep_images) {
+                                               bool                               keep_images) {
 	// Storage writes were reserved during preparation. A later binding/table upload may have
 	// submitted that recording before this command was emitted. Its readbacks must wait for
 	// the final recording, not the already submitted preparation tick. No dirty range expands.
@@ -7043,15 +7213,18 @@ void RenderExecutor::CommitBindingsSideEffects(CommandBuffer& buffer, const Pipe
 				image.Transit(vk::ImageLayout::eGeneral,
 				              vk::AccessFlagBits2::eShaderRead | storage_access, {}, vk_buffer, true);
 			} else if (storage) {
-				// KYTY_IMAGE_STORAGE_READONLY=1 (live, default 0): a storage binding that no binding of the
-				// command writes (no store, no atomic, in any stage) transitions with shader-read access
-				// only. Its access then holds no write, so the next read-only storage use of the image in
-				// GENERAL needs no barrier (with the write access every use was a write-after-write).
-				const bool read_only = g_image_storage_readonly.On() &&
-				                       !ImageWrittenByAnyBinding(prepared_bindings, descriptors.images[i].image_id);
+				// KYTY_IMAGE_STORAGE_READONLY=1 (live, default 0): a storage binding that no
+				// binding of the command writes (no store, no atomic, in any stage) transitions
+				// with shader-read access only. Its access then holds no write, so the next
+				// read-only storage use of the image in GENERAL needs no barrier (with the write
+				// access every use was a write-after-write).
+				const bool read_only =
+				    g_image_storage_readonly.On() &&
+				    !ImageWrittenByAnyBinding(prepared_bindings, descriptors.images[i].image_id);
 				image.Transit(vk::ImageLayout::eGeneral,
 				              read_only ? vk::AccessFlags2 {vk::AccessFlagBits2::eShaderRead}
-				                        : vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
+				                        : vk::AccessFlagBits2::eShaderRead |
+				                              vk::AccessFlagBits2::eShaderWrite,
 				              range, vk_buffer, true);
 			} else {
 				image.Transit(image.info.IsDepth() ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
@@ -7084,10 +7257,11 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 	    vk::ShaderStageFlagBits::eTessellationEvaluation | vk::ShaderStageFlagBits::eFragment;
 	built.push_data     = {};
 	built.has_push_data = false;
-	built.push_stages   = point == vk::PipelineBindPoint::eGraphics ? vk::ShaderStageFlagBits::eFragment
-	                                                                : vk::ShaderStageFlags {};
-	built.mesh_stage = false;
-	built.fresh      = false;
+	built.push_stages   = point == vk::PipelineBindPoint::eGraphics
+	                          ? vk::ShaderStageFlagBits::eFragment
+	                          : vk::ShaderStageFlags {};
+	built.mesh_stage    = false;
+	built.fresh         = false;
 	for (const auto* prepared: stages) {
 		EXIT_IF(prepared == nullptr || prepared->runtime == nullptr || !*prepared->runtime);
 		const auto& program = *prepared->runtime->program;
@@ -7112,8 +7286,8 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 	scratch.writes.reserve(write_count);
 
 	for (auto* prepared: stages) {
-		const auto& program     = *prepared->runtime->program;
-		auto&       descriptors = *prepared;
+		const auto&                 program     = *prepared->runtime->program;
+		auto&                       descriptors = *prepared;
 		const CommitStats::SubScope build_scope(CommitStats::Sub::DescBuild);
 		scratch.occurrences.assign(descriptors.images.size(), 0);
 		for (const auto& binding: program.bindings.descriptors) {
@@ -7123,16 +7297,16 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 				continue;
 			}
 			vk::WriteDescriptorSet write {};
-			write.dstBinding        = ShaderRecompiler::IR::NativeBinding(program.stage, binding.kind);
-			write.descriptorType    = NativeDescriptorType(binding.kind);
+			write.dstBinding     = ShaderRecompiler::IR::NativeBinding(program.stage, binding.kind);
+			write.descriptorType = NativeDescriptorType(binding.kind);
 			write.descriptorCount   = NativeDescriptorCount(binding);
 			const auto buffer_start = scratch.buffers.size();
 			const auto image_start  = scratch.images.size();
 			if (ShaderRecompiler::IR::ImageBindingResourceClass(binding.kind) !=
 			    ShaderRecompiler::IR::ImageResourceClass::None) {
 				for (const auto resource: binding.resources) {
-					scratch.images.push_back(
-					    MakeImageInfo(descriptors.images.at(resource), scratch.occurrences.at(resource)++));
+					scratch.images.push_back(MakeImageInfo(descriptors.images.at(resource),
+					                                       scratch.occurrences.at(resource)++));
 				}
 			} else {
 				switch (binding.kind) {
@@ -7154,10 +7328,15 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 						}
 						break;
 					}
-					case BindingKind::BdaPagetable: scratch.buffers.push_back(env.bda_page_table); break;
-					case BindingKind::FaultBuffer: scratch.buffers.push_back(env.fault_buffer); break;
+					case BindingKind::BdaPagetable:
+						scratch.buffers.push_back(env.bda_page_table);
+						break;
+					case BindingKind::FaultBuffer:
+						scratch.buffers.push_back(env.fault_buffer);
+						break;
 					case BindingKind::MipStats:
-						scratch.buffers.push_back(descriptors.mip_stats_canary ? env.mip_canary : env.mip_counters);
+						scratch.buffers.push_back(descriptors.mip_stats_canary ? env.mip_canary
+						                                                       : env.mip_counters);
 						break;
 					case BindingKind::FlattenedSrt:
 					case BindingKind::ShaderData:
@@ -7172,8 +7351,9 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 							if (env.srt_uniform) {
 								// KYTY_SRT_UNIFORM: at most the uniform array the shader declares.
 								EXIT_IF(view->buffer == nullptr);
-								auto uniform  = *view;
-								uniform.range = std::min<vk::DeviceSize>(uniform.range, env.uniform_range);
+								auto uniform = *view;
+								uniform.range =
+								    std::min<vk::DeviceSize>(uniform.range, env.uniform_range);
 								if (uniform.range < view->range) {
 									static std::atomic<uint32_t> reported {0};
 									if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
@@ -7197,7 +7377,8 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 						for (const auto resource: binding.resources) {
 							const auto sampler = descriptors.samplers.at(resource);
 							EXIT_IF(sampler == nullptr);
-							scratch.images.emplace_back(sampler, nullptr, vk::ImageLayout::eUndefined);
+							scratch.images.emplace_back(sampler, nullptr,
+							                            vk::ImageLayout::eUndefined);
 						}
 						break;
 					case BindingKind::Count: EXIT("invalid descriptor binding kind");
@@ -7212,17 +7393,18 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 			scratch.writes.push_back(write);
 		}
 		for (uint32_t i = 0; !partial && i < descriptors.images.size(); i++) {
-			const auto expected = descriptors.images[i].mip_views.empty()
-			                          ? 1u
-			                          : static_cast<uint32_t>(descriptors.images[i].mip_views.size());
+			const auto expected =
+			    descriptors.images[i].mip_views.empty()
+			        ? 1u
+			        : static_cast<uint32_t>(descriptors.images[i].mip_views.size());
 			EXIT_IF(scratch.occurrences[i] != expected);
 		}
 
 		const auto shader_data_dwords = program.bindings.ShaderDataDwords();
 		EXIT_IF(prepared->shader_data.size() != shader_data_dwords);
 		if (program.bindings.UsesPushData()) {
-			std::ranges::copy(prepared->shader_data,
-			                  built.push_data.dwords.begin() + program.bindings.push_data_start_dword);
+			std::ranges::copy(prepared->shader_data, built.push_data.dwords.begin() +
+			                                             program.bindings.push_data_start_dword);
 			built.has_push_data = true;
 		}
 		CommitStats::StepMark(CommitStats::Step::CbBuild);
@@ -7234,7 +7416,8 @@ void BuildDescriptors(std::span<PreparedBindings* const> stages, vk::PipelineBin
 // What the descriptor build reads besides the bindings, on the commit thread before the build: the
 // emulator's buffers some programs bind (fetched only when a program binds them, as the build did
 // before) and the uniform-range limits.
-DrawEncode::DescriptorEnv RenderExecutor::MakeDescriptorEnv(std::span<PreparedBindings* const> stages) {
+DrawEncode::DescriptorEnv
+RenderExecutor::MakeDescriptorEnv(std::span<PreparedBindings* const> stages) {
 	DrawEncode::DescriptorEnv env;
 	env.uniform_range = std::min<vk::DeviceSize>(
 	    ShaderRecompiler::IR::UniformBufferBytes,
@@ -7245,17 +7428,20 @@ DrawEncode::DescriptorEnv RenderExecutor::MakeDescriptorEnv(std::span<PreparedBi
 			if (binding.kind == BindingKind::BdaPagetable && env.bda_page_table.buffer == nullptr) {
 				const auto* buffer = m_context.GetBufferCache().GetBdaPageTableBuffer();
 				env.bda_page_table = vk::DescriptorBufferInfo(buffer->Handle(), 0, buffer->Size());
-			} else if (binding.kind == BindingKind::FaultBuffer && env.fault_buffer.buffer == nullptr) {
+			} else if (binding.kind == BindingKind::FaultBuffer &&
+			           env.fault_buffer.buffer == nullptr) {
 				const auto* buffer = m_context.GetBufferCache().GetFaultBuffer();
 				env.fault_buffer   = vk::DescriptorBufferInfo(buffer->Handle(), 0, buffer->Size());
 			} else if (binding.kind == BindingKind::MipStats) {
 				auto& lod_stats = m_context.GetLodStats();
 				if (prepared->mip_stats_canary && env.mip_canary.buffer == nullptr) {
-					auto& counters  = lod_stats.CanaryBuffer();
-					env.mip_canary = vk::DescriptorBufferInfo(counters.Handle(), 0, counters.Size());
+					auto& counters = lod_stats.CanaryBuffer();
+					env.mip_canary =
+					    vk::DescriptorBufferInfo(counters.Handle(), 0, counters.Size());
 				} else if (!prepared->mip_stats_canary && env.mip_counters.buffer == nullptr) {
-					auto& counters    = lod_stats.CounterBuffer();
-					env.mip_counters = vk::DescriptorBufferInfo(counters.Handle(), 0, counters.Size());
+					auto& counters = lod_stats.CounterBuffer();
+					env.mip_counters =
+					    vk::DescriptorBufferInfo(counters.Handle(), 0, counters.Size());
 				}
 			}
 		}
@@ -7267,9 +7453,11 @@ DrawEncode::DescriptorEnv RenderExecutor::MakeDescriptorEnv(std::span<PreparedBi
 // then push constants, the descriptor push or set and the bindless set through `sink` and `shadow`.
 template <typename Sink>
 void RenderExecutor::EncodeCommit(Sink& sink, DrawEncode::Shadow& shadow, CommandBuffer& buffer,
-                                  vk::PipelineBindPoint point, const PipelineCache::Pipeline& pipeline,
+                                  vk::PipelineBindPoint              point,
+                                  const PipelineCache::Pipeline&     pipeline,
                                   std::span<PreparedBindings* const> stages, bool partial,
-                                  DrawEncode::DescriptorScratch& scratch, DrawEncode::BuiltDescriptors& built) {
+                                  DrawEncode::DescriptorScratch& scratch,
+                                  DrawEncode::BuiltDescriptors&  built) {
 	const auto flags = CommandBuffer::EncodeFlags();
 	const auto env   = MakeDescriptorEnv(stages);
 	CommitStats::StepMark(CommitStats::Step::CbHead);
@@ -7282,7 +7470,8 @@ void RenderExecutor::EncodeCommit(Sink& sink, DrawEncode::Shadow& shadow, Comman
 		CommitStats::AddItems(CommitStats::Item::DescWrites, scratch.writes.size());
 	}
 	CommitStats::StepMark(CommitStats::Step::CbPushConst);
-	auto*      pass = point == vk::PipelineBindPoint::eGraphics ? CpGaps::CurrentDrawPassSample() : nullptr;
+	auto* pass =
+	    point == vk::PipelineBindPoint::eGraphics ? CpGaps::CurrentDrawPassSample() : nullptr;
 	const auto descriptor_start = pass != nullptr ? CpGaps::Tsc() : 0;
 	if (!scratch.writes.empty()) {
 		EXIT_IF(pipeline.descriptor_set_layout == nullptr);
@@ -7295,8 +7484,8 @@ void RenderExecutor::EncodeCommit(Sink& sink, DrawEncode::Shadow& shadow, Comman
 			// KYTY_PUSH_SHADOW_FRESH_SKIP: a stage's shader data or flattened SRT was uploaded for
 			// this command, so its descriptor differs from every earlier push of this recording.
 			const bool known_miss = PushShadowFreshSkipEnabled() && built.fresh;
-			const auto result = DrawEncode::EmitPushDescriptors(sink, shadow, flags, point, pipeline.pipeline_layout,
-			                                                    scratch, known_miss);
+			const auto result     = DrawEncode::EmitPushDescriptors(
+			    sink, shadow, flags, point, pipeline.pipeline_layout, scratch, known_miss);
 			CountDescriptorPushMiss(result, scratch.writes);
 		} else {
 			EXIT_IF(&scratch != &m_descriptor_scratch);
@@ -7306,7 +7495,8 @@ void RenderExecutor::EncodeCommit(Sink& sink, DrawEncode::Shadow& shadow, Comman
 	}
 	if (pipeline.uses_bindless) [[unlikely]] {
 		// (Created by CommitBindingsSideEffects.)
-		DrawEncode::EmitBindlessSet(sink, point, pipeline.pipeline_layout, m_context.GetBindlessTable().Set());
+		DrawEncode::EmitBindlessSet(sink, point, pipeline.pipeline_layout,
+		                            m_context.GetBindlessTable().Set());
 	}
 	if (pass != nullptr) [[unlikely]] {
 		pass->descriptor_ticks += CpGaps::Tsc() - descriptor_start;
@@ -7357,16 +7547,17 @@ void RenderExecutor::CommitBindingsEncode(CommandBuffer&                     buf
                                           const PipelineCache::Pipeline&     pipeline,
                                           std::span<PreparedBindings* const> prepared_bindings,
                                           bool                               keep_images) {
-	// KYTY_DRAW_RUN_PUSH: a continuation pushes only its per-draw descriptors; its image and sampler
-	// descriptors are the previous draw's, still in effect (RenderExecutor::DrawRunPartialPush).
+	// KYTY_DRAW_RUN_PUSH: a continuation pushes only its per-draw descriptors; its image and
+	// sampler descriptors are the previous draw's, still in effect
+	// (RenderExecutor::DrawRunPartialPush).
 	const bool partial = keep_images && pipeline_bind_point == vk::PipelineBindPoint::eGraphics &&
 	                     DrawRunPartialPush(buffer, pipeline);
 	if (partial) {
 		OwnedCounters::Add(DrawRun::GetTotals().partial_pushes, 1);
 	}
 	auto sink = buffer.StateSink();
-	EncodeCommit(sink, buffer.EncodeShadow(), buffer, pipeline_bind_point, pipeline, prepared_bindings, partial,
-	             m_descriptor_scratch, m_built_descriptors);
+	EncodeCommit(sink, buffer.EncodeShadow(), buffer, pipeline_bind_point, pipeline,
+	             prepared_bindings, partial, m_descriptor_scratch, m_built_descriptors);
 }
 
 // KYTY_SET_REUSE_FRESH (default on; 0 off; verify): a descriptor set whose writes refer to a
@@ -7458,8 +7649,8 @@ void RenderExecutor::CommitDescriptorSet(CommandBuffer& buffer, vk::PipelineBind
 			buffer.StateSink().updateDescriptorSets(m_context.GetGraphics().device, set, count,
 			                                        m_descriptor_scratch.writes.data());
 		} else {
-			m_context.GetGraphics().device.updateDescriptorSets(count, m_descriptor_scratch.writes.data(),
-			                                                    0, nullptr);
+			m_context.GetGraphics().device.updateDescriptorSets(
+			    count, m_descriptor_scratch.writes.data(), 0, nullptr);
 		}
 		Profiler::CountFrameEvent(Profiler::FrameEvent::DescriptorSetsWritten);
 		if (lookup) {
@@ -7492,12 +7683,12 @@ void RenderExecutor::CommitDescriptorSet(CommandBuffer& buffer, vk::PipelineBind
 //    is unchanged); the pipeline shadow stays on the commit thread (it decides FlagBind).
 // The template: the partial write list of a run's continuations is a function of the stage
 // programs (their binding lists), KYTY_SRT_UNIFORM and the run's structure key (which hashes the
-// programs; a program at the same address under the same key is the same program), as KYTY_CONT_EMIT's
-// skeleton (Based on the claude/u59-contrun skeleton). The per-draw part is the buffer infos and
-// the push data.
-// Verify (2): every eligible draw is committed inline as before and followed by a verify-only
-// resolved draw; the recorder compares it field by field with the state the inline packets left
-// (ResolvedDrawModel) and counts mismatches per field ("EmitSplit" lines, live-line " es [..]").
+// programs; a program at the same address under the same key is the same program), as
+// KYTY_CONT_EMIT's skeleton (Based on the claude/u59-contrun skeleton). The per-draw part is the
+// buffer infos and the push data. Verify (2): every eligible draw is committed inline as before and
+// followed by a verify-only resolved draw; the recorder compares it field by field with the state
+// the inline packets left (ResolvedDrawModel) and counts mismatches per field ("EmitSplit" lines,
+// live-line " es [..]").
 static Live::Switch g_emit_split("KYTY_EMIT_SPLIT", [](const char* value) -> int64_t {
 	if (value == nullptr || value[0] == '\0') {
 		return 0;
@@ -7527,38 +7718,49 @@ struct RenderExecutor::EmitSplitTemplate {
 	static constexpr uint32_t MaxInfos  = 96;
 	static constexpr uint32_t MaxWrites = 64;
 
-	bool                                 built   = false; // the key below is set
-	bool                                 valid   = false; // the build fit
-	uint64_t                             run_key = 0;
-	std::array<const void*, MaxStages>   programs {};
-	uint32_t                             stages      = 0;
-	bool                                 srt_uniform = false;
-	uint32_t                             write_count = 0;
-	uint32_t                             info_count  = 0;
+	bool                               built   = false; // the key below is set
+	bool                               valid   = false; // the build fit
+	uint64_t                           run_key = 0;
+	std::array<const void*, MaxStages> programs {};
+	uint32_t                           stages      = 0;
+	bool                               srt_uniform = false;
+	uint32_t                           write_count = 0;
+	uint32_t                           info_count  = 0;
 	std::array<CommandStream::DescriptorWriteRecord, MaxWrites> writes {};
-	std::array<Source, MaxInfos>         sources {};
-	std::array<PushCopy, MaxStages>      push {};
-	uint32_t                             push_count  = 0;
-	uint32_t                             push_stages = 0;
-	bool                                 env         = false; // BDA page table, fault buffer or mip statistics
-	vk::DeviceSize                       uniform_range = 0;
+	std::array<Source, MaxInfos>                                sources {};
+	std::array<PushCopy, MaxStages>                             push {};
+	uint32_t                                                    push_count  = 0;
+	uint32_t                                                    push_stages = 0;
+	bool           env           = false; // BDA page table, fault buffer or mip statistics
+	vk::DeviceSize uniform_range = 0;
 };
 
 struct RenderExecutor::EmitSplitState {
-	EmitSplitTemplate tmpl;
+	EmitSplitTemplate                                                      tmpl;
 	std::array<CommandStream::DescriptorInfo, EmitSplitTemplate::MaxInfos> infos {};
-	std::array<uint32_t, CommandStream::ResolvedDrawPushDwords>             push {};
+	std::array<uint32_t, CommandStream::ResolvedDrawPushDwords>            push {};
 	// Counters (commit thread).
-	enum Miss : uint32_t { NoStream, Sites, BatchOff, SetPath, RunVerify, Audit, Stages, Template, MissCount };
-	static constexpr const char* MissNames[MissCount] = {"no_stream", "sites", "batch_off", "set_path",
-	                                                     "drawrun_verify", "audit", "stages", "template"};
-	uint64_t prepared  = 0;
-	uint64_t records   = 0;
-	uint64_t verifies  = 0;
-	uint64_t templates = 0;
-	uint64_t native    = 0; // records expanded natively (no stream at write time)
+	enum Miss : uint32_t {
+		NoStream,
+		Sites,
+		BatchOff,
+		SetPath,
+		RunVerify,
+		Audit,
+		Stages,
+		Template,
+		MissCount
+	};
+	static constexpr const char* MissNames[MissCount] = {"no_stream", "sites",          "batch_off",
+	                                                     "set_path",  "drawrun_verify", "audit",
+	                                                     "stages",    "template"};
+	uint64_t                     prepared             = 0;
+	uint64_t                     records              = 0;
+	uint64_t                     verifies             = 0;
+	uint64_t                     templates            = 0;
+	uint64_t                     native = 0; // records expanded natively (no stream at write time)
 	std::array<uint64_t, MissCount> misses {};
-	uint64_t last_report_ns = 0;
+	uint64_t                        last_report_ns = 0;
 };
 
 RenderExecutor::EmitSplitState& RenderExecutor::EmitSplit() {
@@ -7572,12 +7774,12 @@ RenderExecutor::EmitSplitState& RenderExecutor::EmitSplit() {
 // and, per info, where it comes from. False when the commit does not fit (a mesh stage, too many
 // writes or infos, an image binding).
 static bool BuildEmitSplitTemplate(std::span<PreparedBindings* const> stages,
-                                   RenderExecutor::EmitSplitTemplate&    t) {
-	using T       = RenderExecutor::EmitSplitTemplate;
-	t.write_count = 0;
-	t.info_count  = 0;
-	t.push_count  = 0;
-	t.env         = false;
+                                   RenderExecutor::EmitSplitTemplate& t) {
+	using T          = RenderExecutor::EmitSplitTemplate;
+	t.write_count    = 0;
+	t.info_count     = 0;
+	t.push_count     = 0;
+	t.env            = false;
 	auto push_stages = vk::ShaderStageFlags(vk::ShaderStageFlagBits::eFragment);
 	for (uint32_t s = 0; s < stages.size(); s++) {
 		const auto& program = *stages[s]->runtime->program;
@@ -7595,30 +7797,42 @@ static bool BuildEmitSplitTemplate(std::span<PreparedBindings* const> stages,
 				return false;
 			}
 			CommandStream::DescriptorWriteRecord record;
-			record.binding  = ShaderRecompiler::IR::NativeBinding(program.stage, binding.kind);
-			record.element  = 0;
-			record.count    = NativeDescriptorCount(binding);
-			record.type     = NativeDescriptorType(binding.kind);
-			record.is_image = 0;
+			record.binding   = ShaderRecompiler::IR::NativeBinding(program.stage, binding.kind);
+			record.element   = 0;
+			record.count     = NativeDescriptorCount(binding);
+			record.type      = NativeDescriptorType(binding.kind);
+			record.is_image  = 0;
 			const auto first = t.info_count;
 			const auto add   = [&](T::Src kind, uint32_t resource) {
-                if (t.info_count >= T::MaxInfos || resource > 0xffffu) {
-                    return false;
-                }
-                t.sources[t.info_count++] = {static_cast<uint8_t>(s), kind, static_cast<uint16_t>(resource)};
-                return true;
+				if (t.info_count >= T::MaxInfos || resource > 0xffffu) {
+					return false;
+				}
+				t.sources[t.info_count++] = {static_cast<uint8_t>(s), kind,
+				                             static_cast<uint16_t>(resource)};
+				return true;
 			};
 			bool ok = true;
 			switch (binding.kind) {
 				case BindingKind::Buffers:
 				case BindingKind::UniformBuffers:
 					for (const auto resource: binding.resources) {
-						ok = ok && add(binding.kind == BindingKind::Buffers ? T::Src::Buffer : T::Src::Uniform, resource);
+						ok = ok && add(binding.kind == BindingKind::Buffers ? T::Src::Buffer
+						                                                    : T::Src::Uniform,
+						               resource);
 					}
 					break;
-				case BindingKind::BdaPagetable: ok = add(T::Src::Bda, 0); t.env = true; break;
-				case BindingKind::FaultBuffer: ok = add(T::Src::Fault, 0); t.env = true; break;
-				case BindingKind::MipStats: ok = add(T::Src::Mip, 0); t.env = true; break;
+				case BindingKind::BdaPagetable:
+					ok    = add(T::Src::Bda, 0);
+					t.env = true;
+					break;
+				case BindingKind::FaultBuffer:
+					ok    = add(T::Src::Fault, 0);
+					t.env = true;
+					break;
+				case BindingKind::MipStats:
+					ok    = add(T::Src::Mip, 0);
+					t.env = true;
+					break;
 				case BindingKind::FlattenedSrt: ok = add(T::Src::Srt, 0); break;
 				case BindingKind::ShaderData: ok = add(T::Src::ShaderData, 0); break;
 				case BindingKind::SharedMemory: ok = add(T::Src::Shared, 0); break;
@@ -7638,13 +7852,14 @@ static bool BuildEmitSplitTemplate(std::span<PreparedBindings* const> stages,
 	return true;
 }
 
-bool RenderExecutor::EmitSplitPrepare(const CommandBuffer& buffer, const PipelineCache::Pipeline& pipeline,
+bool RenderExecutor::EmitSplitPrepare(const CommandBuffer&               buffer,
+                                      const PipelineCache::Pipeline&     pipeline,
                                       std::span<PreparedBindings* const> stages) {
 	auto& es = EmitSplit();
 	es.prepared++;
-	using S        = EmitSplitState;
-	auto  miss     = S::MissCount;
-	auto* encoder  = buffer.StreamEncoder();
+	using S       = EmitSplitState;
+	auto  miss    = S::MissCount;
+	auto* encoder = buffer.StreamEncoder();
 	if (encoder == nullptr) {
 		miss = S::NoStream;
 	} else if (encoder->GetOptions().all_sites) {
@@ -7663,7 +7878,7 @@ bool RenderExecutor::EmitSplitPrepare(const CommandBuffer& buffer, const Pipelin
 		auto&      t           = es.tmpl;
 		const bool srt_uniform = ShaderRecompiler::Spirv::SrtUniformEnabled();
 		bool       same        = t.built && t.run_key == m_run_key && t.stages == stages.size() &&
-		                t.srt_uniform == srt_uniform;
+		                         t.srt_uniform == srt_uniform;
 		for (uint32_t i = 0; same && i < stages.size(); i++) {
 			same = t.programs[i] == stages[i]->runtime->program;
 		}
@@ -7693,17 +7908,19 @@ bool RenderExecutor::EmitSplitPrepare(const CommandBuffer& buffer, const Pipelin
 	return true;
 }
 
-// KYTY_EMIT_SPLIT_DIRECT (live, default 0): the record's buffer infos and push data are written straight
-// into the ring packet (Encoder::openResolvedDraw) instead of into a staging copy first.
+// KYTY_EMIT_SPLIT_DIRECT (live, default 0): the record's buffer infos and push data are written
+// straight into the ring packet (Encoder::openResolvedDraw) instead of into a staging copy first.
 static Live::Switch g_emit_split_direct("KYTY_EMIT_SPLIT_DIRECT", Live::ParseDefaultOff);
 
 void RenderExecutor::EmitSplitWrite(CommandBuffer& buffer, const PipelineCache::Pipeline& pipeline,
-                                    std::span<PreparedBindings* const> stages, CommandStream::ResolvedDrawPacket& packet,
-                                    const CommandStream::ResolvedDrawArrays& arrays_in, bool verify_only) {
-	using P      = CommandStream::ResolvedDrawPacket;
-	using Src    = EmitSplitTemplate::Src;
-	auto&       es = EmitSplit();
-	const auto& t  = es.tmpl;
+                                    std::span<PreparedBindings* const>       stages,
+                                    CommandStream::ResolvedDrawPacket&       packet,
+                                    const CommandStream::ResolvedDrawArrays& arrays_in,
+                                    bool                                     verify_only) {
+	using P                      = CommandStream::ResolvedDrawPacket;
+	using Src                    = EmitSplitTemplate::Src;
+	auto&                     es = EmitSplit();
+	const auto&               t  = es.tmpl;
 	DrawEncode::DescriptorEnv env;
 	if (t.env) {
 		env = MakeDescriptorEnv(stages);
@@ -7721,7 +7938,8 @@ void RenderExecutor::EmitSplitWrite(CommandBuffer& buffer, const PipelineCache::
 	packet.push_stages  = t.push_stages;
 	packet.flags |= (has_push ? P::FlagPushData : 0u) | (t.write_count != 0 ? P::FlagPush : 0u) |
 	                (PushShadowFreshSkipEnabled() && fresh ? P::FlagKnownMiss : 0u) |
-	                (flags.renderer_batch ? P::FlagPushDedup : 0u) | (flags.push_constant_shadow ? P::FlagConstDedup : 0u);
+	                (flags.renderer_batch ? P::FlagPushDedup : 0u) |
+	                (flags.push_constant_shadow ? P::FlagConstDedup : 0u);
 	if (pipeline.uses_bindless) {
 		packet.flags |= P::FlagBindless;
 		packet.bindless_set = m_context.GetBindlessTable().Set();
@@ -7779,10 +7997,13 @@ void RenderExecutor::EmitSplitWrite(CommandBuffer& buffer, const PipelineCache::
 				break;
 			case Src::Bda: out = env.bda_page_table; break;
 			case Src::Fault: out = env.fault_buffer; break;
-			case Src::Mip: out = descriptors.mip_stats_canary ? env.mip_canary : env.mip_counters; break;
+			case Src::Mip:
+				out = descriptors.mip_stats_canary ? env.mip_canary : env.mip_counters;
+				break;
 			case Src::Srt:
 			case Src::ShaderData:
-				out = source.kind == Src::Srt ? descriptors.flattened_srt : descriptors.shader_data_buffer;
+				out = source.kind == Src::Srt ? descriptors.flattened_srt
+				                              : descriptors.shader_data_buffer;
 				EXIT_IF(out.buffer == nullptr);
 				if (t.srt_uniform) {
 					// KYTY_SRT_UNIFORM: at most the uniform array the shader declares.
@@ -7806,9 +8027,12 @@ void RenderExecutor::EmitSplitWrite(CommandBuffer& buffer, const PipelineCache::
 		for (uint32_t i = 0; i < t.push_count; i++) {
 			const auto& copy     = t.push[i];
 			const auto& prepared = *stages[copy.stage];
-			EXIT_IF(prepared.shader_data.size() != prepared.runtime->program->bindings.ShaderDataDwords() ||
-			        copy.start + prepared.shader_data.size() > CommandStream::ResolvedDrawPushDwords);
-			std::memcpy(push + copy.start, prepared.shader_data.data(), sizeof(uint32_t) * prepared.shader_data.size());
+			EXIT_IF(prepared.shader_data.size() !=
+			            prepared.runtime->program->bindings.ShaderDataDwords() ||
+			        copy.start + prepared.shader_data.size() >
+			            CommandStream::ResolvedDrawPushDwords);
+			std::memcpy(push + copy.start, prepared.shader_data.data(),
+			            sizeof(uint32_t) * prepared.shader_data.size());
 		}
 	}
 	if (direct) {
@@ -7820,12 +8044,13 @@ void RenderExecutor::EmitSplitWrite(CommandBuffer& buffer, const PipelineCache::
 			encoder->resolvedDraw(packet, arrays);
 		} else if (!verify_only) {
 			// A direct window opened after EmitSplitPrepare (none is known to): the same commands,
-			// natively, without a shadow (FlagShadowReset is pending for the next record: the window set it).
+			// natively, without a shadow (FlagShadowReset is pending for the next record: the
+			// window set it).
 			CommandStream::ReplayState native;
 			auto                       sink = buffer.StateSink();
-			CommandStream::Detail::ExpandResolvedDraw(sink, native, packet, arrays.vertex_buffers,
-			                                          arrays.vertex_offsets, arrays.vertex_sizes, arrays.writes,
-			                                          arrays.infos, arrays.push, arrays.clip);
+			CommandStream::Detail::ExpandResolvedDraw(
+			    sink, native, packet, arrays.vertex_buffers, arrays.vertex_offsets,
+			    arrays.vertex_sizes, arrays.writes, arrays.infos, arrays.push, arrays.clip);
 			es.native++;
 		}
 	}
@@ -7841,15 +8066,19 @@ void RenderExecutor::EmitSplitReport() {
 		misses += fmt::format(" {}={}", EmitSplitState::MissNames[i], es.misses[i]);
 	}
 	const auto r = CommandStream::ResolvedDrawPublished();
-	std::printf("EmitSplit (mode %d): commit eligible %" PRIu64 " records %" PRIu64 " verify-only %" PRIu64
-	            " templates %" PRIu64 " native %" PRIu64 "; misses%s | recorder records %" PRIu64 " pushes %" PRIu64 " avoided %" PRIu64
-	            " constants %" PRIu64 " avoided %" PRIu64 " resets %" PRIu64 " | verify %" PRIu64 " records %" PRIu64
-	            " checked %" PRIu64 " unmodeled, mismatches pipeline=%" PRIu64 " vertex=%" PRIu64 " index=%" PRIu64
-	            " layout=%" PRIu64 " writes=%" PRIu64 " infos=%" PRIu64 " constants=%" PRIu64 " draw=%" PRIu64 "\n",
-	            static_cast<int>(g_emit_split.Get()), es.prepared, es.records, es.verifies, es.templates, es.native, misses.c_str(),
-	            r.records, r.pushes, r.pushes_avoided, r.constants, r.constants_avoided, r.shadow_resets, r.verify_records,
-	            r.verify_checks, r.verify_unmodeled, r.mismatches[0], r.mismatches[1], r.mismatches[2], r.mismatches[3],
-	            r.mismatches[4], r.mismatches[5], r.mismatches[6], r.mismatches[7]);
+	std::printf("EmitSplit (mode %d): commit eligible %" PRIu64 " records %" PRIu64
+	            " verify-only %" PRIu64 " templates %" PRIu64 " native %" PRIu64
+	            "; misses%s | recorder records %" PRIu64 " pushes %" PRIu64 " avoided %" PRIu64
+	            " constants %" PRIu64 " avoided %" PRIu64 " resets %" PRIu64 " | verify %" PRIu64
+	            " records %" PRIu64 " checked %" PRIu64 " unmodeled, mismatches pipeline=%" PRIu64
+	            " vertex=%" PRIu64 " index=%" PRIu64 " layout=%" PRIu64 " writes=%" PRIu64
+	            " infos=%" PRIu64 " constants=%" PRIu64 " draw=%" PRIu64 "\n",
+	            static_cast<int>(g_emit_split.Get()), es.prepared, es.records, es.verifies,
+	            es.templates, es.native, misses.c_str(), r.records, r.pushes, r.pushes_avoided,
+	            r.constants, r.constants_avoided, r.shadow_resets, r.verify_records,
+	            r.verify_checks, r.verify_unmodeled, r.mismatches[0], r.mismatches[1],
+	            r.mismatches[2], r.mismatches[3], r.mismatches[4], r.mismatches[5], r.mismatches[6],
+	            r.mismatches[7]);
 	std::fflush(stdout);
 }
 

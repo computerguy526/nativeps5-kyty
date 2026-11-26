@@ -41,7 +41,7 @@ constexpr float  FRAME_TIME_MEDIUM = 34.0f;
 constexpr size_t COUNTER_COUNT     = static_cast<size_t>(Counter::Count);
 constexpr auto   HITCH_WINDOW      = std::chrono::seconds(10);
 // At least 50 ms per hitch means at most 200 can finish in a ten-second window.
-constexpr size_t HITCH_HISTORY     = 256;
+constexpr size_t HITCH_HISTORY = 256;
 
 using CounterTotals = std::array<uint64_t, COUNTER_COUNT>;
 
@@ -130,7 +130,7 @@ struct Snapshot {
 	std::array<double, COUNTER_COUNT>   rates {};
 	std::array<uint64_t, COUNTER_COUNT> totals {};
 	CounterTotals                       deltas {};
-	uint32_t                            frame_count = 0;
+	uint32_t                            frame_count    = 0;
 	size_t                              recent_hitches = 0;
 	Hitch                               last_hitch;
 	std::string                         hitch_activity;
@@ -415,7 +415,7 @@ void FrameTimingRows(const Snapshot& shown) {
 	const auto row = [&](const char* label, double first, double second) {
 		Row(label, shown.frame_count > 0
 		               ? Fmt("%.1f / %.1f", first / shown.frame_count, second / shown.frame_count)
-					   : std::string("n/a"));
+		               : std::string("n/a"));
 	};
 	row("Guest GPU / compile", ms(Counter::GpuThreadBusyNs),
 	    ms(Counter::ShaderCompileNs) + ms(Counter::PipelineCreateNs));
@@ -439,8 +439,8 @@ std::string HitchActivity(const Hitch& hitch) {
 	    Activity {"acquire", ms(Counter::PresentAcquireNs)},
 	    Activity {"overlay", ms(Counter::OverlayNs)},
 	    Activity {"other present",
-		          std::max(0.0, ms(Counter::PresentNs) - ms(Counter::PresentAcquireNs) -
-		                            ms(Counter::OverlayNs))}};
+	              std::max(0.0, ms(Counter::PresentNs) - ms(Counter::PresentAcquireNs) -
+	                                ms(Counter::OverlayNs))}};
 	std::partial_sort(activity.begin(), activity.begin() + 2, activity.end(),
 	                  [](const Activity& a, const Activity& b) { return a.ms > b.ms; });
 	std::string text;
@@ -474,9 +474,8 @@ void Refresh(Snapshot& shown, const GraphicContext& graphics, Clock::time_point 
 	                           : std::chrono::duration<double>(now - shown.sample_time).count();
 	for (size_t i = 0; i < COUNTER_COUNT; i++) {
 		const auto value = Common::DebugCounters::Get(static_cast<Counter>(i));
-		shown.deltas[i] = seconds > 0.0 ? value - shown.totals[i] : 0;
-		shown.rates[i] =
-		    seconds > 0.0 ? static_cast<double>(shown.deltas[i]) / seconds : 0.0;
+		shown.deltas[i]  = seconds > 0.0 ? value - shown.totals[i] : 0;
+		shown.rates[i]   = seconds > 0.0 ? static_cast<double>(shown.deltas[i]) / seconds : 0.0;
 		shown.totals[i] = value;
 	}
 	if (seconds <= 0.0) {
@@ -548,9 +547,10 @@ void DrawFramesAndCpu(const Snapshot& shown, vk::Extent2D extent) {
 		Row("Hitches (10 s)", Fmt("%zu", shown.recent_hitches),
 		    shown.recent_hitches > 0 ? MEDIUM : GOOD);
 		if (shown.last_hitch.ms > 0.0f) {
-			Row("Last hitch", Fmt("%.0f ms, %.0f s ago", shown.last_hitch.ms,
-			                     std::chrono::duration<double>(shown.sample_time -
-			                                                   shown.last_hitch.time).count()));
+			Row("Last hitch",
+			    Fmt("%.0f ms, %.0f s ago", shown.last_hitch.ms,
+			        std::chrono::duration<double>(shown.sample_time - shown.last_hitch.time)
+			            .count()));
 			Row("  Activity", shown.hitch_activity);
 		}
 		Row("Guest output", shown.guest_width != 0
@@ -839,7 +839,8 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 			shown.max_frame_ms   = frames.max_ms;
 			shown.frame_count    = frames.flips;
 			shown.recent_hitches = frames.RecentHitches(now);
-			shown.last_hitch = frames.hitches[(frames.next_hitch + HITCH_HISTORY - 1) % HITCH_HISTORY];
+			shown.last_hitch =
+			    frames.hitches[(frames.next_hitch + HITCH_HISTORY - 1) % HITCH_HISTORY];
 			shown.stalled_s   = frames.last_flip == Clock::time_point {}
 			                        ? 0.0
 			                        : std::chrono::duration<double>(now - frames.last_flip).count();

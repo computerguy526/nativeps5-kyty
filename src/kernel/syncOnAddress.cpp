@@ -183,8 +183,8 @@ struct PortableWaiter {
 	// KYTY_SYNC_WAIT_EVENT: read without the entry's lock while the waiter spins; set with it held.
 	std::atomic<bool> wake_requested {false};
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-	// KYTY_SYNC_WAIT_EVENT: the waiting thread's own auto-reset event (null: the condition variable is used,
-	// as before), and when Wake set it.
+	// KYTY_SYNC_WAIT_EVENT: the waiting thread's own auto-reset event (null: the condition variable
+	// is used, as before), and when Wake set it.
 	HANDLE            event = nullptr;
 	Clock::time_point woken_at {};
 #endif
@@ -267,9 +267,10 @@ void MaybeReport() {
 	     buckets[1], buckets[2], buckets[3], buckets[4], longest);
 }
 
-// KYTY_SYNC_WAIT_EVENT: KYTY_SYNC_SPIN_US (default 20; 0: none): how long a waiter checks the value and its
-// wake before it sleeps. A job system's handoffs come back within microseconds, and a sleeping
-// thread takes the scheduler's wakeup to run again. Windows only (Linux waits in the futex).
+// KYTY_SYNC_WAIT_EVENT: KYTY_SYNC_SPIN_US (default 20; 0: none): how long a waiter checks the value
+// and its wake before it sleeps. A job system's handoffs come back within microseconds, and a
+// sleeping thread takes the scheduler's wakeup to run again. Windows only (Linux waits in the
+// futex).
 [[maybe_unused]] uint32_t SpinMicros() {
 	static const uint32_t micros = [] {
 		const char* value = std::getenv("KYTY_SYNC_SPIN_US");
@@ -388,7 +389,8 @@ int WaitCondVar(volatile T* address, T expected, const WaitDeadline& deadline,
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-// KYTY_SYNC_WAIT_EVENT: the calling thread's event and high-resolution timer for its waits (made once).
+// KYTY_SYNC_WAIT_EVENT: the calling thread's event and high-resolution timer for its waits (made
+// once).
 struct ThreadWaitHandles {
 	HANDLE event = nullptr;
 	HANDLE timer = nullptr;
@@ -432,9 +434,9 @@ void SleepOnEvent(const ThreadWaitHandles& handles, uint32_t micros, bool precis
 	(void)WaitForSingleObject(handles.event, std::max<DWORD>(1, (micros + 999u) / 1000u));
 }
 
-// KYTY_SYNC_WAIT_EVENT: a wait that a wake ends at any point of it. The waiter registers first, so no wake
-// is missed; it then checks its value and its wake for SpinMicros before it sleeps on its own
-// event, which Wake sets (CondVar::WaitFor slept the last part of each slice apart from the
+// KYTY_SYNC_WAIT_EVENT: a wait that a wake ends at any point of it. The waiter registers first, so
+// no wake is missed; it then checks its value and its wake for SpinMicros before it sleeps on its
+// own event, which Wake sets (CondVar::WaitFor slept the last part of each slice apart from the
 // condition variable: a wake in it was seen up to 0.5 ms late, in about 5% of a job thread's
 // waits in a race).
 template <typename T>
@@ -650,7 +652,8 @@ void WakeAfterEmulatorWrite(volatile void* address, uint64_t size) {
 		}
 		static std::atomic<bool> logged {false};
 		if (!logged.exchange(true, std::memory_order_relaxed)) {
-			LOGF("KYTY_LABEL_WAKE: first emulator label write with a possible sleeper at 0x%" PRIx64 "\n",
+			LOGF("KYTY_LABEL_WAKE: first emulator label write with a possible sleeper at 0x%" PRIx64
+			     "\n",
 			     static_cast<uint64_t>(begin));
 		}
 		(void)Wake(word, INT_MAX);

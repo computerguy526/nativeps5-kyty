@@ -98,7 +98,7 @@ void               SetServiceCommandsPending(bool (*pending)());
 [[nodiscard]] bool ServiceCommandsPending();
 // KYTY_SPEC_SEGMENTS (live, default 0; segment.h): 1 the commit thread splices the draw a preparing
 // thread encoded for a continuation the kernel takes, 2 verify.
-[[nodiscard]] Segment::Mode     SpecSegmentsMode();
+[[nodiscard]] Segment::Mode      SpecSegmentsMode();
 [[nodiscard]] Segment::Counters& SegmentCounters();
 // KYTY_BK_HANDOVER / KYTY_BK_ADOPT / KYTY_BK_RECORD / KYTY_BK_LEAN (live, default 0; bookkeep.h).
 [[nodiscard]] Bookkeep::Mode      BkHandoverMode();
@@ -293,7 +293,7 @@ public:
 	// packet records anything, so a flush there splits no packet.
 	// The hook is a direct call (`after_commit(after_commit_context)`), not a std::function.
 	Engine(RenderContext& renderer, std::function<void()> service_commands,
-	       void (*after_commit)(void*), void* after_commit_context);
+	       void (*after_commit)(void*), void*             after_commit_context);
 	~Engine();
 	Engine(const Engine&)            = delete;
 	Engine& operator=(const Engine&) = delete;
@@ -402,9 +402,10 @@ public:
 	// execution is unchanged, and the preparation is used only under the same certificate as with
 	// the sequencer (Validate / ValidateDispatch). Without pending draws the command processor
 	// prepares the head itself (ReadyHead), as for any unclaimed head.
-	// Open: with KYTY_DRAW_PREP_VERIFY=1 a GT7 race logged 7 committed preparations (indirect draws)
-	// whose vertex or pixel resources differed from the serial ones (programs equal); not explained
-	// yet. GT7 CP time did not drop either (serial work moved into head waits), so it stays off.
+	// Open: with KYTY_DRAW_PREP_VERIFY=1 a GT7 race logged 7 committed preparations (indirect
+	// draws) whose vertex or pixel resources differed from the serial ones (programs equal); not
+	// explained yet. GT7 CP time did not drop either (serial work moved into head waits), so it
+	// stays off.
 	[[nodiscard]] static bool FenceOverlapEnabled();
 	// Fence-overlap: OnPacket for the deferred fence (counted, nothing committed).
 	void NoteDeferredFence(FenceKind fence_kind);
@@ -440,7 +441,7 @@ private:
 	Mode                     m_mode;
 	std::function<void()>    m_service_commands;
 	void (*m_after_commit)(void*) = nullptr;
-	void*                    m_after_commit_context = nullptr;
+	void* m_after_commit_context  = nullptr;
 	// KYTY_BK_HANDOVER: positions the commit thread has seen finished (bookkeep.h).
 	Bookkeep::ReadyRun       m_ready_run;
 	bool                     m_bk_run_head = false; // the head being committed came from the run

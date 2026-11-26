@@ -739,7 +739,7 @@ void WheelHost::ApplyFfb(uint64_t now) {
 		// RPCS3 sends them.
 		frame.settings.reverse =
 		    m_config.reverse_effects != (frame.sense_known && !frame.settings.device_reverse);
-		frame.present          = m_present;
+		frame.present = m_present;
 		if (const uint32_t game = m_game_rotation;
 		    game != 0 && m_config.soft_lock && frame.sense_known) {
 			frame.lock_at =

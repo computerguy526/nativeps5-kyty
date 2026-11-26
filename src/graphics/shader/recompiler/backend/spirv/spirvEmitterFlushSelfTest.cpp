@@ -21,12 +21,18 @@ uint32_t Compare(EmitterState& state, uint32_t lhs, uint32_t rhs) {
 }
 
 constexpr CompareEmit CompareForms[CompareOps] = {
-    Compare<spv::OpFOrdEqual>,           Compare<spv::OpFUnordEqual>,
-    Compare<spv::OpFOrdNotEqual>,        Compare<spv::OpFUnordNotEqual>,
-    Compare<spv::OpFOrdLessThan>,        Compare<spv::OpFUnordLessThan>,
-    Compare<spv::OpFOrdGreaterThan>,     Compare<spv::OpFUnordGreaterThan>,
-    Compare<spv::OpFOrdLessThanEqual>,   Compare<spv::OpFUnordLessThanEqual>,
-    Compare<spv::OpFOrdGreaterThanEqual>, Compare<spv::OpFUnordGreaterThanEqual>,
+    Compare<spv::OpFOrdEqual>,
+    Compare<spv::OpFUnordEqual>,
+    Compare<spv::OpFOrdNotEqual>,
+    Compare<spv::OpFUnordNotEqual>,
+    Compare<spv::OpFOrdLessThan>,
+    Compare<spv::OpFUnordLessThan>,
+    Compare<spv::OpFOrdGreaterThan>,
+    Compare<spv::OpFUnordGreaterThan>,
+    Compare<spv::OpFOrdLessThanEqual>,
+    Compare<spv::OpFUnordLessThanEqual>,
+    Compare<spv::OpFOrdGreaterThanEqual>,
+    Compare<spv::OpFUnordGreaterThanEqual>,
 };
 
 static_assert(F32FlushClassRcp == 1u << static_cast<uint32_t>(UnaryOp::Rcp) &&
@@ -54,33 +60,37 @@ std::vector<uint32_t> EmitModule(std::string* error) {
 	ShaderStageInputInfo input {};
 	input.compute = &compute;
 	EmitterState state(program, input);
-	if (!GetCodegenOptions().f32_flush_host || GetCodegenOptions().f32_flush_host_classes != F32FlushClassAll ||
+	if (!GetCodegenOptions().f32_flush_host ||
+	    GetCodegenOptions().f32_flush_host_classes != F32FlushClassAll ||
 	    !E::F32FlushHost(state, F32FlushClassAll)) {
 		if (error != nullptr) {
-			*error = "the emitter's host-flush path is not on for every op class (KYTY_F32_FLUSH_HOST)";
+			*error =
+			    "the emitter's host-flush path is not on for every op class (KYTY_F32_FLUSH_HOST)";
 		}
 		return {};
 	}
 	const auto flushes_before = Spirv::EmittedDenormFlushes(1);
 	auto&      b              = state.builder;
 
-	const auto u32      = E::TypeU32(state);
-	const auto f32      = E::TypeF32(state);
-	const auto uvec3    = E::TypeU32Vector(state, 3);
-	const auto words    = b.DecoratedType(spv::OpTypeRuntimeArray,
-	                                      {{spv::OpDecorate, {spv::DecorationArrayStride, 4u}}}, u32);
-	const auto block    = b.DecoratedType(spv::OpTypeStruct,
-	                                      {{spv::OpDecorate, {spv::DecorationBlock}},
-	                                       {spv::OpMemberDecorate, {0u, spv::DecorationOffset, 0u}}},
-	                                      words);
-	const auto buffer   = b.DefineGlobalVariable(E::TypePointer(state, spv::StorageClassStorageBuffer, block),
-	                                             spv::StorageClassStorageBuffer);
-	const auto word_ptr = E::TypePointer(state, spv::StorageClassStorageBuffer, u32);
-	const auto global_id =
-	    b.DefineGlobalVariable(E::TypePointer(state, spv::StorageClassInput, uvec3), spv::StorageClassInput);
+	const auto u32   = E::TypeU32(state);
+	const auto f32   = E::TypeF32(state);
+	const auto uvec3 = E::TypeU32Vector(state, 3);
+	const auto words = b.DecoratedType(spv::OpTypeRuntimeArray,
+	                                   {{spv::OpDecorate, {spv::DecorationArrayStride, 4u}}}, u32);
+	const auto block = b.DecoratedType(spv::OpTypeStruct,
+	                                   {{spv::OpDecorate, {spv::DecorationBlock}},
+	                                    {spv::OpMemberDecorate, {0u, spv::DecorationOffset, 0u}}},
+	                                   words);
+	const auto buffer =
+	    b.DefineGlobalVariable(E::TypePointer(state, spv::StorageClassStorageBuffer, block),
+	                           spv::StorageClassStorageBuffer);
+	const auto word_ptr  = E::TypePointer(state, spv::StorageClassStorageBuffer, u32);
+	const auto global_id = b.DefineGlobalVariable(
+	    E::TypePointer(state, spv::StorageClassInput, uvec3), spv::StorageClassInput);
 	b.AddAnnotation(spv::OpDecorate, buffer, spv::DecorationDescriptorSet, 0u);
 	b.AddAnnotation(spv::OpDecorate, buffer, spv::DecorationBinding, 0u);
-	b.AddAnnotation(spv::OpDecorate, global_id, spv::DecorationBuiltIn, spv::BuiltInGlobalInvocationId);
+	b.AddAnnotation(spv::OpDecorate, global_id, spv::DecorationBuiltIn,
+	                spv::BuiltInGlobalInvocationId);
 
 	state.main_func = b.AllocateId();
 	b.RequireCapability(spv::CapabilityShader);
@@ -92,8 +102,8 @@ std::vector<uint32_t> EmitModule(std::string* error) {
 	b.AddExecutionMode(state.main_func, spv::ExecutionModeLocalSize, WorkgroupSize, 1u, 1u);
 	b.AddName(state.main_func, "main");
 
-	b.AddFunction(spv::OpFunction, E::TypeVoid(state), state.main_func, spv::FunctionControlMaskNone,
-	              E::TypeFunction(state));
+	b.AddFunction(spv::OpFunction, E::TypeVoid(state), state.main_func,
+	              spv::FunctionControlMaskNone, E::TypeFunction(state));
 	E::EmitLabel(state, b.AllocateId());
 	const auto id    = E::Unary(state, spv::OpLoad, uvec3, global_id);
 	const auto index = b.AllocateId();
@@ -101,12 +111,16 @@ std::vector<uint32_t> EmitModule(std::string* error) {
 
 	const auto pointer = [&](uint32_t word) {
 		const auto result = b.AllocateId();
-		b.AddFunction(spv::OpAccessChain, word_ptr, result, buffer, E::ConstantU32(state, 0u), word);
+		b.AddFunction(spv::OpAccessChain, word_ptr, result, buffer, E::ConstantU32(state, 0u),
+		              word);
 		return result;
 	};
-	const auto load = [&](uint32_t word) { return E::Unary(state, spv::OpLoad, u32, pointer(word)); };
+	const auto load = [&](uint32_t word) {
+		return E::Unary(state, spv::OpLoad, u32, pointer(word));
+	};
 	const auto plane_word = [&](uint32_t plane) {
-		return E::Binary(state, spv::OpIAdd, u32, index, E::ConstantU32(state, PlaneWord(plane, 0)));
+		return E::Binary(state, spv::OpIAdd, u32, index,
+		                 E::ConstantU32(state, PlaneWord(plane, 0)));
 	};
 	const auto store = [&](uint32_t plane, uint32_t value) {
 		b.AddFunction(spv::OpStore, pointer(plane_word(plane)), value);
@@ -114,16 +128,19 @@ std::vector<uint32_t> EmitModule(std::string* error) {
 	// The reference operand: the zero of the same sign for a denormal, by integer ops (not the
 	// emitter's flush, which KYTY_CS_FLUSH=off or KYTY_RELAXED_FLOAT leave out).
 	const auto flushed = [&](uint32_t bits) {
-		const auto magnitude = E::Binary(state, spv::OpBitwiseAnd, u32, bits, E::ConstantU32(state, 0x7fffffffu));
-		const auto sign      = E::Binary(state, spv::OpBitwiseAnd, u32, bits, E::ConstantU32(state, 0x80000000u));
-		const auto small =
-		    E::Binary(state, spv::OpULessThan, E::TypeBool(state), magnitude, E::ConstantU32(state, 0x00800000u));
+		const auto magnitude =
+		    E::Binary(state, spv::OpBitwiseAnd, u32, bits, E::ConstantU32(state, 0x7fffffffu));
+		const auto sign =
+		    E::Binary(state, spv::OpBitwiseAnd, u32, bits, E::ConstantU32(state, 0x80000000u));
+		const auto small    = E::Binary(state, spv::OpULessThan, E::TypeBool(state), magnitude,
+		                                E::ConstantU32(state, 0x00800000u));
 		const auto selected = b.AllocateId();
 		b.AddFunction(spv::OpSelect, u32, selected, small, sign, bits);
 		return E::Unary(state, spv::OpBitcast, f32, selected);
 	};
 
-	const auto x_bits = load(E::Binary(state, spv::OpIAdd, u32, index, E::ConstantU32(state, InputBase)));
+	const auto x_bits =
+	    load(E::Binary(state, spv::OpIAdd, u32, index, E::ConstantU32(state, InputBase)));
 	const auto x      = E::Unary(state, spv::OpBitcast, f32, x_bits);
 	const auto x_zero = flushed(x_bits);
 	for (uint32_t op = 0; op < UnaryOps; op++) {
@@ -149,7 +166,8 @@ std::vector<uint32_t> EmitModule(std::string* error) {
 				auto       mask = E::ConstantU32(state, 0u);
 				for (uint32_t j = 0; j < OperandCount; j++) {
 					const auto rhs    = expected ? y_zero[j] : y[j];
-					const auto result = order == 0 ? CompareForms[op](state, lhs, rhs) : CompareForms[op](state, rhs, lhs);
+					const auto result = order == 0 ? CompareForms[op](state, lhs, rhs)
+					                               : CompareForms[op](state, rhs, lhs);
 					const auto bit    = b.AllocateId();
 					b.AddFunction(spv::OpSelect, u32, bit, result, E::ConstantU32(state, 1u << j),
 					              E::ConstantU32(state, 0u));
@@ -186,19 +204,22 @@ std::vector<uint32_t> EmitF16Module() {
 	const auto u32   = E::TypeU32(state);
 	const auto f32   = E::TypeF32(state);
 	const auto uvec3 = E::TypeU32Vector(state, 3);
-	const auto words = b.DecoratedType(spv::OpTypeRuntimeArray, {{spv::OpDecorate, {spv::DecorationArrayStride, 4u}}}, u32);
+	const auto words = b.DecoratedType(spv::OpTypeRuntimeArray,
+	                                   {{spv::OpDecorate, {spv::DecorationArrayStride, 4u}}}, u32);
 	const auto block = b.DecoratedType(spv::OpTypeStruct,
 	                                   {{spv::OpDecorate, {spv::DecorationBlock}},
 	                                    {spv::OpMemberDecorate, {0u, spv::DecorationOffset, 0u}}},
 	                                   words);
 	const auto buffer =
-	    b.DefineGlobalVariable(E::TypePointer(state, spv::StorageClassStorageBuffer, block), spv::StorageClassStorageBuffer);
-	const auto word_ptr = E::TypePointer(state, spv::StorageClassStorageBuffer, u32);
-	const auto global_id =
-	    b.DefineGlobalVariable(E::TypePointer(state, spv::StorageClassInput, uvec3), spv::StorageClassInput);
+	    b.DefineGlobalVariable(E::TypePointer(state, spv::StorageClassStorageBuffer, block),
+	                           spv::StorageClassStorageBuffer);
+	const auto word_ptr  = E::TypePointer(state, spv::StorageClassStorageBuffer, u32);
+	const auto global_id = b.DefineGlobalVariable(
+	    E::TypePointer(state, spv::StorageClassInput, uvec3), spv::StorageClassInput);
 	b.AddAnnotation(spv::OpDecorate, buffer, spv::DecorationDescriptorSet, 0u);
 	b.AddAnnotation(spv::OpDecorate, buffer, spv::DecorationBinding, 0u);
-	b.AddAnnotation(spv::OpDecorate, global_id, spv::DecorationBuiltIn, spv::BuiltInGlobalInvocationId);
+	b.AddAnnotation(spv::OpDecorate, global_id, spv::DecorationBuiltIn,
+	                spv::BuiltInGlobalInvocationId);
 
 	state.main_func = b.AllocateId();
 	b.RequireCapability(spv::CapabilityShader);
@@ -207,15 +228,16 @@ std::vector<uint32_t> EmitF16Module() {
 	E::DeclareFloatControls(state);
 	b.AddExecutionMode(state.main_func, spv::ExecutionModeLocalSize, WorkgroupSize, 1u, 1u);
 	b.AddName(state.main_func, "main");
-	b.AddFunction(spv::OpFunction, E::TypeVoid(state), state.main_func, spv::FunctionControlMaskNone,
-	              E::TypeFunction(state));
+	b.AddFunction(spv::OpFunction, E::TypeVoid(state), state.main_func,
+	              spv::FunctionControlMaskNone, E::TypeFunction(state));
 	E::EmitLabel(state, b.AllocateId());
 	const auto id    = E::Unary(state, spv::OpLoad, uvec3, global_id);
 	const auto index = b.AllocateId();
 	b.AddFunction(spv::OpCompositeExtract, u32, index, id, 0u);
 	const auto pointer = [&](uint32_t word) {
 		const auto result = b.AllocateId();
-		b.AddFunction(spv::OpAccessChain, word_ptr, result, buffer, E::ConstantU32(state, 0u), word);
+		b.AddFunction(spv::OpAccessChain, word_ptr, result, buffer, E::ConstantU32(state, 0u),
+		              word);
 		return result;
 	};
 	const auto at = [&](uint32_t base, uint32_t scale, uint32_t add) {
@@ -225,8 +247,12 @@ std::vector<uint32_t> EmitF16Module() {
 		}
 		return E::Binary(state, spv::OpIAdd, u32, word, E::ConstantU32(state, base + add));
 	};
-	const auto load  = [&](uint32_t word) { return E::Unary(state, spv::OpLoad, u32, pointer(word)); };
-	const auto store = [&](uint32_t word, uint32_t value) { b.AddFunction(spv::OpStore, pointer(word), value); };
+	const auto load = [&](uint32_t word) {
+		return E::Unary(state, spv::OpLoad, u32, pointer(word));
+	};
+	const auto store = [&](uint32_t word, uint32_t value) {
+		b.AddFunction(spv::OpStore, pointer(word), value);
+	};
 
 	// Unpack: EmitF16BitsToF32 of the low half and of the high half (shifted down, as the
 	// translator reads an f16 operand's high half).

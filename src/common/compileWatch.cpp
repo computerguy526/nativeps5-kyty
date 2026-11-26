@@ -36,8 +36,9 @@ constexpr size_t   ListedBuilds = 4;
 
 const auto g_start = std::chrono::steady_clock::now();
 uint64_t   ClockMs() {
-	return static_cast<uint64_t>(
-	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_start).count());
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                 std::chrono::steady_clock::now() - g_start)
+	                                 .count());
 }
 
 uint64_t EnvU64(const char* name, uint64_t fallback) {
@@ -63,13 +64,13 @@ struct QueueWait {
 };
 
 struct State {
-	std::array<Slot, MaxBuilds>      builds;
-	std::array<Slot, MaxWaits>       waits;
-	std::array<QueueWait, MaxQueues> queues;
-	std::atomic<uint64_t>            precompile_done {0}, precompile_total {0};
-	std::atomic<uint64_t>            flips {0}, last_flip_ms {0};
-	std::atomic<uint64_t>            submissions {0}, last_submission_ms {0};
-	std::mutex                       counters_mutex;
+	std::array<Slot, MaxBuilds>            builds;
+	std::array<Slot, MaxWaits>             waits;
+	std::array<QueueWait, MaxQueues>       queues;
+	std::atomic<uint64_t>                  precompile_done {0}, precompile_total {0};
+	std::atomic<uint64_t>                  flips {0}, last_flip_ms {0};
+	std::atomic<uint64_t>                  submissions {0}, last_submission_ms {0};
+	std::mutex                             counters_mutex;
 	std::array<QueueCounter*, MaxCounters> counters {};
 	// Monitor-only state.
 	uint64_t last_periodic_ms = UINT64_MAX; // never
@@ -91,7 +92,7 @@ void Print(const std::string& line) {
 	Log::WriteToConsoleAndLog(line + "\n");
 }
 
-std::string Check(uint64_t now);
+std::string              Check(uint64_t now);
 extern std::atomic<bool> g_no_monitor;
 
 void MonitorThread() {
@@ -111,7 +112,8 @@ void MonitorThread() {
 void EnsureMonitor() {
 	static std::once_flag once;
 	std::call_once(once, [] {
-		S().period_ms = std::clamp<uint64_t>(EnvU64("KYTY_COMPILE_WATCH_PERIOD_S", 10), 2, 3600) * 1000;
+		S().period_ms =
+		    std::clamp<uint64_t>(EnvU64("KYTY_COMPILE_WATCH_PERIOD_S", 10), 2, 3600) * 1000;
 		if (g_no_monitor.load()) return;
 		try {
 			std::thread(MonitorThread).detach();
@@ -126,7 +128,8 @@ int Claim(std::array<Slot, N>& slots, Kind kind, const char* who, uint64_t hash,
 	for (size_t n = 0; n < N; n++) {
 		const size_t i        = (hint + n) % N;
 		uint32_t     expected = 0;
-		if (!slots[i].state.compare_exchange_strong(expected, 1, std::memory_order_acquire)) continue;
+		if (!slots[i].state.compare_exchange_strong(expected, 1, std::memory_order_acquire))
+			continue;
 		auto& slot = slots[i];
 		slot.version.fetch_add(1, std::memory_order_relaxed);
 		slot.kind.store(static_cast<uint8_t>(kind), std::memory_order_relaxed);
@@ -157,9 +160,13 @@ std::vector<Snap> Collect(std::array<Slot, N>& slots) {
 		if (slot.state.load(std::memory_order_acquire) != 2) continue;
 		const auto version = slot.version.load(std::memory_order_relaxed);
 		Snap       snap {static_cast<Kind>(slot.kind.load(std::memory_order_relaxed)),
-                   slot.who.load(std::memory_order_relaxed), slot.hash.load(std::memory_order_relaxed),
-                   slot.hash2.load(std::memory_order_relaxed), slot.start_ms.load(std::memory_order_relaxed), i};
-		if (slot.state.load(std::memory_order_acquire) != 2 || slot.version.load(std::memory_order_relaxed) != version) {
+		                 slot.who.load(std::memory_order_relaxed),
+		                 slot.hash.load(std::memory_order_relaxed),
+		                 slot.hash2.load(std::memory_order_relaxed),
+		                 slot.start_ms.load(std::memory_order_relaxed),
+		                 i};
+		if (slot.state.load(std::memory_order_acquire) != 2 ||
+		    slot.version.load(std::memory_order_relaxed) != version) {
 			continue;
 		}
 		out.push_back(snap);
@@ -169,7 +176,8 @@ std::vector<Snap> Collect(std::array<Slot, N>& slots) {
 
 std::string Hashes(Kind kind, uint64_t hash, uint64_t hash2) {
 	if (kind == Kind::GraphicsPipeline) {
-		return hash2 != 0 ? fmt::format("VS 0x{:016x} PS 0x{:016x}", hash, hash2) : fmt::format("VS 0x{:016x}", hash);
+		return hash2 != 0 ? fmt::format("VS 0x{:016x} PS 0x{:016x}", hash, hash2)
+		                  : fmt::format("VS 0x{:016x}", hash);
 	}
 	return fmt::format("0x{:016x}", hash);
 }
@@ -180,12 +188,14 @@ std::string Seconds(uint64_t ms) {
 
 // "rt-pipeline 0x... 312.0 s, ..." for the oldest builds.
 std::string ListBuilds(std::vector<Snap> builds, uint64_t now, size_t limit) {
-	std::sort(builds.begin(), builds.end(), [](const Snap& a, const Snap& b) { return a.start_ms < b.start_ms; });
+	std::sort(builds.begin(), builds.end(),
+	          [](const Snap& a, const Snap& b) { return a.start_ms < b.start_ms; });
 	std::string text;
 	for (size_t i = 0; i < builds.size() && i < limit; i++) {
 		const auto& b = builds[i];
-		text += fmt::format("{}{} {} {}", i == 0 ? "" : ", ", KindName(b.kind), Hashes(b.kind, b.hash, b.hash2),
-		                    Seconds(now - std::min(now, b.start_ms)));
+		text +=
+		    fmt::format("{}{} {} {}", i == 0 ? "" : ", ", KindName(b.kind),
+		                Hashes(b.kind, b.hash, b.hash2), Seconds(now - std::min(now, b.start_ms)));
 	}
 	if (builds.size() > limit) text += fmt::format(", +{} more", builds.size() - limit);
 	return text;
@@ -219,7 +229,8 @@ std::string CpWaitsText(uint64_t now) {
 		if (kind == nullptr) continue;
 		const auto since = wait.since_ms.load(std::memory_order_relaxed);
 		text += fmt::format("{}queue {} {} 0x{:x} for {}", text.empty() ? "" : ", ", q, kind,
-		                    wait.address.load(std::memory_order_relaxed), Seconds(now - std::min(now, since)));
+		                    wait.address.load(std::memory_order_relaxed),
+		                    Seconds(now - std::min(now, since)));
 	}
 	return text;
 }
@@ -235,7 +246,8 @@ const Snap* BuildFor(const std::vector<Snap>& builds, const Snap& wait) {
 std::string WaitText(const Snap& w, const std::vector<Snap>& builds, uint64_t now) {
 	const auto* b = BuildFor(builds, w);
 	return fmt::format("{} blocked for {} on {} {} ({})", w.who != nullptr ? w.who : "thread",
-	                   Seconds(now - std::min(now, w.start_ms)), KindName(w.kind), Hashes(w.kind, w.hash, w.hash2),
+	                   Seconds(now - std::min(now, w.start_ms)), KindName(w.kind),
+	                   Hashes(w.kind, w.hash, w.hash2),
 	                   b != nullptr ? "building for " + Seconds(now - std::min(now, b->start_ms))
 	                                : std::string("not started yet"));
 }
@@ -245,11 +257,11 @@ std::mutex        g_check_mutex;
 
 std::string Check(uint64_t now) {
 	std::scoped_lock check_lock(g_check_mutex);
-	auto&       s = S();
-	std::string printed;
-	const auto  emit = [&](const std::string& line) {
-        Print(line);
-        printed += line + "\n";
+	auto&            s = S();
+	std::string      printed;
+	const auto       emit = [&](const std::string& line) {
+		Print(line);
+		printed += line + "\n";
 	};
 	const auto builds = Collect(s.builds);
 	const auto waits  = Collect(s.waits);
@@ -258,7 +270,7 @@ std::string Check(uint64_t now) {
 	bool blocked = false;
 	for (const auto& w: waits) {
 		if (now - std::min(now, w.start_ms) < BlockedMs) continue;
-		blocked = true;
+		blocked    = true;
 		auto& slot = s.waits[w.index];
 		if (slot.reported.exchange(true, std::memory_order_relaxed)) continue;
 		emit("Compile wait: " + WaitText(w, builds, now));
@@ -266,8 +278,10 @@ std::string Check(uint64_t now) {
 
 	// 2. The periodic summary while a build is long or a wait is blocked.
 	bool long_build = false;
-	for (const auto& b: builds) long_build |= now - std::min(now, b.start_ms) >= LongBuildMs;
-	if ((long_build || blocked) && (s.last_periodic_ms == UINT64_MAX || now - std::min(now, s.last_periodic_ms) >= s.period_ms)) {
+	for (const auto& b: builds)
+		long_build |= now - std::min(now, b.start_ms) >= LongBuildMs;
+	if ((long_build || blocked) && (s.last_periodic_ms == UINT64_MAX ||
+	                                now - std::min(now, s.last_periodic_ms) >= s.period_ms)) {
 		s.last_periodic_ms = now;
 		std::string line   = fmt::format("Compile wait: {} build(s) in flight", builds.size());
 		if (!builds.empty()) line += " (oldest: " + ListBuilds(builds, now, ListedBuilds) + ")";
@@ -287,19 +301,26 @@ std::string Check(uint64_t now) {
 	const auto last  = s.last_flip_ms.load(std::memory_order_relaxed);
 	if (flips != 0 && now - std::min(now, last) >= StallMs &&
 	    (s.stall_flips != flips || now - s.last_stall_ms >= StallRepeat)) {
-		s.stall_flips   = flips;
-		s.last_stall_ms = now;
-		std::string line = fmt::format("Frame stall: no flip for {} (after flip {}).", Seconds(now - std::min(now, last)), flips);
+		s.stall_flips    = flips;
+		s.last_stall_ms  = now;
+		std::string line = fmt::format("Frame stall: no flip for {} (after flip {}).",
+		                               Seconds(now - std::min(now, last)), flips);
 		if (s.submissions.load(std::memory_order_relaxed) != 0) {
 			const auto submitted = s.last_submission_ms.load(std::memory_order_relaxed);
-			line += fmt::format(" Last Vulkan submission {} ago.", Seconds(now - std::min(now, submitted)));
+			line += fmt::format(" Last Vulkan submission {} ago.",
+			                    Seconds(now - std::min(now, submitted)));
 		}
-		const auto  cp   = CpWaitsText(now);
-		line += cp.empty() ? " Command processor: no queue wait." : " Command processor waits: " + cp + ".";
+		const auto cp = CpWaitsText(now);
+		line += cp.empty() ? " Command processor: no queue wait."
+		                   : " Command processor waits: " + cp + ".";
 		std::string blocked_text;
-		for (const auto& w: waits) blocked_text += (blocked_text.empty() ? "" : "; ") + WaitText(w, builds, now);
-		line += blocked_text.empty() ? " No draw or dispatch waits for a compile." : " Compile waits: " + blocked_text + ".";
-		if (!builds.empty()) line += fmt::format(" {} build(s) in flight: {}.", builds.size(), ListBuilds(builds, now, ListedBuilds));
+		for (const auto& w: waits)
+			blocked_text += (blocked_text.empty() ? "" : "; ") + WaitText(w, builds, now);
+		line += blocked_text.empty() ? " No draw or dispatch waits for a compile."
+		                             : " Compile waits: " + blocked_text + ".";
+		if (!builds.empty())
+			line += fmt::format(" {} build(s) in flight: {}.", builds.size(),
+			                    ListBuilds(builds, now, ListedBuilds));
 		if (const auto queued = QueuedText(); !queued.empty()) line += " " + queued + ".";
 		emit(line);
 	}
@@ -341,10 +362,11 @@ Build::Build(Kind kind, uint64_t hash, uint64_t hash2) {
 Build::~Build() {
 	KytyEvents::NoteBuildEnd();
 	if (m_begin_ns != 0) {
-		PaceLog::NoteStall(m_begin_ns, PaceLog::NowNs(), PaceLog::StallBuild, m_hash, static_cast<int>(m_kind),
-		                   KindName(m_kind));
+		PaceLog::NoteStall(m_begin_ns, PaceLog::NowNs(), PaceLog::StallBuild, m_hash,
+		                   static_cast<int>(m_kind), KindName(m_kind));
 	}
-	if (m_slot >= 0) S().builds[static_cast<size_t>(m_slot)].state.store(0, std::memory_order_release);
+	if (m_slot >= 0)
+		S().builds[static_cast<size_t>(m_slot)].state.store(0, std::memory_order_release);
 }
 
 Wait::Wait(const char* who, Kind kind, uint64_t hash, uint64_t hash2) {
@@ -361,19 +383,21 @@ Wait::Wait(const char* who, Kind kind, uint64_t hash, uint64_t hash2) {
 
 Wait::~Wait() {
 	if (m_begin_ns != 0) {
-		PaceLog::NoteStall(m_begin_ns, PaceLog::NowNs(), PaceLog::StallCompileWait, m_hash, static_cast<int>(m_kind),
-		                   m_who);
+		PaceLog::NoteStall(m_begin_ns, PaceLog::NowNs(), PaceLog::StallCompileWait, m_hash,
+		                   static_cast<int>(m_kind), m_who);
 	}
 	if (m_slot < 0) return;
 	auto& slot = S().waits[static_cast<size_t>(m_slot)];
 	if (slot.reported.load(std::memory_order_relaxed)) {
-		const auto now   = ClockMs();
-		const auto start = slot.start_ms.load(std::memory_order_relaxed);
-		const auto kind  = static_cast<Kind>(slot.kind.load(std::memory_order_relaxed));
-		const char* who  = slot.who.load(std::memory_order_relaxed);
-		Print(fmt::format("Compile wait: {} unblocked after {} ({} {})", who != nullptr ? who : "thread",
-		                  Seconds(now - std::min(now, start)), KindName(kind),
-		                  Hashes(kind, slot.hash.load(std::memory_order_relaxed), slot.hash2.load(std::memory_order_relaxed))));
+		const auto  now   = ClockMs();
+		const auto  start = slot.start_ms.load(std::memory_order_relaxed);
+		const auto  kind  = static_cast<Kind>(slot.kind.load(std::memory_order_relaxed));
+		const char* who   = slot.who.load(std::memory_order_relaxed);
+		Print(fmt::format("Compile wait: {} unblocked after {} ({} {})",
+		                  who != nullptr ? who : "thread", Seconds(now - std::min(now, start)),
+		                  KindName(kind),
+		                  Hashes(kind, slot.hash.load(std::memory_order_relaxed),
+		                         slot.hash2.load(std::memory_order_relaxed))));
 	}
 	slot.state.store(0, std::memory_order_release);
 }
@@ -422,7 +446,8 @@ void NoteSubmission() {
 void NoteQueueWait(uint32_t queue, const char* kind, uint64_t address) {
 	if (!Enabled() || queue >= MaxQueues) return;
 	auto& wait = S().queues[queue];
-	if (wait.kind.load(std::memory_order_relaxed) == kind && wait.address.load(std::memory_order_relaxed) == address) {
+	if (wait.kind.load(std::memory_order_relaxed) == kind &&
+	    wait.address.load(std::memory_order_relaxed) == address) {
 		return;
 	}
 	wait.address.store(address, std::memory_order_relaxed);
@@ -433,7 +458,8 @@ void NoteQueueWait(uint32_t queue, const char* kind, uint64_t address) {
 void ClearQueueWait(uint32_t queue) {
 	if (!Enabled() || queue >= MaxQueues) return;
 	auto& wait = S().queues[queue];
-	if (wait.kind.load(std::memory_order_relaxed) != nullptr) wait.kind.store(nullptr, std::memory_order_release);
+	if (wait.kind.load(std::memory_order_relaxed) != nullptr)
+		wait.kind.store(nullptr, std::memory_order_release);
 }
 
 std::string CheckForTest(uint64_t now_ms) {
@@ -443,19 +469,22 @@ std::string CheckForTest(uint64_t now_ms) {
 void ResetForTest() {
 	g_no_monitor.store(true);
 	std::scoped_lock check_lock(g_check_mutex);
-	auto& s = S();
-	for (auto& slot: s.builds) slot.state.store(0);
-	for (auto& slot: s.waits) slot.state.store(0);
-	for (auto& q: s.queues) q.kind.store(nullptr);
-	s.precompile_done  = 0;
-	s.precompile_total = 0;
-	s.flips            = 0;
-	s.last_flip_ms     = 0;
-	s.submissions      = 0;
+	auto&            s = S();
+	for (auto& slot: s.builds)
+		slot.state.store(0);
+	for (auto& slot: s.waits)
+		slot.state.store(0);
+	for (auto& q: s.queues)
+		q.kind.store(nullptr);
+	s.precompile_done    = 0;
+	s.precompile_total   = 0;
+	s.flips              = 0;
+	s.last_flip_ms       = 0;
+	s.submissions        = 0;
 	s.last_submission_ms = 0;
-	s.last_periodic_ms = UINT64_MAX;
-	s.stall_flips      = UINT64_MAX;
-	s.last_stall_ms    = 0;
+	s.last_periodic_ms   = UINT64_MAX;
+	s.stall_flips        = UINT64_MAX;
+	s.last_stall_ms      = 0;
 }
 
 uint64_t NowMsForTest() {

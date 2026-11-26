@@ -56,8 +56,8 @@
 // KYTY_VCACHE_PLACEMENT=auto|0|1 (default auto): dual-CCD X3D processors (7950X3D, 7900X3D,
 // 9950X3D, ...; one CCD has 3D V-cache) without a Process Lasso-like rule.
 // - The V-cache CCD is the L3 cache group that measures largest (GetLogicalProcessorInformationEx
-//   cache relations), not the one with most cores or the lowest index. A chip counts as dual-CCD X3D
-//   only when there are two or more L3 groups and the largest is at least 1.5 times every other
+//   cache relations), not the one with most cores or the lowest index. A chip counts as dual-CCD
+//   X3D only when there are two or more L3 groups and the largest is at least 1.5 times every other
 //   (96 against 32 MiB). One L3 (7800X3D, 9800X3D, Intel hybrid) or equal L3s (7950X): no change.
 // - auto: only when no external CPU-set or affinity rule is active: the process affinity mask is
 //   the whole system's, no process default CPU sets were set before startup, KYTY_CPU_SETS is
@@ -158,10 +158,11 @@ inline constexpr uint32_t kMinGeneralProcessors = 6;
 // - A whole core is reserved for the CP only while at least KYTY_CPU_RESERVE_WHOLE_MIN_CORES
 //   (default 8) cores are in the budget (one more per extra reserved core of cp+recorder and
 //   stages, which otherwise fall back to cp). Below that the CP gets one logical processor to
-//   itself (its SMT sibling stays general) when the budget has at least KYTY_CPU_RESERVE_LOGICAL_MIN
-//   (default 8) logical processors; otherwise nothing is reserved. 6 cores with SMT: one logical;
-//   4 cores / 8 threads: one logical; 6 cores without SMT: nothing; 8 cores and more: a whole core.
-//   One logical processor needs no whole core, so an odd affinity mask still gets one.
+//   itself (its SMT sibling stays general) when the budget has at least
+//   KYTY_CPU_RESERVE_LOGICAL_MIN (default 8) logical processors; otherwise nothing is reserved. 6
+//   cores with SMT: one logical; 4 cores / 8 threads: one logical; 6 cores without SMT: nothing; 8
+//   cores and more: a whole core. One logical processor needs no whole core, so an odd affinity
+//   mask still gets one.
 // - The CP's core is chosen by the CPU's preferred-core ranking (CPPC SchedulingClass) first; the
 //   core of logical processor 0 only loses ties.
 // - Hybrid CPUs: only cores of the fastest efficiency class are candidates (never an E-core).
@@ -182,10 +183,10 @@ struct ReserveRules {
 // allowed processors is used; ties go to the cache with processors in `preferred_mask` (the V-cache
 // CCD), then to the lower index.
 [[nodiscard]] CpuLayout ComputeCpuLayout(const std::vector<CpuSetInfo>& sets, CpuReserveMode mode,
-                                         int      forced_cp_logical,
-                                         uint32_t min_general    = kMinGeneralProcessors,
-                                         uint64_t preferred_mask = 0,
-                                         const ReserveRules& rules = {});
+                                         int                 forced_cp_logical,
+                                         uint32_t            min_general    = kMinGeneralProcessors,
+                                         uint64_t            preferred_mask = 0,
+                                         const ReserveRules& rules          = {});
 // Pure (tested): the L3 groups as a V-cache topology (KYTY_VCACHE_PLACEMENT).
 [[nodiscard]] VCacheTopology DetectVCache(const std::vector<L3Cache>& caches);
 // Pure (tested): whether the V-cache placement applies. `external_rule`: an affinity or CPU-set
@@ -196,10 +197,11 @@ struct ReserveRules {
 // processors in the V-cache CCD, the cold ones in the other CCDs. `vcache` false (and the reason in
 // the description) when it cannot apply: no allowed processor on either side, fewer than
 // `min_general` hot ones, or the reservation does not fit in the V-cache CCD.
-[[nodiscard]] CpuLayout ComputeVCacheLayout(const std::vector<CpuSetInfo>& sets, CpuReserveMode mode,
-                                            int forced_cp_logical, const VCacheTopology& topology,
-                                            uint32_t min_general = kMinGeneralProcessors,
-                                            const ReserveRules& rules = {});
+[[nodiscard]] CpuLayout ComputeVCacheLayout(const std::vector<CpuSetInfo>& sets,
+                                            CpuReserveMode mode, int forced_cp_logical,
+                                            const VCacheTopology& topology,
+                                            uint32_t            min_general = kMinGeneralProcessors,
+                                            const ReserveRules& rules       = {});
 // KYTY_VCACHE_PLACEMENT=auto|0|1 (also off|on); nullptr is auto. `valid` false: unknown text.
 [[nodiscard]] VCacheMode ParseVCacheMode(const char* text, bool* valid = nullptr);
 [[nodiscard]] VCacheMode GetVCacheMode(); // evaluated once
@@ -208,7 +210,8 @@ struct ReserveRules {
 // (the CPU sets narrow it), otherwise every general processor.
 [[nodiscard]] uint64_t GeneralPoolAffinity(uint64_t affinity, const CpuLayout& layout);
 
-// KYTY_CPU_RESERVE=off|cp|cp+recorder|stages (also 0|1|2|3); nullptr is off. `valid` false: unknown text.
+// KYTY_CPU_RESERVE=off|cp|cp+recorder|stages (also 0|1|2|3); nullptr is off. `valid` false: unknown
+// text.
 [[nodiscard]] CpuReserveMode ParseCpuReserveMode(const char* text, bool* valid = nullptr);
 [[nodiscard]] CpuReserveMode GetCpuReserveMode(); // KYTY_CPU_RESERVE, evaluated once
 // Pure (tested): "0-15", "16-31", "0-7,16-23", "5" as a mask of logical processors 0..63; 0 with

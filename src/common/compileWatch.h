@@ -18,10 +18,10 @@ namespace CompileWatch {
 enum class Kind : uint8_t {
 	GraphicsPipeline,
 	ComputePipeline,
-	RtPipeline,     // a software ray-tracing kernel (background)
-	SplitPipeline,  // a call-split program (KYTY_SHADER_CALLS_SPLIT, background)
-	HugeCompute,    // KYTY_COMPUTE_BACKGROUND_WORDS
-	Shader,         // a shader translation (guest code to SPIR-V and module)
+	RtPipeline,    // a software ray-tracing kernel (background)
+	SplitPipeline, // a call-split program (KYTY_SHADER_CALLS_SPLIT, background)
+	HugeCompute,   // KYTY_COMPUTE_BACKGROUND_WORDS
+	Shader,        // a shader translation (guest code to SPIR-V and module)
 	Count
 };
 [[nodiscard]] const char* KindName(Kind kind);
@@ -64,10 +64,10 @@ class QueueCounter {
 public:
 	explicit QueueCounter(const char* name);
 	~QueueCounter();
-	QueueCounter(const QueueCounter&)            = delete;
-	QueueCounter& operator=(const QueueCounter&) = delete;
-	void          Add() { m_queued.fetch_add(1, std::memory_order_relaxed); }
-	void          Sub() { m_queued.fetch_sub(1, std::memory_order_relaxed); }
+	QueueCounter(const QueueCounter&)                        = delete;
+	QueueCounter&             operator=(const QueueCounter&) = delete;
+	void                      Add() { m_queued.fetch_add(1, std::memory_order_relaxed); }
+	void                      Sub() { m_queued.fetch_sub(1, std::memory_order_relaxed); }
 	[[nodiscard]] int64_t     Queued() const { return m_queued.load(std::memory_order_relaxed); }
 	[[nodiscard]] const char* Name() const { return m_name; }
 

@@ -233,7 +233,7 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 			reduction.reductionMode = filter_mode == 1u ? vk::SamplerReductionMode::eMin
 			                                            : vk::SamplerReductionMode::eMax;
 			sampler_info.pNext = &reduction;
-			reduction_key      = filter_mode;
+			reduction_key           = filter_mode;
 		} else {
 			reduction_dropped = true;
 		}
@@ -260,11 +260,12 @@ constexpr uint32_t SamplerKindBits = 0xfe000000u;
 } // namespace
 
 // usa-ratt/KytyPS5-GT7 81ec2a939: a VkSampler for each distinct create info, not for each distinct
-// S#. S#s that differ only where the Vulkan sampler does not (or by a LOD bias the game moves) piled
-// up past the driver's limit (maxSamplerAllocationCount, 4000 on NVIDIA), and creating the next one
-// ended the emulator after ten minutes of GT7 Circuit Experience retries. Samplers of equal create
-// info are interchangeable, so sharing one changes nothing. With KYTY_SKIP_INVALID, past a budget
-// under the limit (or when vkCreateSampler fails) the nearest in LOD of the same kind stands in.
+// S#. S#s that differ only where the Vulkan sampler does not (or by a LOD bias the game moves)
+// piled up past the driver's limit (maxSamplerAllocationCount, 4000 on NVIDIA), and creating the
+// next one ended the emulator after ten minutes of GT7 Circuit Experience retries. Samplers of
+// equal create info are interchangeable, so sharing one changes nothing. With KYTY_SKIP_INVALID,
+// past a budget under the limit (or when vkCreateSampler fails) the nearest in LOD of the same kind
+// stands in.
 vk::Sampler SamplerCache::FindOrCreate(const vk::SamplerCreateInfo& info, uint32_t reduction) {
 	const DiscreteKey discrete {
 	    static_cast<uint32_t>(info.magFilter) | (static_cast<uint32_t>(info.minFilter) << 4u) |
@@ -329,7 +330,8 @@ vk::Sampler SamplerCache::FindOrCreate(const vk::SamplerCreateInfo& info, uint32
 		if (skip) {
 			// The nearest of the same discrete state, or else any of the same kind.
 			stand_in = nearest(variants);
-			for (auto it = m_variants.begin(); stand_in == nullptr && it != m_variants.end(); ++it) {
+			for (auto it = m_variants.begin(); stand_in == nullptr && it != m_variants.end();
+			     ++it) {
 				if ((it->first[0] & SamplerKindBits) == (discrete[0] & SamplerKindBits)) {
 					stand_in = nearest(it->second);
 				}

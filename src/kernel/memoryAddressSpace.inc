@@ -15,7 +15,8 @@ static constexpr uint64_t HOST_USER_MAX = GUEST_ADDRESS_SPACE_END - 1u;
 // End of the user range that ordinary mappings search: the AMM window above it is left to the
 // AMM map commands (kAmmWindowBase).
 static constexpr uint64_t HOST_USER_ALLOC_END = kAmmWindowBase;
-static_assert(kAmmWindowBase > HOST_USER_MIN && kAmmWindowBase + kAmmWindowSize == HOST_USER_MAX + 1u);
+static_assert(kAmmWindowBase > HOST_USER_MIN &&
+              kAmmWindowBase + kAmmWindowSize == HOST_USER_MAX + 1u);
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 // KYTY_READ_GUARD (default off; chenxiao07/KytyPS5 f53b4497a, 8de5e4024, 90c42c900, ee79829f0,
@@ -45,7 +46,8 @@ static bool ReadGuardNow() {
 	}
 	static const uint64_t minimum = [] {
 		const char* value = std::getenv("KYTY_READ_GUARD_MIN_AVAIL_MB");
-		return (value != nullptr && *value != '\0' ? std::strtoull(value, nullptr, 10) : uint64_t {1536})
+		return (value != nullptr && *value != '\0' ? std::strtoull(value, nullptr, 10)
+		                                           : uint64_t {1536})
 		       << 20u;
 	}();
 	static std::atomic<uint64_t> checked_ms {0};
@@ -63,7 +65,8 @@ static bool ReadGuardNow() {
 				pressure.store(next, std::memory_order_relaxed);
 				static std::atomic<uint32_t> reports {0};
 				if (reports.fetch_add(1, std::memory_order_relaxed) < 8) {
-					std::printf("Memory: %llu MiB of RAM free: guest read protection by %s (KYTY_READ_GUARD=auto)\n",
+					std::printf("Memory: %llu MiB of RAM free: guest read protection by %s "
+					            "(KYTY_READ_GUARD=auto)\n",
 					            static_cast<unsigned long long>(status.ullAvailPhys >> 20u),
 					            next ? "guard pages" : "no access again");
 				}
@@ -149,7 +152,8 @@ public:
 				continue;
 			}
 			const auto begin = Now();
-			for (uint32_t spins = 0; window.closed_ns.load(std::memory_order_acquire) == 0; spins++) {
+			for (uint32_t spins = 0; window.closed_ns.load(std::memory_order_acquire) == 0;
+			     spins++) {
 				if (Now() - begin > Second * 10) {
 					return 0; // never closed: report the fault
 				}
@@ -171,7 +175,8 @@ private:
 	static Window* Open(uint64_t start, uint64_t end) noexcept {
 		auto& window = s_windows[s_next.fetch_add(1, std::memory_order_relaxed) % s_windows.size()];
 		window.closed_ns.store(0, std::memory_order_relaxed);
-		window.id.store(s_opened.fetch_add(1, std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+		window.id.store(s_opened.fetch_add(1, std::memory_order_relaxed) + 1,
+		                std::memory_order_relaxed);
 		window.start.store(start, std::memory_order_relaxed);
 		window.end.store(end, std::memory_order_seq_cst);
 		return &window;
@@ -427,7 +432,7 @@ public:
 		const auto      end     = backing_offset + size;
 		while (backing_offset < end) {
 			MEMORY_BASIC_INFORMATION info {};
-			auto* current = m_backing_base + backing_offset;
+			auto*                    current = m_backing_base + backing_offset;
 			if (VirtualQuery(current, &info, sizeof(info)) != sizeof(info)) {
 				break;
 			}
@@ -832,7 +837,8 @@ public:
 			return;
 		}
 
-		// KYTY_TRANSIENT_UNMAP_RETRY: the parts that stay mapped vanish until they are mapped again.
+		// KYTY_TRANSIENT_UNMAP_RETRY: the parts that stay mapped vanish until they are mapped
+		// again.
 		std::optional<TransientUnmapWindows::Scope> transient;
 		if (TransientUnmapRetryEnabled()) {
 			transient.emplace(old.vaddr, old.vaddr + old.size);
@@ -1620,8 +1626,9 @@ public:
 		// FindGuestFreeRange falls back for such a hint.
 		auto addr = FindFreeAlignedUnlocked(HOST_SYSTEM_MANAGED_MIN, HOST_SYSTEM_MANAGED_MAX + 1u,
 		                                    size, alignment);
-		return addr != 0 ? addr
-		                 : FindFreeAlignedUnlocked(HOST_USER_MIN, HOST_USER_ALLOC_END, size, alignment);
+		return addr != 0
+		           ? addr
+		           : FindFreeAlignedUnlocked(HOST_USER_MIN, HOST_USER_ALLOC_END, size, alignment);
 	}
 
 	uint64_t FindFreeAligned(uint64_t search_start, uint64_t search_end, uint64_t size,
@@ -1880,9 +1887,9 @@ private:
 	}
 
 public:
-	// KYTY_DRAW_PREP_PRIVATE_READS: the bytes of a range wholly inside private (not backed) mappings
-	// (the program image, runtime allocations), copied in place under the map lock, so no unmap can
-	// race the copy. False when any byte lies outside such a mapping.
+	// KYTY_DRAW_PREP_PRIVATE_READS: the bytes of a range wholly inside private (not backed)
+	// mappings (the program image, runtime allocations), copied in place under the map lock, so no
+	// unmap can race the copy. False when any byte lies outside such a mapping.
 	bool TryReadPrivateInPlace(uint64_t vaddr, void* data, uint64_t size) {
 		if (data == nullptr || size == 0 || UINT64_MAX - vaddr < size) {
 			return false;
@@ -1933,10 +1940,10 @@ private:
 			uint64_t    end        = 0;
 		};
 		thread_local LastShared last;
-		const bool remember   = LastSharedMappingEnabled();
-		const auto generation = m_mapped_generation.load(std::memory_order_relaxed);
-		if (remember && last.space == this && last.generation == generation && vaddr >= last.begin &&
-		    size <= last.end - vaddr) {
+		const bool              remember   = LastSharedMappingEnabled();
+		const auto              generation = m_mapped_generation.load(std::memory_order_relaxed);
+		if (remember && last.space == this && last.generation == generation &&
+		    vaddr >= last.begin && size <= last.end - vaddr) {
 			return false;
 		}
 		auto mapping = m_mapped.upper_bound(vaddr);
@@ -2476,7 +2483,7 @@ private:
 	std::map<uint64_t, MappedRegion>            m_mapped;
 	// Advances on every change of m_mapped (under the exclusive lock; read under either):
 	// KYTY_LAST_SHARED_MAPPING.
-	std::atomic<uint64_t>                       m_mapped_generation {1};
+	std::atomic<uint64_t>                      m_mapped_generation {1};
 	std::vector<std::pair<uint64_t, uint64_t>> m_owned;
 	// AddLiveStack's ranges (KYTY_TRACKER_SPARE), host-page aligned: start to end.
 	std::multimap<uint64_t, uint64_t>          m_live_stacks;

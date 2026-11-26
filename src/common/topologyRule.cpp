@@ -17,16 +17,18 @@ std::vector<Setting> Select(uint32_t cores, uint32_t smt_cores, uint32_t logical
 	}
 	(void)cores;
 	(void)smt_cores;
-	// Below 16 logical processors the game's high-band job workers (Astro Bot: Havok) spin on as many
-	// processors as the game gets. 4C/8T (6 general processors) and 6 cores without SMT: they held
-	// every processor while the normal-band threads they wait for stayed READY, 1.5-4 fps in stalls
-	// of 2.5 s; flat bands: 26.6 and 33.3 fps, the stall came back when the switch went off.
-	out.push_back({"KYTY_GUEST_PRIORITY_FLAT", "1", "game high band = normal band (spinning job workers)"});
+	// Below 16 logical processors the game's high-band job workers (Astro Bot: Havok) spin on as
+	// many processors as the game gets. 4C/8T (6 general processors) and 6 cores without SMT: they
+	// held every processor while the normal-band threads they wait for stayed READY, 1.5-4 fps in
+	// stalls of 2.5 s; flat bands: 26.6 and 33.3 fps, the stall came back when the switch went off.
+	out.push_back(
+	    {"KYTY_GUEST_PRIORITY_FLAT", "1", "game high band = normal band (spinning job workers)"});
 	if (logical >= 10) {
-		// 6C/12T: the helpers' spin (2.3 lp) is what the READY game threads lack; the spin gate frees
-		// it without slowing the commit thread (Sky Garden +3.4 fps). Not below 10: at 6 logical
-		// processors the core-budget profile doubled the commit thread's time.
-		out.push_back({"KYTY_SPIN_BUDGET", "1", "helpers spin only on processors nobody else wants"});
+		// 6C/12T: the helpers' spin (2.3 lp) is what the READY game threads lack; the spin gate
+		// frees it without slowing the commit thread (Sky Garden +3.4 fps). Not below 10: at 6
+		// logical processors the core-budget profile doubled the commit thread's time.
+		out.push_back(
+		    {"KYTY_SPIN_BUDGET", "1", "helpers spin only on processors nobody else wants"});
 	}
 	return out;
 }
@@ -65,7 +67,8 @@ void ApplyAtStartup() {
 	std::printf("Kyty small-CPU rule (KYTY_SMALL_CPU_RULE): %s: %s\n", budget.description.c_str(),
 	            Describe(settings).c_str());
 	for (const auto& setting: settings) {
-		std::printf("  %s=%s: %s\n", setting.key.c_str(), setting.value.c_str(), setting.why.c_str());
+		std::printf("  %s=%s: %s\n", setting.key.c_str(), setting.value.c_str(),
+		            setting.why.c_str());
 	}
 	std::fflush(stdout);
 }

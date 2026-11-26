@@ -336,7 +336,8 @@ uint32_t PossibleBits(Value value, std::unordered_map<const Inst*, uint32_t>& kn
 		case ValueOpcode::SelectU32: bits = arg(1) | arg(2); break;
 		case ValueOpcode::Phi: {
 			uint32_t merged = 0;
-			for (uint32_t index = 0; index < inst->NumArgs(); ++index) merged |= arg(index);
+			for (uint32_t index = 0; index < inst->NumArgs(); ++index)
+				merged |= arg(index);
 			if (inst->NumArgs() != 0u) bits = merged;
 			break;
 		}
@@ -353,7 +354,8 @@ uint32_t PossibleBits(Value value, std::unordered_map<const Inst*, uint32_t>& kn
 		case ValueOpcode::BitFieldUExtract: {
 			uint32_t offset = 0;
 			uint32_t count  = 0;
-			if (immediate(1, offset) && immediate(2, count) && offset < 32u && count <= 32u - offset) {
+			if (immediate(1, offset) && immediate(2, count) && offset < 32u &&
+			    count <= 32u - offset) {
 				const auto mask = count == 32u ? UINT32_MAX : (1u << count) - 1u;
 				bits            = (arg(0) >> offset) & mask;
 			}
@@ -362,7 +364,8 @@ uint32_t PossibleBits(Value value, std::unordered_map<const Inst*, uint32_t>& kn
 		case ValueOpcode::BitFieldInsert: {
 			uint32_t offset = 0;
 			uint32_t count  = 0;
-			if (immediate(2, offset) && immediate(3, count) && offset < 32u && count <= 32u - offset) {
+			if (immediate(2, offset) && immediate(3, count) && offset < 32u &&
+			    count <= 32u - offset) {
 				const auto field = (count == 32u ? UINT32_MAX : (1u << count) - 1u) << offset;
 				bits             = (arg(0) & ~field) | ((arg(1) << offset) & field);
 			}
@@ -378,7 +381,8 @@ uint32_t PossibleBits(Value value, std::unordered_map<const Inst*, uint32_t>& kn
 // emitter loads: its base pair handle, offset value and dword-aligned immediate.
 bool ScalarAddressRead(const Program& program, const Inst* read, const Inst*& handle, Value& offset,
                        int32_t& immediate) {
-	if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadAddressU32 || read->NumArgs() != 4u) {
+	if (read == nullptr || read->GetOpcode() != ValueOpcode::LoadAddressU32 ||
+	    read->NumArgs() != 4u) {
 		return false;
 	}
 	const auto index = read->Flags<MemoryFlags>().index;
@@ -388,9 +392,9 @@ bool ScalarAddressRead(const Program& program, const Inst* read, const Inst*& ha
 	const auto& memory = program.memory_info[index];
 	const auto  high   = read->Arg(2).Resolve();
 	const auto  active = read->Arg(3).Resolve();
-	if (memory.kind != ResourceKind::ScalarAddress || memory.address_is_full || memory.planning_only ||
-	    !high.IsImmediate() || high.GetType() != Type::U32 || high.U32() != 0u || !active.IsImmediate() ||
-	    active.GetType() != Type::U1 || !active.U1()) {
+	if (memory.kind != ResourceKind::ScalarAddress || memory.address_is_full ||
+	    memory.planning_only || !high.IsImmediate() || high.GetType() != Type::U32 ||
+	    high.U32() != 0u || !active.IsImmediate() || active.GetType() != Type::U1 || !active.U1()) {
 		return false;
 	}
 	handle = read->Arg(0).Resolve().TryInstruction();
@@ -404,8 +408,8 @@ bool ScalarAddressRead(const Program& program, const Inst* read, const Inst*& ha
 }
 
 bool SameAddressBase(const Inst& left, const Inst& right) {
-	return &left == &right ||
-	       (left.Arg(0).Resolve() == right.Arg(0).Resolve() && left.Arg(1).Resolve() == right.Arg(1).Resolve());
+	return &left == &right || (left.Arg(0).Resolve() == right.Arg(0).Resolve() &&
+	                           left.Arg(1).Resolve() == right.Arg(1).Resolve());
 }
 
 // Collects DmaReadReach for the program (see ShaderIR.h). Every opcode the SPIR-V emitter turns
@@ -414,7 +418,7 @@ bool SameAddressBase(const Inst& left, const Inst& right) {
 template <typename Visitor>
 void CollectDmaReads(const Program& program, Visitor&& visit, DmaReadReach& dma) {
 	constexpr size_t MaxAccesses = 256;
-	dma = {};
+	dma                          = {};
 	if (!program.info.uses_dma) {
 		return;
 	}
@@ -431,11 +435,11 @@ void CollectDmaReads(const Program& program, Visitor&& visit, DmaReadReach& dma)
 	}
 	std::unordered_map<const Inst*, uint32_t> known_bits;
 	std::vector<DmaReadAccess>                accesses;
-	const auto add = [&](DmaReadAccess access) {
+	const auto                                add = [&](DmaReadAccess access) {
 		// Accesses that differ only in their immediate share one entry over the immediates' hull.
 		for (auto& other: accesses) {
-			auto a = other;
-			auto b = access;
+			auto a      = other;
+			auto b      = access;
 			a.immediate = b.immediate = 0;
 			a.extent = b.extent = 0;
 			if (!(a == b)) {
@@ -497,12 +501,14 @@ void CollectDmaReads(const Program& program, Visitor&& visit, DmaReadReach& dma)
 					fail(DmaUnbounded::AddressHandle);
 					break;
 				}
-				// The mesh prologue's index fetch (Translate.cpp): GetAddressResource(draw dword 4 & ~3,
-				// draw dword 5). No guest code yields MeshDrawParameter.
+				// The mesh prologue's index fetch (Translate.cpp): GetAddressResource(draw dword 4
+				// & ~3, draw dword 5). No guest code yields MeshDrawParameter.
 				const auto mesh_dword = [](Value value, uint32_t dword) {
 					const auto* source = value.Resolve().TryInstruction();
-					return source != nullptr && source->GetOpcode() == ValueOpcode::MeshDrawParameter &&
-					       source->NumArgs() == 1u && source->Arg(0).IsImmediate() && source->Arg(0).U32() == dword;
+					return source != nullptr &&
+					       source->GetOpcode() == ValueOpcode::MeshDrawParameter &&
+					       source->NumArgs() == 1u && source->Arg(0).IsImmediate() &&
+					       source->Arg(0).U32() == dword;
 				};
 				const auto* low_and = handle->Arg(0).Resolve().TryInstruction();
 				if (mesh_dword(handle->Arg(1), 5u) && low_and != nullptr &&
@@ -519,7 +525,8 @@ void CollectDmaReads(const Program& program, Visitor&& visit, DmaReadReach& dma)
 				access.base_low  = visit(handle->Arg(0));
 				access.base_high = visit(handle->Arg(1));
 				access.offset    = visit(inst.Arg(1));
-				access.immediate = static_cast<int32_t>(access.scalar ? memory.offset & ~3u : memory.offset);
+				access.immediate =
+				    static_cast<int32_t>(access.scalar ? memory.offset & ~3u : memory.offset);
 				// Unaligned loads read the dword(s) holding their bytes: at most 8 bytes past the
 				// aligned address; 16 leaves room for every load shape.
 				access.extent = 16;
@@ -545,7 +552,8 @@ void CollectDmaReads(const Program& program, Visitor&& visit, DmaReadReach& dma)
 			}
 			DmaReadAccess access;
 			const bool    scalar = op == ValueOpcode::ReadConstBuffer;
-			access.kind = scalar ? DmaReadAccess::Kind::IndirectScalar : DmaReadAccess::Kind::IndirectVector;
+			access.kind =
+			    scalar ? DmaReadAccess::Kind::IndirectScalar : DmaReadAccess::Kind::IndirectVector;
 			for (uint32_t word = 0; word < 4u; ++word) {
 				access.words[word] = visit(handle->Arg(word));
 			}
@@ -561,9 +569,10 @@ void CollectDmaReads(const Program& program, Visitor&& visit, DmaReadReach& dma)
 					const Inst* other_handle = nullptr;
 					Value       other_offset;
 					int32_t     other_immediate = 0;
-					if (ScalarAddressRead(program, handle->Arg(word).Resolve().TryInstruction(), other_handle,
-					                      other_offset, other_immediate) &&
-					    SameAddressBase(*other_handle, *table_handle) && other_offset == table_offset &&
+					if (ScalarAddressRead(program, handle->Arg(word).Resolve().TryInstruction(),
+					                      other_handle, other_offset, other_immediate) &&
+					    SameAddressBase(*other_handle, *table_handle) &&
+					    other_offset == table_offset &&
 					    int64_t {other_immediate} == int64_t {table_immediate} + 4 * word) {
 						access.table_words |= static_cast<uint8_t>(1u << word);
 					}
@@ -684,8 +693,8 @@ void AnalyzeBufferWriteRanges(Program& program, ShaderStageInputInfo input_info)
 	// KYTY_BDA_REACH: the guest memory the device-address reads can reach (on the same tape).
 	CollectDmaReads(program, [&](Value value) { return builder.Visit(value); }, result.dma);
 	if (result.dma.bounded && builder.Overflowed()) {
-		result.dma          = {};
-		result.dma.reason   = static_cast<uint32_t>(DmaUnbounded::NodeOverflow);
+		result.dma        = {};
+		result.dma.reason = static_cast<uint32_t>(DmaUnbounded::NodeOverflow);
 	}
 	if (!result.dma.bounded &&
 	    (result.buffers.empty() ||
@@ -903,7 +912,7 @@ void NormalizeDmaSpans(std::vector<std::pair<uint64_t, uint64_t>>& spans, uint64
 
 bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaReachInputs& inputs,
                                    std::vector<std::pair<uint64_t, uint64_t>>& spans,
-                                   DmaReachFailure& why) const {
+                                   DmaReachFailure&                            why) const {
 	why = DmaReachFailure::None;
 	if (!program.dma.bounded || m_program != &program || m_values.size() != program.nodes.size()) {
 		why = DmaReachFailure::NotBounded;
@@ -942,7 +951,9 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 			}
 			if (inputs.mesh_index_end > inputs.mesh_index_begin &&
 			    !add_span(inputs.mesh_index_begin & ~uint64_t {3}, 0,
-			              static_cast<int64_t>(inputs.mesh_index_end - (inputs.mesh_index_begin & ~uint64_t {3})) + 4)) {
+			              static_cast<int64_t>(inputs.mesh_index_end -
+			                                   (inputs.mesh_index_begin & ~uint64_t {3})) +
+			                  4)) {
 				return fail(DmaReachFailure::Size);
 			}
 			continue;
@@ -953,9 +964,9 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 			if (!exact(access.base_low, low) || !exact(access.base_high, high)) {
 				return fail(DmaReachFailure::Base);
 			}
-			// GuestAddress(): base + zext(offset) + sext(immediate); a scalar read clears bits 1:0 of
-			// the base, the offset and the immediate (already cleared in `immediate`).
-			uint64_t base = low | (uint64_t {high} << 32u);
+			// GuestAddress(): base + zext(offset) + sext(immediate); a scalar read clears bits 1:0
+			// of the base, the offset and the immediate (already cleared in `immediate`).
+			uint64_t base   = low | (uint64_t {high} << 32u);
 			auto     offset = value_of(access.offset);
 			if (access.scalar) {
 				base &= ~uint64_t {3};
@@ -990,7 +1001,8 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 			const bool     swizzle = stride != 0u && (words[1] >> 31u) != 0u;
 			const uint64_t records = words[2];
 			if (!vector) {
-				// LoadIndirectScalarBuffer: (offset & ~3) + 4 <= size, address (base + offset) & ~3.
+				// LoadIndirectScalarBuffer: (offset & ~3) + 4 <= size, address (base + offset) &
+				// ~3.
 				const uint64_t size = stride == 0u ? records : stride * records;
 				return add_span(base & ~uint64_t {3}, 0, static_cast<int64_t>((base & 3u) + size))
 				           ? DmaReachFailure::None
@@ -1000,8 +1012,8 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 			if (format == 0u) {
 				return DmaReachFailure::None; // FORMAT 0 (unbound): every load reads 0
 			}
-			const bool     add_tid      = !word3_known || ((words[3] >> 23u) & 1u) != 0u;
-			const uint32_t mode         = word3_known ? (words[3] >> 28u) & 3u : 2u; // 2: records only
+			const bool     add_tid = !word3_known || ((words[3] >> 23u) & 1u) != 0u;
+			const uint32_t mode    = word3_known ? (words[3] >> 28u) & 3u : 2u; // 2: records only
 			if (swizzle && !word3_known) {
 				return DmaReachFailure::Swizzle;
 			}
@@ -1010,8 +1022,9 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 			// mode; out-of-range lanes read nothing. byte = index * stride + offset + soffset.
 			auto index = value_of(access.index);
 			if (add_tid) index.hi += 63u;
-			uint64_t index_hi   = index.hi;
-			uint64_t offset_hi  = value_of(access.offset).hi + static_cast<uint64_t>(access.immediate < 0 ? 0 : access.immediate);
+			uint64_t index_hi  = index.hi;
+			uint64_t offset_hi = value_of(access.offset).hi +
+			                     static_cast<uint64_t>(access.immediate < 0 ? 0 : access.immediate);
 			if (access.immediate < 0) offset_hi = U32Max; // a wrapping immediate: unknown
 			uint64_t soffset_hi = value_of(access.soffset).hi;
 			if (mode != 2u && records == 0u) {
@@ -1030,8 +1043,10 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 			uint64_t byte_hi = 0;
 			if (swizzle) {
 				const uint64_t indices = uint64_t {1} << (index_stride + 3u);
-				byte_hi = ((index_hi >> (index_stride + 3u)) * stride + (offset_hi & ~uint64_t {3})) * indices +
-				          std::min<uint64_t>(index_hi, indices - 1u) * 4u + 3u + soffset_hi;
+				byte_hi =
+				    ((index_hi >> (index_stride + 3u)) * stride + (offset_hi & ~uint64_t {3})) *
+				        indices +
+				    std::min<uint64_t>(index_hi, indices - 1u) * 4u + 3u + soffset_hi;
 			} else if (mode == 3u) {
 				// offset + soffset + bytes <= records.
 				byte_hi = (stride == 0u ? 0u : index_hi * stride) + records;
@@ -1057,25 +1072,27 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 		    inputs.read == nullptr) {
 			return fail(DmaReachFailure::Base);
 		}
-		const uint64_t table = (table_low | (uint64_t {table_high} << 32u)) & ~uint64_t {3};
-		const auto     range = value_of(access.table_offset);
-		const uint64_t lo    = range.lo & ~uint64_t {3};
-		const uint64_t hi    = range.hi;
-		const uint32_t bits  = access.table_bits;
-		uint32_t       entries = 0;
-		const auto visit_entry = [&](uint64_t offset) {
-			const int64_t  at      = static_cast<int64_t>(offset) + access.table_immediate;
-			const uint64_t address = at < 0 ? table - static_cast<uint64_t>(-at) : table + static_cast<uint64_t>(at);
+		const uint64_t table       = (table_low | (uint64_t {table_high} << 32u)) & ~uint64_t {3};
+		const auto     range       = value_of(access.table_offset);
+		const uint64_t lo          = range.lo & ~uint64_t {3};
+		const uint64_t hi          = range.hi;
+		const uint32_t bits        = access.table_bits;
+		uint32_t       entries     = 0;
+		const auto     visit_entry = [&](uint64_t offset) {
+			const int64_t  at = static_cast<int64_t>(offset) + access.table_immediate;
+			const uint64_t address =
+			    at < 0 ? table - static_cast<uint64_t>(-at) : table + static_cast<uint64_t>(at);
 			if (at < 0 && table < static_cast<uint64_t>(-at)) return DmaReachFailure::TableRead;
 			std::array<uint32_t, 4> words = fixed;
-			uint32_t first = 0;
-			uint32_t last  = 0;
+			uint32_t                first = 0;
+			uint32_t                last  = 0;
 			for (uint32_t word = 0; word < 4u; ++word) {
 				if ((access.table_words & (1u << word)) != 0u) {
 					last = word;
 				}
 			}
-			while ((access.table_words & (1u << first)) == 0u) ++first;
+			while ((access.table_words & (1u << first)) == 0u)
+				++first;
 			std::array<uint32_t, 4> read {};
 			if (!inputs.read(inputs.user, address + first * 4u,
 			                 std::span<uint32_t>(read.data(), last - first + 1u))) {
@@ -1090,7 +1107,8 @@ bool WriteRangeEvaluator::DmaSpans(const WriteRangeProgram& program, const DmaRe
 		if (std::popcount(bits) <= 16) {
 			for (uint32_t sub = bits;; sub = (sub - 1u) & bits) {
 				if (sub >= lo && sub <= hi) {
-					if (++entries > inputs.max_table_entries) return fail(DmaReachFailure::TableEntries);
+					if (++entries > inputs.max_table_entries)
+						return fail(DmaReachFailure::TableEntries);
 					const auto result = visit_entry(sub);
 					if (result != DmaReachFailure::None) return fail(result);
 				}
@@ -1133,14 +1151,16 @@ std::string WriteRangeEvaluator::DescribeDmaFailure(const WriteRangeProgram& pro
 		}
 		return fmt::format("{}[{:x}..{:x}]", what, value.lo, value.hi);
 	};
-	static constexpr const char* kinds[] = {"window", "indirect-scalar", "indirect-vector", "mesh-index"};
-	std::string text = fmt::format("access {}/{} {}{} base {}:{} offset {}", m_dma_failed, program.dma.accesses.size(),
-	                               kinds[static_cast<uint32_t>(access.kind) % 4u], access.scalar ? " scalar" : "",
-	                               node(access.base_low), node(access.base_high), node(access.offset));
+	static constexpr const char* kinds[] = {"window", "indirect-scalar", "indirect-vector",
+	                                        "mesh-index"};
+	std::string                  text    = fmt::format(
+	    "access {}/{} {}{} base {}:{} offset {}", m_dma_failed, program.dma.accesses.size(),
+	    kinds[static_cast<uint32_t>(access.kind) % 4u], access.scalar ? " scalar" : "",
+	    node(access.base_low), node(access.base_high), node(access.offset));
 	if (access.kind != DmaReadAccess::Kind::Window) {
-		text += fmt::format(" table_words {:x} table_offset {} words {} {} {} {}", access.table_words,
-		                    node(access.table_offset), node(access.words[0]), node(access.words[1]),
-		                    node(access.words[2]), node(access.words[3]));
+		text += fmt::format(" table_words {:x} table_offset {} words {} {} {} {}",
+		                    access.table_words, node(access.table_offset), node(access.words[0]),
+		                    node(access.words[1]), node(access.words[2]), node(access.words[3]));
 	}
 	return text;
 }

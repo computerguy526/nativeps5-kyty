@@ -32,8 +32,8 @@ uint64_t NowNs() {
 
 // KYTY_STAGE_PREP_PARALLEL (live, default on; =0 serial): the pixel stage of a draw is prepared on
 // the helper while the vertex stage is prepared on the calling thread. Live so that the stage walks
-// can be A/B'd in one launch (senaxx 816198d2b measured its own version as a loss): off, Get() returns
-// null and callers take the serial path; the helper, once started, stays parked.
+// can be A/B'd in one launch (senaxx 816198d2b measured its own version as a loss): off, Get()
+// returns null and callers take the serial path; the helper, once started, stays parked.
 Live::Switch g_stage_prep_parallel("KYTY_STAGE_PREP_PARALLEL", Live::ParseDefaultOn);
 
 bool ParallelEnabled() {

@@ -86,7 +86,9 @@ void Translator::EmitCallStateRecipe(const void* recipe_pointer, std::vector<IR:
 			case 1: value = ir.Emit(node.opcode, {args[0]}, flags); break;
 			case 2: value = ir.Emit(node.opcode, {args[0], args[1]}, flags); break;
 			case 3: value = ir.Emit(node.opcode, {args[0], args[1], args[2]}, flags); break;
-			case 4: value = ir.Emit(node.opcode, {args[0], args[1], args[2], args[3]}, flags); break;
+			case 4:
+				value = ir.Emit(node.opcode, {args[0], args[1], args[2], args[3]}, flags);
+				break;
 			case 5:
 				value = ir.Emit(node.opcode, {args[0], args[1], args[2], args[3], args[4]}, flags);
 				break;
@@ -128,12 +130,14 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 	};
 	const auto marker = [&](uint16_t code) {
 		split->marker_codes.push_back(code);
-		return IR::U32(ir.Emit(
-		    IR::ValueOpcode::CallStateParam,
-		    {IR::Value(CallSplit::MarkerBase + static_cast<uint32_t>(split->marker_codes.size() - 1u))}));
+		return IR::U32(
+		    ir.Emit(IR::ValueOpcode::CallStateParam,
+		            {IR::Value(CallSplit::MarkerBase +
+		                       static_cast<uint32_t>(split->marker_codes.size() - 1u))}));
 	};
 	const auto lane_dword = [&](const CallSplit::SiteLayout& layout, uint32_t slot, IR::U32 lane) {
-		return ir.IAdd(IR::U32(split->wave_dword), ir.IAdd(U32Imm(layout.VectorBase() + slot * 64u), lane));
+		return ir.IAdd(IR::U32(split->wave_dword),
+		               ir.IAdd(U32Imm(layout.VectorBase() + slot * 64u), lane));
 	};
 	switch (op) {
 		case Decoder::CallStateOp::Header: {
@@ -163,18 +167,19 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 				// A wave list of the site (the bin pass): workgroup x runs the wave it names.
 				const auto list =
 				    ir.ConstructU64(param(CallSplit::ParamListLo), param(CallSplit::ParamListHi));
-				wave = IR::U32(ir.Emit(
-				    IR::ValueOpcode::CallStateLoad,
-				    {CallStateAddress(list, CallStateBuiltin(ir, IR::StageInputKind::WorkgroupId, 0))}));
+				wave = IR::U32(
+				    ir.Emit(IR::ValueOpcode::CallStateLoad,
+				            {CallStateAddress(
+				                list, CallStateBuiltin(ir, IR::StageInputKind::WorkgroupId, 0))}));
 			}
 			split->wave       = wave;
 			split->wave_dword = ir.IMul(wave, param(CallSplit::ParamStride));
 			if (header.entry_site == 0) {
 				return;
 			}
-			const auto& layout = header.sites[header.entry_site - 1u];
-			const auto* recipe = recipe_of(header.entry_site);
-			const auto  lane   = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
+			const auto&            layout = header.sites[header.entry_site - 1u];
+			const auto*            recipe = recipe_of(header.entry_site);
+			const auto             lane   = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
 			std::vector<IR::Value> rebuilt;
 			if (!liveness && recipe != nullptr) {
 				EmitCallStateRecipe(recipe, rebuilt);
@@ -191,7 +196,8 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 				} else {
 					value = IR::U32(ir.Emit(
 					    IR::ValueOpcode::CallStateLoad,
-					    {CallStateAddress(split->state_base, ir.IAdd(IR::U32(split->wave_dword), U32Imm(i)))}));
+					    {CallStateAddress(split->state_base,
+					                      ir.IAdd(IR::U32(split->wave_dword), U32Imm(i)))}));
 				}
 				WriteCallStateCode(code, value);
 			}
@@ -236,7 +242,8 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 					continue;
 				}
 				ir.Emit(IR::ValueOpcode::CallStateStore,
-				        {CallStateAddress(split->state_base, ir.IAdd(IR::U32(split->wave_dword), U32Imm(i))),
+				        {CallStateAddress(split->state_base,
+				                          ir.IAdd(IR::U32(split->wave_dword), U32Imm(i))),
 				         ReadCallStateCode(layout.uniform[i])});
 			}
 			const auto lane = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
@@ -254,13 +261,14 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 			EXIT_IF(header.entry_site == 0);
 			const auto& layout = header.sites[header.entry_site - 1u];
 			EXIT_IF(split->loaded.size() != layout.vector.size());
-			// Payload word 1 = shaded only: a lane whose call named another callee ran the skip path
-			// here (its loop flags changed as if it had been called). Its registers stay as loaded, so
-			// the callee pass of its own target still finds it pending, and the callee passes of one
-			// site store disjoint lanes.
+			// Payload word 1 = shaded only: a lane whose call named another callee ran the skip
+			// path here (its loop flags changed as if it had been called). Its registers stay as
+			// loaded, so the callee pass of its own target still finds it pending, and the callee
+			// passes of one site store disjoint lanes.
 			const bool shaded_only = inst.word_count >= 2u && inst.raw[1] == 1u;
-			const auto shaded      = shaded_only ? ir.GetGotoVariable(IR::SplitShadedVariable) : IR::U1 {};
-			const auto lane        = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
+			const auto shaded =
+			    shaded_only ? ir.GetGotoVariable(IR::SplitShadedVariable) : IR::U1 {};
+			const auto lane = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
 			for (uint32_t j = 0; j < layout.vector.size(); j++) {
 				const auto loaded = IR::U32(split->loaded[j]);
 				auto       value  = ReadCallStateCode(layout.vector[j]);
@@ -268,7 +276,8 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 					value = ir.Select(shaded, value, loaded);
 				}
 				ir.Emit(IR::ValueOpcode::CallStateStoreChanged,
-				        {CallStateAddress(split->state_base, lane_dword(layout, j, lane)), value, loaded});
+				        {CallStateAddress(split->state_base, lane_dword(layout, j, lane)), value,
+				         loaded});
 			}
 			return;
 		}
@@ -281,8 +290,9 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 			for (uint16_t code = 0; code < IR::NumScalarRegs; code++) {
 				probe(code);
 			}
-			for (const uint16_t code: {CallSplit::CodeVccLo, CallSplit::CodeVccHi, CallSplit::CodeM0,
-			                           CallSplit::CodeExecLo, CallSplit::CodeExecHi}) {
+			for (const uint16_t code:
+			     {CallSplit::CodeVccLo, CallSplit::CodeVccHi, CallSplit::CodeM0,
+			      CallSplit::CodeExecLo, CallSplit::CodeExecHi}) {
 				probe(code);
 			}
 			return;
@@ -291,13 +301,14 @@ void Translator::S_KYTY_CALL_STATE(const Decoder::Instruction& inst) {
 	EXIT("unknown S_KYTY_CALL_STATE operation %u at pc 0x%08x", inst.offset, inst.pc);
 }
 
-// Call-split callee programs (CallSplitPlan.cpp BuildCode): SplitTargetCompare sets SCC to whether the
-// target pair s[reg:reg+1] is the callee the dispatch runs (push parameters ParamTargetLo/Hi);
+// Call-split callee programs (CallSplitPlan.cpp BuildCode): SplitTargetCompare sets SCC to whether
+// the target pair s[reg:reg+1] is the callee the dispatch runs (push parameters ParamTargetLo/Hi);
 // ShaderAddress writes the shader base plus an offset into a scalar pair (S_MOV_B32: SCC kept).
 void Translator::EmitCallSplitAddress(const Decoder::Instruction& inst) {
 	const auto op       = static_cast<Decoder::CallStateOp>(inst.offset);
 	const auto pair_reg = inst.word_count >= 2u ? inst.raw[1] : 0xffffffffu;
-	EXIT_IF(op == Decoder::CallStateOp::SplitTargetCompare ? inst.word_count != 2u : inst.word_count != 3u);
+	EXIT_IF(op == Decoder::CallStateOp::SplitTargetCompare ? inst.word_count != 2u
+	                                                       : inst.word_count != 3u);
 	Decoder::Operand lo_operand;
 	Decoder::Operand hi_operand;
 	if (pair_reg == 106u) {
@@ -315,11 +326,14 @@ void Translator::EmitCallSplitAddress(const Decoder::Instruction& inst) {
 		const auto param = [&](uint32_t index) {
 			return IR::U32(ir.Emit(IR::ValueOpcode::CallStateParam, {IR::Value(index)}));
 		};
-		const auto match = ir.LogicalAnd(ir.IEqual(ReadRawU32(lo_operand), param(CallSplit::ParamTargetLo)),
-		                                 ir.IEqual(ReadRawU32(hi_operand), param(CallSplit::ParamTargetHi)));
-		// The active lanes are the call's lanes (the waterfall narrowed EXEC to one record's lanes).
+		const auto match =
+		    ir.LogicalAnd(ir.IEqual(ReadRawU32(lo_operand), param(CallSplit::ParamTargetLo)),
+		                  ir.IEqual(ReadRawU32(hi_operand), param(CallSplit::ParamTargetHi)));
+		// The active lanes are the call's lanes (the waterfall narrowed EXEC to one record's
+		// lanes).
 		ir.SetGotoVariable(IR::SplitShadedVariable,
-		                   ir.LogicalOr(ir.GetGotoVariable(IR::SplitShadedVariable), ir.LogicalAnd(ir.GetExec(), match)));
+		                   ir.LogicalOr(ir.GetGotoVariable(IR::SplitShadedVariable),
+		                                ir.LogicalAnd(ir.GetExec(), match)));
 		ir.SetScc(match);
 		return;
 	}
@@ -332,19 +346,20 @@ void Translator::EmitCallSplitAddress(const Decoder::Instruction& inst) {
 }
 
 // KYTY_CALL_PARTITIONS (ShaderCalls.h): the partition markers of an expanded call. The target pair
-// is s[reg:reg+1]; push-data parameters 0/1 are the report set's address, 2/3 the dispatch's target.
+// is s[reg:reg+1]; push-data parameters 0/1 are the report set's address, 2/3 the dispatch's
+// target.
 void Translator::EmitCallPartition(const Decoder::Instruction& inst) {
 	EXIT_IF(inst.word_count != 2u);
 	const uint32_t pair_reg = inst.raw[1]; // the payload (DecodeSopp keeps it)
 	EXIT_IF(pair_reg + 1u >= IR::NumScalarRegs);
 	Decoder::Operand lo_operand;
-	lo_operand.kind = Decoder::OperandKind::Sgpr;
-	lo_operand.reg  = pair_reg;
+	lo_operand.kind             = Decoder::OperandKind::Sgpr;
+	lo_operand.reg              = pair_reg;
 	Decoder::Operand hi_operand = lo_operand;
-	hi_operand.reg             = pair_reg + 1u;
-	const auto lo    = ReadRawU32(lo_operand);
-	const auto hi    = ReadRawU32(hi_operand);
-	const auto param = [&](uint32_t index) {
+	hi_operand.reg              = pair_reg + 1u;
+	const auto lo               = ReadRawU32(lo_operand);
+	const auto hi               = ReadRawU32(hi_operand);
+	const auto param            = [&](uint32_t index) {
 		return IR::U32(ir.Emit(IR::ValueOpcode::CallStateParam, {IR::Value(index)}));
 	};
 	if (static_cast<Decoder::CallStateOp>(inst.offset) == Decoder::CallStateOp::PartitionCompare) {
@@ -354,9 +369,9 @@ void Translator::EmitCallPartition(const Decoder::Instruction& inst) {
 	}
 	// One report per wave: the first active lane inserts the target's low word (with bit 0 set,
 	// so it is never zero) into the dispatch's report set.
-	const auto exec   = ir.GetExec();
-	const auto lane   = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
-	const auto first  = IR::U32(ir.Emit(IR::ValueOpcode::ReadFirstLane, {lane, exec}));
+	const auto exec      = ir.GetExec();
+	const auto lane      = IR::U32(ir.Emit(IR::ValueOpcode::LaneId));
+	const auto first     = IR::U32(ir.Emit(IR::ValueOpcode::ReadFirstLane, {lane, exec}));
 	const auto report_lo = param(IR::CallPartitionParamReportLo);
 	const auto report_hi = param(IR::CallPartitionParamReportHi);
 	// No report set (a dispatch that did not pass one): the lanes still leave, nothing is written.
@@ -364,7 +379,8 @@ void Translator::EmitCallPartition(const Decoder::Instruction& inst) {
 	    ir.LogicalNot(ir.IEqual(ir.BitwiseOr(report_lo, report_hi), IR::U32(IR::Value(0u))));
 	const auto leader = ir.LogicalAnd(ir.LogicalAnd(exec, ir.IEqual(lane, first)), has_report);
 	const auto base   = ir.ConstructU64(report_lo, report_hi);
-	ir.Emit(IR::ValueOpcode::CallStateReport, {base, IR::U32(ir.BitwiseOr(lo, IR::U32(IR::Value(1u)))), leader});
+	ir.Emit(IR::ValueOpcode::CallStateReport,
+	        {base, IR::U32(ir.BitwiseOr(lo, IR::U32(IR::Value(1u)))), leader});
 	if (static_cast<Decoder::CallStateOp>(inst.offset) == Decoder::CallStateOp::MissReport) {
 		return; // KYTY_CALL_LEARN: the lanes stay and take the skip path
 	}

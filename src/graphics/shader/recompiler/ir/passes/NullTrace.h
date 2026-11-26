@@ -11,9 +11,9 @@
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
 enum class NullTraceKind : uint32_t {
-	NullBuffer = 0,  // buffer V# specialized as null (unmapped base)
-	NullImage,       // image T# that is not a descriptor, bound as null
-	SkippedProgram,  // a draw or dispatch skipped because its program is skipped
+	NullBuffer = 0,   // buffer V# specialized as null (unmapped base)
+	NullImage,        // image T# that is not a descriptor, bound as null
+	SkippedProgram,   // a draw or dispatch skipped because its program is skipped
 	SkippedResources, // a draw or dispatch skipped because its resources did not materialize
 	Count
 };

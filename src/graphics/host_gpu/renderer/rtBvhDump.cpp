@@ -1,8 +1,8 @@
 #include "graphics/host_gpu/renderer/rtBvhDump.h"
-#include "common/staticOnce.h"
 
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
+#include "common/staticOnce.h"
 #include "graphics/host_gpu/renderer/drawPrep/readSet.h"
 #include "graphics/host_gpu/rt/bvhDump.h"
 #include "kernel/memory.h"
@@ -12,8 +12,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fmt/format.h>
 #include <filesystem>
+#include <fmt/format.h>
 #include <fstream>
 #include <string>
 #include <system_error>
@@ -46,7 +46,8 @@ const std::vector<uint64_t>& DumpOrdinals() {
 		list.erase(std::unique(list.begin(), list.end()), list.end());
 		return list;
 	};
-	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(ordinals_init())>> ordinals_once;
+	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(ordinals_init())>>
+	                             ordinals_once;
 	const std::vector<uint64_t>& ordinals = ordinals_once.Get(ordinals_init);
 	return ordinals;
 }
@@ -93,19 +94,20 @@ bool ProbeNow(const RtBvhDispatch& d, uint64_t ordinal, const char* spec) {
 	// SRT+544, 0x208e... at SRT+512); the first whose TLAS header is readable is reported.
 	Rt::GuestSnapshot probe(FetchCoherent, 64ull << 20u);
 	probe.AllowWindow(0, ~0ull);
-	uint64_t   srt = 0, buffer = 0, tlas = 0;
-	uint32_t   header[32] = {};
-	uint8_t    root[Rt::Psr::Box32Bytes] = {};
-	bool       header_ok = false, root_ok = false;
+	uint64_t    srt = 0, buffer = 0, tlas = 0;
+	uint32_t    header[32]                = {};
+	uint8_t     root[Rt::Psr::Box32Bytes] = {};
+	bool        header_ok = false, root_ok = false;
 	std::string paths;
 	for (const char* at = spec; at != nullptr && *at != '\0';) {
-		unsigned sgpr = 0, vsharp = 0, qword = 0;
+		unsigned    sgpr = 0, vsharp = 0, qword = 0;
 		const char* next = std::strchr(at, '+');
-		if (std::sscanf(at, "%u:%u:%u", &sgpr, &vsharp, &qword) == 3 && sgpr + 1u < d.user_sgpr.size()) {
+		if (std::sscanf(at, "%u:%u:%u", &sgpr, &vsharp, &qword) == 3 &&
+		    sgpr + 1u < d.user_sgpr.size()) {
 			srt = d.user_sgpr[sgpr] | static_cast<uint64_t>(d.user_sgpr[sgpr + 1u]) << 32u;
 			uint32_t v[4] = {};
-			buffer = 0;
-			tlas   = 0;
+			buffer        = 0;
+			tlas          = 0;
 			if (probe.Read(srt + vsharp, v, sizeof(v))) {
 				buffer = v[0] | (static_cast<uint64_t>(v[1] & 0xffffu) << 32u);
 				if (probe.Read(buffer + qword, &tlas, sizeof(tlas))) {
@@ -136,8 +138,9 @@ bool ProbeNow(const RtBvhDispatch& d, uint64_t ordinal, const char* spec) {
 		for (uint32_t c = 0; c < 4; c++) {
 			const auto& b = box.bounds[c];
 			char        line[200];
-			std::snprintf(line, sizeof(line), "\n  child %u: 0x%08x [%g %g %g]..[%g %g %g]", c, box.children[c],
-			              b.min[0], b.min[1], b.min[2], b.max[0], b.max[1], b.max[2]);
+			std::snprintf(line, sizeof(line), "\n  child %u: 0x%08x [%g %g %g]..[%g %g %g]", c,
+			              box.children[c], b.min[0], b.min[1], b.min[2], b.max[0], b.max[1],
+			              b.max[2]);
 			node += line;
 		}
 	}
@@ -145,8 +148,10 @@ bool ProbeNow(const RtBvhDispatch& d, uint64_t ordinal, const char* spec) {
 	// anything, the first few non-empty offsets, and whether any of it was GPU-written.
 	std::string scan;
 	if (header_ok) {
-		const uint64_t instances = static_cast<uint64_t>(header[10]) | static_cast<uint64_t>(header[11]) << 32u;
-		const uint64_t limit     = std::min<uint64_t>(instances != 0 ? instances : (4u << 20u), 4u << 20u);
+		const uint64_t instances =
+		    static_cast<uint64_t>(header[10]) | static_cast<uint64_t>(header[11]) << 32u;
+		const uint64_t limit =
+		    std::min<uint64_t>(instances != 0 ? instances : (4u << 20u), 4u << 20u);
 		std::vector<uint32_t> block(16);
 		uint64_t              filled = 0, total = 0;
 		std::string           first;
@@ -156,10 +161,12 @@ bool ProbeNow(const RtBvhDispatch& d, uint64_t ordinal, const char* spec) {
 			bool empty = true;
 			for (uint32_t w = 0; w < 16u; w++) {
 				// An empty box (pointers 0xffffffff, bounds +inf/-inf) or zeros counts as nothing.
-				empty &= block[w] == 0u || block[w] == 0xffffffffu || block[w] == 0x7f800000u || block[w] == 0xff800000u;
+				empty &= block[w] == 0u || block[w] == 0xffffffffu || block[w] == 0x7f800000u ||
+				         block[w] == 0xff800000u;
 			}
 			if (!empty) {
-				if (filled < 4u) first += fmt::format(" +0x{:x}:{:08x}/{:08x}", at, block[0], block[4]);
+				if (filled < 4u)
+					first += fmt::format(" +0x{:x}:{:08x}/{:08x}", at, block[0], block[4]);
 				filled++;
 			}
 		}
@@ -168,10 +175,12 @@ bool ProbeNow(const RtBvhDispatch& d, uint64_t ordinal, const char* spec) {
 			uint32_t rec[32] = {};
 			if (!probe.Read(tlas + instances + i * 128u, rec, sizeof(rec))) break;
 			bool any = false;
-			for (const auto w: rec) any |= w != 0u;
+			for (const auto w: rec)
+				any |= w != 0u;
 			inst_nonzero += any ? 1u : 0u;
 		}
-		scan = fmt::format("\n  node region: {} of {} 64-byte blocks hold data{}; first 64 instance records: {} non-zero",
+		scan = fmt::format("\n  node region: {} of {} 64-byte blocks hold data{}; first 64 "
+		                   "instance records: {} non-zero",
 		                   filled, total, first, inst_nonzero);
 	}
 	uint32_t gpu_pages = 0;
@@ -181,9 +190,9 @@ bool ProbeNow(const RtBvhDispatch& d, uint64_t ordinal, const char* spec) {
 	LOGF("RtBvhDump: probe at dispatch %" PRIu64 " frame %d shader 0x%016" PRIx64 ": SRT 0x%" PRIx64
 	     ", V# base 0x%" PRIx64 ", TLAS header 0x%" PRIx64 " (%s), %zu pages read, %u GPU-written;"
 	     " header dwords:%s\n  root box32 at +256 (%s):%s%s\n",
-	     ordinal, d.frame, d.shader_hash, srt, buffer, tlas, header_ok ? "readable" : "NOT readable",
-	     probe.Pages().size(), gpu_pages, text.c_str(), root_ok ? "readable" : "NOT readable", node.c_str(),
-	     scan.c_str());
+	     ordinal, d.frame, d.shader_hash, srt, buffer, tlas,
+	     header_ok ? "readable" : "NOT readable", probe.Pages().size(), gpu_pages, text.c_str(),
+	     root_ok ? "readable" : "NOT readable", node.c_str(), scan.c_str());
 	return true;
 }
 
@@ -352,11 +361,12 @@ std::vector<WatchReadShader>& WatchReadList() {
 	return list;
 }
 
-void WatchReadSave(const std::filesystem::path& folder, uint32_t ordinal, uint64_t at_hash, int frame,
-                   uint64_t owner, const WatchReadRegion& region, uint64_t base, const char* when) {
+void WatchReadSave(const std::filesystem::path& folder, uint32_t ordinal, uint64_t at_hash,
+                   int frame, uint64_t owner, const WatchReadRegion& region, uint64_t base,
+                   const char* when) {
 	std::vector<uint8_t> data(region.bytes);
-	const bool ok = LibKernel::Memory::SynchronizeGpuBackingForRead(base, data.size()) &&
-	                LibKernel::Memory::TryReadGpuCleanBacking(base, data.data(), data.size());
+	const bool  ok = LibKernel::Memory::SynchronizeGpuBackingForRead(base, data.size()) &&
+	                 LibKernel::Memory::TryReadGpuCleanBacking(base, data.data(), data.size());
 	std::string head;
 	for (size_t i = 0; ok && i + 4 <= data.size() && i < 32; i += 4) {
 		uint32_t v = 0;
@@ -365,13 +375,14 @@ void WatchReadSave(const std::filesystem::path& folder, uint32_t ordinal, uint64
 	}
 	LOGF("KYTY_WATCH_READ: #%u frame %d at CS 0x%016" PRIx64 ": %s region of CS 0x%016" PRIx64
 	     " s%u 0x%" PRIx64 "+0x%x %s%s\n",
-	     ordinal, frame, at_hash, when, owner, region.sgpr, base, region.bytes, ok ? "" : "UNREADABLE",
-	     head.c_str());
+	     ordinal, frame, at_hash, when, owner, region.sgpr, base, region.bytes,
+	     ok ? "" : "UNREADABLE", head.c_str());
 	if (!ok) return;
-	const auto name = fmt::format("{:03}_f{}_at{:016x}_{}_{:016x}_s{}.bin", ordinal, frame, at_hash, when,
-	                              owner, region.sgpr);
+	const auto name = fmt::format("{:03}_f{}_at{:016x}_{}_{:016x}_s{}.bin", ordinal, frame, at_hash,
+	                              when, owner, region.sgpr);
 	std::ofstream(folder / name, std::ios::binary)
-	    .write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+	    .write(reinterpret_cast<const char*>(data.data()),
+	           static_cast<std::streamsize>(data.size()));
 }
 
 } // namespace
@@ -382,23 +393,25 @@ bool WatchReadEnabled() noexcept {
 
 void WatchReadOnDispatch(uint64_t shader_hash, std::span<const uint32_t> user_sgpr, int frame) {
 	auto& list  = WatchReadList();
-	auto  match = std::find_if(list.begin(), list.end(), [&](const auto& s) { return s.hash == shader_hash; });
+	auto  match = std::find_if(list.begin(), list.end(),
+	                           [&](const auto& s) { return s.hash == shader_hash; });
 	if (match == list.end()) return;
 	static const int from_frame = [] {
 		const char* value = std::getenv("KYTY_WATCH_READ_FROM_FRAME");
 		return value != nullptr ? std::atoi(value) : 0;
 	}();
 	if (frame < from_frame) return;
-	static uint32_t ordinal = 0;
-	static const uint32_t max = [] {
+	static uint32_t       ordinal = 0;
+	static const uint32_t max     = [] {
 		const char* value = std::getenv("KYTY_WATCH_READ_MAX");
 		return value != nullptr ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : 48u;
 	}();
 	if (ordinal >= max) return;
-	const uint32_t n = ordinal++;
+	const uint32_t                     n      = ordinal++;
 	static const std::filesystem::path folder = [] {
-		const char* dir = std::getenv("KYTY_WATCH_READ_DIR");
-		auto path = dir != nullptr && *dir != '\0' ? std::filesystem::path(dir) : Config::GetShaderLogFolder() / "watch";
+		const char* dir  = std::getenv("KYTY_WATCH_READ_DIR");
+		auto        path = dir != nullptr && *dir != '\0' ? std::filesystem::path(dir)
+		                                                  : Config::GetShaderLogFolder() / "watch";
 		std::error_code error;
 		std::filesystem::create_directories(path, error);
 		return path;
@@ -406,21 +419,26 @@ void WatchReadOnDispatch(uint64_t shader_hash, std::span<const uint32_t> user_sg
 	LOGF("KYTY_WATCH_READ: #%u frame %d CS 0x%016" PRIx64 " user data:%s\n", n, frame, shader_hash,
 	     [&] {
 		     std::string text;
-		     for (const auto v: user_sgpr) text += " " + Hex(v);
+		     for (const auto v: user_sgpr)
+			     text += " " + Hex(v);
 		     return text;
 	     }()
 	         .c_str());
 	// What earlier listed dispatches left (their last bases), then this dispatch's inputs.
 	for (const auto& shader: list) {
 		for (const auto& region: shader.regions) {
-			if (region.last != 0) WatchReadSave(folder, n, shader_hash, frame, shader.hash, region, region.last, "seen");
+			if (region.last != 0)
+				WatchReadSave(folder, n, shader_hash, frame, shader.hash, region, region.last,
+				              "seen");
 		}
 	}
 	for (auto& region: match->regions) {
 		if (region.sgpr + 1u >= user_sgpr.size()) continue;
-		const uint64_t base = user_sgpr[region.sgpr] | static_cast<uint64_t>(user_sgpr[region.sgpr + 1u] & 0xffffu) << 32u;
+		const uint64_t base = user_sgpr[region.sgpr] |
+		                      static_cast<uint64_t>(user_sgpr[region.sgpr + 1u] & 0xffffu) << 32u;
 		region.last         = base;
-		if (base != 0) WatchReadSave(folder, n, shader_hash, frame, shader_hash, region, base, "before");
+		if (base != 0)
+			WatchReadSave(folder, n, shader_hash, frame, shader_hash, region, base, "before");
 	}
 }
 

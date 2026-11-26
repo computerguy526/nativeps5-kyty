@@ -19,7 +19,7 @@ struct BufferKey {
 	uint32_t    width   = 0;
 	uint32_t    height  = 0;
 	uint32_t    depth   = 0;
-	bool operator<(const BufferKey& o) const {
+	bool        operator<(const BufferKey& o) const {
 		return std::tie(op, reason, element, family, width, height, depth) <
 		       std::tie(o.op, o.reason, o.element, o.family, o.width, o.height, o.depth);
 	}
@@ -46,7 +46,7 @@ public:
 		}
 		return sum;
 	}
-	[[nodiscard]] size_t Size() const { return m_map.size(); }
+	[[nodiscard]] size_t                                  Size() const { return m_map.size(); }
 	[[nodiscard]] const std::map<BufferKey, BufferValue>& Map() const { return m_map; }
 	void                                                  Clear() { m_map.clear(); }
 	// One line per key; the first info's geometry stands for the pass.

@@ -46,7 +46,8 @@ void RemoveIdentities(const BlockList& blocks) {
 	}
 }
 
-static bool RemoveDeadPhiWebs(const BlockList& blocks, const std::unordered_set<const Inst*>* keep) {
+static bool RemoveDeadPhiWebs(const BlockList&                       blocks,
+                              const std::unordered_set<const Inst*>* keep) {
 	std::vector<Inst*> dead;
 	std::vector<Inst*> web;
 	std::vector<Inst*> stack;
@@ -104,7 +105,8 @@ static bool RemoveDeadPhiWebs(const BlockList& blocks, const std::unordered_set<
 	return true;
 }
 
-static void EliminateDeadCodeImpl(const BlockList& blocks, const std::unordered_set<const Inst*>* keep) {
+static void EliminateDeadCodeImpl(const BlockList&                       blocks,
+                                  const std::unordered_set<const Inst*>* keep) {
 	do {
 		bool changed;
 		do {

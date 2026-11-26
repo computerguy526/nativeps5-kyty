@@ -526,7 +526,7 @@ void StartMonitor(std::string_view trace_directory) {
 	// (default: no flip and no host submission).
 	const auto* reports_value = std::getenv("KYTY_HANG_WATCHDOG_REPORTS");
 	const auto  max_reports   = static_cast<uint32_t>(
-        reports_value ? std::clamp<uint64_t>(std::strtoull(reports_value, nullptr, 10), 1, 16) : 1);
+	    reports_value ? std::clamp<uint64_t>(std::strtoull(reports_value, nullptr, 10), 1, 16) : 1);
 	const auto* trigger    = std::getenv("KYTY_HANG_WATCHDOG_TRIGGER");
 	const bool  flips_only = trigger != nullptr && std::strcmp(trigger, "flips") == 0;
 	// KYTY_HANG_WATCHDOG_TRIGGER=periodic: a report every KYTY_HANG_WATCHDOG_MS whether or not the
@@ -541,8 +541,8 @@ void StartMonitor(std::string_view trace_directory) {
 				d.rearm      = max_reports > 1;
 				return d;
 			};
-			StallDetector    detector = fresh();
-			uint32_t         reports  = 0;
+			StallDetector    detector         = fresh();
+			uint32_t         reports          = 0;
 			uint64_t         last_periodic_ms = NowMs();
 			std::unique_lock lock(g_sleep_mutex);
 			for (;;) {
@@ -552,10 +552,9 @@ void StartMonitor(std::string_view trace_directory) {
 				g_time_ms.store(now, std::memory_order_relaxed);
 				if (!Enabled() && !terminal)
 					detector = fresh();
-				else if (terminal ||
-				         (periodic ? now - last_periodic_ms >= timeout
-				                   : detector.Poll(now, g_flips.load(), g_submissions.load(),
-				                                   timeout))) {
+				else if (terminal || (periodic ? now - last_periodic_ms >= timeout
+				                               : detector.Poll(now, g_flips.load(),
+				                                               g_submissions.load(), timeout))) {
 					last_periodic_ms = now;
 					g_report_reason.store(terminal ? 2 : periodic ? 3 : 1);
 					reports++;
@@ -568,10 +567,12 @@ void StartMonitor(std::string_view trace_directory) {
 					}
 					// One line per stall report, after every thread was resumed (not during a fatal
 					// shutdown, which may be tearing the log down).
-					if (!terminal) Log::WriteToConsoleAndLog(fmt::format(
-					    "Hang watchdog: no {} for {} ms (flips={}); report {}/{} written to {}\n",
-					    flips_only ? "flip" : "flip or submission", timeout, g_flips.load(),
-					    reports, max_reports, path));
+					if (!terminal)
+						Log::WriteToConsoleAndLog(
+						    fmt::format("Hang watchdog: no {} for {} ms (flips={}); report {}/{} "
+						                "written to {}\n",
+						                flips_only ? "flip" : "flip or submission", timeout,
+						                g_flips.load(), reports, max_reports, path));
 					if (terminal || reports >= max_reports) return;
 					lock.lock();
 				}

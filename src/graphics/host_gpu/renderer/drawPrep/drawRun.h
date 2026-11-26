@@ -215,7 +215,8 @@ extern Live::Switch g_texdelta;      // KYTY_DRAW_RUN_TEXDELTA (texDelta.h)
 // structure key differs from the record's only in the vertex program continues the run with a
 // pipeline swap. At the Sky Garden ~150k draws per 10 s differ from the record in the vertex
 // program alone (same registers, pixel program, T# and S# words).
-//  - the swap key (the structure key with the vertex program left out, DrawRun::StructureKey) equals
+//  - the swap key (the structure key with the vertex program left out, DrawRun::StructureKey)
+//  equals
 //    the record's; the stage flags, pixel program and slice offset are the record's;
 //  - the two vertex programs declare the same images and samplers (every field of their
 //    descriptions but the user-data source and first use), so the kept vertex-stage texture and
@@ -229,9 +230,9 @@ extern Live::Switch g_texdelta;      // KYTY_DRAW_RUN_TEXDELTA (texDelta.h)
 // continuation, and like any draw looks up its pipeline (the binding plan's), pushes all its
 // descriptors (no partial push) and records its dynamic state again. Its record eligibility is
 // computed in full (not taken from the record, KYTY_DRAW_RUN_CONT_ELIGIBLE), and the record takes
-// the new vertex program and pipeline layout. Verify mode (KYTY_DRAW_RUN=verify) compares a would-be
-// swap's normal path with the record as for any continuation.
-// KYTY_DRAW_RUN_TEXDELTA (live, default 0; 1 on, 2 verify): texDelta.h.
+// the new vertex program and pipeline layout. Verify mode (KYTY_DRAW_RUN=verify) compares a
+// would-be swap's normal path with the record as for any continuation. KYTY_DRAW_RUN_TEXDELTA
+// (live, default 0; 1 on, 2 verify): texDelta.h.
 [[nodiscard]] inline int64_t TexDeltaMode() {
 	return Detail::g_texdelta.Get();
 }
@@ -272,8 +273,8 @@ void NoteForeignActivity(const char* what = "other") noexcept;
 // The structure key of a prepared draw (any thread; the preparing thread in parallel mode). 0 when
 // the preparation failed.
 // targets_key (optional): the hash of the registers alone (KYTY_DRAW_RUN_TARGETS); swap_key
-// (optional): the key without the vertex program (KYTY_DRAW_RUN_PIPESWAP); texture_free_key (optional):
-// the key without the T#/S# words (KYTY_DRAW_RUN_TEXDELTA, texDelta.h); 0 with the key.
+// (optional): the key without the vertex program (KYTY_DRAW_RUN_PIPESWAP); texture_free_key
+// (optional): the key without the T#/S# words (KYTY_DRAW_RUN_TEXDELTA, texDelta.h); 0 with the key.
 [[nodiscard]] uint64_t StructureKey(const HW::Context& context, const HW::UserConfig& user_config,
                                     const DrawPrep::PreparedDraw& prepared,
                                     uint64_t* targets_key = nullptr, uint64_t* swap_key = nullptr,

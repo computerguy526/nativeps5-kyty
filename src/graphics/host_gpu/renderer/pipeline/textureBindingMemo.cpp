@@ -36,7 +36,7 @@ struct TextureBindingMemo::Entry {
 	std::array<uint64_t, MaxExtraPages> extra_versions {};
 	// The overlap loop's candidates whose "keep" decision depended on time (TextureCache::
 	// OverlapLookup::timed): each must still exist and not be OverlapSafeToDelete.
-	uint8_t                                                  timed_count = 0;
+	uint8_t                                                    timed_count = 0;
 	std::array<ImageId, TextureCache::OverlapLookup::MaxTimed> timed {};
 	// KYTY_IMG_DEPTHALIAS: a depth-class answer. The pages [span_first, span_first + span_count)
 	// (outer region, inner regions, the image's first page) keep their structure versions exactly
@@ -110,8 +110,8 @@ int RevalidateVerifyMode() {
 
 bool TextureBindingMemo::HasPartner(const TextureCache& cache, uint64_t page, ImageId found,
                                     const Image& image) {
-	// SyncAliasFromOwner's grid rule (SameAliasGrid: equal extents, or with KYTY_ALIAS_BLOCK_VIEWS a
-	// block-compressed / uncompressed pair over the same block grid). The extent-only test this
+	// SyncAliasFromOwner's grid rule (SameAliasGrid: equal extents, or with KYTY_ALIAS_BLOCK_VIEWS
+	// a block-compressed / uncompressed pair over the same block grid). The extent-only test this
 	// replaced missed block-view partners (titles with KYTY_ALIAS_BLOCK_VIEWS=1); without that
 	// switch both are the same test.
 	return cache.HasAliasPartner(page, found, image);
@@ -150,7 +150,8 @@ uint64_t TextureBindingMemo::SpanSum(const TextureCache& cache, uint64_t first, 
 bool TextureBindingMemo::DepthAliasClass(const TextureCache::OverlapLookup& lookup, ImageId found) {
 	// The loop answered through ResolveDepthOverlap without recreating (depth_class), or recreated
 	// (impure for that reason): KYTY_IMG_DEPTHALIAS decides (and counts) either.
-	return ImgSide::DepthAliasMode() != ImgSide::Mode::Off && lookup.overlap && lookup.result == found &&
+	return ImgSide::DepthAliasMode() != ImgSide::Mode::Off && lookup.overlap &&
+	       lookup.result == found &&
 	       (lookup.depth_class || lookup.impure_why == TextureCache::OverlapLookup::WhyDepth);
 }
 
@@ -206,7 +207,7 @@ TextureBindingMemo::Entry* TextureBindingMemo::SlotEntry(uint32_t slot) {
 	}
 	const auto second = static_cast<size_t>(slot - SlotCount());
 	return m_second && second < static_cast<size_t>(SecondSets()) * SecondWays ? &m_second[second]
-	                                                                         : nullptr;
+	                                                                           : nullptr;
 }
 
 const TextureBindingMemo::Entry* TextureBindingMemo::SlotEntry(uint32_t slot) const {
@@ -408,9 +409,9 @@ bool TextureBindingMemo::FindHint(const Key& key, uint64_t hash, uint64_t& tag) 
 
 Image* TextureBindingMemo::HitImage(TextureCache& cache, const Entry& entry) {
 	auto* image = cache.m_slot_images.try_get(entry.image);
-	if (image == nullptr || !image->registered || image->depth_id ||
-	    image->binding.needs_rebind || entry.requested_first < image->resident_first ||
-	    !OverlapUsable(entry) || !PagesHold(cache, entry) ||
+	if (image == nullptr || !image->registered || image->depth_id || image->binding.needs_rebind ||
+	    entry.requested_first < image->resident_first || !OverlapUsable(entry) ||
+	    !PagesHold(cache, entry) ||
 	    PartnerBlocks(cache, entry, *image, ImgSide::PartnerMode() == ImgSide::Mode::On)) {
 		return nullptr;
 	}
@@ -442,8 +443,8 @@ uint32_t TextureBindingMemo::TryResolveRun(TextureCache& cache, std::span<const 
 	uint32_t         hits = 0;
 	std::scoped_lock lock {cache.m_lock};
 	const auto       tick = cache.m_scheduler.CurrentTick();
-	const bool second = m_second && ImgSide::Memo2Mode() == ImgSide::Mode::On &&
-	                    ImgSide::InplaceMode() == ImgSide::Mode::On;
+	const bool       second = m_second && ImgSide::Memo2Mode() == ImgSide::Mode::On &&
+	                          ImgSide::InplaceMode() == ImgSide::Mode::On;
 	for (; hits < bindings.size(); hits++) {
 		auto   slot  = static_cast<uint32_t>(hashes[hits] % SlotCount());
 		Entry* found = &m_entries[slot];
@@ -451,8 +452,8 @@ uint32_t TextureBindingMemo::TryResolveRun(TextureCache& cache, std::span<const 
 			break;
 		}
 		if (found->tag != tags[hits]) {
-			// KYTY_IMG_INPLACE on: the hint may name a second-level entry of the key's set (tags are
-			// unique, so a way holding the tag holds the key).
+			// KYTY_IMG_INPLACE on: the hint may name a second-level entry of the key's set (tags
+			// are unique, so a way holding the tag holds the key).
 			found = nullptr;
 			if (second) {
 				const auto set = SecondSet(hashes[hits]);
@@ -497,8 +498,10 @@ uint32_t TextureBindingMemo::TryResolveRun(TextureCache& cache, std::span<const 
 uint32_t TextureBindingMemo::SecondSets() {
 	static constexpr auto sets_init = [] {
 		const auto* value = std::getenv("KYTY_IMG_MEMO2_SLOTS");
-		const auto  count = value != nullptr && value[0] != '\0' ? std::strtoul(value, nullptr, 10) : 0ul;
-		const auto  slots = count >= 256 && count <= (1ul << 22u) ? static_cast<uint32_t>(count) : 32768u;
+		const auto  count =
+		    value != nullptr && value[0] != '\0' ? std::strtoul(value, nullptr, 10) : 0ul;
+		const auto slots =
+		    count >= 256 && count <= (1ul << 22u) ? static_cast<uint32_t>(count) : 32768u;
 		return slots / SecondWays;
 	};
 	static constinit Common::StaticOnce<std::remove_cvref_t<decltype(sets_init())>> sets_once;
@@ -567,7 +570,7 @@ void TextureBindingMemo::Evict(const Entry& entry) {
 	}
 	const auto set  = SecondSet(Hash(entry.key));
 	auto*      ways = &m_second[static_cast<size_t>(set) * SecondWays];
-	const auto way = ImgSide::PickWay(
+	const auto way  = ImgSide::PickWay(
 	    SecondWays, m_second_next[set],
 	    [&](uint32_t w) { return ways[w].tag != 0 && ways[w].key == entry.key; },
 	    [&](uint32_t w) { return ways[w].tag == 0; });
@@ -576,8 +579,8 @@ void TextureBindingMemo::Evict(const Entry& entry) {
 	ImgSide::Bump(ImgSide::S::Memo2Evict);
 }
 
-bool TextureBindingMemo::TrySecond(TextureCache& cache, const Key& key, uint64_t hash, uint32_t slot,
-                                   bool verify) {
+bool TextureBindingMemo::TrySecond(TextureCache& cache, const Key& key, uint64_t hash,
+                                   uint32_t slot, bool verify) {
 	uint32_t found_slot = 0;
 	Entry*   found      = FindSecond(key, hash, found_slot);
 	if (found == nullptr) {
@@ -609,8 +612,8 @@ bool TextureBindingMemo::TrySecond(TextureCache& cache, const Key& key, uint64_t
 	if (!entry.null_image) {
 		std::scoped_lock lock {cache.m_lock};
 		const auto*      image = cache.m_slot_images.try_get(entry.image);
-		if (image == nullptr || !image->registered || image->depth_id || image->binding.needs_rebind ||
-		    entry.requested_first < image->resident_first ||
+		if (image == nullptr || !image->registered || image->depth_id ||
+		    image->binding.needs_rebind || entry.requested_first < image->resident_first ||
 		    (entry.dcc && !cache.MetadataPagesHold(entry.dcc_noop))) {
 			return false;
 		}
@@ -619,8 +622,8 @@ bool TextureBindingMemo::TrySecond(TextureCache& cache, const Key& key, uint64_t
 		}
 		bool partner = entry.has_partner;
 		if (!entry.overlap && !PagesHold(cache, entry)) {
-			if (!RevalidateEnabled() ||
-			    cache.FindImageWithSameBacking(entry.desc.info, entry.exact_format) != entry.image) {
+			if (!RevalidateEnabled() || cache.FindImageWithSameBacking(
+			                                entry.desc.info, entry.exact_format) != entry.image) {
 				return false;
 			}
 			partner = HasPartner(cache, entry.page, entry.image, *image);
@@ -660,7 +663,8 @@ TextureBindingMemo::Entry* TextureBindingMemo::FindSecond(const Key& key, uint64
 	return nullptr;
 }
 
-static bool SameAnswer(const TextureBinding& a, ImageId image, const TextureCache::ImageDesc& desc) {
+static bool SameAnswer(const TextureBinding& a, ImageId image,
+                       const TextureCache::ImageDesc& desc) {
 	// The fields KYTY_TEXTURE_MEMO_REVALIDATE_VERIFY compares.
 	return a.image_id == image && a.desc.type == desc.type && a.desc.view_info == desc.view_info &&
 	       a.desc.info.data == desc.info.data && a.desc.info.pixel_format == desc.info.pixel_format;
@@ -681,11 +685,11 @@ void TextureBindingMemo::VerifyClaim(const TextureCache& cache, const TextureBin
 		return;
 	}
 	if (kind == ClaimKind::DepthAlias) {
-		// KYTY_IMG_DEPTHALIAS=verify: same answer; the full lookup was depth-class and pure with the
-		// same result, made the same rebinds with the same applied flags (the hit's replay), and
-		// synchronized the alias exactly when the hit would have (LookupSideEffects).
+		// KYTY_IMG_DEPTHALIAS=verify: same answer; the full lookup was depth-class and pure with
+		// the same result, made the same rebinds with the same applied flags (the hit's replay),
+		// and synchronized the alias exactly when the hit would have (LookupSideEffects).
 		ImgSide::Bump(ImgSide::S::DaChecks);
-		const auto& lookup = cache.LastOverlap();
+		const auto& lookup       = cache.LastOverlap();
 		bool        same_rebinds = lookup.rebind_count == m_claim.rebind_count;
 		for (uint32_t i = 0; same_rebinds && i < m_claim.rebind_count; i++) {
 			same_rebinds = lookup.rebind[i] == m_claim.rebind[i] &&
@@ -693,28 +697,34 @@ void TextureBindingMemo::VerifyClaim(const TextureCache& cache, const TextureBin
 		}
 		const auto effects = cache.LookupSideEffects() - m_claim.effects;
 		if (!SameAnswer(full, m_claim.image, m_claim.desc)) {
-			ImgSide::ReportMismatch(ImgSide::S::DaMismatch, "depthalias: an entry resolved differently");
-		} else if (!lookup.overlap || !lookup.pure || !lookup.depth_class || lookup.result != m_claim.image) {
-			ImgSide::ReportMismatch(ImgSide::S::DaMismatch, "depthalias: the full lookup took another path");
-		} else if (!same_rebinds) {
-			ImgSide::ReportMismatch(ImgSide::S::DaMismatch, "depthalias: the full lookup's rebinds differ");
-		} else if (m_claim.expect_sync ? effects == 0 : effects != 0) {
 			ImgSide::ReportMismatch(ImgSide::S::DaMismatch,
-			                        m_claim.expect_sync ? "depthalias: the full resolution did not synchronize the alias"
-			                                            : "depthalias: the full resolution had a lookup side effect");
+			                        "depthalias: an entry resolved differently");
+		} else if (!lookup.overlap || !lookup.pure || !lookup.depth_class ||
+		           lookup.result != m_claim.image) {
+			ImgSide::ReportMismatch(ImgSide::S::DaMismatch,
+			                        "depthalias: the full lookup took another path");
+		} else if (!same_rebinds) {
+			ImgSide::ReportMismatch(ImgSide::S::DaMismatch,
+			                        "depthalias: the full lookup's rebinds differ");
+		} else if (m_claim.expect_sync ? effects == 0 : effects != 0) {
+			ImgSide::ReportMismatch(
+			    ImgSide::S::DaMismatch,
+			    m_claim.expect_sync
+			        ? "depthalias: the full resolution did not synchronize the alias"
+			        : "depthalias: the full resolution had a lookup side effect");
 		}
 		return;
 	}
 	if (kind == ClaimKind::Overlap) {
-		// KYTY_IMG_OVERLAP=verify: same answer, no lookup side effect, and the full lookup's overlap
-		// loop was pure again with the same image (no free, expansion, merge or insertion).
+		// KYTY_IMG_OVERLAP=verify: same answer, no lookup side effect, and the full lookup's
+		// overlap loop was pure again with the same image (no free, expansion, merge or insertion).
 		ImgSide::Bump(ImgSide::S::OverlapChecks);
 		const auto& lookup = cache.LastOverlap();
 		if (!SameAnswer(full, m_claim.image, m_claim.desc)) {
 			ImgSide::ReportMismatch(ImgSide::S::OverlapMismatch,
 			                        "overlap: an overlap-loop entry resolved differently");
-		} else if (cache.LookupSideEffects() != m_claim.effects || !lookup.overlap || !lookup.pure ||
-		           lookup.result != m_claim.image) {
+		} else if (cache.LookupSideEffects() != m_claim.effects || !lookup.overlap ||
+		           !lookup.pure || lookup.result != m_claim.image) {
 			ImgSide::ReportMismatch(ImgSide::S::OverlapMismatch,
 			                        "overlap: the full lookup did more than the entry's answer");
 		}
@@ -728,11 +738,12 @@ void TextureBindingMemo::VerifyClaim(const TextureCache& cache, const TextureBin
 		                        "partner: an alias-partner entry resolved differently");
 	} else if (const auto effects = cache.LookupSideEffects() - m_claim.effects;
 	           m_claim.expect_sync ? effects == 0 : effects != 0) {
-		// A no-op claim: FindImage must synchronize nothing (nor extend residency); a sync claim: it
-		// must synchronize (the hit would have made that same call).
+		// A no-op claim: FindImage must synchronize nothing (nor extend residency); a sync claim:
+		// it must synchronize (the hit would have made that same call).
 		ImgSide::ReportMismatch(ImgSide::S::PartnerMismatch,
-		                        m_claim.expect_sync ? "partner: the full resolution did not synchronize the alias"
-		                                            : "partner: the full resolution synchronized the alias");
+		                        m_claim.expect_sync
+		                            ? "partner: the full resolution did not synchronize the alias"
+		                            : "partner: the full resolution synchronized the alias");
 	}
 }
 
@@ -771,10 +782,11 @@ bool TextureBindingMemo::TryResolve(TextureCache& cache, const Key& key, uint64_
 	bool inplace_hit    = false;
 	bool inplace_verify = false;
 	if (entry->tag == 0 || !(hinted || entry->key == key)) {
-		const auto second  = ImgSide::Memo2Mode();
-		const bool empty   = entry->tag == 0;
-		const auto inplace = second == ImgSide::Mode::On ? ImgSide::InplaceMode() : ImgSide::Mode::Off;
-		bool       found   = false;
+		const auto second = ImgSide::Memo2Mode();
+		const bool empty  = entry->tag == 0;
+		const auto inplace =
+		    second == ImgSide::Mode::On ? ImgSide::InplaceMode() : ImgSide::Mode::Off;
+		bool found = false;
 		if (inplace != ImgSide::Mode::Off) {
 			// KYTY_IMG_INPLACE: the second-level entry answers where it is (continues below exactly
 			// as a primary hit, on that entry and its slot).
@@ -835,12 +847,14 @@ bool TextureBindingMemo::TryResolve(TextureCache& cache, const Key& key, uint64_
 		// A structural change on the description's first page may alter what FindImage returns:
 		// redo its lookup and the partner scan for the new owner list (RevalidateEnabled).
 		if (entry->overlap) {
-			// KYTY_IMG_OVERLAP: every page of the lookup region keeps its version (no revalidation).
+			// KYTY_IMG_OVERLAP: every page of the lookup region keeps its version (no
+			// revalidation).
 			if (!PagesHold(cache, *entry)) {
 				ImgSide::Count(ImgSide::C::MissPage);
 				return stale();
 			}
-		} else if (const auto version = cache.PageVersion(entry->page); entry->page_version != version) {
+		} else if (const auto version = cache.PageVersion(entry->page);
+		           entry->page_version != version) {
 			if (!RevalidateEnabled() ||
 			    cache.FindImageWithSameBacking(entry->desc.info, entry->exact_format) !=
 			        entry->image) {
@@ -854,15 +868,17 @@ bool TextureBindingMemo::TryResolve(TextureCache& cache, const Key& key, uint64_
 			Profiler::CountFrameEvent(Profiler::FrameEvent::TextureBindingMemoRevalidated);
 			m_totals.revalidated++;
 		}
-		// KYTY_IMG_DEPTHALIAS: the alias branch's rebind targets are the lookup's candidates, registered
-		// on the span's pages: present while the span holds (checked anyway; a miss is the full path).
+		// KYTY_IMG_DEPTHALIAS: the alias branch's rebind targets are the lookup's candidates,
+		// registered on the span's pages: present while the span holds (checked anyway; a miss is
+		// the full path).
 		for (uint32_t i = 0; i < entry->rebind_count; i++) {
 			if (cache.m_slot_images.try_get(entry->rebind[i]) == nullptr) {
 				ImgSide::Count(ImgSide::C::MissPage);
 				return stale();
 			}
 		}
-		bool hit_sync = false; // KYTY_IMG_PARTNER: the hit synchronizes the alias (after the rebinds)
+		bool hit_sync =
+		    false; // KYTY_IMG_PARTNER: the hit synchronizes the alias (after the rebinds)
 		if (entry->has_partner) {
 			// An alias partner: FindImage would synchronize the image from an owner unless it owns
 			// the bytes (the old rule) or, by KYTY_IMG_PARTNER's rule, no image qualifies as an
@@ -871,15 +887,18 @@ bool TextureBindingMemo::TryResolve(TextureCache& cache, const Key& key, uint64_
 			// KYTY_STENCIL_DEPTH_ALIAS, its alias can still be synchronized.)
 			const auto partner_mode = ImgSide::PartnerMode();
 			const bool old_blocks   = PartnerBlocks(cache, *entry, *image, false);
-			const bool classify     = partner_mode == ImgSide::Mode::On ||
-			                      (old_blocks && (partner_mode != ImgSide::Mode::Off || ImgSide::StatsEnabled()));
-			const auto sync = classify ? ClassifyAliasSync(cache, *entry, *image) : AliasSync::Owner;
+			const bool classify =
+			    partner_mode == ImgSide::Mode::On ||
+			    (old_blocks && (partner_mode != ImgSide::Mode::Off || ImgSide::StatsEnabled()));
+			const auto sync =
+			    classify ? ClassifyAliasSync(cache, *entry, *image) : AliasSync::Owner;
 			if (old_blocks && ImgSide::StatsEnabled()) {
 				ImgSide::Count(sync == AliasSync::AtOnce    ? ImgSide::C::PartnerAtOnce
 				               : sync == AliasSync::NoOwner ? ImgSide::C::PartnerNoOwner
 				                                            : ImgSide::C::PartnerOwner);
 			}
-			const auto action = ImgSide::PartnerDecision(partner_mode, old_blocks, sync != AliasSync::Owner);
+			const auto action =
+			    ImgSide::PartnerDecision(partner_mode, old_blocks, sync != AliasSync::Owner);
 			if (action == ImgSide::PartnerAction::Miss || action == ImgSide::PartnerAction::Claim) {
 				if (action == ImgSide::PartnerAction::Claim) {
 					// Claimed; the full resolution provides the result (VerifyClaim).
@@ -897,21 +916,22 @@ bool TextureBindingMemo::TryResolve(TextureCache& cache, const Key& key, uint64_
 			}
 			hit_sync = action == ImgSide::PartnerAction::HitSync;
 		}
-		const auto class_mode = entry->depth_class ? ImgSide::DepthAliasMode() : ImgSide::OverlapMode();
+		const auto class_mode =
+		    entry->depth_class ? ImgSide::DepthAliasMode() : ImgSide::OverlapMode();
 		if (entry->overlap && class_mode != ImgSide::Mode::On) {
-			// KYTY_IMG_OVERLAP=verify / KYTY_IMG_DEPTHALIAS=verify: every hit condition holds; claimed
-			// (with the effects the hit would perform), and the full resolution provides the result
-			// (VerifyClaim). Off: such entries never answer. Nothing was done yet.
+			// KYTY_IMG_OVERLAP=verify / KYTY_IMG_DEPTHALIAS=verify: every hit condition holds;
+			// claimed (with the effects the hit would perform), and the full resolution provides
+			// the result (VerifyClaim). Off: such entries never answer. Nothing was done yet.
 			if (class_mode == ImgSide::Mode::Verify) {
-				m_claim.kind         = entry->depth_class ? ClaimKind::DepthAlias : ClaimKind::Overlap;
-				m_claim.image        = entry->image;
-				m_claim.desc         = entry->desc;
-				m_claim.effects      = cache.LookupSideEffects();
+				m_claim.kind    = entry->depth_class ? ClaimKind::DepthAlias : ClaimKind::Overlap;
+				m_claim.image   = entry->image;
+				m_claim.desc    = entry->desc;
+				m_claim.effects = cache.LookupSideEffects();
 				m_claim.expect_sync  = hit_sync;
 				m_claim.rebind_count = entry->rebind_count;
 				m_claim.rebind       = entry->rebind;
 				for (uint32_t i = 0; i < entry->rebind_count; i++) {
-					const auto& depth = cache.m_slot_images[entry->rebind[i]];
+					const auto& depth         = cache.m_slot_images[entry->rebind[i]];
 					m_claim.rebind_applied[i] = depth.binding.is_bound || depth.binding.is_target;
 				}
 			}
@@ -958,14 +978,16 @@ bool TextureBindingMemo::TryResolve(TextureCache& cache, const Key& key, uint64_
 }
 
 void TextureBindingMemo::CountOverlap(const TextureCache& cache, ImageId found) {
-	// KYTY_IMG_STATS: whether a rejected answer came from a pure overlap loop (TextureCache::LastOverlap).
+	// KYTY_IMG_STATS: whether a rejected answer came from a pure overlap loop
+	// (TextureCache::LastOverlap).
 	const auto& overlap = cache.LastOverlap();
 	if (!ImgSide::StatsEnabled() || !overlap.overlap || !overlap.pure || overlap.result != found) {
 		return;
 	}
 	ImgSide::Count(ImgSide::C::OvlPure);
 	TextureCache::ImagePageTable::PageRange pages {};
-	if (TextureCache::ImagePageTable::TryGetPageRange(overlap.region_address, overlap.region_size, pages) &&
+	if (TextureCache::ImagePageTable::TryGetPageRange(overlap.region_address, overlap.region_size,
+	                                                  pages) &&
 	    pages.last_exclusive - pages.first <= 4) {
 		ImgSide::Count(ImgSide::C::OvlPurePages);
 		if (overlap.candidates == 1) {
@@ -974,8 +996,9 @@ void TextureBindingMemo::CountOverlap(const TextureCache& cache, ImageId found) 
 	}
 }
 
-void TextureBindingMemo::CountBacking(const TextureCache& cache, const TextureCache::ImageDesc& desc,
-                                      bool exact_format, ImageId found) {
+void TextureBindingMemo::CountBacking(const TextureCache&            cache,
+                                      const TextureCache::ImageDesc& desc, bool exact_format,
+                                      ImageId found) {
 	// KYTY_IMG_STATS: why FindImageWithSameBacking(final description) is not FindImage's answer.
 	const auto& lookup = cache.LastOverlap();
 	if (lookup.result == found) {
@@ -984,16 +1007,19 @@ void TextureBindingMemo::CountBacking(const TextureCache& cache, const TextureCa
 			               : lookup.inserted ? ImgSide::C::BkOvlInserted
 			                                 : ImgSide::C::BkOvlImpure);
 		}
-		if (!(lookup.requested.data == desc.info.data) || lookup.requested.extent != desc.info.extent ||
+		if (!(lookup.requested.data == desc.info.data) ||
+		    lookup.requested.extent != desc.info.extent ||
 		    lookup.requested.pixel_format != desc.info.pixel_format ||
-		    !(lookup.requested.resources == desc.info.resources) || lookup.requested.type != desc.info.type) {
+		    !(lookup.requested.resources == desc.info.resources) ||
+		    lookup.requested.type != desc.info.type) {
 			ImgSide::Count(ImgSide::C::BkDescChanged);
 		}
 	}
 	const auto other = cache.FindImageWithSameBacking(desc.info, exact_format);
 	ImgSide::Count(!other ? ImgSide::C::BkSbNone : ImgSide::C::BkSbOther);
 	TextureCache::ImagePageTable::PageRange pages {};
-	if (TextureCache::ImagePageTable::TryGetPageRange(desc.info.data.address, desc.info.data.size, pages)) {
+	if (TextureCache::ImagePageTable::TryGetPageRange(desc.info.data.address, desc.info.data.size,
+	                                                  pages)) {
 		uint32_t matches = 0;
 		if (const auto* owners = cache.m_image_page_table.Find(pages.first); owners != nullptr) {
 			owners->ForEach([&](ImageId id) {
@@ -1017,14 +1043,14 @@ void TextureBindingMemo::Record(TextureCache& cache, const Key& key, uint64_t ha
 	const auto& desc = binding.desc;
 	// A DCC description only with the certificate of its lookup's DCC decision (texdcc).
 	const bool dcc_desc = desc.info.metadata.kind == ImageMetadataKind::Dcc;
-	// KYTY_IMG_OVERLAP: answers of FindImage's overlap loop (no first-page answer) are recorded when
-	// the loop was pure (OverlapAnswer); a rebased view is such an answer.
+	// KYTY_IMG_OVERLAP: answers of FindImage's overlap loop (no first-page answer) are recorded
+	// when the loop was pure (OverlapAnswer); a rebased view is such an answer.
 	const auto overlap_mode = ImgSide::OverlapMode();
 	const bool overlap_ok   = overlap_mode != ImgSide::Mode::Off && !dcc_desc;
 	const auto reject       = [&](ImgSide::C reason) {
-        Profiler::CountFrameEvent(Profiler::FrameEvent::TextureBindingMemoRejects);
-        ImgSide::Count(ImgSide::C::RecReject);
-        ImgSide::Count(reason);
+		Profiler::CountFrameEvent(Profiler::FrameEvent::TextureBindingMemoRejects);
+		ImgSide::Count(ImgSide::C::RecReject);
+		ImgSide::Count(reason);
 	};
 	if ((view_rebased && !overlap_ok) || binding.image_id != found ||
 	    (dcc_desc && (dcc == nullptr || !dcc->provable))) {
@@ -1038,22 +1064,22 @@ void TextureBindingMemo::Record(TextureCache& cache, const Key& key, uint64_t ha
 	}
 	const bool null_image      = desc.info.data.Empty();
 	bool       has_partner     = false;
-	bool       overlap         = false;
+	bool                                                         overlap         = false;
 	uint64_t   page            = 0;
 	uint64_t   page_version    = 0;
-	uint64_t   alias_page      = 0;
+	uint64_t                                                     alias_page      = 0;
 	uint32_t   requested_first = 0;
-	uint8_t    extra_count     = 0;
-	std::array<uint64_t, MaxExtraPages> extra_pages {};
-	std::array<uint64_t, MaxExtraPages> extra_versions {};
-	uint8_t                                                  timed_count = 0;
-	std::array<ImageId, TextureCache::OverlapLookup::MaxTimed> timed {};
-	bool                                                       depth_class  = false;
-	uint8_t                                                    rebind_count = 0;
+	uint8_t                                                      extra_count     = 0;
+	std::array<uint64_t, MaxExtraPages>                          extra_pages {};
+	std::array<uint64_t, MaxExtraPages>                          extra_versions {};
+	uint8_t                                                      timed_count = 0;
+	std::array<ImageId, TextureCache::OverlapLookup::MaxTimed>   timed {};
+	bool                                                         depth_class  = false;
+	uint8_t                                                      rebind_count = 0;
 	std::array<ImageId, TextureCache::OverlapLookup::MaxRebinds> rebind {};
-	uint64_t                                                   span_first = 0;
-	uint32_t                                                   span_count = 0;
-	uint64_t                                                   span_sum   = 0;
+	uint64_t                                                     span_first = 0;
+	uint32_t                                                     span_count = 0;
+	uint64_t                                                     span_sum   = 0;
 	{
 		// One critical section: the checks below and the page versions describe the same state.
 		std::scoped_lock lock {cache.m_lock};
@@ -1076,27 +1102,31 @@ void TextureBindingMemo::Record(TextureCache& cache, const Key& key, uint64_t ha
 				if (ImgSide::StatsEnabled()) {
 					reject(cache.m_image_lookup_mode != TextureCache::ImageLookupMode::FirstPage
 					           ? ImgSide::C::RejMode
-					       : image == nullptr || !image->registered || image->depth_id ? ImgSide::C::RejImage
-					                                                                  : ImgSide::C::RejPages);
+					       : image == nullptr || !image->registered || image->depth_id
+					           ? ImgSide::C::RejImage
+					           : ImgSide::C::RejPages);
 				} else {
 					reject(ImgSide::C::RejImage);
 				}
 				return;
 			}
-			const bool first_page = !view_rebased &&
-			                        cache.FindImageWithSameBacking(desc.info, exact_format) == found;
+			const bool first_page =
+			    !view_rebased && cache.FindImageWithSameBacking(desc.info, exact_format) == found;
 			if (!first_page && DepthAliasClass(cache.LastOverlap(), found)) {
-				// KYTY_IMG_DEPTHALIAS: a depth-class answer of the overlap loop (see textureBindingMemo.h).
-				const auto& lookup = cache.LastOverlap();
+				// KYTY_IMG_DEPTHALIAS: a depth-class answer of the overlap loop (see
+				// textureBindingMemo.h).
+				const auto&                             lookup = cache.LastOverlap();
 				TextureCache::ImagePageTable::PageRange region {};
 				const bool refused = view_rebased || dcc_desc || TextureCache::BlockSubwritesOn() ||
-				                     !TextureCache::ImagePageTable::TryGetPageRange(lookup.region_address,
-				                                                                    lookup.region_size, region);
-				// Every page whose owner list the answer read: the outer scan's region, the inner scans'
-				// regions, the image's own first page (SyncAliasFromOwner's partners).
-				const auto span = ImgSide::DepthAliasSpan(region.first, region.last_exclusive, lookup.span_first,
-				                                          lookup.span_last, pages.first);
-				const auto decision = ImgSide::DepthAliasRecord(lookup.pure, refused, span.hi - span.lo, MaxSpanPages);
+				                     !TextureCache::ImagePageTable::TryGetPageRange(
+				                         lookup.region_address, lookup.region_size, region);
+				// Every page whose owner list the answer read: the outer scan's region, the inner
+				// scans' regions, the image's own first page (SyncAliasFromOwner's partners).
+				const auto span =
+				    ImgSide::DepthAliasSpan(region.first, region.last_exclusive, lookup.span_first,
+				                            lookup.span_last, pages.first);
+				const auto decision    = ImgSide::DepthAliasRecord(lookup.pure, refused,
+				                                                   span.hi - span.lo, MaxSpanPages);
 				const uint64_t span_lo = span.lo;
 				const uint64_t span_hi = span.hi;
 				ImgSide::Bump(decision == ImgSide::DaRecord::Keep     ? ImgSide::S::DaRecordable
@@ -1107,10 +1137,10 @@ void TextureBindingMemo::Record(TextureCache& cache, const Key& key, uint64_t ha
 					reject(ImgSide::C::RejBacking);
 					return;
 				}
-				overlap     = true;
-				depth_class = true;
-				timed_count = static_cast<uint8_t>(lookup.timed_count);
-				timed       = lookup.timed;
+				overlap      = true;
+				depth_class  = true;
+				timed_count  = static_cast<uint8_t>(lookup.timed_count);
+				timed        = lookup.timed;
 				rebind_count = static_cast<uint8_t>(lookup.rebind_count);
 				rebind       = lookup.rebind;
 				page         = region.first;
@@ -1119,28 +1149,32 @@ void TextureBindingMemo::Record(TextureCache& cache, const Key& key, uint64_t ha
 				span_sum     = SpanSum(cache, span_first, span_count);
 				ImgSide::Bump(ImgSide::S::DaRecords);
 			} else if (!first_page) {
-				// KYTY_IMG_OVERLAP: the overlap loop's answer, when pure (see textureBindingMemo.h).
-				const auto& lookup = cache.LastOverlap();
+				// KYTY_IMG_OVERLAP: the overlap loop's answer, when pure (see
+				// textureBindingMemo.h).
+				const auto&                             lookup = cache.LastOverlap();
 				TextureCache::ImagePageTable::PageRange region {};
-				// (A depth-class answer is KYTY_IMG_DEPTHALIAS's: its rebind effect needs the replay.)
+				// (A depth-class answer is KYTY_IMG_DEPTHALIAS's: its rebind effect needs the
+				// replay.)
 				if (!overlap_ok || !lookup.overlap || !lookup.pure || lookup.depth_class ||
 				    lookup.result != found ||
 				    !TextureCache::ImagePageTable::TryGetPageRange(lookup.region_address,
 				                                                   lookup.region_size, region) ||
 				    region.last_exclusive - region.first > MaxExtraPages) {
 					if (overlap_ok) {
-						using L = TextureCache::OverlapLookup;
+						using L         = TextureCache::OverlapLookup;
 						const bool same = lookup.overlap && lookup.result == found;
-						ImgSide::Bump(!same                                    ? ImgSide::S::OvlRejOther
-						              : lookup.inserted                        ? ImgSide::S::OvlRejInserted
-						              : lookup.impure_why == L::WhyTimedTaken  ? ImgSide::S::OvlRejTimedTaken
-						              : lookup.impure_why == L::WhyTimedMany   ? ImgSide::S::OvlRejTimedMany
-						              : lookup.impure_why == L::WhyDepth || lookup.depth_class ? ImgSide::S::OvlRejDepth
-						              : lookup.impure_why == L::WhyExpand      ? ImgSide::S::OvlRejExpand
-						              : lookup.impure_why == L::WhyMerge       ? ImgSide::S::OvlRejMerge
-						              : lookup.impure_why == L::WhyContains    ? ImgSide::S::OvlRejContains
-						              : !lookup.pure                           ? ImgSide::S::OvlRejOther
-						                                                       : ImgSide::S::OvlRejPages);
+						ImgSide::Bump(
+						    !same                                   ? ImgSide::S::OvlRejOther
+						    : lookup.inserted                       ? ImgSide::S::OvlRejInserted
+						    : lookup.impure_why == L::WhyTimedTaken ? ImgSide::S::OvlRejTimedTaken
+						    : lookup.impure_why == L::WhyTimedMany  ? ImgSide::S::OvlRejTimedMany
+						    : lookup.impure_why == L::WhyDepth || lookup.depth_class
+						        ? ImgSide::S::OvlRejDepth
+						    : lookup.impure_why == L::WhyExpand   ? ImgSide::S::OvlRejExpand
+						    : lookup.impure_why == L::WhyMerge    ? ImgSide::S::OvlRejMerge
+						    : lookup.impure_why == L::WhyContains ? ImgSide::S::OvlRejContains
+						    : !lookup.pure                        ? ImgSide::S::OvlRejOther
+						                                          : ImgSide::S::OvlRejPages);
 					}
 					reject(view_rebased ? ImgSide::C::RejRebased : ImgSide::C::RejBacking);
 					CountOverlap(cache, found);
@@ -1153,8 +1187,8 @@ void TextureBindingMemo::Record(TextureCache& cache, const Key& key, uint64_t ha
 				timed_count = static_cast<uint8_t>(lookup.timed_count);
 				timed       = lookup.timed;
 				// The description's first page (FindImageWithSameBacking's) is the region's first;
-				// the other pages of the region (FindImagesInRegion's owner lists), and the image's own
-				// first page (SyncAliasFromOwner's partners) when it lies outside the region.
+				// the other pages of the region (FindImagesInRegion's owner lists), and the image's
+				// own first page (SyncAliasFromOwner's partners) when it lies outside the region.
 				page = region.first;
 				for (auto p = region.first + 1; p < region.last_exclusive; p++) {
 					extra_pages[extra_count++] = p;
@@ -1337,8 +1371,8 @@ bool TextureBindingMemo::TryRepeatResolve(TextureCache& cache, std::span<Texture
 	std::scoped_lock lock {cache.m_lock};
 	for (const auto& binding: bindings) {
 		const auto& entry = SlotRef(binding.memo_slot);
-		if (binding.memo_tag == 0 || entry.tag != binding.memo_tag || entry.image != binding.image_id ||
-		    InplaceVerifySlot(binding.memo_slot)) {
+		if (binding.memo_tag == 0 || entry.tag != binding.memo_tag ||
+		    entry.image != binding.image_id || InplaceVerifySlot(binding.memo_slot)) {
 			return false;
 		}
 		if (entry.null_image) {
@@ -1470,13 +1504,14 @@ void TextureBindingMemo::RecordView(const TextureBinding& binding, vk::ImageView
 	}
 	auto* entry = SlotEntry(binding.memo_slot);
 	if (entry != nullptr && entry->tag == binding.memo_tag && entry->image == binding.image_id) {
-		// KYTY_IMG_INPLACE=verify: FindTexture's view of a second-level entry (ViewEntry refused it)
-		// must be the view the entry holds.
+		// KYTY_IMG_INPLACE=verify: FindTexture's view of a second-level entry (ViewEntry refused
+		// it) must be the view the entry holds.
 		if (entry->view != nullptr && InplaceVerifySlot(binding.memo_slot)) {
 			ImgSide::Bump(ImgSide::S::InplaceChecks);
 			if (entry->view != view) {
-				ImgSide::ReportMismatch(ImgSide::S::InplaceMismatch,
-				                        "inplace: FindTexture's view differs from the second-level entry's");
+				ImgSide::ReportMismatch(
+				    ImgSide::S::InplaceMismatch,
+				    "inplace: FindTexture's view differs from the second-level entry's");
 			}
 		}
 		entry->view = view;

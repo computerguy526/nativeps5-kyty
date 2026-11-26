@@ -8,12 +8,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
-#include <vector>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <renderdoc_app.h>
 #include <string>
+#include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 #include <windows.h>
@@ -165,10 +165,10 @@ static void StartCapture() {
 static void AutoCaptureOnFlip() {
 	static const std::vector<uint64_t> flips = [] {
 		std::vector<uint64_t> list;
-		const auto* value = std::getenv("KYTY_RENDERDOC_CAPTURE_FLIPS");
+		const auto*           value = std::getenv("KYTY_RENDERDOC_CAPTURE_FLIPS");
 		for (const char* p = value; p != nullptr && *p != '\0';) {
-			char* end = nullptr;
-			const auto n = std::strtoull(p, &end, 0);
+			char*      end = nullptr;
+			const auto n   = std::strtoull(p, &end, 0);
 			if (end == p) break;
 			list.push_back(n);
 			p = *end == ',' ? end + 1 : end;
@@ -187,16 +187,18 @@ static void AutoCaptureOnFlip() {
 	if (trigger != nullptr && (flip % 8u) == 0u) {
 		std::error_code error;
 		if (std::filesystem::exists(trigger, error) && std::filesystem::remove(trigger, error)) {
-			std::printf("RenderDoc: capture requested by KYTY_RENDERDOC_CAPTURE_FILE at guest flip %llu\n",
-			            static_cast<unsigned long long>(flip));
+			std::printf(
+			    "RenderDoc: capture requested by KYTY_RENDERDOC_CAPTURE_FILE at guest flip %llu\n",
+			    static_cast<unsigned long long>(flip));
 			RenderDocRequestCapture();
 		}
 	}
 	if (flips.empty()) return;
 	for (const auto n: flips) {
 		if (n == flip) {
-			std::printf("RenderDoc: automatic capture at guest flip %llu (KYTY_RENDERDOC_CAPTURE_FLIPS)\n",
-			            static_cast<unsigned long long>(flip));
+			std::printf(
+			    "RenderDoc: automatic capture at guest flip %llu (KYTY_RENDERDOC_CAPTURE_FLIPS)\n",
+			    static_cast<unsigned long long>(flip));
 			RenderDocRequestCapture();
 		}
 	}

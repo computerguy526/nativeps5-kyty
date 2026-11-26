@@ -82,9 +82,10 @@ void FlushLocked(State& state, double seconds) {
 			total_bytes += value.bytes;
 		}
 	}
-	std::fprintf(stderr, "[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
-	     " bytes (passes only; %" PRIu64 " events)\n",
-	     state.index, seconds, state.window.size(), total_count, total_bytes, event_count);
+	std::fprintf(stderr,
+	             "[tilertrace] window %" PRIu64 " %.1f s: %zu keys, %" PRIu64 " passes, %" PRIu64
+	             " bytes (passes only; %" PRIu64 " events)\n",
+	             state.index, seconds, state.window.size(), total_count, total_bytes, event_count);
 	for (const auto& [key, value]: state.window) {
 		std::fprintf(stderr,
 		             "[tilertrace] %s %s addr=0x%016" PRIx64 " fmt=%u tile=%u %ux%u layers=%u "
@@ -97,12 +98,13 @@ void FlushLocked(State& state, double seconds) {
 		             key.vk_format, value.count, value.bytes);
 	}
 	for (const auto& [what, value]: state.counters) {
-		std::fprintf(stderr, "[tilertrace] count %s n=%" PRIu64 " bytes=%" PRIu64 "\n", what.c_str(),
-		             value.count, value.bytes);
+		std::fprintf(stderr, "[tilertrace] count %s n=%" PRIu64 " bytes=%" PRIu64 "\n",
+		             what.c_str(), value.count, value.bytes);
 	}
 	uint64_t buffer_mb_x100 = state.buffer.TotalBytes() * 100u / (1024u * 1024u);
-	std::fprintf(stderr, "[tilertrace] buffer-mode %zu keys, %" PRIu64 ".%02" PRIu64 " MB (window %.1f s)\n",
-	             state.buffer.Size(), buffer_mb_x100 / 100u, buffer_mb_x100 % 100u, seconds);
+	std::fprintf(
+	    stderr, "[tilertrace] buffer-mode %zu keys, %" PRIu64 ".%02" PRIu64 " MB (window %.1f s)\n",
+	    state.buffer.Size(), buffer_mb_x100 / 100u, buffer_mb_x100 % 100u, seconds);
 	for (const auto& [key, value]: state.buffer.Map()) {
 		std::fprintf(stderr, "%s\n", BufferAggregate::Format(key, value).c_str());
 	}
@@ -182,8 +184,9 @@ void NoteBuffer(const char* op, uint32_t element, uint32_t family, uint32_t widt
 	}
 	auto&            state = GetState();
 	std::scoped_lock lock(state.mutex);
-	state.buffer.Add({op, t_reason != nullptr ? t_reason : "?", element, family, width, height, depth},
-	                 infos, bytes);
+	state.buffer.Add(
+	    {op, t_reason != nullptr ? t_reason : "?", element, family, width, height, depth}, infos,
+	    bytes);
 	const auto   now     = std::chrono::steady_clock::now();
 	const double elapsed = std::chrono::duration<double>(now - state.start).count();
 	if (elapsed >= window) {

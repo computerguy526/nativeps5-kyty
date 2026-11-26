@@ -12,8 +12,9 @@ class CommandBuffer;
 class RenderContext;
 class StreamBuffer;
 
-// KYTY_INDIRECT_GUARD (default off): a DispatchIndirect reads its workgroup counts from a guard slot
-// that gpu_dispatch_guard.comp filled from the guest record, zeroed when the counts are absurd.
+// KYTY_INDIRECT_GUARD (default off): a DispatchIndirect reads its workgroup counts from a guard
+// slot that gpu_dispatch_guard.comp filled from the guest record, zeroed when the counts are
+// absurd.
 class DispatchGuard {
 public:
 	explicit DispatchGuard(RenderContext& context);

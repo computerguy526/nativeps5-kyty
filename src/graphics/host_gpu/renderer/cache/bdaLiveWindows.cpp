@@ -16,7 +16,8 @@ BdaLiveWindows::BdaLiveWindows(uint64_t backing_base, uint64_t backing_size, uin
 }
 
 uint64_t BdaLiveWindows::Translate(uint64_t host, uint64_t bytes) {
-	if (!m_valid || bytes == 0 || host < m_base || host - m_base >= m_size || bytes > m_size - (host - m_base)) {
+	if (!m_valid || bytes == 0 || host < m_base || host - m_base >= m_size ||
+	    bytes > m_size - (host - m_base)) {
 		m_range_rejects++;
 		return 0;
 	}

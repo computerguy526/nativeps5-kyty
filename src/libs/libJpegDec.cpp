@@ -182,7 +182,7 @@ static int32_t ParseHeader(const void* jpeg, uint32_t size, uint16_t down_scale,
 		// Standard sampling: grayscale, or 1x1 chroma with luma at most 2x2 (4:4:4/4:2:2/4:2:0).
 		const bool standard =
 		    components == 1 || (info->sampling_factor[1] == 0x11 &&
-			                    info->sampling_factor[2] == 0x11 && h_max <= 2 && v_max <= 2);
+		                        info->sampling_factor[2] == 0x11 && h_max <= 2 && v_max <= 2);
 		info->suitable_csc_attribute =
 		    standard ? JPEG_DEC_ATTRIBUTE_CSC_STD_SAMPLING : JPEG_DEC_ATTRIBUTE_CSC_FULL_SAMPLING;
 		info->output_image_width  = (info->image_width + down_scale - 1) / down_scale;
@@ -389,7 +389,8 @@ static int32_t KYTY_SYSV_ABI JpegDecDecode(void* handle, const JpegDecDecodePara
 
 // KYTY_JPEG=1 (default off): libSceJpegDec (and libSceJpegEnc, libJpegEnc.cpp) are registered;
 // otherwise their imports stay unresolved stubs that return 0, as before (upstream registers them
-// always; kept behind the switch so Astro Bot, Insomniac titles and GT7 presets keep their behaviour).
+// always; kept behind the switch so Astro Bot, Insomniac titles and GT7 presets keep their
+// behaviour).
 static bool JpegLibsEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_JPEG");
@@ -406,7 +407,6 @@ LIB_DEFINE(InitJpegDec_1) {
 	}
 
 	PRINT_NAME_ENABLE(true);
-
 
 	LIB_FUNC("uNAUmANZMEw", JpegDec::JpegDecQueryMemorySize);
 	LIB_FUNC("JPh3Zgg0Zwc", JpegDec::JpegDecCreate);

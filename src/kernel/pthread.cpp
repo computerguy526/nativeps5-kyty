@@ -1,5 +1,3 @@
-#include "common/hleWaitStats.h"
-#include "common/staticOnce.h"
 #include "kernel/pthread.h"
 
 #include "common/assert.h"
@@ -10,11 +8,13 @@
 #include "common/fpEnv.h"
 #include "common/gthreadStats.h"
 #include "common/hangWatchdog.h"
+#include "common/hleWaitStats.h"
 #include "common/hostException.h"
 #include "common/liveSwitch.h"
 #include "common/logging/log.h"
 #include "common/ramStats.h"
 #include "common/singleton.h"
+#include "common/staticOnce.h"
 #include "common/stringUtils.h"
 #include "common/threads.h"
 #include "common/timer.h"
@@ -280,15 +280,20 @@ struct KernelGuestTscClock {
 	GuestTsc::Scale simulate;
 	GuestTsc::Scale scale;
 
-	[[nodiscard]] uint64_t ToGuest(uint64_t raw) const { return scale.ToGuest(simulate.ToGuest(raw)); }
-	[[nodiscard]] uint64_t Ticks(uint64_t elapsed) const { return scale.Ticks(simulate.Ticks(elapsed)); }
+	[[nodiscard]] uint64_t ToGuest(uint64_t raw) const {
+		return scale.ToGuest(simulate.ToGuest(raw));
+	}
+	[[nodiscard]] uint64_t Ticks(uint64_t elapsed) const {
+		return scale.Ticks(simulate.Ticks(elapsed));
+	}
 };
 
 static const KernelGuestTscClock& KernelGetGuestTscClock() {
 	static constexpr auto clock_init = [] {
 		KernelGuestTscClock c;
 		auto                measured = KernelGetTscFrequencyNative();
-		if (const char* sim = std::getenv("KYTY_HOST_TSC_SIMULATE"); sim != nullptr && *sim != '\0') {
+		if (const char* sim = std::getenv("KYTY_HOST_TSC_SIMULATE");
+		    sim != nullptr && *sim != '\0') {
 			const auto value = std::strtoull(sim, nullptr, 10);
 			if (value >= GuestTsc::kMinGuestTscFrequency && measured != 0) {
 				c.simulate = GuestTsc::Scale(measured, value, KernelGetInitialTsc());
@@ -301,8 +306,8 @@ static const KernelGuestTscClock& KernelGetGuestTscClock() {
 		c.scale     = GuestTsc::Scale(measured, c.frequency, KernelGetInitialTsc());
 		if (!c.scale.Identity()) {
 			LOGF("Guest TSC: host %" PRIu64 " Hz, guest %" PRIu64
-			            " Hz (KYTY_GUEST_TSC_FREQUENCY=0 reports the host value)\n",
-			            measured, c.frequency);
+			     " Hz (KYTY_GUEST_TSC_FREQUENCY=0 reports the host value)\n",
+			     measured, c.frequency);
 		}
 		return c;
 	};
@@ -1467,9 +1472,10 @@ static int PthreadCondInitNamed(PthreadCond* cond, const PthreadCondattr* attr, 
 // that unlocks and re-locks in a loop (Wwise's audio thread does this with its global lock
 // when audio runs behind) then keeps the mutex for seconds and every other locker starves:
 // Ratchet & Clank froze with its main thread stuck in PthreadMutexLock. A waiter that has
-// waited longer than KYTY_MUTEX_HANDOFF_US (default 0 = off in this line; 2000 us in the PPSA01474/PPSA03671 title presets) joins the starving
-// queue; while that queue is not empty the mutex goes to its front thread only (direct
-// hand-off, like Go's sync.Mutex starvation mode). Short waits behave as before.
+// waited longer than KYTY_MUTEX_HANDOFF_US (default 0 = off in this line; 2000 us in the
+// PPSA01474/PPSA03671 title presets) joins the starving queue; while that queue is not empty the
+// mutex goes to its front thread only (direct hand-off, like Go's sync.Mutex starvation mode).
+// Short waits behave as before.
 static int64_t MutexHandoffMicros() {
 	static const int64_t value = [] {
 		const auto* env = std::getenv("KYTY_MUTEX_HANDOFF_US");
@@ -3499,7 +3505,8 @@ static void CleanupThread(void* arg) {
 	thread->almost_done = true;
 }
 
-/// KYTY_GUEST_PRIORITY_FLAT (live): re-applies the calling guest thread's host priority after a change.
+/// KYTY_GUEST_PRIORITY_FLAT (live): re-applies the calling guest thread's host priority after a
+/// change.
 static void ApplyGuestPriorityToSelf() {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	auto* thread = g_pthread_self;

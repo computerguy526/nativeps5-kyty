@@ -165,7 +165,13 @@ inline Pages g_pages;
 // KYTY_CLEAN_UNTOUCHED_DIAG=1 (diagnostic, default off, read once): which source touched the pages
 // that make a certificate "touched" (one 4 KiB map per marking source), and whether a 1 KiB map
 // would have called it untouched. Nothing is allocated unless it is on.
-enum class DiagSource : uint32_t { BufferDirtyAdd, TrackerGpuMark, ImageGpuModified, PublicationBegin, Count };
+enum class DiagSource : uint32_t {
+	BufferDirtyAdd,
+	TrackerGpuMark,
+	ImageGpuModified,
+	PublicationBegin,
+	Count
+};
 [[nodiscard]] inline bool DiagEnabled() noexcept {
 	static const bool enabled = [] {
 		const auto* value = std::getenv("KYTY_CLEAN_UNTOUCHED_DIAG");

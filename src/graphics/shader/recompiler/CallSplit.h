@@ -83,8 +83,8 @@ enum HeaderFlag : uint32_t {
 struct Header {
 	uint32_t                entry_site = 0; // 0: from the program start
 	uint32_t                flags      = 0;
-	std::array<uint64_t, 2> digest {};      // of the canonical program (recipe key)
-	uint32_t                vgprs      = 0; // registers a liveness translation loads
+	std::array<uint64_t, 2> digest {}; // of the canonical program (recipe key)
+	uint32_t                vgprs = 0; // registers a liveness translation loads
 	std::vector<SiteLayout> sites;
 
 	[[nodiscard]] uint32_t WaveDwords() const;
@@ -97,12 +97,12 @@ bool DecodeHeader(std::span<const uint32_t> payload, Header& header);
 // A scalar value rebuilt in the loading program: nodes in dependency order. An argument is a
 // node index (>= 0) or the immediate imms[-1 - arg].
 struct RecipeNode {
-	IR::ValueOpcode       opcode = IR::ValueOpcode::Void;
-	uint64_t              flags  = 0;
-	std::vector<int32_t>  args;
-	bool                  has_memory = false;
-	uint32_t              memory_pc  = 0;
-	IR::MemoryInfo        memory {};
+	IR::ValueOpcode      opcode = IR::ValueOpcode::Void;
+	uint64_t             flags  = 0;
+	std::vector<int32_t> args;
+	bool                 has_memory = false;
+	uint32_t             memory_pc  = 0;
+	IR::MemoryInfo       memory {};
 };
 struct SiteRecipe {
 	std::vector<RecipeNode>     nodes;
@@ -113,8 +113,7 @@ struct Recipe {
 	std::vector<SiteRecipe> sites; // index k - 1
 };
 
-void                          RegisterRecipe(const std::array<uint64_t, 2>& digest,
-                                             std::shared_ptr<const Recipe> recipe);
+void RegisterRecipe(const std::array<uint64_t, 2>& digest, std::shared_ptr<const Recipe> recipe);
 std::shared_ptr<const Recipe> FindRecipe(const std::array<uint64_t, 2>& digest);
 
 // What a planning translation found (TranslateResult::call_split).
@@ -127,20 +126,21 @@ struct Report {
 struct Translation {
 	Header                        header;
 	std::shared_ptr<const Recipe> recipe;
-	IR::Value                     state_base;  // U64
-	IR::Value                     header_base; // U64
-	IR::Value                     wave;        // U32
-	IR::Value                     wave_dword;  // U32
-	std::vector<IR::Value>        loaded;      // per vector slot of the entry site
+	IR::Value                     state_base;   // U64
+	IR::Value                     header_base;  // U64
+	IR::Value                     wave;         // U32
+	IR::Value                     wave_dword;   // U32
+	std::vector<IR::Value>        loaded;       // per vector slot of the entry site
 	std::vector<uint32_t>         marker_codes; // liveness: CallStateParam(MarkerBase + i) -> code
 	std::map<uint32_t, uint32_t>  site_at_pc;   // Save / Probe markers: guest pc -> site
 	// Bytes in front of the guest code in this program (the header and, for a resume program, its
-	// branch to a_k): an S_GETPC_B64 of the canonical code returns its guest address, so PC-relative
-	// data after the guest code (Miles' 0x6d9e reads its pixel jitter table this way) is found.
-	uint32_t                      guest_pc_offset = 0;
-	bool                          prepared = false;
+	// branch to a_k): an S_GETPC_B64 of the canonical code returns its guest address, so
+	// PC-relative data after the guest code (Miles' 0x6d9e reads its pixel jitter table this way)
+	// is found.
+	uint32_t guest_pc_offset = 0;
+	bool     prepared        = false;
 };
-constexpr uint32_t MarkerBase = 0x1000u;
+constexpr uint32_t         MarkerBase = 0x1000u;
 [[nodiscard]] Translation* Current();
 void                       SetCurrent(Translation* translation);
 

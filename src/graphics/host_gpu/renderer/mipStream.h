@@ -59,14 +59,16 @@ struct Config {
 	uint32_t class_static   = 0;
 	uint32_t class_new      = 2;
 	uint32_t grow_budget_mb = 0; // per frame, 0 = unlimited
-	bool     proxy          = false; // KYTY_TEX_MIP_AUTO_PROXY: no-counter textures measured through a co-sampled counter texture
-	uint32_t proxy_bias     = 1;     // levels finer than the proxy estimate to keep
+	bool     proxy = false;      // KYTY_TEX_MIP_AUTO_PROXY: no-counter textures measured through a
+	                             // co-sampled counter texture
+	uint32_t proxy_bias = 1;     // levels finer than the proxy estimate to keep
 };
 
 inline uint32_t EnvU32(const char* name, uint32_t fallback) {
 	const char* value = std::getenv(name);
-	return value != nullptr && value[0] != 0 ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
-	                                         : fallback;
+	return value != nullptr && value[0] != 0
+	           ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10))
+	           : fallback;
 }
 inline bool EnvOn(const char* name) {
 	const char* value = std::getenv(name);
@@ -88,15 +90,16 @@ inline const Config& Get() {
 		c.class_static   = EnvU32("KYTY_TEX_MIP_AUTO_STATIC", 0);
 		c.proxy          = EnvOn("KYTY_TEX_MIP_AUTO_PROXY");
 		c.proxy_bias     = EnvU32("KYTY_TEX_MIP_AUTO_PROXY_BIAS", 1);
-		if (const char* cls = std::getenv("KYTY_TEX_MIP_SKIP_CLASS"); cls != nullptr && cls[0] != 0) {
-			c.class_on = true;
+		if (const char* cls = std::getenv("KYTY_TEX_MIP_SKIP_CLASS");
+		    cls != nullptr && cls[0] != 0) {
+			c.class_on   = true;
 			bool new_set = false;
 			// "stream=2,static=0,new=2"
 			for (const char* p = cls; *p != 0;) {
 				const char* eq = std::strchr(p, '=');
 				if (eq == nullptr) break;
-				const auto  len   = static_cast<size_t>(eq - p);
-				const auto  value = static_cast<uint32_t>(std::strtoul(eq + 1, nullptr, 10));
+				const auto len   = static_cast<size_t>(eq - p);
+				const auto value = static_cast<uint32_t>(std::strtoul(eq + 1, nullptr, 10));
 				if (len == 6 && std::strncmp(p, "stream", 6) == 0) c.class_stream = value;
 				if (len == 6 && std::strncmp(p, "static", 6) == 0) c.class_static = value;
 				if (len == 3 && std::strncmp(p, "new", 3) == 0) {
@@ -112,12 +115,14 @@ inline const Config& Get() {
 		}
 		if (c.auto_on) c.class_on = false;
 		if (c.view_shift || c.auto_on || c.class_on || c.census) {
-			std::fprintf(stderr,
-			             "[mipstream] view_shift %d auto %d (max %u start %u bias %u hold %u static %u/%u "
-			             "grow %u MiB/frame proxy %d bias %u) class %d (stream %u static %u new %u) census %d\n",
-			             c.view_shift, c.auto_on, c.auto_max, c.auto_start, c.auto_bias, c.auto_hold,
-			             c.static_frames, c.class_static, c.grow_budget_mb, c.proxy, c.proxy_bias, c.class_on, c.class_stream,
-			             c.class_static, c.class_new, c.census);
+			std::fprintf(
+			    stderr,
+			    "[mipstream] view_shift %d auto %d (max %u start %u bias %u hold %u static %u/%u "
+			    "grow %u MiB/frame proxy %d bias %u) class %d (stream %u static %u new %u) census "
+			    "%d\n",
+			    c.view_shift, c.auto_on, c.auto_max, c.auto_start, c.auto_bias, c.auto_hold,
+			    c.static_frames, c.class_static, c.grow_budget_mb, c.proxy, c.proxy_bias,
+			    c.class_on, c.class_stream, c.class_static, c.class_new, c.census);
 		}
 		return c;
 	}();
@@ -131,22 +136,26 @@ inline const Config& Get() {
 
 // Presented-frame clock (TextureCache's frame counter, set by its constructor).
 inline std::atomic<const std::atomic<uint64_t>*> g_frame_source {nullptr};
-[[nodiscard]] inline uint32_t Now() {
+[[nodiscard]] inline uint32_t                    Now() {
 	const auto* source = g_frame_source.load(std::memory_order_relaxed);
-	return source != nullptr ? static_cast<uint32_t>(source->load(std::memory_order_relaxed) & 0xffffffu) : 0u;
+	return source != nullptr
+	           ? static_cast<uint32_t>(source->load(std::memory_order_relaxed) & 0xffffffu)
+	           : 0u;
 }
-[[nodiscard]] inline uint32_t Age(uint32_t now, uint32_t stamp) { return (now - stamp) & 0xffffffu; }
+[[nodiscard]] inline uint32_t Age(uint32_t now, uint32_t stamp) {
+	return (now - stamp) & 0xffffffu;
+}
 
 // Record bits.
-constexpr uint64_t FinestMask   = 0xfu;          // 0..3 finest measured level (absolute)
-constexpr uint64_t MeasuredBit  = 1u << 4u;
-constexpr uint64_t StreamedBit  = 1u << 5u;
-constexpr uint32_t NativeShift  = 6u;            // 6..9 native_first
-constexpr uint64_t SeenBit      = 1u << 10u;     // first_seen valid
-constexpr uint64_t ProxyBit     = 1u << 15u;     // measured through a co-sampled counter texture
-constexpr uint32_t GameShift    = 11u;           // 11..14 the game's own first level (view + MIN_LOD)
-constexpr uint32_t StampShift   = 16u;           // 16..39 measurement stamp
-constexpr uint32_t SeenShift    = 40u;           // 40..63 first seen
+constexpr uint64_t FinestMask  = 0xfu; // 0..3 finest measured level (absolute)
+constexpr uint64_t MeasuredBit = 1u << 4u;
+constexpr uint64_t StreamedBit = 1u << 5u;
+constexpr uint32_t NativeShift = 6u;        // 6..9 native_first
+constexpr uint64_t SeenBit     = 1u << 10u; // first_seen valid
+constexpr uint64_t ProxyBit    = 1u << 15u; // measured through a co-sampled counter texture
+constexpr uint32_t GameShift   = 11u;       // 11..14 the game's own first level (view + MIN_LOD)
+constexpr uint32_t StampShift  = 16u;       // 16..39 measurement stamp
+constexpr uint32_t SeenShift   = 40u;       // 40..63 first seen
 
 struct Slot {
 	std::atomic<uint64_t> key {0};
@@ -166,7 +175,8 @@ inline Slot        g_table[Slots];
 		if (key == address) return &slot;
 		if (key == 0) {
 			if (!create) return nullptr;
-			if (slot.key.compare_exchange_strong(key, address, std::memory_order_acq_rel) || key == address) {
+			if (slot.key.compare_exchange_strong(key, address, std::memory_order_acq_rel) ||
+			    key == address) {
 				return &slot;
 			}
 		}
@@ -199,7 +209,8 @@ inline void NoteStreamed(uint64_t address) {
 inline void NoteNative(uint64_t address, uint32_t native_first) {
 	if (!Active()) return;
 	Update(address, [native_first](uint64_t v) {
-		return (v & ~(uint64_t {0xf} << NativeShift)) | (uint64_t {native_first & 0xfu} << NativeShift);
+		return (v & ~(uint64_t {0xf} << NativeShift)) |
+		       (uint64_t {native_first & 0xfu} << NativeShift);
 	});
 }
 
@@ -260,8 +271,9 @@ inline void NoteMeasured(uint64_t address, uint32_t finest, bool proxy = false) 
 	if (last > base) {
 		const uint32_t whole = min_lod >> 8u;
 		if (whole > host) host = whole < last ? whole : last;
-		const uint64_t address = ((tsharp[0] | (static_cast<uint64_t>(tsharp[1]) << 32u)) & 0xFFFFFFFFFFull) << 8u;
-		const uint32_t native  = static_cast<uint32_t>((Read(address) >> NativeShift) & 0xfu);
+		const uint64_t address =
+		    ((tsharp[0] | (static_cast<uint64_t>(tsharp[1]) << 32u)) & 0xFFFFFFFFFFull) << 8u;
+		const uint32_t native = static_cast<uint32_t>((Read(address) >> NativeShift) & 0xfu);
 		if (native > host) host = native < last ? native : last;
 	}
 	return host;
@@ -291,7 +303,8 @@ inline void NoteMeasured(uint64_t address, uint32_t finest, bool proxy = false) 
 	}
 	if (c.class_on) {
 		if ((v & StreamedBit) != 0) return c.class_stream;
-		if ((v & SeenBit) != 0 && Age(now, static_cast<uint32_t>((v >> SeenShift) & 0xffffffu)) > c.static_frames) {
+		if ((v & SeenBit) != 0 &&
+		    Age(now, static_cast<uint32_t>((v >> SeenShift) & 0xffffffu)) > c.static_frames) {
 			return c.class_static;
 		}
 		return c.class_new;

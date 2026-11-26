@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/renderer/lodStats.h"
-#include "graphics/host_gpu/renderer/mipStream.h"
 
 #include "common/assert.h"
 #include "common/hangTrace.h"
@@ -10,6 +9,7 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
+#include "graphics/host_gpu/renderer/mipStream.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "kernel/memory.h"
 
@@ -258,7 +258,8 @@ void LodStatsCounter::Report(uint64_t destination, uint32_t size, uint32_t contr
 	if (MipStream::Active()) {
 		std::scoped_lock lock(MipStream::g_assoc_mutex);
 		if (publish && !MipStream::g_assoc.empty()) {
-			assoc = std::make_shared<std::vector<std::pair<uint32_t, uint64_t>>>(MipStream::g_assoc);
+			assoc =
+			    std::make_shared<std::vector<std::pair<uint32_t, uint64_t>>>(MipStream::g_assoc);
 		}
 		if (reset) {
 			MipStream::g_assoc.clear();
@@ -327,7 +328,8 @@ void LodStatsCounter::Report(uint64_t destination, uint32_t size, uint32_t contr
 				}
 				// Proxy: finest level of the counter texture plus the width ratio, minus the bias.
 				const int offset = static_cast<int>((code >> 8u) & 0xfu) - 8;
-				const int level  = static_cast<int>(std::min<uint32_t>(words[counter], 14u)) + offset - bias;
+				const int level =
+				    static_cast<int>(std::min<uint32_t>(words[counter], 14u)) + offset - bias;
 				MipStream::NoteMeasured(address, static_cast<uint32_t>(std::max(level, 0)), true);
 			}
 		}

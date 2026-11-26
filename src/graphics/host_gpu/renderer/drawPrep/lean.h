@@ -48,7 +48,7 @@ enum Part : uint32_t {
 }
 
 // drawPrep.cpp (live switch).
-[[nodiscard]] uint32_t Parts() noexcept;
+[[nodiscard]] uint32_t    Parts() noexcept;
 [[nodiscard]] inline bool On(Part part) noexcept {
 	return (Parts() & part) != 0;
 }

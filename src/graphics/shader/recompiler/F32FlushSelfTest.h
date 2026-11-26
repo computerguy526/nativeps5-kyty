@@ -119,14 +119,14 @@ struct Verdict {
 	std::array<uint64_t, UnaryOps + CompareOps> by_op {};
 	// "rcp 2046, OpFOrdLessThan 12": the ops with mismatches.
 	[[nodiscard]] std::string ByOpText() const;
-	[[nodiscard]] bool Passed() const { return checked != 0 && mismatches == 0; }
+	[[nodiscard]] bool        Passed() const { return checked != 0 && mismatches == 0; }
 };
 // The op classes whose results all matched, as CodegenOptions::f32_flush_host_classes bits
 // (F32FlushClassRcp/Rsq/Sqrt/Exp/Log = 1 << UnaryOp, F32FlushClassCompare = 32 for all twelve
 // compares); 0 for a verdict that checked nothing.
 inline constexpr uint8_t ClassCompare = 32u;
 inline constexpr uint8_t ClassAll     = 63u;
-[[nodiscard]] uint8_t     PassingClasses(const Verdict& verdict);
+[[nodiscard]] uint8_t    PassingClasses(const Verdict& verdict);
 // "rsq, sqrt, exp, log" ("none" for 0, "all" for ClassAll).
 [[nodiscard]] std::string ClassesText(uint8_t classes);
 // Actual results against the shader's expected results.
@@ -159,19 +159,19 @@ void ForceMismatch(std::span<uint32_t> buffer);
 // values that are exact f16 denormals and the ties between them (round to nearest even, as
 // V_CVT_F16_F32 under FLOAT_MODE 0xC0), both signs, and f32 denormals (-> signed zero).
 // Expected = CPU model, bit-exact.
-inline constexpr uint32_t F16Words        = 2048; // unpack inputs, one per invocation
-inline constexpr uint32_t F16PackValues   = 2u * F16Words;
-inline constexpr uint32_t F16UnpackBase   = 0;
-inline constexpr uint32_t F16PackBase     = F16UnpackBase + F16Words;
+inline constexpr uint32_t F16Words         = 2048; // unpack inputs, one per invocation
+inline constexpr uint32_t F16PackValues    = 2u * F16Words;
+inline constexpr uint32_t F16UnpackBase    = 0;
+inline constexpr uint32_t F16PackBase      = F16UnpackBase + F16Words;
 inline constexpr uint32_t F16UnpackOutBase = F16PackBase + F16PackValues; // 2 f32 per input word
-inline constexpr uint32_t F16PackOutBase  = F16UnpackOutBase + 2u * F16Words; // 1 word per pair
-inline constexpr uint32_t F16BufferWords  = F16PackOutBase + F16Words;
+inline constexpr uint32_t F16PackOutBase   = F16UnpackOutBase + 2u * F16Words; // 1 word per pair
+inline constexpr uint32_t F16BufferWords   = F16PackOutBase + F16Words;
 static_assert(F16Words % WorkgroupSize == 0);
 
 // f16 bits -> f32 bits (exact; denormals kept).
 [[nodiscard]] uint32_t F16ToF32Bits(uint32_t half);
 // f32 bits -> f16 bits, round to nearest even, f16 denormals kept, f32 denormals -> signed zero.
-[[nodiscard]] uint32_t F32ToF16BitsRne(uint32_t bits);
+[[nodiscard]] uint32_t              F32ToF16BitsRne(uint32_t bits);
 [[nodiscard]] std::vector<uint32_t> F16InitialBuffer();
 // Results against the model; by_op[0] counts unpack mismatches, by_op[1] pack mismatches.
 [[nodiscard]] Verdict ClassifyF16(std::span<const uint32_t> buffer);
@@ -189,7 +189,7 @@ enum class Outcome : uint8_t {
 	NoPreserve16 // stage B: all classes, DenormPreserve 16 left out
 };
 struct DecisionInput {
-	uint8_t stage_a_classes = 0;     // PassingClasses of stage A (0 if it did not run)
+	uint8_t stage_a_classes     = 0;     // PassingClasses of stage A (0 if it did not run)
 	bool    preserve16_declared = false; // the device's controls declare DenormPreserve 16
 	bool    native_f16_active   = false; // stage B refuses
 	bool    stage_b_ran         = false;
@@ -202,7 +202,7 @@ struct DecisionInput {
 [[nodiscard]] Outcome Decide(const DecisionInput& in);
 // The CodegenOptions::f32_flush_host_classes value of an outcome.
 inline constexpr uint8_t ClassNoPreserve16 = 64u;
-[[nodiscard]] uint8_t OutcomeClasses(Outcome outcome, uint8_t stage_a_classes);
+[[nodiscard]] uint8_t    OutcomeClasses(Outcome outcome, uint8_t stage_a_classes);
 
 } // namespace Libs::Graphics::ShaderRecompiler::FlushSelfTest
 

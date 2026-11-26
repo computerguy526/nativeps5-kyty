@@ -25,18 +25,18 @@ class QTimer;
 class PrecompileDialog final: public QDialog {
 public:
 	// The process has its program, arguments, environment and working directory; the window starts
-	// it and owns it. `installed_now`: the list was copied into place for this run, so it is removed
-	// again when the emulator refuses it. `finished` is called once, when the process has ended
-	// (or could not be started).
-	PrecompileDialog(const QString& game, const QString& list, bool installed_now, QProcess* process,
-	                 std::function<void()> finished, QWidget* parent = nullptr);
+	// it and owns it. `installed_now`: the list was copied into place for this run, so it is
+	// removed again when the emulator refuses it. `finished` is called once, when the process has
+	// ended (or could not be started).
+	PrecompileDialog(const QString& game, const QString& list, bool installed_now,
+	                 QProcess* process, std::function<void()> finished, QWidget* parent = nullptr);
 	~PrecompileDialog() override;
 
 	// Explains what a shader list is and lets the user choose one for the game; the file is checked
-	// and copied to its place in the emulator's folder. Returns that place, or empty when nothing was
-	// installed. With `explain_missing` the question starts from "no list is installed".
-	static QString ChooseList(QWidget* parent, const QString& emulator_dir, const Configuration& game,
-	                          bool explain_missing);
+	// and copied to its place in the emulator's folder. Returns that place, or empty when nothing
+	// was installed. With `explain_missing` the question starts from "no list is installed".
+	static QString ChooseList(QWidget* parent, const QString& emulator_dir,
+	                          const Configuration& game, bool explain_missing);
 	// Test seam (the launcher's --precompile-list argument): this file is taken as the user's
 	// choice, without the question and the file dialog; the checks and the copy are the same.
 	static void SetTestList(const QString& path) { s_test_list = path; }
@@ -48,13 +48,13 @@ protected:
 
 private:
 	static QString s_test_list;
-	void ReadOutput();
-	void TakeLine(const QString& line);
-	void ShowLines();
-	void Finish(const QString& text, bool ok);
-	void ProcessFinished(int exit_code, QProcess::ExitStatus status);
-	void ProcessFailed(QProcess::ProcessError error);
-	void Cancel();
+	void           ReadOutput();
+	void           TakeLine(const QString& line);
+	void           ShowLines();
+	void           Finish(const QString& text, bool ok);
+	void           ProcessFinished(int exit_code, QProcess::ExitStatus status);
+	void           ProcessFailed(QProcess::ProcessError error);
+	void           Cancel();
 
 	QString               m_list;
 	bool                  m_installed_now = false;

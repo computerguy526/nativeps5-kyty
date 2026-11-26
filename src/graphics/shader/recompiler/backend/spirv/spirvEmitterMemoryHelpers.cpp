@@ -1,6 +1,5 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
-
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
 
@@ -247,7 +246,7 @@ MemoryResourceAccess PrepareMemoryResourceAccess(EmitterState& state, const IR::
 			const auto bits = mem.kind == IR::ResourceKind::Buffer
 			                      ? StorageBufferElementBits(state.program, mem) : 32u;
 			// KYTY_COHERENT_GLC_ONLY: only GLC/DLC accesses use the Coherent alias.
-			const auto variable = bits == 8u ? state.storage_buffer_u8_variable
+			const auto variable = bits == 8u    ? state.storage_buffer_u8_variable
 			                      : bits == 16u ? state.storage_buffer_u16_variable
 			                      : mem.coherent && state.storage_buffer_coherent_variable != 0
 			                          ? state.storage_buffer_coherent_variable
@@ -277,7 +276,8 @@ uint32_t EmitStorageElementInBounds(EmitterState& state, const MemoryResourceAcc
 	// KYTY_ROBUST_BUFFER_STORES (upstream ee034be4b), plain stores only: the descriptor range ends
 	// where access.length does, and with robustBufferAccess2 at a 1-byte robustness alignment the
 	// device drops a store with any byte past it (HostBufferRobustness).
-	if ((access.kind == IR::ResourceKind::Buffer || access.kind == IR::ResourceKind::ScalarBuffer) &&
+	if ((access.kind == IR::ResourceKind::Buffer ||
+	     access.kind == IR::ResourceKind::ScalarBuffer) &&
 	    GetCodegenOptions().robust_buffer_stores &&
 	    GetHostBufferRobustness().storage_dword_loads_return_zero) {
 		return ConstantBool(state, true);
@@ -462,13 +462,13 @@ static uint32_t EmitF32ToI32Bits(EmitterState& state, uint32_t value, uint32_t m
 }
 
 uint32_t EmitClampToHalfRangeBits(EmitterState& state, uint32_t f32_bits) {
-	const auto magnitude = EmitBinaryU32(state, spv::OpBitwiseAnd, f32_bits,
-	                                     ConstantU32(state, 0x7fffffffu));
+	const auto magnitude =
+	    EmitBinaryU32(state, spv::OpBitwiseAnd, f32_bits, ConstantU32(state, 0x7fffffffu));
 	// 0x477fe000 is 65504, the largest half; 0x7f800000 and above are infinity and NaN.
-	const auto beyond = Binary(
-	    state, spv::OpLogicalAnd, TypeBool(state),
-	    EmitCompareU32Constant(state, spv::OpUGreaterThan, magnitude, 0x477fe000u),
-	    EmitCompareU32Constant(state, spv::OpULessThan, magnitude, 0x7f800000u));
+	const auto beyond =
+	    Binary(state, spv::OpLogicalAnd, TypeBool(state),
+	           EmitCompareU32Constant(state, spv::OpUGreaterThan, magnitude, 0x477fe000u),
+	           EmitCompareU32Constant(state, spv::OpULessThan, magnitude, 0x7f800000u));
 	const auto largest = EmitBinaryU32(
 	    state, spv::OpBitwiseOr,
 	    EmitBinaryU32(state, spv::OpBitwiseAnd, f32_bits, ConstantU32(state, 0x80000000u)),

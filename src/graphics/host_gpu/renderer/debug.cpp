@@ -300,13 +300,12 @@ static void RtCheck(P& p, const HW::RenderTarget& rt) {
 	KYTY_CHECK_EXIT(p, rt.info.fmask_compression_enable && rt.attrib.num_samples == 0 &&
 	                       rt.attrib.num_fragments == 0);
 
-	KYTY_CHECK_LOG_ONCE(p, log.rt_metadata,
-	                    rt.info.cmask_fast_clear_enable || rt.info.dcc_compression_enable,
-	                    "RenderTarget: temporary: ignoring PS5 color metadata fast_clear=%s dcc=%s "
-	                    "cmask=0x%016" PRIx64 " dcc_addr=0x%016" PRIx64 "\n",
-	                    rt.info.cmask_fast_clear_enable ? "true" : "false",
-	                    rt.info.dcc_compression_enable ? "true" : "false", rt.cmask.addr,
-	                    rt.dcc_addr.addr);
+	KYTY_CHECK_LOG_ONCE(
+	    p, log.rt_metadata, rt.info.cmask_fast_clear_enable || rt.info.dcc_compression_enable,
+	    "RenderTarget: temporary: ignoring PS5 color metadata fast_clear=%s dcc=%s "
+	    "cmask=0x%016" PRIx64 " dcc_addr=0x%016" PRIx64 "\n",
+	    rt.info.cmask_fast_clear_enable ? "true" : "false",
+	    rt.info.dcc_compression_enable ? "true" : "false", rt.cmask.addr, rt.dcc_addr.addr);
 	KYTY_CHECK_LOG_ONCE(p, log.rt_dest_alpha, rt.attrib.force_dest_alpha_to_one,
 	                    "RenderTarget: temporary: accepting PS5 force destination alpha-to-one\n");
 	KYTY_CHECK_FAIL(p, !RenderIsColorTileMode(rt.attrib3.tile_mode),

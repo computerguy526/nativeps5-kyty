@@ -37,7 +37,7 @@ struct PipelineLayoutSignature {
 	uint32_t                             push_size        = 0;
 	bool                                 push_descriptors = false;
 	// Bindless (Senaxx): the set-1 layout of a pipeline that samples bindless images (0: none).
-	uint64_t                             bindless_set     = 0;
+	uint64_t bindless_set = 0;
 
 	bool operator==(const PipelineLayoutSignature&) const = default;
 };
@@ -55,7 +55,7 @@ MakePipelineLayoutSignature(std::span<const vk::DescriptorSetLayoutBinding> bind
 // bindless_set: the set-1 layout of a pipeline that samples bindless images (not owned), or null
 // for every other pipeline, whose layout is then exactly as before.
 [[nodiscard]] PipelineLayoutHandles
-AcquirePipelineLayout(GraphicContext& graphics,
+AcquirePipelineLayout(GraphicContext&                                 graphics,
                       std::span<const vk::DescriptorSetLayoutBinding> bindings,
                       vk::ShaderStageFlags push_stages, uint32_t push_size,
                       vk::DescriptorSetLayout bindless_set = nullptr);

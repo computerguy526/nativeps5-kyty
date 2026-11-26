@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <span>
 #include <vector>
-
 #include <xxhash.h>
 
 // KYTY_DRAW_RUN_TEXDELTA (live, default 0; 1 on, 2 verify; with KYTY_DRAW_RUN=1): a draw whose
@@ -19,7 +18,8 @@
 //    buffer, tick, rendering instance, validation, the same programs, slice offset);
 //  - neither the record nor the draw writes buffers (no KYTY_DRAW_RUN_WRITES overlap test against
 //    textures that are resolved only later);
-//  - the draw resolves its textures and samplers, their views and transitions as on the normal path,
+//  - the draw resolves its textures and samplers, their views and transitions as on the normal
+//  path,
 //    and pushes all its descriptors; it keeps the record's targets, attachment acquisition and
 //    rendering state, and its dynamic state (a function of the same registers and targets);
 //  - after the buffer work the attachments must be as the record left them (the textures are this
@@ -33,8 +33,9 @@ namespace Libs::Graphics::DrawRun::TexDelta {
 
 // The structure key's chaining (DrawRun::StructureKey): the register hash, the stage programs, the
 // stage flags and the hash of the T#/S# words. Never 0.
-[[nodiscard]] inline uint64_t ChainKey(uint64_t registers, const std::array<const void*, 2>& programs,
-                                       uint32_t flags, uint64_t words) {
+[[nodiscard]] inline uint64_t ChainKey(uint64_t                          registers,
+                                       const std::array<const void*, 2>& programs, uint32_t flags,
+                                       uint64_t words) {
 	uint64_t result = XXH3_64bits_withSeed(programs.data(), sizeof(programs), registers);
 	result          = XXH3_64bits_withSeed(&flags, sizeof(flags), result);
 	result          = XXH3_64bits_withSeed(&words, sizeof(words), result);
@@ -42,11 +43,11 @@ namespace Libs::Graphics::DrawRun::TexDelta {
 }
 
 // The key without the T#/S# words (a seed of its own, so it never stands for a full key). Never 0.
-[[nodiscard]] inline uint64_t TextureFreeKey(uint64_t registers, const std::array<const void*, 2>& programs,
-                                             uint32_t flags) {
+[[nodiscard]] inline uint64_t
+TextureFreeKey(uint64_t registers, const std::array<const void*, 2>& programs, uint32_t flags) {
 	constexpr uint64_t kTag = 0x7e47de17a5ull;
-	uint64_t           result = XXH3_64bits_withSeed(programs.data(), sizeof(programs), registers ^ kTag);
-	result                    = XXH3_64bits_withSeed(&flags, sizeof(flags), result);
+	uint64_t result = XXH3_64bits_withSeed(programs.data(), sizeof(programs), registers ^ kTag);
+	result          = XXH3_64bits_withSeed(&flags, sizeof(flags), result);
 	return result != 0 ? result : 1;
 }
 
@@ -113,7 +114,8 @@ struct AttachmentFacts {
 			}
 		}
 		for (const auto& attachment: attachments) {
-			if (texture.size != 0 && attachment.size != 0 && texture.address < attachment.address + attachment.size &&
+			if (texture.size != 0 && attachment.size != 0 &&
+			    texture.address < attachment.address + attachment.size &&
 			    attachment.address < texture.address + texture.size) {
 				return TextureVerdict::OverAttachment;
 			}

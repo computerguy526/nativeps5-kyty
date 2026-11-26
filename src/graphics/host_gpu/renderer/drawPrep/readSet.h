@@ -85,13 +85,13 @@ public:
 	// first Record. While the reads come in the order Finish would sort them into, Record merges
 	// each one into the ranges at once, exactly as Finish's loop would (the same comparisons in the
 	// same order, so the same ranges, bytes and failures): Finish then has nothing left to do, and
-	// the bytes are copied once. The first read out of that order turns the ranges built so far back
-	// into reads (each range one read, its merged bytes): merging those with the remaining reads
-	// gives the ranges merging all the original reads gives, since a merged range is the union of
-	// its reads and two pieces join on the same rule (overlap, or touch away from a 4 KiB boundary)
-	// whether they are reads or ranges, and two reads that disagree on a byte make either merge
-	// fail. The limits count the original reads and bytes, as the plain path does.
-	void SetLean(bool lean) noexcept { m_lean = lean; }
+	// the bytes are copied once. The first read out of that order turns the ranges built so far
+	// back into reads (each range one read, its merged bytes): merging those with the remaining
+	// reads gives the ranges merging all the original reads gives, since a merged range is the
+	// union of its reads and two pieces join on the same rule (overlap, or touch away from a 4 KiB
+	// boundary) whether they are reads or ranges, and two reads that disagree on a byte make either
+	// merge fail. The limits count the original reads and bytes, as the plain path does.
+	void               SetLean(bool lean) noexcept { m_lean = lean; }
 	[[nodiscard]] bool Lean() const noexcept { return m_lean; }
 	// Tests: whether the lean read set is still merging online.
 	[[nodiscard]] bool LeanOnline() const noexcept { return m_lean && m_online; }
@@ -161,8 +161,12 @@ public:
 	}
 	[[nodiscard]] ReadFailure Failure() const noexcept { return m_failure; }
 	[[nodiscard]] bool        Failed() const noexcept { return m_failure != ReadFailure::None; }
-	[[nodiscard]] size_t      ReadCount() const noexcept { return m_lean ? m_read_count : m_reads.size(); }
-	[[nodiscard]] size_t      ByteCount() const noexcept { return m_lean ? m_byte_count : m_bytes.size(); }
+	[[nodiscard]] size_t      ReadCount() const noexcept {
+		return m_lean ? m_read_count : m_reads.size();
+	}
+	[[nodiscard]] size_t ByteCount() const noexcept {
+		return m_lean ? m_byte_count : m_bytes.size();
+	}
 
 	// Coalesces the recorded reads into sorted, non-overlapping ranges. Overlapping reads merge,
 	// and so do touching ones unless they meet at a 4 KiB boundary (two guest mappings can meet
@@ -356,15 +360,17 @@ private:
 
 	// The plain path's Record limits and coalescing, then the online merge (SetLean).
 	bool RecordLean(uint64_t address, const uint8_t* data, uint64_t size) {
-		if (m_read_count >= MaxReads || size > MaxBytes - m_byte_count || address > UINT64_MAX - size) {
+		if (m_read_count >= MaxReads || size > MaxBytes - m_byte_count ||
+		    address > UINT64_MAX - size) {
 			Fail(ReadFailure::Overflow);
 			return false;
 		}
 		m_byte_count += static_cast<uint32_t>(size);
-		// The plain path extends its last entry instead of adding one (KYTY_DRAW_PREP_DIRECT_READS).
+		// The plain path extends its last entry instead of adding one
+		// (KYTY_DRAW_PREP_DIRECT_READS).
 		const bool extends = m_coalesce && m_entries != 0 && m_last_end == address &&
 		                     (address & (PageSize - 1u)) != 0;
-		m_last_end = address + size;
+		m_last_end         = address + size;
 		if (extends) {
 			m_entry.size += size;
 		} else {
@@ -379,8 +385,9 @@ private:
 		}
 		// Finish's order: by address, then the larger read first. Still sorted if the previous
 		// entry does not sort after the current one (the current one may just have grown).
-		if (m_entries >= 2 && (m_entry.address < m_prev_entry.address ||
-		                       (m_entry.address == m_prev_entry.address && m_entry.size > m_prev_entry.size))) {
+		if (m_entries >= 2 &&
+		    (m_entry.address < m_prev_entry.address ||
+		     (m_entry.address == m_prev_entry.address && m_entry.size > m_prev_entry.size))) {
 			GoOffline();
 			AppendRead(address, data, size, extends);
 			return true;
@@ -472,10 +479,11 @@ private:
 				out.push_back(range);
 			}
 		};
-		size_t bytes = 0;
+		size_t bytes  = 0;
 		size_t digest = 0;
 		while (bytes < m_ranges.size() || digest < count) {
-			if (digest == count || (bytes < m_ranges.size() && m_ranges[bytes].begin <= digests[digest].begin)) {
+			if (digest == count ||
+			    (bytes < m_ranges.size() && m_ranges[bytes].begin <= digests[digest].begin)) {
 				push(m_ranges[bytes++]);
 			} else {
 				push(digests[digest++]);

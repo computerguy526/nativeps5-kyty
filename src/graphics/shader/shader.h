@@ -119,7 +119,7 @@ struct ShaderMeshInputInfo: ShaderWorkgroupInputInfo {
 	bool     fast_launch          = false;
 	// A subgroup larger than a host mesh workgroup may be (VK_EXT_mesh_shader limits) runs its
 	// waves in this many sequential passes of equal size, each on the whole workgroup.
-	uint32_t passes               = 1;
+	uint32_t passes = 1;
 
 	[[nodiscard]] constexpr uint32_t Waves() const {
 		return (threads_num[0] * threads_num[1] * threads_num[2] + wave_size - 1u) / wave_size;
@@ -172,11 +172,11 @@ struct ShaderTessellationInputInfo {
 	uint32_t partitioning          = 0;
 	uint32_t output_topology       = 0;
 	// VGT_HOS_MIN/MAX_TESS_LEVEL as f32 bits: the hardware clamps every factor to them.
-	uint32_t min_tess_level        = 0;
-	uint32_t max_tess_level        = 0;
-	// KYTY_TESS_MERGED_CARRY (with KYTY_TESS_MERGED_HULL; based on Erlou93/KytyPS5-Yotei): the VGPRs
-	// the HS part of a split merged LS+HS program reads before writing them. On the hardware one
-	// wave runs both parts, so they still hold what the LS part left in the lane. The LS stage
+	uint32_t min_tess_level = 0;
+	uint32_t max_tess_level = 0;
+	// KYTY_TESS_MERGED_CARRY (with KYTY_TESS_MERGED_HULL; based on Erlou93/KytyPS5-Yotei): the
+	// VGPRs the HS part of a split merged LS+HS program reads before writing them. On the hardware
+	// one wave runs both parts, so they still hold what the LS part left in the lane. The LS stage
 	// exports them after its outputs and the HS stage starts with them; bit k = v<k>. Empty for
 	// every other pair.
 	std::array<uint32_t, 8> carried_vgprs {};
@@ -217,8 +217,8 @@ struct ShaderVertexInputInfo {
 	// KYTY_INDIRECT_VERTEX_BASE (upstream a833e1b73): an indirect draw's vertex index excludes its
 	// record's base vertex, which goes only to this user SGPR (s8 + GS user data index; -1: none).
 	// Not stored in journals and lists (a later build recompiles such a program).
-	bool                    indirect_vertex_base = false;
-	int32_t                 base_vertex_sgpr     = -1;
+	bool    indirect_vertex_base = false;
+	int32_t base_vertex_sgpr     = -1;
 };
 
 // Bytes of an input info that shader journals and pipeline lists store. A vertex input info is
@@ -291,7 +291,7 @@ struct ShaderPixelInputInfo {
 	// EXTRA_LDS_SIZE: LDS reserved beyond the interpolants (VGPR spills to LDS); at most 255 * 128
 	// dwords, so 16 bits. The two bytes after it were its always-zero high half in stored journals
 	// and pipeline lists.
-	uint16_t                                       lds_size_dwords              = 0;
+	uint16_t lds_size_dwords = 0;
 	// KYTY_INT_MRT_OUTPUTS (upstream 26ca60923): exports to UINT and SINT targets, which take
 	// integer outputs of the same signedness. In the old high half of lds_size_dwords (the padding
 	// before `stage` holds the ObjPrimID fields); journals and pipeline lists read them as zero
@@ -324,26 +324,30 @@ struct ShaderPixelInputInfo {
 	// KYTY_FLOAT_STORE_CLAMP: MRT i goes to a 16-bit float render target (bit i); its 32-bit
 	// exports clamp to the half range. In padding before `stage`: the struct keeps its size, and
 	// stored journals and pipeline lists read it as zero (ShaderSanitizeStoredInputInfo).
-	uint8_t                                        target_half_float_mask = 0;
+	uint8_t target_half_float_mask = 0;
 	// KYTY_OBJPRIM_ID (based on Erlou93/KytyPS5-Yotei): the colour slot that receives the draw's
 	// hardware ObjPrimID write (VGT_OBJECT_ID, plus the primitive index with
 	// PA_CL_OBJPRIM_ID_CNTL.ADD_PIPED_PRIM_ID), 0xff for none. VGT_OBJECT_ID changes every draw, so
 	// the program reads it from push-constant dword objprim_push_dword. In the padding before
 	// `stage` (offsets 213..215): the struct keeps its size; stored journals read them as "none"
 	// (ShaderSanitizeStoredInputInfo).
-	uint8_t                                        objprim_slot           = 0xffu;
-	uint8_t                                        objprim_push_dword     = 0xffu;
-	bool                                           objprim_add_prim_id    = false;
+	uint8_t                                        objprim_slot        = 0xffu;
+	uint8_t                                        objprim_push_dword  = 0xffu;
+	bool                                           objprim_add_prim_id = false;
 	ShaderStageRuntime                             stage;
 
 	bool HasPositionInput() const { return ps_pos_x || ps_pos_y || ps_pos_z || ps_pos_w; }
 	bool HasObjprimOutput() const { return objprim_slot < 8u; }
 };
-// Journals and pipeline lists store the whole pixel input info: the masks above must stay in padding.
-static_assert(offsetof(ShaderPixelInputInfo, target_uint_mask) == offsetof(ShaderPixelInputInfo, lds_size_dwords) + 2,
-              "ShaderPixelInputInfo: the integer target masks must stay in lds_size_dwords' old high half");
-static_assert(offsetof(ShaderPixelInputInfo, stage) == 216,
-              "ShaderPixelInputInfo layout changed: stored journals and pipeline lists would break");
+// Journals and pipeline lists store the whole pixel input info: the masks above must stay in
+// padding.
+static_assert(
+    offsetof(ShaderPixelInputInfo, target_uint_mask) ==
+        offsetof(ShaderPixelInputInfo, lds_size_dwords) + 2,
+    "ShaderPixelInputInfo: the integer target masks must stay in lds_size_dwords' old high half");
+static_assert(
+    offsetof(ShaderPixelInputInfo, stage) == 216,
+    "ShaderPixelInputInfo layout changed: stored journals and pipeline lists would break");
 
 // Journals and pipeline lists written before async_compute / parameter_mode existed hold padding
 // bytes where those fields now sit (sizeof did not change). Called after a stored input info is
@@ -404,7 +408,7 @@ uint32_t ShaderPixelParameterMappedLocation(const ShaderPixelInputInfo& info, ui
 bool     ShaderCbShaderMaskExports();
 // KYTY_OBJPRIM_ID=1 (startup, default off): the hardware ObjPrimID write (PipelineCache
 // ObjprimIdSlot, ShaderPixelInputInfo::objprim_slot).
-bool     ShaderObjprimIdEnabled();
+bool ShaderObjprimIdEnabled();
 // The colour target of MRT export `export_index` under `shader_mask`; UINT32_MAX for none.
 uint32_t ShaderPixelExportTarget(uint32_t shader_mask, uint32_t export_index);
 uint32_t ShaderPixelParameterLocation(const ShaderPixelInputInfo& info,

@@ -68,8 +68,7 @@ using PhiMap = std::unordered_map<Inst*, Inst*>;
 // stack instead of recursion (same order, same result): a spill VGPR that crosses thousands of
 // blocks nests as many Phis, and PPSA03671's expanded material kernel 0xe6d76d24f59f8015 overflowed
 // a 1 MiB thread stack at 3,265 levels.
-Value GetRealValue(PhiMap& phi_map, Value source, uint32_t lane, uint32_t wave_size,
-                   bool relaxed) {
+Value GetRealValue(PhiMap& phi_map, Value source, uint32_t lane, uint32_t wave_size, bool relaxed) {
 	struct Frame {
 		Inst*              inst = nullptr; // the guest Phi
 		Inst*              phi  = nullptr; // its lane value
@@ -78,7 +77,8 @@ Value GetRealValue(PhiMap& phi_map, Value source, uint32_t lane, uint32_t wave_s
 	};
 	std::vector<Frame> stack;
 	Value              ready;
-	// Either the value at `value` is known (in `ready`; returns true) or a frame for its Phi starts.
+	// Either the value at `value` is known (in `ready`; returns true) or a frame for its Phi
+	// starts.
 	const auto enter = [&](Value value) {
 		const auto chain = SearchChain(value, lane, wave_size);
 		if (chain.write != nullptr) {
@@ -86,8 +86,8 @@ Value GetRealValue(PhiMap& phi_map, Value source, uint32_t lane, uint32_t wave_s
 			return true;
 		}
 		auto* inst = chain.value.TryInstruction();
-		if (relaxed && (inst == nullptr || inst->GetOpcode() != ValueOpcode::Phi ||
-		                inst->NumArgs() == 0)) {
+		if (relaxed &&
+		    (inst == nullptr || inst->GetOpcode() != ValueOpcode::Phi || inst->NumArgs() == 0)) {
 			// No V_WRITELANE of this lane on this path: the guest lane is undefined; read 0.
 			ready = Value(0u);
 			return true;
@@ -98,16 +98,17 @@ Value GetRealValue(PhiMap& phi_map, Value source, uint32_t lane, uint32_t wave_s
 			ready = Value(entry->second);
 			return true;
 		}
-		auto* block           = inst->Parent();
-		auto  insertion_point = std::find_if(block->begin(), block->end(),
-		                                     [&](const Inst& candidate) { return &candidate == inst; });
+		auto* block = inst->Parent();
+		auto  insertion_point =
+		    std::find_if(block->begin(), block->end(),
+		                 [&](const Inst& candidate) { return &candidate == inst; });
 		EXIT_IF(insertion_point == block->end());
 		auto& phi = *block->PrependNewInst(insertion_point, ValueOpcode::Phi);
 		phi.SetFlags(Type::U32);
 		entry->second = &phi;
-		auto& frame = stack.emplace_back();
-		frame.inst  = inst;
-		frame.phi   = &phi;
+		auto& frame   = stack.emplace_back();
+		frame.inst    = inst;
+		frame.phi     = &phi;
 		frame.arguments.reserve(inst->NumArgs());
 		return false;
 	};

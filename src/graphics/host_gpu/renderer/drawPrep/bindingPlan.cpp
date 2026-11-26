@@ -236,9 +236,10 @@ bool PredictTargets(const GraphicContext& graphics, const HW::Context& ctx,
 	// KYTY_LAYER_CLAMP: the key of a draw that exports the layer index takes the bound layer count,
 	// which only the resolution knows: the serial path.
 	if (ShaderRecompiler::GetCodegenOptions().layer_clamp && prepared.vertex_info.stage &&
-	    std::ranges::any_of(prepared.vertex_info.stage.program->info.outputs, [](const auto& output) {
-		    return output.kind == ShaderRecompiler::IR::StageOutputKind::Layer;
-	    })) {
+	    std::ranges::any_of(prepared.vertex_info.stage.program->info.outputs,
+	                        [](const auto& output) {
+		                        return output.kind == ShaderRecompiler::IR::StageOutputKind::Layer;
+	                        })) {
 		return false;
 	}
 	uint32_t mrt_mask = 0;
@@ -316,7 +317,8 @@ void PlanPipeline(const BindingPlanContext& context, const RegisterSnapshot& reg
 	const auto abstain = [prefetch_only](E event, size_t reason = 5) {
 		if (prefetch_only) return;
 		if (event != E::DrawPrepBindingAbstainPipelineBusy) {
-			g_binding_totals.pipeline_abstain_reasons[reason].fetch_add(1, std::memory_order_relaxed);
+			g_binding_totals.pipeline_abstain_reasons[reason].fetch_add(1,
+			                                                            std::memory_order_relaxed);
 		}
 		Profiler::CountFrameEvent(event);
 		(event == E::DrawPrepBindingAbstainPipelineBusy ? g_binding_totals.pipeline_busy
@@ -552,7 +554,9 @@ BindingTotals& GetBindingTotals() {
 void PrefetchBindingPipeline(const BindingPlanContext& context, const RegisterSnapshot& registers,
                              const DrawIndexArgs* index_args, const PreparedDraw& prepared) {
 	// KYTY_DRAW_PREP_TESS: a tessellated draw's three vertex stages are not planned.
-	if (!context.pipelines->PipelinePrefetchEnabled() || !prepared.ok || prepared.vertex_stages != 1) return;
+	if (!context.pipelines->PipelinePrefetchEnabled() || !prepared.ok ||
+	    prepared.vertex_stages != 1)
+		return;
 	// A regular pipeline binding plan below already requests the same key.
 	if (BindingPartEnabled(BindingParts(), BindingPart::Pipeline)) return;
 	BindingPlan plan;

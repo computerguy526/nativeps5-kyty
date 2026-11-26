@@ -61,7 +61,7 @@ public:
 	~SubmitDependencyHelpScope() { t_active = m_previous; }
 	SubmitDependencyHelpScope(const SubmitDependencyHelpScope&)            = delete;
 	SubmitDependencyHelpScope& operator=(const SubmitDependencyHelpScope&) = delete;
-	[[nodiscard]] static bool Active() noexcept { return t_active; }
+	[[nodiscard]] static bool  Active() noexcept { return t_active; }
 
 private:
 	static inline thread_local bool t_active = false;

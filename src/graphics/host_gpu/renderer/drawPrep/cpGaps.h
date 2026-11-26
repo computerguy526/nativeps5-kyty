@@ -50,8 +50,8 @@ namespace Libs::Graphics::CpGaps {
 enum class Cat : uint8_t {
 	Commit,
 	HeadSelf,
-	HeadWait,        // a wait that began right after a stop, with a shallow or a deep window:
-	HeadWaitStart,   // (DrawPrepCommitWaits{Barrier,Start,Shallow,Deep}); HeadWait = barrier
+	HeadWait,      // a wait that began right after a stop, with a shallow or a deep window:
+	HeadWaitStart, // (DrawPrepCommitWaits{Barrier,Start,Shallow,Deep}); HeadWait = barrier
 	HeadWaitShallow,
 	HeadWaitDeep,
 	DrawOp,
@@ -279,7 +279,8 @@ enum class Event : uint8_t {
 constexpr size_t EventCount = static_cast<size_t>(Event::Count);
 
 // The GPU thread's ledger (null on every other thread, and while the diagnostic is off).
-// KYTY_CP_PASS_STATS=1 (with KYTY_CP_GAP_STATS=1): draw commits by the final draw's attachment signature.
+// KYTY_CP_PASS_STATS=1 (with KYTY_CP_GAP_STATS=1): draw commits by the final draw's attachment
+// signature.
 struct DrawPassKey {
 	uint32_t width        = 0;
 	uint32_t height       = 0;
@@ -292,14 +293,15 @@ struct DrawPassKey {
 
 struct DrawPassSample {
 	DrawPassKey key;
-	uint64_t    binding_ticks         = 0;
-	uint64_t    descriptor_ticks      = 0;
-	uint64_t    rebind_ticks          = 0;
-	uint64_t    shader_table_bindings = 0;
-	uint64_t    shader_table_bytes    = 0;
+	uint64_t    binding_ticks          = 0;
+	uint64_t    descriptor_ticks       = 0;
+	uint64_t    rebind_ticks           = 0;
+	uint64_t    shader_table_bindings  = 0;
+	uint64_t    shader_table_bytes     = 0;
 	int64_t     shader_table_reduction = 0;
 	int64_t     shader_byte_reduction  = 0;
-	// nps5 saroscp: ledger time nested in this commit (protect, drains, side copies, uploads, faults).
+	// nps5 saroscp: ledger time nested in this commit (protect, drains, side copies, uploads,
+	// faults).
 	uint64_t nested_protect = 0;
 	uint64_t nested_drain   = 0;
 	uint64_t nested_side    = 0;
@@ -309,20 +311,20 @@ struct DrawPassSample {
 
 struct DrawPassTotals {
 	DrawPassKey key;
-	uint64_t    draws                 = 0;
-	uint64_t    ticks                 = 0;
-	uint64_t    binding_ticks         = 0;
-	uint64_t    descriptor_ticks      = 0;
-	uint64_t    rebind_ticks          = 0;
-	uint64_t    shader_table_bindings = 0;
-	uint64_t    shader_table_bytes    = 0;
+	uint64_t    draws                  = 0;
+	uint64_t    ticks                  = 0;
+	uint64_t    binding_ticks          = 0;
+	uint64_t    descriptor_ticks       = 0;
+	uint64_t    rebind_ticks           = 0;
+	uint64_t    shader_table_bindings  = 0;
+	uint64_t    shader_table_bytes     = 0;
 	int64_t     shader_table_reduction = 0;
 	int64_t     shader_byte_reduction  = 0;
-	uint64_t    nested_protect = 0;
-	uint64_t    nested_drain   = 0;
-	uint64_t    nested_side    = 0;
-	uint64_t    nested_upload  = 0;
-	uint64_t    nested_fault   = 0;
+	uint64_t    nested_protect         = 0;
+	uint64_t    nested_drain           = 0;
+	uint64_t    nested_side            = 0;
+	uint64_t    nested_upload          = 0;
+	uint64_t    nested_fault           = 0;
 };
 
 struct ThreadState {
@@ -405,8 +407,8 @@ private:
 
 // nps5 saroscp: the in-commit ledger totals the per-pass nested split reads (protect, drain,
 // gpuwait.other (side-copy waits included), upload, fault), in this order.
-inline constexpr std::array<Cat, 5> kPassNestedCats = {Cat::Protect, Cat::GpuWaitDrain, Cat::GpuWaitOther,
-                                                       Cat::TextureUpload, Cat::Fault};
+inline constexpr std::array<Cat, 5> kPassNestedCats = {
+    Cat::Protect, Cat::GpuWaitDrain, Cat::GpuWaitOther, Cat::TextureUpload, Cat::Fault};
 
 // KYTY_CP_PASS_STATS=1 with KYTY_CP_GAP_STATS=1 records the same inclusive commit
 // boundary by the final draw's attachment signature. Non-draw commits remain unclassified.
@@ -467,7 +469,8 @@ inline void NestedNs(Cat cat, uint64_t ns) noexcept {
 }
 
 // The sequencer's parse stops (any thread; the line's "stops/f"): lockstep ops by kind, and the
-// pending-write stops. A lockstep read also records its guest address (the 2 MiB regions most read).
+// pending-write stops. A lockstep read also records its guest address (the 2 MiB regions most
+// read).
 enum class Stop : uint8_t {
 	WaitSelfLabel,
 	WaitOther,
@@ -475,11 +478,12 @@ enum class Stop : uint8_t {
 	Predication,
 	CondExec,
 	Branch,
-	RegisterRead,  // LockstepRead of register pairs (GPU-touched pages)
-	CommandBytes,  // LockstepRead of command bytes
-	PendingWrite,  // a front read under a pending CP write
+	RegisterRead,          // LockstepRead of register pairs (GPU-touched pages)
+	CommandBytes,          // LockstepRead of command bytes
+	PendingWrite,          // a front read under a pending CP write
 	RegisterReadFineClean, // diagnostic: a RegisterRead the 1 KiB marks call untouched
-	// KYTY_CLEAN_UNTOUCHED_DIAG: the marking sources of a RegisterRead's pages (GpuTouched::DiagSource order)
+	// KYTY_CLEAN_UNTOUCHED_DIAG: the marking sources of a RegisterRead's pages
+	// (GpuTouched::DiagSource order)
 	RegisterReadByBufferDirty,
 	RegisterReadByTrackerGpu,
 	RegisterReadByImageGpu,
@@ -487,8 +491,8 @@ enum class Stop : uint8_t {
 	Count
 };
 constexpr size_t StopCount = static_cast<size_t>(Stop::Count);
-void NoteStopSlow(Stop stop, uint64_t address) noexcept;
-inline void NoteStop(Stop stop, uint64_t address = 0) noexcept {
+void             NoteStopSlow(Stop stop, uint64_t address) noexcept;
+inline void      NoteStop(Stop stop, uint64_t address = 0) noexcept {
 	if (Enabled()) [[unlikely]] {
 		NoteStopSlow(stop, address);
 	}

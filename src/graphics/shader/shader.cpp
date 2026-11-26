@@ -266,8 +266,8 @@ static const ShaderBinaryInfo* GetBinaryInfo(const uint32_t* code, uint32_t code
 			LogRejectedBinaryInfo(code, offset, code_size_bytes, "outside the code");
 			return nullptr;
 		}
-		const auto* info = reinterpret_cast<const ShaderBinaryInfo*>(
-		    code + static_cast<size_t>(offset + 1u) * 2);
+		const auto* info =
+		    reinterpret_cast<const ShaderBinaryInfo*>(code + static_cast<size_t>(offset + 1u) * 2);
 		if (!BinaryInfoSigned(*info)) {
 			LogRejectedBinaryInfo(code, offset, code_size_bytes, "no signature");
 			return nullptr;
@@ -392,7 +392,7 @@ static uint64_t GetDeclaredShaderHash(uint64_t shader_addr, uint32_t code_size_b
 			// The signature (KYTY_SKIP_INVALID) and the hashes in one probe.
 			ShaderBinaryInfo info {};
 			const bool       clean = LibKernel::Memory::TryReadGpuCleanBacking(
-			          reinterpret_cast<uint64_t>(header), &info, sizeof(info));
+			    reinterpret_cast<uint64_t>(header), &info, sizeof(info));
 			Profiler::CountFrameEvent(clean ? Profiler::FrameEvent::ShaderHeaderProbeHits
 			                                : Profiler::FrameEvent::ShaderHeaderProbeMisses);
 			if (!clean && speculative) {
@@ -496,15 +496,15 @@ static bool LeanCodeDigest(uint64_t address, uint64_t size, uint64_t& digest) {
 		return false;
 	}
 	static thread_local DrawPrep::CodeDigestCache cache;
-	auto& reads = *recorder->reads;
+	auto&                                         reads = *recorder->reads;
 	if (uint64_t cached = 0; cache.Lookup(key, cached)) {
 		if (DrawPrep::Lean::DigestVerifyMode() != 0) [[unlikely]] {
 			uint64_t fresh = 0;
 			if (LibKernel::Memory::HashBackingUnrecorded(address, size, fresh)) {
 				DrawPrep::Lean::NoteDigestVerify(fresh != cached);
 				if (fresh != cached) {
-					LOGF("DrawPrepLean: cached code digest 0x%016" PRIx64 " of 0x%016" PRIx64 "+%" PRIu64
-					     " differs from the bytes (0x%016" PRIx64 ")\n",
+					LOGF("DrawPrepLean: cached code digest 0x%016" PRIx64 " of 0x%016" PRIx64
+					     "+%" PRIu64 " differs from the bytes (0x%016" PRIx64 ")\n",
 					     cached, address, size, fresh);
 					if (DrawPrep::Lean::DigestVerifyMode() == 2) {
 						EXIT("DrawPrepLean: a cached code digest differs from the bytes\n");
@@ -620,14 +620,15 @@ static ShaderParams GetShaderParams(uint64_t shader_addr, const char* label, uin
 	uint64_t effective_hash = declared_hash;
 	// KYTY_DRAW_PREP_DECLARED_CODE=1 (default off): a draw-prep preparation of a shader with a
 	// declared (AGC header) hash takes the program by that hash, as the serial path does, without
-	// re-reading and re-hashing its code for the certificate (GT7's shaders are hundreds of KiB each;
-	// with KYTY_DRAW_PREP_PRIVATE_READS their code in the program image is otherwise copied and hashed
-	// for every prepared stage).
+	// re-reading and re-hashing its code for the certificate (GT7's shaders are hundreds of KiB
+	// each; with KYTY_DRAW_PREP_PRIVATE_READS their code in the program image is otherwise copied
+	// and hashed for every prepared stage).
 	static const bool declared_code = [] {
 		const auto* value = std::getenv("KYTY_DRAW_PREP_DECLARED_CODE");
 		return value != nullptr && value[0] == '1';
 	}();
-	if (RegisteredShaderCodeEnabled() && DrawPrep::Speculative() && !(declared_code && declared_hash != 0)) {
+	if (RegisteredShaderCodeEnabled() && DrawPrep::Speculative() &&
+	    !(declared_code && declared_hash != 0)) {
 		// Keep the worker's exact code certificate, including failed-read fallback at commit.
 		const auto certified_hash = HashShaderCodeCertified(code);
 		if (certified_hash != data.code_hash || DrawPrep::SpeculativeFailed()) {
@@ -1159,7 +1160,8 @@ static void ShaderApplyAttribSemantics(ShaderVertexInputInfo& info,
 				LOGF("Vertex input: %s vertex buffer read as if linear: attribute %u (semantic %u) "
 				     "V# [0x%08x 0x%08x 0x%08x 0x%08x] base 0x%012" PRIx64
 				     " stride %u records %u attribute format %u offset %u\n",
-				     r.SwizzleEnabled() ? (r.AddTid() ? "swizzled ADD_TID" : "swizzled") : "ADD_TID",
+				     r.SwizzleEnabled() ? (r.AddTid() ? "swizzled ADD_TID" : "swizzled")
+				                        : "ADD_TID",
 				     i, static_cast<uint32_t>(in.semantic), r.fields[0], r.fields[1], r.fields[2],
 				     r.fields[3], r.Base48(), r.Stride(), r.NumRecords(),
 				     static_cast<uint32_t>(format), offset);
@@ -1349,7 +1351,8 @@ static bool VertexTablesCommitted(const ShaderVertexMetadata& metadata, const ui
 	}
 	uint32_t max_index = 0;
 	for (uint32_t i = 0; i < metadata.input_semantics_count; i++) {
-		max_index = std::max<uint32_t>(max_index, attrib[metadata.input_semantics[i].semantic] & 0x1fu);
+		max_index =
+		    std::max<uint32_t>(max_index, attrib[metadata.input_semantics[i].semantic] & 0x1fu);
 	}
 	return LibKernel::Memory::IsCommittedSpan(reinterpret_cast<uint64_t>(buffer),
 	                                          (uint64_t {max_index} + 1u) * 16u);
@@ -1431,7 +1434,8 @@ static void ShaderGetStaticInputInfoPS(
 
 	ps_info = {};
 	ps_info.scratch_size_dwords = data.scratch_size_dwords;
-	ps_info.lds_size_dwords     = static_cast<uint16_t>(static_cast<uint32_t>(regs.ps_regs.rsrc2.extra_lds_size) * 128u);
+	ps_info.lds_size_dwords =
+	    static_cast<uint16_t>(static_cast<uint32_t>(regs.ps_regs.rsrc2.extra_lds_size) * 128u);
 
 	// SPI_PS_IN_CONTROL: NUM_INTERP occupies bits 5:0 and PS_W32_EN is bit 15.
 	ps_info.input_num            = sh.ps_in_control & 0x3fu;
@@ -1475,11 +1479,11 @@ static void ShaderGetStaticInputInfoPS(
 	// A position or front-face input in ADDR alone keeps its VGPR: it gets the value anyway (the
 	// hardware leaves it undefined), so the VGPRs after it stay where the shader reads them. The
 	// ancillary VGPR is the last of them; reading the sample index would turn on sample shading.
-	ps_info.ps_pos_x                     = (layout_inputs & 0x00000100u) != 0;
-	ps_info.ps_pos_y                     = (layout_inputs & 0x00000200u) != 0;
-	ps_info.ps_pos_z                     = (layout_inputs & 0x00000400u) != 0;
-	ps_info.ps_pos_w                     = (layout_inputs & 0x00000800u) != 0;
-	ps_info.ps_front_face                = (layout_inputs & 0x00001000u) != 0;
+	ps_info.ps_pos_x      = (layout_inputs & 0x00000100u) != 0;
+	ps_info.ps_pos_y      = (layout_inputs & 0x00000200u) != 0;
+	ps_info.ps_pos_z      = (layout_inputs & 0x00000400u) != 0;
+	ps_info.ps_pos_w      = (layout_inputs & 0x00000800u) != 0;
+	ps_info.ps_front_face = (layout_inputs & 0x00001000u) != 0;
 	// SPI_BARYC_CNTL.FRONT_FACE_ALL_BITS selects integer masks instead of float +/-1.
 	ps_info.ps_front_face_all_bits       = (sh.baryc_cntl & 0x01000000u) != 0;
 	ps_info.ps_ancillary                 = (active_inputs & 0x00002000u) != 0;
@@ -1522,7 +1526,7 @@ static void ShaderGetStaticInputInfoCS(const HW::ComputeShaderInfo& regs,
 	info                                  = {};
 	info.async_compute                    = async_compute;
 	info.dispatch_thread_dimensions       = dispatch_thread_dimensions;
-	info.dispatch_dimensions_indirect     = dispatch_dimensions_indirect;
+	info.dispatch_dimensions_indirect       = dispatch_dimensions_indirect;
 	info.host_subgroup_size               = host_subgroup_size;
 	std::ranges::copy(workgroup_counts, info.workgroup_counts);
 	info.threads_num[0]                   = regs.cs_regs.num_thread_x;
@@ -1712,21 +1716,20 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 			return 2;
 		return 1;
 	}();
-	const auto amplification  = sh.m_geNggSubgrpCntl & 0x1ffu;
-	const auto amp            = prim_amp_mode == 2 || (prim_amp_mode == 1 && mesh.fast_launch)
-	                                ? amplification
-	                                : 0u;
-	const auto native_bound   = mesh.InputPrimitiveCount(mesh.max_vertices);
-	mesh.primitives_per_group = std::min({static_cast<uint32_t>(group.primitive_group_size),
-	                                      mesh.InputPrimitiveCount(group.vertex_group_size),
-	                                      native_ngg ? (mesh.fast_launch ? std::max(mesh.max_vertices, amp)
-	                                                                     : native_bound)
-	                                                 : mesh.max_vertices / sh.m_vgtGsMaxVertOut});
+	const auto amplification = sh.m_geNggSubgrpCntl & 0x1ffu;
+	const auto amp =
+	    prim_amp_mode == 2 || (prim_amp_mode == 1 && mesh.fast_launch) ? amplification : 0u;
+	const auto native_bound = mesh.InputPrimitiveCount(mesh.max_vertices);
+	mesh.primitives_per_group =
+	    std::min({static_cast<uint32_t>(group.primitive_group_size),
+	              mesh.InputPrimitiveCount(group.vertex_group_size),
+	              native_ngg ? (mesh.fast_launch ? std::max(mesh.max_vertices, amp) : native_bound)
+	                         : mesh.max_vertices / sh.m_vgtGsMaxVertOut});
 	EXIT_IF(mesh.primitives_per_group == 0u);
-	mesh.max_primitives = mesh.fast_launch ? std::max(mesh.max_vertices, amp)
-	                      : native_ngg ? std::max(native_bound, mesh.primitives_per_group * amp)
-	                                   : group.primitive_group_size *
-	                                         std::max(sh.m_vgtGsMaxVertOut - 2u, amp);
+	mesh.max_primitives =
+	    mesh.fast_launch ? std::max(mesh.max_vertices, amp)
+	    : native_ngg     ? std::max(native_bound, mesh.primitives_per_group * amp)
+	                     : group.primitive_group_size * std::max(sh.m_vgtGsMaxVertOut - 2u, amp);
 	mesh.vertices_per_group = mesh.InputVertexCount(mesh.primitives_per_group);
 	const auto threads  = native_ngg && !mesh.fast_launch
 	                          ? std::max(mesh.vertices_per_group, mesh.primitives_per_group * amp)
@@ -1738,15 +1741,15 @@ ShaderParams PrepareProgram(const HW::VertexShaderInfo& regs, const HW::Context&
 }
 
 // KYTY_TESS_MERGED_HULL=1 (default off, PPSA26344 preset; based on Erlou93/KytyPS5-Yotei): Ghost of
-// Yotei 2.x binds one merged LS+HS program (Agc binary type kHs) at the LS address and leaves the HS
-// address 0, where 1.x bound the two halves sceAgcFuseShaderHalves joined. The merged program is the
-// two halves one after the other: a prologue (EXEC = all, v0 = lane index by V_MBCNT, V_CMPX lane <
-// LS vertex count, S_CBRANCH_EXECZ to the HS part), the LS part, then the HS part from the branch
-// target on (beginning with EXEC = all). It is split there into what the halves path takes: the front
-// is the prologue and the LS part ending in the merged-stage handoff (S_SETPC_B64 s[6:7], where the
-// Local stage ends for AnalyzeTessellationPrograms); the back is the prologue's two V_MBCNT (the lane
-// index a separately compiled HS back half computes itself) and the HS part. A program of another
-// shape is not split (its patch draws are skipped).
+// Yotei 2.x binds one merged LS+HS program (Agc binary type kHs) at the LS address and leaves the
+// HS address 0, where 1.x bound the two halves sceAgcFuseShaderHalves joined. The merged program is
+// the two halves one after the other: a prologue (EXEC = all, v0 = lane index by V_MBCNT, V_CMPX
+// lane < LS vertex count, S_CBRANCH_EXECZ to the HS part), the LS part, then the HS part from the
+// branch target on (beginning with EXEC = all). It is split there into what the halves path takes:
+// the front is the prologue and the LS part ending in the merged-stage handoff (S_SETPC_B64 s[6:7],
+// where the Local stage ends for AnalyzeTessellationPrograms); the back is the prologue's two
+// V_MBCNT (the lane index a separately compiled HS back half computes itself) and the HS part. A
+// program of another shape is not split (its patch draws are skipped).
 static bool TessMergedHullEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_TESS_MERGED_HULL");
@@ -1786,8 +1789,10 @@ static bool TessMergedCarryEnabled(uint64_t control_hash) {
 		size_t at = 0;
 		while (at < text.size()) {
 			const auto next = text.find(',', at);
-			const auto item = text.substr(at, next == std::string::npos ? std::string::npos : next - at);
-			if (!item.empty() && item != "0") parsed.hashes.push_back(std::strtoull(item.c_str(), nullptr, 16));
+			const auto item =
+			    text.substr(at, next == std::string::npos ? std::string::npos : next - at);
+			if (!item.empty() && item != "0")
+				parsed.hashes.push_back(std::strtoull(item.c_str(), nullptr, 16));
 			if (next == std::string::npos) break;
 			at = next + 1;
 		}
@@ -1795,7 +1800,8 @@ static bool TessMergedCarryEnabled(uint64_t control_hash) {
 	}();
 	if (setting.all) return true;
 	return std::ranges::any_of(setting.hashes, [&](uint64_t hash) {
-		return hash == control_hash || hash == (control_hash & 0xffffffffull) || hash == (control_hash >> 32u);
+		return hash == control_hash || hash == (control_hash & 0xffffffffull) ||
+		       hash == (control_hash >> 32u);
 	});
 }
 
@@ -1807,11 +1813,13 @@ struct MergedHullHalves {
 	uint64_t              back_hash  = 0;
 };
 
-static const MergedHullHalves& SplitMergedHullProgram(uint64_t addr, uint32_t code_size_bytes, uint64_t hash) {
+static const MergedHullHalves& SplitMergedHullProgram(uint64_t addr, uint32_t code_size_bytes,
+                                                      uint64_t hash) {
 	namespace Decoder = ShaderRecompiler::Decoder;
 	using Decoder::Opcode;
-	static std::mutex                                     mutex;
-	static std::unordered_map<uint64_t, MergedHullHalves> splits; // node-based: the halves stay valid
+	static std::mutex mutex;
+	static std::unordered_map<uint64_t, MergedHullHalves>
+	                 splits; // node-based: the halves stay valid
 	std::scoped_lock lock(mutex);
 	const uint64_t   key = hash ^ (addr * 0x9e3779b97f4a7c15ull);
 	if (const auto found = splits.find(key); found != splits.end()) return found->second;
@@ -1822,7 +1830,8 @@ static const MergedHullHalves& SplitMergedHullProgram(uint64_t addr, uint32_t co
 	Decoder::DecodeProgram(code, program);
 	const auto& insts = program.instructions;
 	const auto  fail  = [&](const char* reason) -> const MergedHullHalves& {
-		LOGF("Tessellation: merged HS program 0x%016" PRIx64 " cannot be split: %s\n", addr, reason);
+		LOGF("Tessellation: merged HS program 0x%016" PRIx64 " cannot be split: %s\n", addr,
+		     reason);
 		return halves;
 	};
 	size_t i = 0;
@@ -1831,30 +1840,38 @@ static const MergedHullHalves& SplitMergedHullProgram(uint64_t addr, uint32_t co
 		return inst.opcode == Opcode::S_MOV_B64 && inst.raw[0] == 0xbefe04c1u; // s_mov_b64 exec, -1
 	};
 	const auto is_lane_index = [](const Decoder::Instruction& inst, Opcode opcode) {
-		return inst.opcode == opcode && inst.dst.kind == Decoder::OperandKind::Vgpr && inst.dst.reg == 0u;
+		return inst.opcode == opcode && inst.dst.kind == Decoder::OperandKind::Vgpr &&
+		       inst.dst.reg == 0u;
 	};
-	if (i + 5u > insts.size() || !is_exec_all(insts[i]) || !is_lane_index(insts[i + 1u], Opcode::V_MBCNT_LO_U32_B32) ||
-	    !is_lane_index(insts[i + 2u], Opcode::V_MBCNT_HI_U32_B32) || insts[i + 3u].opcode != Opcode::V_CMPX_LT_U32 ||
+	if (i + 5u > insts.size() || !is_exec_all(insts[i]) ||
+	    !is_lane_index(insts[i + 1u], Opcode::V_MBCNT_LO_U32_B32) ||
+	    !is_lane_index(insts[i + 2u], Opcode::V_MBCNT_HI_U32_B32) ||
+	    insts[i + 3u].opcode != Opcode::V_CMPX_LT_U32 ||
 	    insts[i + 4u].opcode != Opcode::S_CBRANCH_EXECZ) {
 		return fail("no LS prologue (EXEC = all, V_MBCNT lane index, V_CMPX, S_CBRANCH_EXECZ)");
 	}
 	const auto& mbcnt_lo = insts[i + 1u];
 	const auto& mbcnt_hi = insts[i + 2u];
 	const auto  split_pc = insts[i + 4u].branch_target;
-	const auto  at_split = std::find_if(insts.begin(), insts.end(), [&](const auto& inst) { return inst.pc == split_pc; });
-	if (at_split == insts.end() || !is_exec_all(*at_split)) return fail("the HS part does not begin with EXEC = all");
+	const auto  at_split = std::find_if(insts.begin(), insts.end(),
+	                                    [&](const auto& inst) { return inst.pc == split_pc; });
+	if (at_split == insts.end() || !is_exec_all(*at_split))
+		return fail("the HS part does not begin with EXEC = all");
 	for (const auto& inst: insts) {
 		if (inst.opcode == Opcode::S_GETPC_B64 || inst.opcode == Opcode::S_SETPC_B64 ||
-		    inst.opcode == Opcode::UNKNOWN || (inst.opcode == Opcode::S_ENDPGM && inst.pc < split_pc)) {
+		    inst.opcode == Opcode::UNKNOWN ||
+		    (inst.opcode == Opcode::S_ENDPGM && inst.pc < split_pc)) {
 			return fail("PC-relative code, an unknown instruction or an LS-part exit");
 		}
-		if (Decoder::IsDirectBranch(inst.opcode) && (inst.pc < split_pc) != (inst.branch_target <= split_pc)) {
+		if (Decoder::IsDirectBranch(inst.opcode) &&
+		    (inst.pc < split_pc) != (inst.branch_target <= split_pc)) {
 			return fail("a branch crosses between the LS and HS parts");
 		}
 	}
 	const auto split_word = split_pc / sizeof(uint32_t);
 	halves.front.assign(code.begin(), code.begin() + split_word);
-	halves.front.push_back(0xbe802006u); // s_setpc_b64 s[6:7]: the merged-stage handoff of a front half
+	halves.front.push_back(
+	    0xbe802006u); // s_setpc_b64 s[6:7]: the merged-stage handoff of a front half
 	for (const auto* inst: {&mbcnt_lo, &mbcnt_hi}) {
 		const auto first = code.begin() + inst->pc / sizeof(uint32_t);
 		halves.back.insert(halves.back.end(), first, first + inst->word_count);
@@ -1863,7 +1880,8 @@ static const MergedHullHalves& SplitMergedHullProgram(uint64_t addr, uint32_t co
 	halves.front_hash = XXH3_64bits(halves.front.data(), halves.front.size() * sizeof(uint32_t));
 	halves.back_hash  = XXH3_64bits(halves.back.data(), halves.back.size() * sizeof(uint32_t));
 	halves.valid      = true;
-	LOGF("Tessellation: merged HS program 0x%016" PRIx64 " split at 0x%x: LS 0x%016" PRIx64 " HS 0x%016" PRIx64 "\n",
+	LOGF("Tessellation: merged HS program 0x%016" PRIx64 " split at 0x%x: LS 0x%016" PRIx64
+	     " HS 0x%016" PRIx64 "\n",
 	     addr, split_pc, halves.front_hash, halves.back_hash);
 	return halves;
 }
@@ -1881,8 +1899,8 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 		bool missing = false;
 		{
 			std::scoped_lock lock(g_shader_map_mutex);
-			for (const auto addr: {regs.ls_regs.data_addr, regs.hs_regs.data_addr,
-			                       regs.es_regs.data_addr}) {
+			for (const auto addr:
+			     {regs.ls_regs.data_addr, regs.hs_regs.data_addr, regs.es_regs.data_addr}) {
 				if (maybe_merged && addr == 0) continue;
 				missing = missing || g_shader_map == nullptr || !g_shader_map->contains(addr);
 			}
@@ -1892,8 +1910,9 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 			static std::unordered_set<uint64_t> logged;
 			std::scoped_lock                    lock(logged_mutex);
 			if (logged.size() < 64u &&
-			    logged.insert(regs.ls_regs.data_addr ^ (regs.hs_regs.data_addr << 1u) ^
-			                  (regs.es_regs.data_addr << 2u))
+			    logged
+			        .insert(regs.ls_regs.data_addr ^ (regs.hs_regs.data_addr << 1u) ^
+			                (regs.es_regs.data_addr << 2u))
 			        .second) {
 				LOGF("Tessellation: LS 0x%016" PRIx64 " / HS 0x%016" PRIx64 " / TES 0x%016" PRIx64
 				     ": a stage is not a registered shader, its patch draws are skipped\n",
@@ -1903,15 +1922,16 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 			return {};
 		}
 	}
-	const auto local      = ShaderGetMappedData(regs.ls_regs.data_addr, "ShaderGetInputInfoLS():");
+	const auto local = ShaderGetMappedData(regs.ls_regs.data_addr, "ShaderGetInputInfoLS():");
 	const MergedHullHalves* merged = nullptr;
 	if (maybe_merged && local.type == Prospero::ShaderBinaryType::kHs) {
 		if (DrawPrep::Speculative()) {
 			DrawPrep::FailActive(DrawPrep::ReadFailure::Uncertified);
 			return {};
 		}
-		const auto& halves = SplitMergedHullProgram(regs.ls_regs.data_addr, local.code_size_bytes,
-		                                            RegisteredOrDeclaredShaderHash(regs.ls_regs.data_addr, local));
+		const auto& halves =
+		    SplitMergedHullProgram(regs.ls_regs.data_addr, local.code_size_bytes,
+		                           RegisteredOrDeclaredShaderHash(regs.ls_regs.data_addr, local));
 		if (!halves.valid) {
 			EXIT_IF(unsupported == nullptr);
 			*unsupported = true;
@@ -1937,19 +1957,22 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 	if (speculative && DrawPrep::SpeculativeFailed()) {
 		return {};
 	}
-	const bool unsupported_types = (merged == nullptr && local.type != Prospero::ShaderBinaryType::kHsFront) ||
-	                               control.type != Prospero::ShaderBinaryType::kHsBack ||
-	                               evaluation.type != Prospero::ShaderBinaryType::kGs;
-	const uint32_t stages             = context.GetShaderStages();
-	// KYTY_TESS_WAVE32 (upstream 27f290e95, default off): wave32 hull (HS_W32_EN, bit 21) and domain
-	// (GS_W32_EN, bit 22) stages compile with their wave size instead of counting as unsupported.
+	const bool unsupported_types =
+	    (merged == nullptr && local.type != Prospero::ShaderBinaryType::kHsFront) ||
+	    control.type != Prospero::ShaderBinaryType::kHsBack ||
+	    evaluation.type != Prospero::ShaderBinaryType::kGs;
+	const uint32_t stages = context.GetShaderStages();
+	// KYTY_TESS_WAVE32 (upstream 27f290e95, default off): wave32 hull (HS_W32_EN, bit 21) and
+	// domain (GS_W32_EN, bit 22) stages compile with their wave size instead of counting as
+	// unsupported.
 	const uint32_t wave32_mask        = TessWave32Enabled() ? 0x00000020u : 0x00600020u;
 	const bool     unsupported_stages = (stages & 0x4u) == 0 || (stages & wave32_mask) != 0;
 	// GT7 (usa-ratt/KytyPS5-GT7 round 138): a set this path cannot run (no hull stage, a GS after
 	// the tessellator, a wave32 hull or domain stage without KYTY_TESS_WAVE32, other binary types)
 	// has its patch draws skipped with KYTY_SKIP_INVALID (default on) instead of ending the
 	// emulator. Logged once per set and stage mask.
-	if (speculative && (unsupported_types || unsupported_stages || regs.hs_regs.user_data_addr == 0)) {
+	if (speculative &&
+	    (unsupported_types || unsupported_stages || regs.hs_regs.user_data_addr == 0)) {
 		*unsupported = true;
 		return {};
 	}
@@ -1983,15 +2006,18 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 	const auto control_addr = merged != nullptr ? regs.ls_regs.data_addr : regs.hs_regs.data_addr;
 	std::array<ShaderParams, 3> params {
 	    GetShaderParams(regs.ls_regs.data_addr, "ShaderRecompiler LS",
-	                    RegisteredOrDeclaredShaderHash(regs.ls_regs.data_addr, local), local_users, local),
+	                    RegisteredOrDeclaredShaderHash(regs.ls_regs.data_addr, local), local_users,
+	                    local),
 	    GetShaderParams(control_addr, "ShaderRecompiler HS",
-	                    RegisteredOrDeclaredShaderHash(control_addr, control), local_users, control, 8u),
+	                    RegisteredOrDeclaredShaderHash(control_addr, control), local_users, control,
+	                    8u),
 	    GetShaderParams(regs.es_regs.data_addr, "ShaderRecompiler TES",
-	                    RegisteredOrDeclaredShaderHash(regs.es_regs.data_addr, evaluation), evaluation_users,
-	                    evaluation),
+	                    RegisteredOrDeclaredShaderHash(regs.es_regs.data_addr, evaluation),
+	                    evaluation_users, evaluation),
 	};
 	if (merged != nullptr) {
-		// The halves of the merged program; the HS part keeps the merged program's user SGPRs at s8+.
+		// The halves of the merged program; the HS part keeps the merged program's user SGPRs at
+		// s8+.
 		params[0].code = merged->front;
 		params[0].hash = merged->front_hash;
 		params[1].code = merged->back;
@@ -2032,7 +2058,8 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 	// the LS, whose user SGPRs start at s0 here. The LS then gets the instance ID from 0 and
 	// the start instance in that SGPR, as the VS path does.
 	if (const auto start_instance = regs.start_instance_user_sgpr - 32;
-	    start_instance >= 0 && static_cast<uint32_t>(start_instance) < regs.hs_regs.rsrc2.user_sgpr) {
+	    start_instance >= 0 &&
+	    static_cast<uint32_t>(start_instance) < regs.hs_regs.rsrc2.user_sgpr) {
 		input_info[0].start_instance_sgpr = start_instance;
 	}
 	input_info[0].wave_size           = (stages & 0x00200000u) != 0 ? 32u : 64u;
@@ -2061,11 +2088,11 @@ PrepareTessellationPrograms(const HW::VertexShaderInfo& regs, const HW::Context&
 	EXIT_IF(tess.input_control_points == 0 || tess.input_control_points > 32 ||
 	        tess.output_control_points == 0 || tess.output_control_points > 32);
 	// The analysis caches the LS/HS strides per program pair and control point counts itself
-	// (the tess line's cache; int21's per-pair layout cache of upstream c71589124 is not used with it).
-	if (!ShaderRecompiler::AnalyzeTessellationPrograms(params[0].code, params[1].code, tess,
-	                                                   params[0].hash, params[1].hash,
-	                                                   params[2].code, nullptr,
-	                                                   merged != nullptr && TessMergedCarryEnabled(params[1].hash))) {
+	// (the tess line's cache; int21's per-pair layout cache of upstream c71589124 is not used with
+	// it).
+	if (!ShaderRecompiler::AnalyzeTessellationPrograms(
+	        params[0].code, params[1].code, tess, params[0].hash, params[1].hash, params[2].code,
+	        nullptr, merged != nullptr && TessMergedCarryEnabled(params[1].hash))) {
 		// The analysis logged the set once; without a caller that can skip, end as before.
 		EXIT_IF(unsupported == nullptr);
 		*unsupported = true;

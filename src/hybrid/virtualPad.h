@@ -1,12 +1,12 @@
-// A virtual DualSense / Switch Pro made with SDL3's virtual joystick (SDL_AttachVirtualJoystick) that
-// sends accel + gyro at 1000 Hz (a tilt ramp, then a shake spike, repeating) through SDL's real event
-// path. Used by tests/PadMotionE2ETests.cpp and, behind ASTROHYBRID_PAD_VIRTUAL=ps5|switch (default
-// off), by a real title run (kytyGpuBridge.cpp): the same motion status line must then say live=yes
-// (work/release/v140/rc/check-motion-live.sh, rehearse R2).
+// A virtual DualSense / Switch Pro made with SDL3's virtual joystick (SDL_AttachVirtualJoystick)
+// that sends accel + gyro at 1000 Hz (a tilt ramp, then a shake spike, repeating) through SDL's
+// real event path. Used by tests/PadMotionE2ETests.cpp and, behind
+// ASTROHYBRID_PAD_VIRTUAL=ps5|switch (default off), by a real title run (kytyGpuBridge.cpp): the
+// same motion status line must then say live=yes (work/release/v140/rc/check-motion-live.sh,
+// rehearse R2).
 #pragma once
 
 #include <SDL3/SDL.h>
-
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -21,7 +21,8 @@ enum class Kind { PS5, SwitchPro };
 constexpr float kG = 9.80665f;
 
 // The motion every virtual pad plays, t in ms since it started: roll 0 -> 45 degrees over 1 s (gyro
-// z = the ramp rate), rest, a 60 ms shake spike (3 g on z, 10 rad/s on x) at 1.2 s, rest to 3 s, repeat.
+// z = the ramp rate), rest, a 60 ms shake spike (3 g on z, 10 rad/s on x) at 1.2 s, rest to 3 s,
+// repeat.
 struct Pose {
 	float accel[3];
 	float gyro[3];
@@ -29,10 +30,10 @@ struct Pose {
 	bool  spike;
 };
 inline Pose PoseAt(uint64_t t_ms) {
-	const float pi = 3.14159265358979f;
-	const uint64_t t = t_ms % 3000;
-	Pose p {};
-	const float ramp_end = pi / 4.0f;
+	const float    pi = 3.14159265358979f;
+	const uint64_t t  = t_ms % 3000;
+	Pose           p {};
+	const float    ramp_end = pi / 4.0f;
 	if (t < 1000) {
 		p.roll_rad = ramp_end * static_cast<float>(t) / 1000.0f;
 		p.gyro[2]  = ramp_end; // rad/s, 1 s ramp
@@ -59,7 +60,7 @@ struct Pad {
 inline bool Attach(Kind kind, Pad* pad) {
 	static const SDL_VirtualJoystickSensorDesc sensors[2] = {{SDL_SENSOR_ACCEL, 1000.0f},
 	                                                         {SDL_SENSOR_GYRO, 1000.0f}};
-	SDL_VirtualJoystickDesc desc;
+	SDL_VirtualJoystickDesc                    desc;
 	SDL_INIT_INTERFACE(&desc);
 	desc.type        = SDL_JOYSTICK_TYPE_GAMEPAD;
 	desc.vendor_id   = kind == Kind::PS5 ? 0x054c : 0x057e;
@@ -100,10 +101,10 @@ public:
 			const auto start = std::chrono::steady_clock::now();
 			uint64_t   sent  = 0;
 			while (!m_stop) {
-				const auto elapsed = static_cast<uint64_t>(
-				    std::chrono::duration_cast<std::chrono::milliseconds>(
-				        std::chrono::steady_clock::now() - start)
-				        .count());
+				const auto elapsed =
+				    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				                              std::chrono::steady_clock::now() - start)
+				                              .count());
 				for (; sent <= elapsed; ++sent) {
 					SendSample(m_pad, sent, 1000000000ull);
 				}

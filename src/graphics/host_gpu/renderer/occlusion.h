@@ -103,8 +103,8 @@ public:
 		return m_published.load(std::memory_order_acquire) != m_issued;
 	}
 	[[nodiscard]] bool Active() const noexcept { return m_queries.Active(); }
-	// KYTY_SKIP_OCCLUSION_VISIBLE (renderDraw.cpp): a draw skipped while its shaders translate or its
-	// pipeline builds, while a dump pair counts, adds `samples` to the counter every later dump
+	// KYTY_SKIP_OCCLUSION_VISIBLE (renderDraw.cpp): a draw skipped while its shaders translate or
+	// its pipeline builds, while a dump pair counts, adds `samples` to the counter every later dump
 	// publishes (to its first DB's qword), so the guest sees the object as visible (CP thread).
 	void AddSkippedSamples(uint64_t samples) noexcept {
 		m_skip_bias += samples;

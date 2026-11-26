@@ -9,7 +9,8 @@
 //    push-descriptor contents and epochs, the push constants). CommandBuffer owns one per command
 //    buffer and forwards its BindPipeline/PushDescriptors/PushConstants/BindDescriptorSet to it;
 //    the comparisons and updates are exactly those CommandBuffer made before.
-//  - DescriptorScratch: the descriptor write arrays a commit builds (the executor's scratch before).
+//  - DescriptorScratch: the descriptor write arrays a commit builds (the executor's scratch
+//  before).
 //
 // Nothing here touches a cache, the barrier batcher, a scheduler or a Vulkan device: the sink is
 // the only output. Unit tested without a device (tests/DrawEncodeTests.cpp).
@@ -69,13 +70,14 @@ public:
 	};
 
 	[[nodiscard]] static size_t Index(vk::PipelineBindPoint point) {
-		EXIT_IF(point != vk::PipelineBindPoint::eGraphics && point != vk::PipelineBindPoint::eCompute);
+		EXIT_IF(point != vk::PipelineBindPoint::eGraphics &&
+		        point != vk::PipelineBindPoint::eCompute);
 		return point == vk::PipelineBindPoint::eCompute ? 1u : 0u;
 	}
 
-	// Whether binding `pipeline` records a command (not the one bound, or no dedup); the shadow then
-	// holds it as bound. BindPipeline records it; the encode offload decides on the commit thread and
-	// records on the encode thread (encodeOffload.h).
+	// Whether binding `pipeline` records a command (not the one bound, or no dedup); the shadow
+	// then holds it as bound. BindPipeline records it; the encode offload decides on the commit
+	// thread and records on the encode thread (encodeOffload.h).
 	[[nodiscard]] bool TakePipelineBind(const ShadowFlags& flags, vk::PipelineBindPoint point,
 	                                    vk::Pipeline pipeline) {
 		auto& current = bound_pipelines[Index(point)];
@@ -129,8 +131,8 @@ public:
 		auto& state = descriptor_states[Index(point)];
 		EXIT_IF(set == nullptr || layout == nullptr);
 		if (flags.set_reuse && state.bound_set == set && state.layout == layout) {
-			// Still bound as set 0 with this layout: nothing since disturbed it (every other bind and
-			// every push descriptor update of this bind point passes through the shadow), and
+			// Still bound as set 0 with this layout: nothing since disturbed it (every other bind
+			// and every push descriptor update of this bind point passes through the shadow), and
 			// binding a pipeline never disturbs descriptor sets.
 			Profiler::CountFrameEvent(Profiler::FrameEvent::DescriptorSetBindsAvoided);
 			return;
@@ -192,10 +194,11 @@ public:
 		for (uint32_t i = 0; supported && i < count; ++i) {
 			const auto& write       = writes[i];
 			const bool  buffer_type = IsBufferType(write.descriptorType);
-			const bool  image_type  = write.descriptorType == vk::DescriptorType::eSampler ||
-			                         write.descriptorType == vk::DescriptorType::eSampledImage ||
-			                         write.descriptorType == vk::DescriptorType::eStorageImage ||
-			                         write.descriptorType == vk::DescriptorType::eCombinedImageSampler;
+			const bool  image_type =
+			    write.descriptorType == vk::DescriptorType::eSampler ||
+			    write.descriptorType == vk::DescriptorType::eSampledImage ||
+			    write.descriptorType == vk::DescriptorType::eStorageImage ||
+			    write.descriptorType == vk::DescriptorType::eCombinedImageSampler;
 			supported = write.pNext == nullptr && write.pTexelBufferView == nullptr &&
 			            ((buffer_type && write.pBufferInfo != nullptr) ||
 			             (image_type && write.pImageInfo != nullptr));
@@ -212,7 +215,8 @@ public:
 			for (uint32_t i = 0; result == PushAvoided && i < count; ++i) {
 				const auto& write = writes[i];
 				const auto& old   = state.writes[i];
-				if (write.dstBinding != old.dstBinding || write.dstArrayElement != old.dstArrayElement ||
+				if (write.dstBinding != old.dstBinding ||
+				    write.dstArrayElement != old.dstArrayElement ||
 				    write.descriptorCount != old.descriptorCount ||
 				    write.descriptorType != old.descriptorType) {
 					result = PushMissShape;
@@ -220,8 +224,9 @@ public:
 				}
 				const bool buffer_type = IsBufferType(write.descriptorType);
 				for (uint32_t j = 0; j < write.descriptorCount; ++j) {
-					const bool equal = buffer_type ? write.pBufferInfo[j] == state.buffers[buffer_index++]
-					                               : write.pImageInfo[j] == state.images[image_index++];
+					const bool equal = buffer_type
+					                       ? write.pBufferInfo[j] == state.buffers[buffer_index++]
+					                       : write.pImageInfo[j] == state.images[image_index++];
 					if (!equal) {
 						result = static_cast<int32_t>(i);
 						break;
@@ -268,7 +273,8 @@ public:
 
 private:
 	[[nodiscard]] static bool IsBufferType(vk::DescriptorType type) {
-		return type == vk::DescriptorType::eStorageBuffer || type == vk::DescriptorType::eUniformBuffer;
+		return type == vk::DescriptorType::eStorageBuffer ||
+		       type == vk::DescriptorType::eUniformBuffer;
 	}
 };
 
@@ -278,8 +284,8 @@ private:
 
 // The prepared vertex buffers (guest descriptor bounds as sizes, no strides).
 template <typename Sink>
-void EmitVertexBuffers(Sink& sink, uint32_t count, const vk::Buffer* buffers, const vk::DeviceSize* offsets,
-                       const vk::DeviceSize* sizes) {
+void EmitVertexBuffers(Sink& sink, uint32_t count, const vk::Buffer* buffers,
+                       const vk::DeviceSize* offsets, const vk::DeviceSize* sizes) {
 	for (uint32_t i = 0; i < count; i++) {
 		EXIT_IF(buffers[i] == nullptr);
 	}
@@ -312,7 +318,8 @@ template <typename Sink>
 void EmitDirectDraw(Sink& sink, const DirectDraw& draw) {
 	if (!draw.quad_list) {
 		if (draw.indexed) {
-			sink.drawIndexed(draw.count, draw.instance_count, 0, draw.vertex_offset, draw.first_instance);
+			sink.drawIndexed(draw.count, draw.instance_count, 0, draw.vertex_offset,
+			                 draw.first_instance);
 		} else {
 			sink.draw(draw.count, draw.instance_count, draw.first_vertex, draw.first_instance);
 		}

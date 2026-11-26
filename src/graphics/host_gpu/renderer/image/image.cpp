@@ -480,7 +480,7 @@ bool Image::ZeroFresh() {
 		return false;
 	}
 	KYTY_GPU_OP_SITE("image.zero");
-	const auto aspect = FullAspectMask(backing.format);
+	const auto                aspect = FullAspectMask(backing.format);
 	vk::ImageSubresourceRange whole {};
 	whole.aspectMask = aspect;
 	whole.levelCount = VK_REMAINING_MIP_LEVELS;
@@ -505,12 +505,13 @@ bool Image::ZeroFresh() {
 	command.pipelineBarrier2(dependency);
 	if (!(aspect & vk::ImageAspectFlagBits::eColor)) {
 		const vk::ClearDepthStencilValue zero {0.0f, 0};
-		command.clearDepthStencilImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &zero, 1,
-		                               &whole);
+		command.clearDepthStencilImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &zero,
+		                               1, &whole);
 	} else {
 		vk::ClearColorValue zero {};
 		zero.uint32 = std::array<uint32_t, 4> {0u, 0u, 0u, 0u};
-		command.clearColorImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &zero, 1, &whole);
+		command.clearColorImage(backing.image, vk::ImageLayout::eTransferDstOptimal, &zero, 1,
+		                        &whole);
 	}
 	backing.state = {vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
 	                 vk::ImageLayout::eTransferDstOptimal};
@@ -538,20 +539,23 @@ void Image::Transit(vk::ImageLayout destination_layout, vk::AccessFlags2 destina
 	if (static_cast<bool>(destination_access & transfer_access)) {
 		destination_stage |= vk::PipelineStageFlagBits2::eTransfer;
 	}
-	// KYTY_IMAGE_STAGE_NARROW=1 (live, default 0): an access made only of color (or only of depth/stencil)
-	// attachment bits happens only in the attachment stages (load/store/clear operations, blending,
-	// resolves, depth tests), so the transition's second scope - and the image's tracked stage, the first
-	// scope of its next barrier - is those stages instead of every graphics stage plus compute.
+	// KYTY_IMAGE_STAGE_NARROW=1 (live, default 0): an access made only of color (or only of
+	// depth/stencil) attachment bits happens only in the attachment stages (load/store/clear
+	// operations, blending, resolves, depth tests), so the transition's second scope - and the
+	// image's tracked stage, the first scope of its next barrier - is those stages instead of every
+	// graphics stage plus compute.
 	constexpr vk::AccessFlags2 ColorAccess =
 	    vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
-	constexpr vk::AccessFlags2 DepthAccess =
-	    vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+	constexpr vk::AccessFlags2 DepthAccess = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+	                                         vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
 	const bool color_only = destination_access && !(destination_access & ~ColorAccess);
 	const bool depth_only = destination_access && !(destination_access & ~DepthAccess);
 	if (g_image_stage_narrow.On() && (color_only || depth_only)) {
-		destination_stage |= color_only ? vk::PipelineStageFlags2 {vk::PipelineStageFlagBits2::eColorAttachmentOutput}
-		                                : vk::PipelineStageFlagBits2::eEarlyFragmentTests |
-		                                      vk::PipelineStageFlagBits2::eLateFragmentTests;
+		destination_stage |=
+		    color_only
+		        ? vk::PipelineStageFlags2 {vk::PipelineStageFlagBits2::eColorAttachmentOutput}
+		        : vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+		              vk::PipelineStageFlagBits2::eLateFragmentTests;
 	} else if (!destination_access ||
 	           static_cast<bool>(destination_access & ~vk::AccessFlags2 {transfer_access})) {
 		destination_stage |=
@@ -840,9 +844,9 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 	// Upstream 17a0f53d3: a target the texture cache placed at a level of a larger image (or one
 	// whose level is smaller than the image's own extent) resolves the area both levels have,
 	// where this was an abort. Extents that fit resolve the image's extent, as before.
-	const auto plan_extent = CopyResolvePlan::ResolveExtent({info.extent.width, info.extent.height},
-	                                                        {source_width, source_height},
-	                                                        {destination_width, destination_height});
+	const auto plan_extent = CopyResolvePlan::ResolveExtent(
+	    {info.extent.width, info.extent.height}, {source_width, source_height},
+	    {destination_width, destination_height});
 	const vk::Extent3D resolve_extent {plan_extent.width, plan_extent.height, 1};
 
 	m_scheduler.EndRendering();
@@ -895,18 +899,19 @@ bool Image::CopyViaBufferSupported(const Image& source) const noexcept {
 
 void Image::DescribeCopyMismatch(const Image& source, const char* what) const noexcept {
 	const auto describe = [](const char* role, const Image& image) {
-		std::fprintf(stderr,
-		             "[memtrk]   %s 0x%016" PRIx64 "+0x%" PRIx64 " %s guest_fmt=%u tile=%u pitch=%u"
-		             " %ux%ux%u type=%d mips=%u layers=%u samples=%u bytes_per_block=%u transfer_bytes=%u "
-		             "block=%u\n",
-		             role, image.info.data.address, image.info.data.size,
-		             vk::to_string(image.backing.format).c_str(),
-		             static_cast<uint32_t>(image.info.guest_format), static_cast<uint32_t>(image.info.tile_mode),
-		             image.info.pitch,
-		             image.backing.extent.width, image.backing.extent.height, image.backing.extent.depth,
-		             static_cast<int>(image.backing.image_type), image.backing.mip_levels,
-		             image.backing.layers, static_cast<uint32_t>(image.backing.samples),
-		             image.info.bytes_per_block, CopyTransferBytes(image), image.info.IsBlock() ? 4u : 1u);
+		std::fprintf(
+		    stderr,
+		    "[memtrk]   %s 0x%016" PRIx64 "+0x%" PRIx64 " %s guest_fmt=%u tile=%u pitch=%u"
+		    " %ux%ux%u type=%d mips=%u layers=%u samples=%u bytes_per_block=%u transfer_bytes=%u "
+		    "block=%u\n",
+		    role, image.info.data.address, image.info.data.size,
+		    vk::to_string(image.backing.format).c_str(),
+		    static_cast<uint32_t>(image.info.guest_format),
+		    static_cast<uint32_t>(image.info.tile_mode), image.info.pitch,
+		    image.backing.extent.width, image.backing.extent.height, image.backing.extent.depth,
+		    static_cast<int>(image.backing.image_type), image.backing.mip_levels,
+		    image.backing.layers, static_cast<uint32_t>(image.backing.samples),
+		    image.info.bytes_per_block, CopyTransferBytes(image), image.info.IsBlock() ? 4u : 1u);
 	};
 	std::fprintf(stderr, "[memtrk] %s: image copy between incompatible texel sizes\n", what);
 	describe("source", source);
@@ -1020,8 +1025,8 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 			return source_texels == destination_texels ? texels
 			                                           : texels / source_block * source_block;
 		};
-		const auto width             = fit(source.backing.extent.width, backing.extent.width);
-		const auto height            = fit(source.backing.extent.height, backing.extent.height);
+		const auto width  = fit(source.backing.extent.width, backing.extent.width);
+		const auto height = fit(source.backing.extent.height, backing.extent.height);
 		if (width == 0 || height == 0) {
 			continue;
 		}
@@ -1132,13 +1137,15 @@ void Image::CopyBlockMip(Image& source, uint32_t mip, uint32_t layer) {
 	copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, mip, layer, 1};
 	copy.extent         = {source.backing.extent.width, source.backing.extent.height, 1};
 	const auto command  = m_scheduler.Current().HelperSink();
-	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command.Identity());
+	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {},
+	        command.Identity());
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
 	               command.Identity());
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
 	                  vk::ImageLayout::eTransferDstOptimal, 1, &copy);
 	Transit(vk::ImageLayout::eGeneral,
-	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {}, command.Identity());
+	        vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eTransferRead, {},
+	        command.Identity());
 }
 
 bool ImageLevelClampEnabled() {
@@ -1159,8 +1166,10 @@ bool ClampImageLevelsToExtent(ImageInfo& info, ImageViewInfo& view) {
 		return false;
 	}
 	static std::atomic<uint32_t> clamped {0};
-	if (const auto n = clamped.fetch_add(1, std::memory_order_relaxed) + 1u; n <= 4u || std::has_single_bit(n)) {
-		std::printf("KYTY_IMAGE_LEVEL_CLAMP #%u: guest=0x%016" PRIx64 " %ux%ux%u levels %u -> %u (view %u+%u)\n",
+	if (const auto n = clamped.fetch_add(1, std::memory_order_relaxed) + 1u;
+	    n <= 4u || std::has_single_bit(n)) {
+		std::printf("KYTY_IMAGE_LEVEL_CLAMP #%u: guest=0x%016" PRIx64
+		            " %ux%ux%u levels %u -> %u (view %u+%u)\n",
 		            n, info.data.address, info.extent.width, info.extent.height, info.extent.depth,
 		            info.resources.levels, valid, view.base_level, view.level_count);
 	}
@@ -1425,12 +1434,13 @@ void Image::CreateBacking(uint32_t sparse_first_level, uint32_t trim_first_level
 		    std::max({create.extent.width, create.extent.height, create.extent.depth})));
 		if (create.mipLevels > valid) {
 			static std::atomic<uint32_t> invalid {0};
-			const auto n = invalid.fetch_add(1, std::memory_order_relaxed) + 1u;
+			const auto                   n = invalid.fetch_add(1, std::memory_order_relaxed) + 1u;
 			if (n <= 16u || std::has_single_bit(n)) {
-				std::printf("KYTY_ADDRESS_BINDING_REPORT: image #%u with %u levels > %u valid: guest=0x%016" PRIx64
-				            " %ux%ux%u format=%d\n",
+				std::printf("KYTY_ADDRESS_BINDING_REPORT: image #%u with %u levels > %u valid: "
+				            "guest=0x%016" PRIx64 " %ux%ux%u format=%d\n",
 				            n, create.mipLevels, valid, info.data.address, create.extent.width,
-				            create.extent.height, create.extent.depth, static_cast<int>(create.format));
+				            create.extent.height, create.extent.depth,
+				            static_cast<int>(create.format));
 			}
 		}
 	}

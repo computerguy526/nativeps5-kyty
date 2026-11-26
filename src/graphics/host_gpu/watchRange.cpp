@@ -1,8 +1,9 @@
 #include "graphics/host_gpu/watchRange.h"
-#include "common/staticOnce.h"
 
 #include "common/logging/log.h"
+#include "common/staticOnce.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -10,7 +11,6 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
-#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -24,7 +24,7 @@ struct Config {
 
 const Config& Get() {
 	static constexpr auto config_init = [] {
-		Config c;
+		Config      c;
 		const char* text = std::getenv("KYTY_WATCH_RANGE");
 		while (text != nullptr && *text != '\0') {
 			char*          end   = nullptr;
@@ -93,12 +93,14 @@ void Note(const char* what, uint64_t address, uint64_t size) {
 		const auto line = g_lines.fetch_add(1, std::memory_order_relaxed);
 		if (line >= config.lines) return;
 		const auto id = std::hash<std::thread::id> {}(std::this_thread::get_id());
-		Log::WriteToConsoleAndLog(fmt::format(
-		    "KYTY_WATCH_RANGE: {} 0x{:x}+0x{:x} (watch 0x{:x}+0x{:x}) thread {:x}; last GPU op #{} {} "
-		    "0x{:016x}{}\n",
-		    what, address, size, begin, end - begin, id & 0xffffu, g_ops.load(std::memory_order_relaxed),
-		    g_kind.load(std::memory_order_relaxed), g_hash.load(std::memory_order_relaxed),
-		    line + 1u == config.lines ? " (last line)" : ""));
+		Log::WriteToConsoleAndLog(fmt::format("KYTY_WATCH_RANGE: {} 0x{:x}+0x{:x} (watch "
+		                                      "0x{:x}+0x{:x}) thread {:x}; last GPU op #{} {} "
+		                                      "0x{:016x}{}\n",
+		                                      what, address, size, begin, end - begin, id & 0xffffu,
+		                                      g_ops.load(std::memory_order_relaxed),
+		                                      g_kind.load(std::memory_order_relaxed),
+		                                      g_hash.load(std::memory_order_relaxed),
+		                                      line + 1u == config.lines ? " (last line)" : ""));
 		return;
 	}
 }
@@ -120,23 +122,25 @@ void NoteDispatch(uint64_t shader_hash, bool async_compute, uint32_t groups_x, u
 	}();
 	if (shaders.empty()) return;
 	bool listed = false;
-	for (const auto hash: shaders) listed |= hash == shader_hash;
+	for (const auto hash: shaders)
+		listed |= hash == shader_hash;
 	if (!listed) return;
 	static std::atomic<uint32_t> lines {0};
-	const auto line = lines.fetch_add(1, std::memory_order_relaxed);
+	const auto                   line = lines.fetch_add(1, std::memory_order_relaxed);
 	if (line >= Get().lines) return;
-	Log::WriteToConsoleAndLog(fmt::format(
-	    "KYTY_WATCH_SHADERS: op #{} CS 0x{:016x} on the {} queue, {} groups {}x{}x{}\n",
-	    g_ops.load(std::memory_order_relaxed), shader_hash, async_compute ? "async compute" : "graphics",
-	    indirect ? "indirect" : "direct", groups_x, groups_y, groups_z));
+	Log::WriteToConsoleAndLog(
+	    fmt::format("KYTY_WATCH_SHADERS: op #{} CS 0x{:016x} on the {} queue, {} groups {}x{}x{}\n",
+	                g_ops.load(std::memory_order_relaxed), shader_hash,
+	                async_compute ? "async compute" : "graphics", indirect ? "indirect" : "direct",
+	                groups_x, groups_y, groups_z));
 }
 
 namespace {
 
 struct WriterConfig {
-	std::vector<std::pair<uint64_t, uint64_t>> ranges; // [begin, end)
+	std::vector<std::pair<uint64_t, uint64_t>> ranges;  // [begin, end)
 	uint64_t                                   end = 0; // non-zero when any range is set
-	[[nodiscard]] bool Covers(uint64_t address, uint64_t size) const {
+	[[nodiscard]] bool                         Covers(uint64_t address, uint64_t size) const {
 		for (const auto& [b, e]: ranges) {
 			if (address < e && address + size > b) return true;
 		}
@@ -168,16 +172,16 @@ const WriterConfig& Writers() {
 }
 
 struct WriterEntry {
-	uint64_t    op     = 0;
-	uint64_t    hash   = 0;
-	const char* kind   = "";
-	const char* what   = "";
-	uint32_t    frame  = 0;
+	uint64_t    op    = 0;
+	uint64_t    hash  = 0;
+	const char* kind  = "";
+	const char* what  = "";
+	uint32_t    frame = 0;
 	uint32_t    groups[3] {};
 	uint32_t    ud[16] {};
-	uint64_t    first  = 0; // the first written byte in the page
-	uint64_t    bytes  = 0;
-	uint32_t    count  = 1; // consecutive registrations of the same op
+	uint64_t    first = 0; // the first written byte in the page
+	uint64_t    bytes = 0;
+	uint32_t    count = 1; // consecutive registrations of the same op
 };
 
 struct OpDetail {
@@ -189,7 +193,7 @@ struct OpDetail {
 std::mutex                                             g_writers_mutex;
 std::unordered_map<uint64_t, std::vector<WriterEntry>> g_writers; // page -> newest last
 std::atomic<uint32_t>                                  g_detail_frame {0};
-OpDetail                                               g_detail; // GPU thread writes, read under the lock
+OpDetail g_detail; // GPU thread writes, read under the lock
 
 } // namespace
 
@@ -197,16 +201,17 @@ bool WritersEnabled() noexcept {
 	return Writers().end != 0;
 }
 
-void SetCurrentOpDetail(uint32_t frame, const uint32_t* user_data, uint32_t user_data_count, uint32_t groups_x,
-                        uint32_t groups_y, uint32_t groups_z) noexcept {
+void SetCurrentOpDetail(uint32_t frame, const uint32_t* user_data, uint32_t user_data_count,
+                        uint32_t groups_x, uint32_t groups_y, uint32_t groups_z) noexcept {
 	if (!WritersEnabled()) return;
 	std::scoped_lock lock(g_writers_mutex);
-	g_detail       = {};
-	g_detail.frame = frame;
+	g_detail           = {};
+	g_detail.frame     = frame;
 	g_detail.groups[0] = groups_x;
 	g_detail.groups[1] = groups_y;
 	g_detail.groups[2] = groups_z;
-	for (uint32_t i = 0; i < 16 && i < user_data_count && user_data != nullptr; i++) g_detail.ud[i] = user_data[i];
+	for (uint32_t i = 0; i < 16 && i < user_data_count && user_data != nullptr; i++)
+		g_detail.ud[i] = user_data[i];
 	g_detail_frame.store(frame, std::memory_order_relaxed);
 }
 
@@ -222,15 +227,15 @@ void NoteWriter(const char* what, uint64_t address, uint64_t size) {
 			last  = std::max(last, std::min(address + size, e));
 		}
 	}
-	const uint64_t op    = g_ops.load(std::memory_order_relaxed);
-	const uint64_t hash  = g_hash.load(std::memory_order_relaxed);
-	const char*    kind  = g_kind.load(std::memory_order_relaxed);
+	const uint64_t   op   = g_ops.load(std::memory_order_relaxed);
+	const uint64_t   hash = g_hash.load(std::memory_order_relaxed);
+	const char*      kind = g_kind.load(std::memory_order_relaxed);
 	std::scoped_lock lock(g_writers_mutex);
 	for (uint64_t page = first & ~uint64_t {0xfff}; page < last; page += 0x1000) {
 		auto&          list  = g_writers[page];
 		const uint64_t start = std::max(page, first);
 		const uint64_t stop  = std::min(page + 0x1000, last);
-		WriterEntry e;
+		WriterEntry    e;
 		e.op    = op;
 		e.hash  = hash;
 		e.kind  = kind;
@@ -254,9 +259,11 @@ std::string DescribeWriters(uint64_t address) {
 	std::string text = " writers[";
 	for (const auto& e: it->second) {
 		if (address < e.first || address >= e.first + e.bytes) continue;
-		text += fmt::format(" {{op#{} f{} {} 0x{:016x} {} 0x{:x}+0x{:x} x{} g{}x{}x{} ud", e.op, e.frame, e.kind, e.hash, e.what,
-		                    e.first, e.bytes, e.count, e.groups[0], e.groups[1], e.groups[2]);
-		for (const auto w: e.ud) text += fmt::format(" {:08x}", w);
+		text += fmt::format(" {{op#{} f{} {} 0x{:016x} {} 0x{:x}+0x{:x} x{} g{}x{}x{} ud", e.op,
+		                    e.frame, e.kind, e.hash, e.what, e.first, e.bytes, e.count, e.groups[0],
+		                    e.groups[1], e.groups[2]);
+		for (const auto w: e.ud)
+			text += fmt::format(" {:08x}", w);
 		text += "}";
 	}
 	return text + " ]";

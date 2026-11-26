@@ -35,12 +35,12 @@ public:
 	QLineEdit*         GetCommentEdit() { return m_comment_edit; }
 	QPushButton*       GetPrecompileButton() { return m_precompile_button; }
 	// Below it: exports the shader list of what this game's sessions recorded (shaderListExport.h).
-	QPushButton*       GetExportListButton() { return m_export_button; }
+	QPushButton* GetExportListButton() { return m_export_button; }
 	// The emulator's folder (its PipelineLists holds the shader lists, its _PipelineCache the
 	// journals) and whether a precompile of any game, or this game from another row, runs: the
 	// buttons' tooltips and whether they can be clicked. `can_export`: kyty_pipeline_list is there
 	// (without it the Export list button is hidden).
-	void               SetPrecompileState(const QString& emulator_dir, bool blocked, bool can_export = false);
+	void SetPrecompileState(const QString& emulator_dir, bool blocked, bool can_export = false);
 
 private:
 	void UpdateIcon();

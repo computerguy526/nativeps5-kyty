@@ -88,7 +88,8 @@ bool HasMemoryInfo(IR::ValueOpcode opcode) {
 
 class RecipeBuilder {
 public:
-	RecipeBuilder(const IR::Program& program, SiteRecipe& recipe): m_program(program), m_recipe(recipe) {}
+	RecipeBuilder(const IR::Program& program, SiteRecipe& recipe)
+	    : m_program(program), m_recipe(recipe) {}
 
 	// The argument for `value`, or false when it is not rebuildable.
 	bool Build(IR::Value value, int32_t& result, uint32_t depth = 0) {
@@ -140,9 +141,9 @@ public:
 private:
 	static constexpr int32_t Failed = INT32_MIN;
 
-	const IR::Program&                            m_program;
-	SiteRecipe&                                   m_recipe;
-	std::unordered_map<const IR::Inst*, int32_t>  m_memo;
+	const IR::Program&                           m_program;
+	SiteRecipe&                                  m_recipe;
+	std::unordered_map<const IR::Inst*, int32_t> m_memo;
 };
 
 } // namespace
@@ -171,7 +172,8 @@ void EncodeHeader(const Header& header, std::vector<uint32_t>& out) {
 		std::vector<uint16_t> codes = site.uniform;
 		codes.insert(codes.end(), site.vector.begin(), site.vector.end());
 		for (size_t i = 0; i < codes.size(); i += 2u) {
-			payload.push_back(codes[i] | (i + 1u < codes.size() ? uint32_t {codes[i + 1u]} << 16u : 0u));
+			payload.push_back(codes[i] |
+			                  (i + 1u < codes.size() ? uint32_t {codes[i + 1u]} << 16u : 0u));
 		}
 	}
 	EXIT_IF(payload.size() > 0xfffu);
@@ -201,7 +203,8 @@ bool DecodeHeader(std::span<const uint32_t> payload, Header& header) {
 		for (uint32_t i = 0; i < uniform + vector; i++) {
 			const auto word = at + i / 2u;
 			if (word >= payload.size()) return false;
-			codes.push_back(static_cast<uint16_t>((i & 1u) != 0 ? payload[word] >> 16u : payload[word]));
+			codes.push_back(
+			    static_cast<uint16_t>((i & 1u) != 0 ? payload[word] >> 16u : payload[word]));
 		}
 		at += (uniform + vector + 1u) / 2u;
 		SiteLayout site;

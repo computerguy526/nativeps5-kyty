@@ -45,7 +45,7 @@ thread_local bool      t_seen_ue  = false;
 Counters& Local() {
 	if (t_counters == nullptr) {
 		// Never freed: a finished thread's counts stay in the totals.
-		auto* counters = new Counters;
+		auto*           counters = new Counters;
 		std::lock_guard lock(RegistryMutex());
 		Registry().push_back(counters);
 		t_counters = counters;
@@ -89,7 +89,7 @@ void Detail::FpProbeSlow() {
 }
 
 Totals Sum() {
-	Totals t;
+	Totals          t;
 	std::lock_guard lock(RegistryMutex());
 	for (const auto* c: Registry()) {
 		t.sema_signal += c->sema_signal.load(std::memory_order_relaxed);
@@ -126,13 +126,15 @@ void Start() {
 				std::this_thread::sleep_for(std::chrono::seconds(1));
 				const auto t = Sum();
 				Log::WriteToConsoleAndLog(fmt::format(
-				    "GThreadStats t_us {}: sema sig {} multi {} partial {} block {} wake {} spurious {} | "
-				    "fp probes {} de {} ue {} threads_de {} threads_ue {} | memlock guest {}/{}/{}us "
+				    "GThreadStats t_us {}: sema sig {} multi {} partial {} block {} wake {} "
+				    "spurious {} | "
+				    "fp probes {} de {} ue {} threads_de {} threads_ue {} | memlock guest "
+				    "{}/{}/{}us "
 				    "host {}/{}/{}us | memread guest {}/{}/{}us host {}/{}/{}us\n",
 				    HangTrace::NowNs() / 1000u, t.sema_signal, t.sema_signal_multi,
 				    t.sema_signal_partial, t.sema_block, t.sema_wake, t.sema_spurious, t.fp_probes,
-				    t.fp_de, t.fp_ue, t.fp_thread_de, t.fp_thread_ue, t.mem_acq[0], t.mem_contended[0],
-				    t.mem_wait_ns[0] / 1000u, t.mem_acq[1], t.mem_contended[1],
+				    t.fp_de, t.fp_ue, t.fp_thread_de, t.fp_thread_ue, t.mem_acq[0],
+				    t.mem_contended[0], t.mem_wait_ns[0] / 1000u, t.mem_acq[1], t.mem_contended[1],
 				    t.mem_wait_ns[1] / 1000u, t.mem_read_acq[0], t.mem_read_contended[0],
 				    t.mem_read_wait_ns[0] / 1000u, t.mem_read_acq[1], t.mem_read_contended[1],
 				    t.mem_read_wait_ns[1] / 1000u));

@@ -1,18 +1,18 @@
 #include "graphics/host_gpu/renderer/commandStream.h"
-#include "common/ramStats.h"
 
 #include "common/handoffLean.h"
 #include "common/hangWatchdog.h"
 #include "common/helperPriority.h"
 #include "common/liveSwitch.h"
+#include "common/ramStats.h"
 #include "common/spinGate.h"
 #include "graphics/host_gpu/renderer/drawPrep/cpGaps.h"
 #include "graphics/host_gpu/renderer/drawPrep/prepStats.h"
 
 #include <algorithm>
-#include <cstdlib>
 #include <chrono>
 #include <cinttypes>
+#include <cstdlib>
 #include <new>
 #include <thread>
 
@@ -253,12 +253,13 @@ const char* OpName(Op op) noexcept {
 // KYTY_EMIT_SPLIT consumer totals
 
 namespace {
-constexpr uint32_t                    ResolvedTotalCount = 9 + ResolvedDrawModel::FieldCount;
+constexpr uint32_t ResolvedTotalCount = 9 + ResolvedDrawModel::FieldCount;
 std::array<std::atomic<uint64_t>, ResolvedTotalCount> g_resolved_totals {};
 
 void ResolvedFields(const ResolvedDrawStats& s, uint64_t* out) noexcept {
-	const uint64_t head[9] = {s.records,        s.pushes,        s.pushes_avoided,  s.constants,       s.constants_avoided,
-	                          s.shadow_resets,  s.verify_records, s.verify_checks, s.verify_unmodeled};
+	const uint64_t head[9] = {
+	    s.records,       s.pushes,         s.pushes_avoided, s.constants,       s.constants_avoided,
+	    s.shadow_resets, s.verify_records, s.verify_checks,  s.verify_unmodeled};
 	std::memcpy(out, head, sizeof(head));
 	std::memcpy(out + 9, s.mismatches, sizeof(s.mismatches));
 }
@@ -775,10 +776,11 @@ bool Ring::EnsureSpace(uint64_t bytes, const WaitPolicy& policy, WaitStats& stat
 	return true;
 }
 
-// KYTY_RING_PREFETCHW (live, default 0 = off; N = 1..64): each reservation also issues a prefetch for
-// writing of the ring line N lines past its end. The ring (16 MiB at the commit thread) is larger than
-// the L2, and the consumer last read those lines one lap ago on another core: without the hint the
-// first store to each new line waits for its read-for-ownership. A hint only: the bytes are unchanged.
+// KYTY_RING_PREFETCHW (live, default 0 = off; N = 1..64): each reservation also issues a prefetch
+// for writing of the ring line N lines past its end. The ring (16 MiB at the commit thread) is
+// larger than the L2, and the consumer last read those lines one lap ago on another core: without
+// the hint the first store to each new line waits for its read-for-ownership. A hint only: the
+// bytes are unchanged.
 static Live::Switch g_ring_prefetchw("KYTY_RING_PREFETCHW", [](const char* value) -> int64_t {
 	return value != nullptr ? std::clamp<int64_t>(std::strtoll(value, nullptr, 10), 0, 64) : 0;
 });
@@ -890,8 +892,8 @@ bool Ring::WaitPublished(const std::atomic<bool>& stop, const WaitPolicy& policy
 	// a short spin while the core budget is exceeded (common/spinGate.h).
 	using Common::SpinGate::Site;
 	const auto spin_tsc = DrawPrep::PrepStats::Tsc();
-	const bool spun = Spin(Common::SpinGate::SpinNs(Site::Recorder, policy.spin_ns),
-	                       [&] { return available() || stop.load(std::memory_order_acquire); });
+	const bool spun     = Spin(Common::SpinGate::SpinNs(Site::Recorder, policy.spin_ns),
+	                           [&] { return available() || stop.load(std::memory_order_acquire); });
 	// PrepStats: the recorder's spin time (one consumer thread; relaxed adds read by the reporter).
 	const auto spun_tsc = DrawPrep::PrepStats::Tsc() - spin_tsc;
 	DrawPrep::PrepStats::g_spin.recorder.fetch_add(spun_tsc, std::memory_order_relaxed);
@@ -923,9 +925,9 @@ void Ring::WakeConsumer() noexcept {
 // ------------------------------------------------------------------------------------------------
 // Encoder
 
-// KYTY_RING_KICK_EVERY=<n> (live, default 0 = 1: every draw and dispatch packet): a draw or dispatch
-// packet kicks the consumer (publication plus the parked-consumer check, on the cache line the
-// recorder polls) only every n-th time; Submit and DrainMarker packets, and every wait of the
+// KYTY_RING_KICK_EVERY=<n> (live, default 0 = 1: every draw and dispatch packet): a draw or
+// dispatch packet kicks the consumer (publication plus the parked-consumer check, on the cache line
+// the recorder polls) only every n-th time; Submit and DrainMarker packets, and every wait of the
 // producer (WaitConsumed, a full ring), still kick. Packets in between are published by the
 // publication batch (Ring::SetPublishBatch). At the Playroom GPU Jungle the commit thread kicks
 // ~10,000 times per flip.
@@ -1021,10 +1023,11 @@ uint64_t Encoder::Splice(Ring& source, uint64_t end) {
 			std::memcpy(base, header, bytes);
 			const auto* out = reinterpret_cast<Header*>(base);
 			if ((out->flags & FlagVerify) != 0) {
-				const uint32_t offset = sizeof(Header) + ((out->flags & FlagSite) != 0 ? sizeof(SiteBlock) : 0u);
-				auto*          verify = reinterpret_cast<VerifyBlock*>(base + offset);
-				verify->sequence      = ++m_sequence;
-				m_cb_digest           = FoldDigest(m_cb_digest, out->op, verify->hash);
+				const uint32_t offset =
+				    sizeof(Header) + ((out->flags & FlagSite) != 0 ? sizeof(SiteBlock) : 0u);
+				auto* verify     = reinterpret_cast<VerifyBlock*>(base + offset);
+				verify->sequence = ++m_sequence;
+				m_cb_digest      = FoldDigest(m_cb_digest, out->op, verify->hash);
 				m_cb_packets++;
 			}
 			m_packets++;
@@ -1333,7 +1336,8 @@ void Encoder::resolvedDraw(const ResolvedDrawPacket& packet_in, const ResolvedDr
 	closeResolvedDraw();
 }
 
-Encoder::ResolvedDrawSlots Encoder::openResolvedDraw(const ResolvedDrawPacket& packet_in, const ResolvedDrawArrays& arrays) {
+Encoder::ResolvedDrawSlots Encoder::openResolvedDraw(const ResolvedDrawPacket& packet_in,
+                                                     const ResolvedDrawArrays& arrays) {
 	using P = ResolvedDrawPacket;
 	EXIT_IF(m_rd_open);
 	if ((packet_in.flags & P::FlagVerifyOnly) != 0) {
@@ -1344,11 +1348,12 @@ Encoder::ResolvedDrawSlots Encoder::openResolvedDraw(const ResolvedDrawPacket& p
 	m_copy_count              = 0;
 	const uint64_t push       = (packet.flags & P::FlagPushData) != 0 ? ResolvedDrawPushDwords : 0u;
 	const uint64_t payload    = Sz<ResolvedDrawPacket>() + Arr<HostCopyPacket>(packet.copy_count) +
-	                         3u * Arr<uint64_t>(packet.vertex_count) +
-	                         Arr<DescriptorWriteRecord>(packet.write_count) + Arr<DescriptorInfo>(packet.info_count) +
-	                         Arr<uint32_t>(push) + Arr<uint8_t>(packet.clip_bytes);
-	auto           w        = Open(Op::ResolvedDraw, payload, false);
-	const auto     start    = w.Offset();
+	                            3u * Arr<uint64_t>(packet.vertex_count) +
+	                            Arr<DescriptorWriteRecord>(packet.write_count) +
+	                            Arr<DescriptorInfo>(packet.info_count) + Arr<uint32_t>(push) +
+	                            Arr<uint8_t>(packet.clip_bytes);
+	auto           w          = Open(Op::ResolvedDraw, payload, false);
+	const auto     start      = w.Offset();
 	w.Put(packet);
 	w.PutArray(m_copies.data(), packet.copy_count);
 	w.PutArray(arrays.vertex_buffers, packet.vertex_count);
@@ -1361,11 +1366,11 @@ Encoder::ResolvedDrawSlots Encoder::openResolvedDraw(const ResolvedDrawPacket& p
 	slots.push = push != 0 ? reinterpret_cast<uint32_t*>(w.Cursor()) : nullptr;
 	w.Skip(sizeof(uint32_t) * push);
 	w.PutArray(reinterpret_cast<const uint8_t*>(arrays.clip), packet.clip_bytes);
-	m_rd_open    = true;
-	m_rd_base    = reinterpret_cast<uint8_t*>(w.GetHeader());
-	m_rd_size    = w.Size();
-	m_rd_start   = start;
-	m_rd_verify  = w.Verify();
+	m_rd_open   = true;
+	m_rd_base   = reinterpret_cast<uint8_t*>(w.GetHeader());
+	m_rd_size   = w.Size();
+	m_rd_start  = start;
+	m_rd_verify = w.Verify();
 	return slots;
 }
 
@@ -1373,7 +1378,9 @@ void Encoder::closeResolvedDraw() {
 	EXIT_IF(!m_rd_open);
 	m_rd_open = false;
 	Writer w(m_rd_base, m_rd_size, m_rd_size, m_rd_verify);
-	Close(w, m_options.verify ? VerifyHash::ResolvedDraw(m_rd_base + m_rd_start, m_rd_size - m_rd_start) : 0);
+	Close(w, m_options.verify
+	             ? VerifyHash::ResolvedDraw(m_rd_base + m_rd_start, m_rd_size - m_rd_start)
+	             : 0);
 }
 
 void Encoder::bindIndexBuffer(vk::Buffer buffer, vk::DeviceSize offset, vk::IndexType type) {
@@ -1622,7 +1629,8 @@ void Encoder::writeTimestamp2(vk::PipelineStageFlags2 stage, vk::QueryPool pool,
 }
 
 void Encoder::hostCopy(void* destination, uint64_t source, uint64_t size) {
-	const HostCopyPacket copy {static_cast<uint64_t>(reinterpret_cast<uintptr_t>(destination)), source, size};
+	const HostCopyPacket copy {static_cast<uint64_t>(reinterpret_cast<uintptr_t>(destination)),
+	                           source, size};
 	if (g_emit_split_copies.Get() != 0 && m_copy_count < MaxHeldCopies) {
 		m_copies[m_copy_count++] = copy;
 		return;
@@ -1633,7 +1641,9 @@ void Encoder::hostCopy(void* destination, uint64_t source, uint64_t size) {
 void Encoder::EmitHostCopy(const HostCopyPacket& copy) {
 	auto w = Open(Op::HostCopy, Sz<HostCopyPacket>(), false);
 	w.Put(copy);
-	Close(w, m_options.verify ? VerifyHash::Value(Op::HostCopy, copy.destination, copy.source, copy.size) : 0);
+	Close(w, m_options.verify
+	             ? VerifyHash::Value(Op::HostCopy, copy.destination, copy.source, copy.size)
+	             : 0);
 }
 
 void Encoder::insertDebugLabel(const char* name) {

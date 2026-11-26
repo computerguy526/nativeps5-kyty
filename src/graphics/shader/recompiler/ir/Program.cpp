@@ -190,8 +190,8 @@ Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
 	Value                           invariant;
 	std::vector<Value>              pending {value};
 	std::unordered_set<const Inst*> visited;
-	// 905bphi: SAROS 905b only (hash-keyed): an immediate-zero incoming (entry default of a register another
-	// branch initialises) is ignored when the remaining incomings agree.
+	// 905bphi: SAROS 905b only (hash-keyed): an immediate-zero incoming (entry default of a
+	// register another branch initialises) is ignored when the remaining incomings agree.
 	const bool ignore_entry_zero = SarosPhiIgnoresEntryZero(program.shader_hash);
 	bool       saw_zero          = false;
 	while (!pending.empty()) {
@@ -207,7 +207,8 @@ Value ResolveInvariantPhi(const ResourcePlan& program, Value value) {
 			}
 			continue;
 		}
-		if (ignore_entry_zero && current.IsImmediate() && current.GetType() == Type::U32 && current.U32() == 0u) {
+		if (ignore_entry_zero && current.IsImmediate() && current.GetType() == Type::U32 &&
+		    current.U32() == 0u) {
 			saw_zero = true;
 			continue;
 		}
@@ -517,8 +518,8 @@ void ValidateProgram(const Program& program, bool require_ssa) {
 				    !memory.SupportsIndirectRawLoad(inst.GetOpcode()) &&
 				    !(program.info.bda_writes &&
 				      (memory.SupportsIndirectRawWrite(inst.GetOpcode()) ||
-				       (GetCodegenOptions().IndirectFormatStoresFor(program.shader_hash) && memory.formatted &&
-				        !memory.typed && memory.data_bits == 32u &&
+				       (GetCodegenOptions().IndirectFormatStoresFor(program.shader_hash) &&
+				        memory.formatted && !memory.typed && memory.data_bits == 32u &&
 				        BufferAccessOf(inst.GetOpcode()) == BufferAccess::Write)))) {
 					return Fail("indirect buffer requires a raw DWORD x2/x3/x4 load");
 				}
@@ -838,7 +839,7 @@ size_t DropDeadPlanReferences(Program& program) {
 
 std::unordered_set<const Inst*> PlanTableInstructions(const Program& program) {
 	std::unordered_set<const Inst*> named;
-	const auto add_value = [&](const Value& value) {
+	const auto                      add_value = [&](const Value& value) {
 		if (const auto* inst = value.TryInstruction(); inst != nullptr) {
 			named.insert(inst);
 		}
@@ -892,7 +893,8 @@ size_t ResolvePlanIdentities(Program& program) {
 		    }
 	    },
 	    [&](const Inst*& inst) {
-		    if (inst == nullptr || !live.contains(inst) || inst->GetOpcode() != ValueOpcode::Identity) {
+		    if (inst == nullptr || !live.contains(inst) ||
+		        inst->GetOpcode() != ValueOpcode::Identity) {
 			    return;
 		    }
 		    // An identity of an immediate names no instruction: DropDeadPlanReferences clears it.

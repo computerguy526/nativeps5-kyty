@@ -242,8 +242,8 @@ void OnGuestFlip() {
 	// KYTY_GPU_SPAN_LOG=<path> (diagnostic, default off): one line per guest command buffer with
 	// its GPU start/end and its host record/submit/dispatch/observe times, in microseconds on the
 	// hang trace's clock (cp.csv t_us), so GPU idle gaps can be matched with CP and guest events.
-	static FILE*   span_log    = nullptr;
-	static int64_t span_offset = 0;
+	static FILE*      span_log    = nullptr;
+	static int64_t    span_offset = 0;
 	static const bool span_log_on = [] {
 		const auto* path = std::getenv("KYTY_GPU_SPAN_LOG");
 		if (path == nullptr || path[0] == '\0') {
@@ -254,7 +254,8 @@ void OnGuestFlip() {
 			return false;
 		}
 		span_offset = static_cast<int64_t>(NowNs()) - static_cast<int64_t>(HangTrace::NowNs());
-		std::fprintf(span_log, "gpu_start_us,gpu_end_us,record_us,submit_us,dispatch_us,observed_us\n");
+		std::fprintf(span_log,
+		             "gpu_start_us,gpu_end_us,record_us,submit_us,dispatch_us,observed_us\n");
 		return true;
 	}();
 	if (span_log_on && calibration.valid) {
@@ -265,7 +266,8 @@ void OnGuestFlip() {
 			const auto& s = *span.sample;
 			std::fprintf(span_log, "%lld,%lld,%lld,%lld,%lld,%lld\n", rel(to_steady(span.start)),
 			             rel(to_steady(span.end)), rel(static_cast<double>(s.record_ns)),
-			             rel(static_cast<double>(s.submit_ns)), rel(static_cast<double>(s.dispatch_ns)),
+			             rel(static_cast<double>(s.submit_ns)),
+			             rel(static_cast<double>(s.dispatch_ns)),
 			             rel(static_cast<double>(s.observed_ns)));
 		}
 		std::fflush(span_log);

@@ -283,7 +283,8 @@ VALUE_OPCODE(BvhIntersectRay, U32x4, AddressResource, U32x4, U32, U32, U32, U32,
 // traversal code after it is not folded away (which reshapes the CFG the game was compiled to).
 VALUE_OPCODE(BvhIntersectRayStub, U32x4, U32)
 // Native ray tracing (KYTY_RT_HW, RayTracingPatch.h, ir/RayQuery.h); the flags hold the site and
-// the variant. Init: origin xyz, direction xyz, t max, cull mask (f32 bits), TLAS header pair, EXEC.
+// the variant. Init: origin xyz, direction xyz, t max, cull mask (f32 bits), TLAS header pair,
+// EXEC.
 VALUE_OPCODE(RayQueryInit, U1, U32, U32, U32, U32, U32, U32, U32, U32, U32, U32, U1)
 VALUE_OPCODE(RayQueryNext, U32x4)
 VALUE_OPCODE(RayQueryMatch, U1)
@@ -296,10 +297,11 @@ VALUE_OPCODE(RayQueryKeep, Void, U32)
 VALUE_OPCODE(RayQueryKept, U32)
 VALUE_OPCODE(RayQueryCount, Void, U1)
 // IMAGE_BVH8_INTERSECT_RAY (PS5 Pro, upstream 5eab0ec73): GetAddressResource(T# base lo, hi), T#
-// dwords 0-3, encoded base lo/hi, ray extent, instance mask, origin xyz, direction xyz, node pointer,
-// EXEC. Bvh8Extract reads result dword 0-9 (destination), 10-15 (ray out) or 16 (instance flag).
-VALUE_OPCODE(Bvh8IntersectRay, Bvh8Result, AddressResource, U32x4, U32, U32, U32, U32, U32, U32, U32,
-             U32, U32, U32, U32, U1)
+// dwords 0-3, encoded base lo/hi, ray extent, instance mask, origin xyz, direction xyz, node
+// pointer, EXEC. Bvh8Extract reads result dword 0-9 (destination), 10-15 (ray out) or 16 (instance
+// flag).
+VALUE_OPCODE(Bvh8IntersectRay, Bvh8Result, AddressResource, U32x4, U32, U32, U32, U32, U32, U32,
+             U32, U32, U32, U32, U32, U1)
 VALUE_OPCODE(Bvh8Extract, U32, Bvh8Result, U32)
 VALUE_OPCODE(LoadBufferU8, U8, BufferResource, U32, U32, U32, U1)
 VALUE_OPCODE(LoadBufferU16, U16, BufferResource, U32, U32, U32, U1)
@@ -379,8 +381,8 @@ VALUE_OPCODE(SwizzleU32, U32, U32, U32, U1)
 VALUE_OPCODE(ImageQueryDimensions, U32x4, ImageResource, ImageAddress)
 VALUE_OPCODE(ImageQueryLod, U32x4, ImageResource, SamplerResource, ImageAddress)
 VALUE_OPCODE(ImageRead, U32x4, ImageResource, ImageAddress, U1)
-// KYTY_IMAGE_GLC_COHERENT / KYTY_POPS_INTERLOCK: IMAGE_LOAD* through the storage image (OpImageRead),
-// so a GLC load or a POPS read-modify-write sees the stores of other invocations.
+// KYTY_IMAGE_GLC_COHERENT / KYTY_POPS_INTERLOCK: IMAGE_LOAD* through the storage image
+// (OpImageRead), so a GLC load or a POPS read-modify-write sees the stores of other invocations.
 VALUE_OPCODE(ImageReadStorage, U32x4, ImageResource, ImageAddress, U1)
 VALUE_OPCODE(ImageWrite, Void, ImageResource, ImageAddress, U32x4, U1)
 VALUE_OPCODE(ImageSampleRaw, U32x4, ImageResource, SamplerResource, ImageAddress)

@@ -33,7 +33,8 @@ namespace {
 // (KYTY_FLIGHTREC=2) uses 65536-record rings.
 constexpr uint32_t kMaxRings    = 17;
 constexpr uint32_t kMaxTriggers = 16;
-constexpr uint32_t kMaxImages   = 1024; // mainhang: 192 filled with system images before kyty_gpu/KK/SDL loaded
+constexpr uint32_t kMaxImages =
+    1024; // mainhang: 192 filled with system images before kyty_gpu/KK/SDL loaded
 uint64_t           g_shared_n   = 1u << 14;
 
 Detail::Ring          g_rings[kMaxRings];
@@ -279,24 +280,26 @@ void RefreshImages() noexcept {
 #if defined(__APPLE__)
 	const uint32_t n = _dyld_image_count();
 	uint32_t       k = 0;
-	// Two passes: our own images (app, prx, dlopen'd dylibs) first, then the system ones, so a full table never
-	// drops kyty_gpu / KK / SDL (2026-11-22 mainhang: their frames were attributed to libSceAgcDriver.prx).
+	// Two passes: our own images (app, prx, dlopen'd dylibs) first, then the system ones, so a full
+	// table never drops kyty_gpu / KK / SDL (2026-11-22 mainhang: their frames were attributed to
+	// libSceAgcDriver.prx).
 	for (uint32_t pass = 0; pass < 2; pass++)
-	for (uint32_t i = 0; i < n && k < kMaxImages; i++) {
-		const char* nm = _dyld_get_image_name(i);
-		if (nm == nullptr) {
-			continue;
+		for (uint32_t i = 0; i < n && k < kMaxImages; i++) {
+			const char* nm = _dyld_get_image_name(i);
+			if (nm == nullptr) {
+				continue;
+			}
+			const bool sys =
+			    std::strncmp(nm, "/System/", 8) == 0 || std::strncmp(nm, "/usr/lib/", 9) == 0;
+			if (sys != (pass == 1)) {
+				continue;
+			}
+			const char* base = std::strrchr(nm, '/'); // basename only: no user paths in a dump
+			base             = base != nullptr ? base + 1 : nm;
+			g_images[k].base = reinterpret_cast<uint64_t>(_dyld_get_image_header(i));
+			std::snprintf(g_images[k].name, sizeof(g_images[k].name), "%s", base);
+			k++;
 		}
-		const bool sys = std::strncmp(nm, "/System/", 8) == 0 || std::strncmp(nm, "/usr/lib/", 9) == 0;
-		if (sys != (pass == 1)) {
-			continue;
-		}
-		const char* base = std::strrchr(nm, '/'); // basename only: no user paths in a dump
-		base             = base != nullptr ? base + 1 : nm;
-		g_images[k].base = reinterpret_cast<uint64_t>(_dyld_get_image_header(i));
-		std::snprintf(g_images[k].name, sizeof(g_images[k].name), "%s", base);
-		k++;
-	}
 	g_image_n.store(k, std::memory_order_release);
 #endif
 }
@@ -356,9 +359,10 @@ void RecordBacktrace(uint32_t kind, uint32_t port) noexcept {
 	}
 }
 
-// mainhang (KYTY_FLIGHTREC_ALLTHREADS=1, default off): every thread's backtrace, for the 10 s stalls, the
-// flip stall and Trigger() dumps. Per thread: a header record (kind 4: os thread id + 24 bytes of its name),
-// then up to 8 groups of 4 frames (kind 3). Not from a signal handler; never suspends the calling thread.
+// mainhang (KYTY_FLIGHTREC_ALLTHREADS=1, default off): every thread's backtrace, for the 10 s
+// stalls, the flip stall and Trigger() dumps. Per thread: a header record (kind 4: os thread id +
+// 24 bytes of its name), then up to 8 groups of 4 frames (kind 3). Not from a signal handler; never
+// suspends the calling thread.
 bool g_all_threads = false;
 void RecordAllThreads() noexcept {
 #if defined(__APPLE__) && defined(__arm64__)
@@ -374,26 +378,31 @@ void RecordAllThreads() noexcept {
 			uint64_t                      tid = 0;
 			thread_identifier_info_data_t idi {};
 			mach_msg_type_number_t        icnt = THREAD_IDENTIFIER_INFO_COUNT;
-			if (thread_info(th, THREAD_IDENTIFIER_INFO, reinterpret_cast<thread_info_t>(&idi), &icnt) == KERN_SUCCESS) {
+			if (thread_info(th, THREAD_IDENTIFIER_INFO, reinterpret_cast<thread_info_t>(&idi),
+			                &icnt) == KERN_SUCCESS) {
 				tid = idi.thread_id;
 			}
-			uint64_t                   nm[3] = {0, 0, 0};
+			uint64_t                    nm[3] = {0, 0, 0};
 			thread_extended_info_data_t ext {};
 			mach_msg_type_number_t      ecnt = THREAD_EXTENDED_INFO_COUNT;
-			if (thread_info(th, THREAD_EXTENDED_INFO, reinterpret_cast<thread_info_t>(&ext), &ecnt) == KERN_SUCCESS) {
-				std::memcpy(nm, ext.pth_name, sizeof(nm) < sizeof(ext.pth_name) ? sizeof(nm) : sizeof(ext.pth_name));
+			if (thread_info(th, THREAD_EXTENDED_INFO, reinterpret_cast<thread_info_t>(&ext),
+			                &ecnt) == KERN_SUCCESS) {
+				std::memcpy(nm, ext.pth_name,
+				            sizeof(nm) < sizeof(ext.pth_name) ? sizeof(nm) : sizeof(ext.pth_name));
 			}
 			Rec(EvBacktrace, tid, nm[0], nm[1], nm[2], static_cast<uint8_t>(4u << 5));
 			uint64_t       pcs[32] = {};
 			const uint32_t n       = Backtrace(static_cast<uint32_t>(th), pcs, 32);
 			for (uint32_t i = 0, g = 0; i < n; i += 4, g++) {
-				Rec(EvBacktrace, pcs[i], pcs[i + 1], pcs[i + 2], pcs[i + 3], static_cast<uint8_t>(g | (3u << 5)));
+				Rec(EvBacktrace, pcs[i], pcs[i + 1], pcs[i + 2], pcs[i + 3],
+				    static_cast<uint8_t>(g | (3u << 5)));
 			}
 		}
 		mach_port_deallocate(mach_task_self(), th);
 	}
 	mach_port_deallocate(mach_task_self(), self);
-	vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(list), count * sizeof(thread_act_t));
+	vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(list),
+	              count * sizeof(thread_act_t));
 #endif
 }
 
@@ -436,10 +445,10 @@ void* MonitorMain(void*) {
 	uint64_t last_sample   = Detail::Now();
 	uint32_t armed_present = 0; // bit0: 2 s dumped, bit1: 10 s dumped
 	uint32_t armed_main    = 0;
-	uint64_t seen_present  = 0, seen_hb = 0;
-	uint32_t seen_flip     = 0;
-	uint64_t flip_t        = 0;    // Now() when the guest flip count last changed
-	bool     flip_dumped   = false;
+	uint64_t seen_present = 0, seen_hb = 0;
+	uint32_t seen_flip   = 0;
+	uint64_t flip_t      = 0; // Now() when the guest flip count last changed
+	bool     flip_dumped = false;
 	for (;;) {
 		usleep(100 * 1000);
 		const uint64_t now = Detail::Now();
@@ -471,8 +480,9 @@ void* MonitorMain(void*) {
 				}
 			}
 		}
-		// mainhang (with KYTY_FLIGHTREC_ALLTHREADS=1): the guest stopped flipping for 10 s while the window may
-		// still present (2026-11-22 blame6: Kyty re-presented flip 3889 for minutes, no stall dump fired).
+		// mainhang (with KYTY_FLIGHTREC_ALLTHREADS=1): the guest stopped flipping for 10 s while
+		// the window may still present (2026-11-22 blame6: Kyty re-presented flip 3889 for minutes,
+		// no stall dump fired).
 		if (g_all_threads) {
 			const uint32_t fl = Detail::g_flip.load(std::memory_order_relaxed);
 			if (fl != seen_flip || flip_t == 0) {
@@ -574,7 +584,8 @@ bool InitImpl() noexcept {
 		std::snprintf(g_ctl, sizeof(g_ctl), "%s", c);
 	}
 	g_max_dumps = static_cast<int>(ParseU64(std::getenv("KYTY_FLIGHTREC_MAXDUMPS"), 12));
-	g_all_threads = ParseU64(std::getenv("KYTY_FLIGHTREC_ALLTHREADS"), 0) != 0; // mainhang: all-thread backtraces
+	g_all_threads = ParseU64(std::getenv("KYTY_FLIGHTREC_ALLTHREADS"), 0) !=
+	                0; // mainhang: all-thread backtraces
 	g_exit_dump = ParseU64(std::getenv("KYTY_FLIGHTREC_EXIT"), 1) != 0;
 	ParseTriggers(std::getenv("KYTY_FLIGHTREC_TRIGGER"));
 #if defined(__APPLE__)
@@ -603,14 +614,18 @@ bool InitImpl() noexcept {
 	}
 	Detail::g_on.store(1, std::memory_order_release); // the monitor thread records
 	StartMonitor();
-	std::fprintf(stderr,
-	             "[flightrec] on (%s): %llu records/thread (%llu KiB), <= %u rings, dir %s, window %llu s, exit dump %d, "
-	             "%u flip / %u present triggers%s%s%s\n",
-	             verbose ? "verbose" : "light", static_cast<unsigned long long>(g_n),
-	             static_cast<unsigned long long>(g_n * sizeof(Record) / 1024), kMaxRings, g_dir,
-	             static_cast<unsigned long long>(g_window_ns / 1000000000ull), g_exit_dump ? 1 : 0, g_trig_flip_n,
-	             g_trig_present_n, g_ctl[0] != '\0' ? ", ctl " : "", g_ctl,
-	             g_all_threads ? ", all-thread backtraces + 10 s flip-stall dump (KYTY_FLIGHTREC_ALLTHREADS, mainhang)" : "");
+	std::fprintf(
+	    stderr,
+	    "[flightrec] on (%s): %llu records/thread (%llu KiB), <= %u rings, dir %s, window %llu s, "
+	    "exit dump %d, "
+	    "%u flip / %u present triggers%s%s%s\n",
+	    verbose ? "verbose" : "light", static_cast<unsigned long long>(g_n),
+	    static_cast<unsigned long long>(g_n * sizeof(Record) / 1024), kMaxRings, g_dir,
+	    static_cast<unsigned long long>(g_window_ns / 1000000000ull), g_exit_dump ? 1 : 0,
+	    g_trig_flip_n, g_trig_present_n, g_ctl[0] != '\0' ? ", ctl " : "", g_ctl,
+	    g_all_threads
+	        ? ", all-thread backtraces + 10 s flip-stall dump (KYTY_FLIGHTREC_ALLTHREADS, mainhang)"
+	        : "");
 	return true;
 }
 

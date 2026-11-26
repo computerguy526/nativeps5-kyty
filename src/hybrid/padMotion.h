@@ -158,8 +158,8 @@ inline std::string FormatLogLine(const char* type, double rate_hz, const Sample&
 // The default pose a Kyty pad reports before any sensor event arrived: accel exactly (0, 1 g, 0),
 // gyro exactly 0. A real sensor never reads exactly this (it always has noise).
 inline bool IsNeutralDefault(const Sample& s) {
-	return s.accel[0] == 0.0f && s.accel[1] == kGravity && s.accel[2] == 0.0f && s.gyro[0] == 0.0f &&
-	       s.gyro[1] == 0.0f && s.gyro[2] == 0.0f;
+	return s.accel[0] == 0.0f && s.accel[1] == kGravity && s.accel[2] == 0.0f &&
+	       s.gyro[0] == 0.0f && s.gyro[1] == 0.0f && s.gyro[2] == 0.0f;
 }
 
 // What the relay sends while a pad claims sensors but SDL delivers none: everything, as always.
@@ -169,7 +169,8 @@ inline bool IsNeutralDefault(const Sample& s) {
 struct RelayPlan {
 	bool publish_state  = true; // buttons, sticks, triggers, touch, connected: always
 	bool publish_motion = true;
-	bool motion_flagged = false; // sensors claimed but not live: the motion values are the default pose
+	bool motion_flagged =
+	    false; // sensors claimed but not live: the motion values are the default pose
 };
 inline RelayPlan PlanRelay(bool pad_has_sensors, bool live) {
 	RelayPlan plan;
@@ -187,19 +188,19 @@ inline std::string FormatStatusLine(bool pad_has_sensors, bool live, uint64_t ac
 	// keyboard_focus / background_input: 1, 0 or -1 (not known). focus=NO with bg_input=0 is SDL
 	// dropping every pad event (padFocus.h): the reason for live=NO, not the pad.
 	char line[320];
-	std::snprintf(line, sizeof(line),
-	              "[pad] motion status: sensors=%s live=%s motion=%s sdl_events accel=%llu "
-	              "gyro=%llu total=%llu unrouted=%llu rearms=%llu sdl_queued=%llu window_steps=%llu "
-	              "focus=%s bg_input=%s",
-	              pad_has_sensors ? "yes" : "no", live ? "yes" : "NO",
-	              flagged ? "NEUTRAL-DEFAULT(no sensor data)" : "ok", static_cast<unsigned long long>(accel_events),
-	              static_cast<unsigned long long>(gyro_events),
-	              static_cast<unsigned long long>(events_total),
-	              static_cast<unsigned long long>(events_unrouted),
-	              static_cast<unsigned long long>(rearms), static_cast<unsigned long long>(queued),
-	              static_cast<unsigned long long>(window_steps),
-	              keyboard_focus < 0 ? "?" : (keyboard_focus != 0 ? "yes" : "NO"),
-	              background_input < 0 ? "?" : (background_input != 0 ? "1" : "0"));
+	std::snprintf(
+	    line, sizeof(line),
+	    "[pad] motion status: sensors=%s live=%s motion=%s sdl_events accel=%llu "
+	    "gyro=%llu total=%llu unrouted=%llu rearms=%llu sdl_queued=%llu window_steps=%llu "
+	    "focus=%s bg_input=%s",
+	    pad_has_sensors ? "yes" : "no", live ? "yes" : "NO",
+	    flagged ? "NEUTRAL-DEFAULT(no sensor data)" : "ok",
+	    static_cast<unsigned long long>(accel_events), static_cast<unsigned long long>(gyro_events),
+	    static_cast<unsigned long long>(events_total),
+	    static_cast<unsigned long long>(events_unrouted), static_cast<unsigned long long>(rearms),
+	    static_cast<unsigned long long>(queued), static_cast<unsigned long long>(window_steps),
+	    keyboard_focus < 0 ? "?" : (keyboard_focus != 0 ? "yes" : "NO"),
+	    background_input < 0 ? "?" : (background_input != 0 ? "1" : "0"));
 	return line;
 }
 
@@ -214,14 +215,17 @@ inline bool Wanted(const char* env, bool pad_has_sensors) {
 	return pad_has_sensors;
 }
 
-// v1.4: a host library without the pad-motion export (an older libnps5_gpu picked up through the binary's LC_RPATH when
-// DYLD_LIBRARY_PATH named a directory that did not exist) silently dropped every gyro sample. Returns the one-time ERROR text when the
-// motion relay is wanted (the pad has sensors, not switched off) but the host cannot receive it; empty when all is well.
-inline std::string HostMotionProblem(const char* env, bool pad_has_sensors, bool host_has_publish, const char* dyld_path) {
+// v1.4: a host library without the pad-motion export (an older libnps5_gpu picked up through the
+// binary's LC_RPATH when DYLD_LIBRARY_PATH named a directory that did not exist) silently dropped
+// every gyro sample. Returns the one-time ERROR text when the motion relay is wanted (the pad has
+// sensors, not switched off) but the host cannot receive it; empty when all is well.
+inline std::string HostMotionProblem(const char* env, bool pad_has_sensors, bool host_has_publish,
+                                     const char* dyld_path) {
 	if (!Wanted(env, pad_has_sensors) || host_has_publish) {
 		return {};
 	}
-	return std::string("ERROR: the pad has motion sensors but the host cannot receive motion (no Nps5KytyHostPublishPadMotion): "
+	return std::string("ERROR: the pad has motion sensors but the host cannot receive motion (no "
+	                   "Nps5KytyHostPublishPadMotion): "
 	                   "the host library in use is not this release's; DYLD_LIBRARY_PATH=") +
 	       (dyld_path != nullptr && dyld_path[0] != '\0' ? dyld_path : "(unset)");
 }

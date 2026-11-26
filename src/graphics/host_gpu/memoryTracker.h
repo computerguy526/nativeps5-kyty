@@ -106,7 +106,7 @@ public:
 		uint64_t unmarked_pages = 0;
 		uint64_t retained_pages = 0;
 	};
-	void                               MarkReadbackPending(uint64_t vaddr, uint64_t size);
+	void MarkReadbackPending(uint64_t vaddr, uint64_t size);
 	// nps5 zerocopy4 (KYTY_ZEROCOPY_READ_OPEN, RegionManager::OpenRead / CloseRead): the pages of
 	// the range stay readable for guest threads across GPU ownership changes, until closed. Dirty
 	// bits, serials and the write watch are untouched. Any thread. Return the pages changed.
@@ -151,7 +151,9 @@ public:
 	// KYTY_BDA_REACH=verify (bufferCacheReach.cpp): a second log of the same transitions, with or
 	// without CPU-mutation tracking, taken by the reach verification only. False from the take
 	// when ranges were dropped (overflow).
-	void EnableReachLog(bool enable) noexcept { m_reach_log_on.store(enable, std::memory_order_release); }
+	void EnableReachLog(bool enable) noexcept {
+		m_reach_log_on.store(enable, std::memory_order_release);
+	}
 	[[nodiscard]] bool TakeReachLog(RangeSet& ranges);
 	// The sum of the mutation serials (RegionManager::Serial) of the regions [vaddr, vaddr + size)
 	// spans, or 0 when one of them does not exist yet (or the range is invalid). Serials only grow,
@@ -206,7 +208,8 @@ private:
 			if (const auto max = s_hot_max_override.load(std::memory_order_relaxed); max != 0) {
 				policy.hot_max = max;
 			}
-			if (const auto frames = s_hot_frames_override.load(std::memory_order_relaxed); frames != 0) {
+			if (const auto frames = s_hot_frames_override.load(std::memory_order_relaxed);
+			    frames != 0) {
 				policy.hot_frames = frames;
 			}
 		}
@@ -296,7 +299,8 @@ public:
 	}
 	// KYTY_HOT_PAGE_MAX_LIVE / KYTY_HOT_PAGE_FRAMES_LIVE (BufferCache, live): with hot pages on,
 	// write faults promote up to `max` hot pages after `frames` consecutive faulting frames instead
-	// of the policy's (0: the policy's). Any thread; a fault takes the values current when it starts.
+	// of the policy's (0: the policy's). Any thread; a fault takes the values current when it
+	// starts.
 	static void SetHotOverride(uint32_t frames, uint32_t max) noexcept {
 		s_hot_frames_override.store(std::min<uint32_t>(frames, 255), std::memory_order_relaxed);
 		s_hot_max_override.store(std::min<uint32_t>(max, 65536), std::memory_order_relaxed);
@@ -393,7 +397,8 @@ public:
 			}
 		});
 		MemoryStats::Count(MemoryStats::Counter::HotDemotions, demoted);
-		if (is_written && WatchRange::Enabled()) WatchRange::Note("written binding takes GPU ownership", vaddr, size);
+		if (is_written && WatchRange::Enabled())
+			WatchRange::Note("written binding takes GPU ownership", vaddr, size);
 		if (is_written && FaultCost::AttribEnabled()) FaultCost::AttribNoteProducer(vaddr, size, 0);
 		upload_func();
 		// No clean-verdict bump: these GPU bits are not read by clean-read verdicts, and the
@@ -453,7 +458,8 @@ public:
 				    late_range_func(address, range_bytes);
 			    });
 		});
-		if (WatchRange::Enabled()) WatchRange::Note("written binding takes GPU ownership (late copy)", vaddr, size);
+		if (WatchRange::Enabled())
+			WatchRange::Note("written binding takes GPU ownership (late copy)", vaddr, size);
 		if (FaultCost::AttribEnabled()) FaultCost::AttribNoteProducer(vaddr, size, 1);
 		late_upload_func();
 		Iterate<false>(vaddr, size, [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
@@ -537,10 +543,10 @@ private:
 	void           AdvanceCpuMutationEpoch() noexcept;
 	// The region-relative byte window a write fault of [offset, offset + bytes) can make CPU-dirty
 	// (RegionManager::MarkWriteFault's fault-ahead window of `ahead` pages).
-	// `sequential`: FaultPolicy::sequential_ahead (the window may reach `ahead` pages past the start).
-	[[nodiscard]] static std::pair<uint64_t, uint64_t> FaultWindow(uint64_t offset, uint64_t bytes,
-	                                                               uint64_t ahead,
-	                                                               bool     sequential = false) noexcept;
+	// `sequential`: FaultPolicy::sequential_ahead (the window may reach `ahead` pages past the
+	// start).
+	[[nodiscard]] static std::pair<uint64_t, uint64_t>
+	FaultWindow(uint64_t offset, uint64_t bytes, uint64_t ahead, bool sequential = false) noexcept;
 	inline static std::atomic_uint32_t s_ahead_override {0};
 	inline static std::atomic_bool     s_sequential_ahead {false};
 	inline static std::atomic_uint32_t s_hot_max_override {0};
@@ -564,9 +570,9 @@ private:
 	RangeSet                m_dirtied;
 	bool                    m_dirtied_overflow = false;
 	// Reach log (EnableReachLog), under m_dirtied_mutex.
-	std::atomic_bool        m_reach_log_on {false};
-	RangeSet                m_reach_log;
-	bool                    m_reach_log_overflow = false;
+	std::atomic_bool m_reach_log_on {false};
+	RangeSet         m_reach_log;
+	bool             m_reach_log_overflow = false;
 };
 
 } // namespace Libs::Graphics

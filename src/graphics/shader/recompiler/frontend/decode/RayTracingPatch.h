@@ -104,8 +104,8 @@ struct RayTracingPatch {
 	uint32_t header_offset = 0;
 	uint32_t root          = 0;
 	// Traversal loops the finder saw but could not match (for the log).
-	uint32_t        unmatched = 0;
-	std::string     report;
+	uint32_t    unmatched = 0;
+	std::string report;
 };
 
 // Finds the traversal loops of a decoded program by their structure (see RayTracingPatch.cpp);

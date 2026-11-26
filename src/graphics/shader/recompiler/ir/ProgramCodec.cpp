@@ -21,10 +21,11 @@ namespace {
 // Members: Inst 7; Value 2 (type and one union member); MemoryInfo 26; BufferResource 16;
 // ImageResource 22; SamplerResource 9; SampledResourcePair 3; StageInput 5; StageOutput 4;
 // ShaderInfo 11; DescriptorBinding 2; BindingLayout 8; WriteRangeNode 6; WriteRangeAccess 5;
-// BufferWriteRange 4; WriteRangeProgram 2; CompiledShaderInfo 11; DescriptorSource 4 (BindlessSampler 2, IndirectDescriptor
-// 18, SelectorRead 6 (MaskRanks 3));SrtRead 2; ResourceBlock 3; EvaluationOperand 3; EvaluationRecipe 6; ArithmeticTapeOperand 2;
-// ArithmeticTapeInstruction 5; ArithmeticTape 2; UniformFill 5; UniformFillPlan 2; ResourcePlan 29;
-// ResourceSpecialization 2 (Buffer 3, Image 12).
+// BufferWriteRange 4; WriteRangeProgram 2; CompiledShaderInfo 11; DescriptorSource 4
+// (BindlessSampler 2, IndirectDescriptor 18, SelectorRead 6 (MaskRanks 3));SrtRead 2; ResourceBlock
+// 3; EvaluationOperand 3; EvaluationRecipe 6; ArithmeticTapeOperand 2; ArithmeticTapeInstruction 5;
+// ArithmeticTape 2; UniformFill 5; UniformFillPlan 2; ResourcePlan 29; ResourceSpecialization 2
+// (Buffer 3, Image 12).
 static_assert(sizeof(Inst) == 104, "IR::Inst changed: update ProgramCodec");
 static_assert(sizeof(Value) == 16, "IR::Value changed: update ProgramCodec");
 static_assert(sizeof(MemoryInfo) == 72, "IR::MemoryInfo changed: update ProgramCodec");
@@ -41,8 +42,10 @@ static_assert(sizeof(WriteRangeNode) == 24, "IR::WriteRangeNode changed: update 
 static_assert(sizeof(WriteRangeAccess) == 20, "IR::WriteRangeAccess changed: update ProgramCodec");
 static_assert(sizeof(BufferWriteRange) == 40, "IR::BufferWriteRange changed: update ProgramCodec");
 static_assert(sizeof(DmaReadAccess) == 60, "IR::DmaReadAccess changed: update ProgramCodec");
-static_assert(sizeof(WriteRangeProgram) == 80, "IR::WriteRangeProgram changed: update ProgramCodec");
-static_assert(sizeof(CompiledShaderInfo) == 432, "IR::CompiledShaderInfo changed: update ProgramCodec");
+static_assert(sizeof(WriteRangeProgram) == 80,
+              "IR::WriteRangeProgram changed: update ProgramCodec");
+static_assert(sizeof(CompiledShaderInfo) == 432,
+              "IR::CompiledShaderInfo changed: update ProgramCodec");
 static_assert(sizeof(DescriptorSource) == 304, "IR::DescriptorSource changed: update ProgramCodec");
 static_assert(sizeof(DescriptorSource::IndirectDescriptor) == 144,
               "IR::DescriptorSource::IndirectDescriptor changed: update ProgramCodec");
@@ -457,7 +460,7 @@ void Read(CodecReader& r, SamplerResource& v) {
 	v.depth_compare         = r.Bool();
 	v.integer_border        = r.Bool();
 	v.gather_lod            = r.Bool();
-	v.bindless              = r.Bool();
+	v.bindless                = r.Bool();
 	v.bindless_mapping_offset = r.U32();
 }
 
@@ -721,7 +724,7 @@ void Read(CodecReader& r, ShaderInfo& v) {
 	v.uses_dma             = r.Bool();
 	v.uses_bvh             = r.Bool();
 	v.bda_writes           = r.Bool();
-	v.pops                 = r.Bool();
+	v.pops                    = r.Bool();
 	v.ray_query_sites         = r.U32();
 	v.ray_query_user_sgpr     = r.U32();
 	v.ray_query_vsharp_offset = r.U32();
@@ -1112,12 +1115,12 @@ public:
 				image.table_record_bytes = r.U32();
 				image.table_scalar       = r.Bool();
 				image.workgroup_axis     = r.U32();
-				image.bindless           = r.Bool();
-				image.runtime            = r.Bool();
-				image.record_pointer     = r.U32();
-				image.nested_vsharp      = r.U32();
-				image.nested_heap        = r.U32();
-				image.nested_keys        = r.U32();
+				image.bindless             = r.Bool();
+				image.runtime              = r.Bool();
+				image.record_pointer       = r.U32();
+				image.nested_vsharp        = r.U32();
+				image.nested_heap          = r.U32();
+				image.nested_keys          = r.U32();
 				image.workgroup_multiplier = r.U32();
 				image.workgroup_shift      = static_cast<uint8_t>(r.U32());
 				if (!ValueOf(image.key_count) || !ValueOf(image.selector_first) ||
@@ -1126,7 +1129,8 @@ public:
 				}
 			}
 			if (r.Bool()) {
-				auto& sampler = source.bindless_sampler.emplace(DescriptorSource::BindlessSampler {});
+				auto& sampler =
+				    source.bindless_sampler.emplace(DescriptorSource::BindlessSampler {});
 				sampler.table_offset = r.U32();
 				sampler.stride       = r.U32();
 			}
@@ -1327,7 +1331,7 @@ bool DecodeSpecializationInt21(std::span<const uint8_t> bytes, ResourceSpecializ
 }
 
 bool DecodeSpecializationV13(std::span<const uint8_t> bytes, ResourceSpecialization& value) {
-	CodecReader reader(bytes);
+	CodecReader            reader(bytes);
 	ResourceSpecialization out;
 	ReadVector(reader, out.buffers);
 	const auto count = reader.Count(1);
@@ -1361,7 +1365,8 @@ bool DecodeSpecializationCompat(std::span<const uint8_t> bytes, ResourceSpeciali
 	// int21 layout (image records end after `fmask`, the later fields read as their defaults). The
 	// two layouts differ in length per image record, so a blob with an image never decodes as both.
 	ResourceSpecialization old;
-	if (!DecodeSpecializationInt21(bytes, old) && !DecodeSpecializationV13(bytes, old)) return false;
+	if (!DecodeSpecializationInt21(bytes, old) && !DecodeSpecializationV13(bytes, old))
+		return false;
 	value = std::move(old);
 	if (legacy != nullptr) *legacy = true;
 	return true;

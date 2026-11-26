@@ -320,16 +320,16 @@ static bool PendingOpsNoWait() {
 // (PopReadyOperations, with KYTY_RENDERER_BATCH's early returns) first reads the queue front's tick
 // without taking the operation mutex, and returns at once when the queue is empty or its first
 // operation belongs to the recording tick: the two cases in which the locked check returns without
-// doing anything. At the Playroom GPU Jungle the lock and unlock cost ~0.2 ms per flip (10,000 draws).
-// A push racing the read is seen by the next pop, as a push just after a locked check is.
+// doing anything. At the Playroom GPU Jungle the lock and unlock cost ~0.2 ms per flip (10,000
+// draws). A push racing the read is seen by the next pop, as a push just after a locked check is.
 static Live::Switch g_pop_ready_fast("KYTY_POP_READY_FAST", [](const char* value) -> int64_t {
 	return value != nullptr ? std::strtoll(value, nullptr, 10) : 0;
 });
 
 // KYTY_POP_READY_FAST=2: also without the lock while the front operation's tick is not known
-// complete; the GPU's progress is then queried (MasterSemaphore::Refresh, a driver call) at most every
-// KYTY_PENDING_REFRESH_US (preset 200), else every 50 us (the operations are deletions and recycling nothing at a
-// draw waits for; every blocking pop still queries).
+// complete; the GPU's progress is then queried (MasterSemaphore::Refresh, a driver call) at most
+// every KYTY_PENDING_REFRESH_US (preset 200), else every 50 us (the operations are deletions and
+// recycling nothing at a draw waits for; every blocking pop still queries).
 static uint64_t PendingRefreshIntervalNs();
 
 void CommandScheduler::PopReadyOperations() {
@@ -339,7 +339,7 @@ void CommandScheduler::PopReadyOperations() {
 			return;
 		}
 		if (fast >= 2 && !m_master.IsFree(front)) {
-			const auto now = GpuTiming::NowNs();
+			const auto now      = GpuTiming::NowNs();
 			const auto interval = PendingRefreshIntervalNs(); // KYTY_PENDING_REFRESH_US, else 50 us
 			if (now - m_last_pending_refresh_ns < (interval != 0 ? interval : 50'000u)) {
 				return;
@@ -419,8 +419,9 @@ void CommandScheduler::PopOperations(bool wait_for_priority) {
 			}
 			operation = std::move(m_pending_operations.front());
 			m_pending_operations.pop();
-			m_pending_front_tick.store(m_pending_operations.empty() ? UINT64_MAX : m_pending_operations.front().tick,
-			                           std::memory_order_release);
+			m_pending_front_tick.store(
+			    m_pending_operations.empty() ? UINT64_MAX : m_pending_operations.front().tick,
+			    std::memory_order_release);
 		}
 		if (wait_for_priority) {
 			WaitPriorityOperations(operation.tick);

@@ -305,7 +305,8 @@ void ConfigurationItem::SetRunning(bool state) {
 	UpdatePrecompileButton();
 }
 
-void ConfigurationItem::SetPrecompileState(const QString& emulator_dir, bool blocked, bool can_export) {
+void ConfigurationItem::SetPrecompileState(const QString& emulator_dir, bool blocked,
+                                           bool can_export) {
 	m_emulator_dir       = emulator_dir;
 	m_precompile_blocked = blocked;
 	m_can_export         = can_export;
@@ -342,7 +343,8 @@ void ConfigurationItem::UpdatePrecompileButton() {
 	// Export list: off while this game runs or is precompiled (the journals are being written).
 	// Without recorded journals it stays on: a click says how to record them.
 	m_export_button->setVisible(m_can_export);
-	m_export_button->setEnabled(m_can_export && game && valid && !m_running && !m_precompile_blocked);
+	m_export_button->setEnabled(m_can_export && game && valid && !m_running &&
+	                            !m_precompile_blocked);
 	QString export_tip;
 	if (m_emulator_dir.isEmpty() || !m_can_export) {
 		// Not looked for yet, or no kyty_pipeline_list.
@@ -352,9 +354,11 @@ void ConfigurationItem::UpdatePrecompileButton() {
 		export_tip = QStringLiteral("Nothing has been recorded for this game yet: play it first.\n"
 		                            "Kyty records the shaders a game uses while you play.");
 	} else {
-		export_tip = QStringLiteral("Makes a shader list of what your sessions of this game recorded,\n"
-		                            "to send to other players: %1")
-		                 .arg(QDir::toNativeSeparators(ShaderListExport::DefaultOutput(m_emulator_dir, title, version)));
+		export_tip =
+		    QStringLiteral("Makes a shader list of what your sessions of this game recorded,\n"
+		                   "to send to other players: %1")
+		        .arg(QDir::toNativeSeparators(
+		            ShaderListExport::DefaultOutput(m_emulator_dir, title, version)));
 	}
 	m_export_button->setToolTip(export_tip);
 }

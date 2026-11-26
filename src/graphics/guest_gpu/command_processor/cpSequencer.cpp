@@ -33,8 +33,8 @@
 #include <immintrin.h>
 #endif
 
-// KYTY_HANDOFF_LEAN (live, default 0; common/handoffLean.h): registered here, in the emulator, as the
-// header's users include tests without the live-switch registry. The parser publishes the mode.
+// KYTY_HANDOFF_LEAN (live, default 0; common/handoffLean.h): registered here, in the emulator, as
+// the header's users include tests without the live-switch registry. The parser publishes the mode.
 static Live::Switch g_handoff_lean("KYTY_HANDOFF_LEAN", Common::HandoffLean::Parse);
 
 namespace Libs::Graphics::CpSeq {
@@ -248,8 +248,8 @@ void Sequencer::Run() {
 			m_intake.pop_front();
 		}
 		HangWatchdog::SetCpContext(0, intake.sequence);
-		// The publication epoch (syncEpoch.h): guest writes before this submission are ordered before
-		// every draw of it.
+		// The publication epoch (syncEpoch.h): guest writes before this submission are ordered
+		// before every draw of it.
 		SyncEpoch::AdvancePublish();
 		const bool running = m_processor.SequenceSubmission(intake);
 		HangWatchdog::SetCpContext(UINT32_MAX, 0);

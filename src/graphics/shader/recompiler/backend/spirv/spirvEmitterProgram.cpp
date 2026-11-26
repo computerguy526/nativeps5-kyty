@@ -1,17 +1,15 @@
-#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
-
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
+#include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterRayTracing.h"
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
 
-#include <cstdio>
-#include <cstring>
-#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <set>
@@ -33,8 +31,8 @@ bool DispatcherTreeEnabled() {
 
 namespace {
 
-// KYTY_OBJPRIM_ID (based on Erlou93/KytyPS5-Yotei): what the hardware writes to the ObjPrimID colour
-// slot, VGT_OBJECT_ID (push-constant dword) plus the primitive index of the draw when
+// KYTY_OBJPRIM_ID (based on Erlou93/KytyPS5-Yotei): what the hardware writes to the ObjPrimID
+// colour slot, VGT_OBJECT_ID (push-constant dword) plus the primitive index of the draw when
 // ADD_PIPED_PRIM_ID is set. Stored in the entry block: a fragment the guest code discards writes
 // nothing, like any colour output.
 void EmitObjprimIdOutput(EmitterState& state) {
@@ -51,7 +49,7 @@ void EmitObjprimIdOutput(EmitterState& state) {
 		const auto primitive = state.builder.AllocateId();
 		state.builder.AddFunction(spv::OpLoad, TypeI32(state), primitive, variable);
 		const auto primitive_u32 = Unary(state, spv::OpBitcast, TypeU32(state), primitive);
-		value = Binary(state, spv::OpIAdd, TypeU32(state), value, primitive_u32);
+		value                    = Binary(state, spv::OpIAdd, TypeU32(state), value, primitive_u32);
 	}
 	state.builder.AddFunction(spv::OpStore, state.objprim_output_variable, value);
 }
@@ -279,7 +277,8 @@ bool IsLoopMergeBlock(const IR::Program& program, uint32_t target) {
 // KYTY_CALL_LOOP_CAP: the merge of a loop of a bracketed callee body (CFG::Terminator::call_loop).
 bool IsCallLoopMergeBlock(const IR::Program& program, uint32_t target) {
 	return std::ranges::any_of(program.block_info, [=](const IR::BlockInfo& info) {
-		return info.terminator.loop_header && info.terminator.call_loop && info.terminator.merge_block == target;
+		return info.terminator.loop_header && info.terminator.call_loop &&
+		       info.terminator.merge_block == target;
 	});
 }
 
@@ -407,8 +406,10 @@ uint32_t BranchCondition(ValueEmitContext& ctx, const IR::BlockInfo& info) {
 		const auto active_word = ctx.state.builder.AllocateId();
 		ctx.state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(ctx.state), active_word,
 		                              active, 0);
-		const auto low_all  = Binary(ctx.state, spv::OpIEqual, TypeBool(ctx.state), low, active_word);
-		const auto high_all = Binary(ctx.state, spv::OpIEqual, TypeBool(ctx.state), high, active_word);
+		const auto low_all =
+		    Binary(ctx.state, spv::OpIEqual, TypeBool(ctx.state), low, active_word);
+		const auto high_all =
+		    Binary(ctx.state, spv::OpIEqual, TypeBool(ctx.state), high, active_word);
 		return Binary(ctx.state, spv::OpLogicalAnd, TypeBool(ctx.state), low_all, high_all);
 	}
 	const auto combined =
@@ -500,13 +501,14 @@ void EmitStructuredTerminator(ValueEmitContext& ctx, const IR::Block* block,
 					const auto exhausted = CallLoopExhausted(ctx.state);
 					const auto forced    = ctx.state.builder.AllocateId();
 					if (true_exits) {
-						ctx.state.builder.AddFunction(spv::OpLogicalOr, TypeBool(ctx.state), forced, condition,
-						                              exhausted);
+						ctx.state.builder.AddFunction(spv::OpLogicalOr, TypeBool(ctx.state), forced,
+						                              condition, exhausted);
 					} else {
 						const auto alive = ctx.state.builder.AllocateId();
-						ctx.state.builder.AddFunction(spv::OpLogicalNot, TypeBool(ctx.state), alive, exhausted);
-						ctx.state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(ctx.state), forced, condition,
-						                              alive);
+						ctx.state.builder.AddFunction(spv::OpLogicalNot, TypeBool(ctx.state), alive,
+						                              exhausted);
+						ctx.state.builder.AddFunction(spv::OpLogicalAnd, TypeBool(ctx.state),
+						                              forced, condition, alive);
 					}
 					condition = forced;
 				}
@@ -909,12 +911,15 @@ void EmitBlock(ValueEmitContext& ctx, const IR::Block* block, EmitInstruction&& 
 		} else {
 			emitted_non_phi = true;
 		}
-		const bool lds_write_sync = ctx.state.split_wave && GetCodegenOptions().split_lds_write_sync &&
+		const bool lds_write_sync = ctx.state.split_wave &&
+		                            GetCodegenOptions().split_lds_write_sync &&
 		                            AccessesLds(ctx.state.program, inst);
-		const bool lds_write = lds_write_sync && IR::SharedAccessOf(inst.GetOpcode()) != IR::SharedAccess::Read;
+		const bool lds_write =
+		    lds_write_sync && IR::SharedAccessOf(inst.GetOpcode()) != IR::SharedAccess::Read;
 		if (lds_write_sync) {
-			// KYTY_SPLIT_LDS_WRITE_SYNC: a write waits for the other half only when this half read the
-			// LDS since the last barrier (it may overwrite what the other half has yet to read).
+			// KYTY_SPLIT_LDS_WRITE_SYNC: a write waits for the other half only when this half read
+			// the LDS since the last barrier (it may overwrite what the other half has yet to
+			// read).
 			if (lds_write && !ctx.state.lds_split_synced) {
 				EmitWaveBarrier(ctx.state);
 			}
@@ -1063,7 +1068,7 @@ const char* FindMeshSplits(const IR::Program& program, std::vector<MeshSplit>& s
 	if (program.dispatcher_fallback) {
 		return "the control flow needs the dispatcher";
 	}
-	const auto count = program.blocks.size();
+	const auto                           count = program.blocks.size();
 	std::unordered_map<uint32_t, size_t> index_of;
 	for (size_t i = 0; i < count; i++) {
 		index_of.emplace(program.block_info[i].id, i);
@@ -1141,10 +1146,10 @@ const char* FindMeshSplits(const IR::Program& program, std::vector<MeshSplit>& s
 // pass, stored at the end of the segment that defines it and loaded by every later segment that
 // uses it.
 struct MeshSegmentPlan {
-	std::vector<MeshSplit>                              splits;
-	std::unordered_map<const IR::Inst*, uint32_t>       spills;
-	std::vector<std::vector<const IR::Inst*>>           stores;
-	std::vector<std::vector<const IR::Inst*>>           loads;
+	std::vector<MeshSplit>                        splits;
+	std::unordered_map<const IR::Inst*, uint32_t> spills;
+	std::vector<std::vector<const IR::Inst*>>     stores;
+	std::vector<std::vector<const IR::Inst*>>     loads;
 };
 
 MeshSegmentPlan PlanMeshSegments(EmitterState& state, std::vector<MeshSplit> splits) {
@@ -1172,33 +1177,33 @@ MeshSegmentPlan PlanMeshSegments(EmitterState& state, std::vector<MeshSplit> spl
 	}
 	std::set<std::pair<const IR::Inst*, uint32_t>> visited;
 	std::function<void(IR::Value, uint32_t)>       use = [&](IR::Value value, uint32_t user) {
-        value            = value.Resolve();
-        const auto* inst = value.TryInstruction();
-        if (inst == nullptr || !visited.emplace(inst, user).second) {
-            return;
-        }
-        const auto found = segment_of.find(inst);
-        if (found == segment_of.end() || found->second >= user) {
-            return;
-        }
-        if (TypeId(state, inst->GetType()) == 0) {
-            // A handle the emitter reads through its producer: the producer's operands are
-            // what the user's segment loads.
-            for (size_t index = 0; index < inst->NumArgs(); index++) {
-                use(inst->Arg(index), user);
-            }
-            return;
-        }
-        if (!plan.spills.contains(inst)) {
-            const auto slots  = state.lane_count * state.mesh_passes;
-            const auto array  = state.builder.Type(spv::OpTypeArray, TypeId(state, inst->GetType()),
-                                                   ConstantU32(state, slots));
-            plan.spills.emplace(inst, state.builder.DefineGlobalVariable(
-                                          TypePointer(state, spv::StorageClassPrivate, array),
-                                          spv::StorageClassPrivate));
-            plan.stores[found->second].push_back(inst);
-        }
-        plan.loads[user].push_back(inst);
+		value            = value.Resolve();
+		const auto* inst = value.TryInstruction();
+		if (inst == nullptr || !visited.emplace(inst, user).second) {
+			return;
+		}
+		const auto found = segment_of.find(inst);
+		if (found == segment_of.end() || found->second >= user) {
+			return;
+		}
+		if (TypeId(state, inst->GetType()) == 0) {
+			// A handle the emitter reads through its producer: the producer's operands are
+			// what the user's segment loads.
+			for (size_t index = 0; index < inst->NumArgs(); index++) {
+				use(inst->Arg(index), user);
+			}
+			return;
+		}
+		if (!plan.spills.contains(inst)) {
+			const auto slots = state.lane_count * state.mesh_passes;
+			const auto array = state.builder.Type(spv::OpTypeArray, TypeId(state, inst->GetType()),
+			                                      ConstantU32(state, slots));
+			plan.spills.emplace(inst, state.builder.DefineGlobalVariable(
+			                              TypePointer(state, spv::StorageClassPrivate, array),
+			                              spv::StorageClassPrivate));
+			plan.stores[found->second].push_back(inst);
+		}
+		plan.loads[user].push_back(inst);
 	};
 	for (size_t block = 0; block < program.blocks.size(); block++) {
 		for (const auto& inst: *program.blocks[block]) {
@@ -1222,15 +1227,15 @@ uint32_t MeshSpillPointer(ValueEmitContext& lane, uint32_t variable, const IR::I
 	auto&      state = lane.state;
 	const auto pass  = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpLoad, TypeU32(state), pass, state.mesh_pass_variable);
-	const auto slot = Binary(state, spv::OpIAdd, TypeU32(state),
-	                         Binary(state, spv::OpIMul, TypeU32(state), pass,
-	                                ConstantU32(state, state.lane_count)),
-	                         ConstantU32(state, lane.half));
+	const auto slot = Binary(
+	    state, spv::OpIAdd, TypeU32(state),
+	    Binary(state, spv::OpIMul, TypeU32(state), pass, ConstantU32(state, state.lane_count)),
+	    ConstantU32(state, lane.half));
 	const auto pointer = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpAccessChain,
-	                          TypePointer(state, spv::StorageClassPrivate,
-	                                      TypeId(state, inst.GetType())),
-	                          pointer, variable, slot);
+	state.builder.AddFunction(
+	    spv::OpAccessChain,
+	    TypePointer(state, spv::StorageClassPrivate, TypeId(state, inst.GetType())), pointer,
+	    variable, slot);
 	return pointer;
 }
 
@@ -1378,18 +1383,20 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 	EmitLabel(state, dispatcher.select_label);
 	if (DispatcherTreeEnabled() && state.program.blocks.size() > 2) {
 		// nps5 memtrk: KYTY_DISPATCHER_TREE=1 (opt-in; codegen fingerprint text when on). The block
-		// switch as a binary tree of nested selections on pc. KosmicKrisp lowers an OpSwitch to a flat
-		// chain of `if (pc == k)` tests that the Metal compiler cannot see as exclusive; SAROS's CS
-		// e1b5f15e (192 blocks) replayed standalone at 130.7 ms as the chain, 16.9 ms as a tree and
-		// 10.1 ms as an MSL switch (mslh, M4 Pro, identical outputs). pc always holds a block id here
-		// (UINT32_MAX left the loop above), so the tree needs no default leg.
+		// switch as a binary tree of nested selections on pc. KosmicKrisp lowers an OpSwitch to a
+		// flat chain of `if (pc == k)` tests that the Metal compiler cannot see as exclusive;
+		// SAROS's CS e1b5f15e (192 blocks) replayed standalone at 130.7 ms as the chain, 16.9 ms as
+		// a tree and 10.1 ms as an MSL switch (mslh, M4 Pro, identical outputs). pc always holds a
+		// block id here (UINT32_MAX left the loop above), so the tree needs no default leg.
 		std::vector<std::pair<uint32_t, size_t>> cases;
 		for (size_t index = 1; index < state.program.blocks.size(); index++) {
 			cases.emplace_back(state.program.block_info[index].id, index);
 		}
 		std::sort(cases.begin(), cases.end());
-		std::fprintf(stderr, "[memtrk] KYTY_DISPATCHER_TREE: dispatcher of %zu blocks emitted as a selection tree\n",
-		             cases.size());
+		std::fprintf(
+		    stderr,
+		    "[memtrk] KYTY_DISPATCHER_TREE: dispatcher of %zu blocks emitted as a selection tree\n",
+		    cases.size());
 		struct Result {
 			uint32_t label;
 			uint32_t value;
@@ -1397,28 +1404,30 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 		// Emits the subtree for cases [lo, hi) starting at `header` (already allocated, not yet
 		// emitted, except for the root whose label is current); returns the block and next-pc value
 		// that reach the caller's merge. `merge` is where this subtree ends.
-		std::function<Result(size_t, size_t, uint32_t, bool)> node = [&](size_t lo, size_t hi, uint32_t merge,
-		                                                               bool header_emitted) -> Result {
+		std::function<Result(size_t, size_t, uint32_t, bool)> node =
+		    [&](size_t lo, size_t hi, uint32_t merge, bool header_emitted) -> Result {
 			if (hi - lo == 1) {
 				const auto index = cases[lo].second;
 				EmitBlock(ctx, state.program.blocks[index],
 				          [&](ValueEmitContext& lane, const IR::Inst& inst) {
 					          EmitDispatcherInstruction(lane, dispatcher, inst);
 				          });
-				const auto selected = EmitDispatcherNextPc(ctx, dispatcher, state.program.blocks[index],
-				                                           state.program.block_info[index]);
+				const auto selected = EmitDispatcherNextPc(
+				    ctx, dispatcher, state.program.blocks[index], state.program.block_info[index]);
 				const Result result {state.current_label, selected};
 				state.builder.AddFunction(spv::OpBranch, merge);
 				return result;
 			}
 			(void)header_emitted;
-			const auto mid      = (lo + hi) / 2;
-			const auto own      = state.builder.AllocateId();
-			const auto less     = state.builder.AllocateId();
-			const auto left_hdr = hi - lo == 2 || mid - lo == 1 ? ctx.Label(state.program.blocks[cases[lo].second])
-			                                                     : state.builder.AllocateId();
-			const auto right_hdr = hi - mid == 1 ? ctx.Label(state.program.blocks[cases[mid].second])
-			                                     : state.builder.AllocateId();
+			const auto mid       = (lo + hi) / 2;
+			const auto own       = state.builder.AllocateId();
+			const auto less      = state.builder.AllocateId();
+			const auto left_hdr  = hi - lo == 2 || mid - lo == 1
+			                           ? ctx.Label(state.program.blocks[cases[lo].second])
+			                           : state.builder.AllocateId();
+			const auto right_hdr = hi - mid == 1
+			                           ? ctx.Label(state.program.blocks[cases[mid].second])
+			                           : state.builder.AllocateId();
 			state.builder.AddFunction(spv::OpULessThan, TypeBool(state), less, pc,
 			                          ConstantU32(state, cases[mid].first));
 			state.builder.AddFunction(spv::OpSelectionMerge, own, spv::SelectionControlMaskNone);
@@ -1433,8 +1442,8 @@ void EmitDispatcherFunction(ValueEmitContext& ctx, const DispatcherFunctionState
 			const auto right = node(mid, hi, own, true);
 			EmitLabel(state, own);
 			const auto value = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpPhi, TypeU32(state), value, left.value, left.label, right.value,
-			                          right.label);
+			state.builder.AddFunction(spv::OpPhi, TypeU32(state), value, left.value, left.label,
+			                          right.value, right.label);
 			const Result result {own, value};
 			state.builder.AddFunction(spv::OpBranch, merge);
 			return result;
@@ -1566,7 +1575,8 @@ uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 	}
 	const auto ballot_type = TypeU32Vector(state, 4);
 	const auto scope       = ConstantU32(state, spv::ScopeSubgroup);
-	const auto low_value   = other_half == nullptr || half == 0 ? Def(predicate) : other_half->Def(predicate);
+	const auto low_value =
+	    other_half == nullptr || half == 0 ? Def(predicate) : other_half->Def(predicate);
 	const auto low         = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, low, scope, low_value);
 	if (other_half == nullptr) {
@@ -1582,7 +1592,8 @@ uint32_t ValueEmitContext::Ballot(IR::Value predicate) {
 	if (high_value != low_value || !GetCodegenOptions().lane2_share) {
 		const auto high = state.builder.AllocateId();
 		high_word       = state.builder.AllocateId();
-		state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, high, scope, high_value);
+		state.builder.AddFunction(spv::OpGroupNonUniformBallot, ballot_type, high, scope,
+		                          high_value);
 		state.builder.AddFunction(spv::OpCompositeExtract, TypeU32(state), high_word, high, 0);
 	}
 	state.builder.AddFunction(spv::OpCompositeConstruct, ballot_type, ballot, low_word, high_word,

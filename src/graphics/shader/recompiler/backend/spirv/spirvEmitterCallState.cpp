@@ -10,7 +10,8 @@ namespace {
 
 uint32_t CallStatePointer(EmitterState& state, uint32_t address) {
 	const auto pointer = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpConvertUToPtr, TypePhysicalU32Pointer(state), pointer, address);
+	state.builder.AddFunction(spv::OpConvertUToPtr, TypePhysicalU32Pointer(state), pointer,
+	                          address);
 	return pointer;
 }
 
@@ -56,25 +57,30 @@ void EmitCallStateProbe(ValueEmitContext& ctx, const IR::Inst& inst) {
 // set of IR::CallPartitionReportSlots words, zero = free) with up to eight linear probes.
 void EmitCallStateReport(EmitterState& state, uint32_t base, uint32_t key, uint32_t leader) {
 	EmitIfCondition(state, leader, [&] {
-		const auto hash = EmitBinaryU32(
-		    state, spv::OpShiftRightLogical,
-		    EmitBinaryU32(state, spv::OpIMul, key, ConstantU32(state, 0x9e3779b1u)), ConstantU32(state, 23u));
+		const auto hash =
+		    EmitBinaryU32(state, spv::OpShiftRightLogical,
+		                  EmitBinaryU32(state, spv::OpIMul, key, ConstantU32(state, 0x9e3779b1u)),
+		                  ConstantU32(state, 23u));
 		std::function<void(uint32_t)> probe = [&](uint32_t i) {
-			const auto slot = EmitBinaryU32(
-			    state, spv::OpBitwiseAnd, EmitBinaryU32(state, spv::OpIAdd, hash, ConstantU32(state, i)),
-			    ConstantU32(state, IR::CallPartitionReportSlots - 1u));
-			const auto bytes = Unary(state, spv::OpUConvert, TypeU64(state),
-			                         EmitBinaryU32(state, spv::OpShiftLeftLogical, slot, ConstantU32(state, 2u)));
+			const auto slot =
+			    EmitBinaryU32(state, spv::OpBitwiseAnd,
+			                  EmitBinaryU32(state, spv::OpIAdd, hash, ConstantU32(state, i)),
+			                  ConstantU32(state, IR::CallPartitionReportSlots - 1u));
+			const auto bytes =
+			    Unary(state, spv::OpUConvert, TypeU64(state),
+			          EmitBinaryU32(state, spv::OpShiftLeftLogical, slot, ConstantU32(state, 2u)));
 			const auto address = Binary(state, spv::OpIAdd, TypeU64(state), base, bytes);
 			const auto old     = state.builder.AllocateId();
-			state.builder.AddFunction(spv::OpAtomicCompareExchange, TypeU32(state), old,
-			                          CallStatePointer(state, address), ConstantU32(state, spv::ScopeDevice),
-			                          ConstantU32(state, spv::MemorySemanticsMaskNone),
-			                          ConstantU32(state, spv::MemorySemanticsMaskNone), key, ConstantU32(state, 0u));
+			state.builder.AddFunction(
+			    spv::OpAtomicCompareExchange, TypeU32(state), old, CallStatePointer(state, address),
+			    ConstantU32(state, spv::ScopeDevice),
+			    ConstantU32(state, spv::MemorySemanticsMaskNone),
+			    ConstantU32(state, spv::MemorySemanticsMaskNone), key, ConstantU32(state, 0u));
 			if (i + 1u >= 8u) return;
-			const auto taken = Binary(state, spv::OpLogicalAnd, TypeBool(state),
-			                          Binary(state, spv::OpINotEqual, TypeBool(state), old, ConstantU32(state, 0u)),
-			                          Binary(state, spv::OpINotEqual, TypeBool(state), old, key));
+			const auto taken = Binary(
+			    state, spv::OpLogicalAnd, TypeBool(state),
+			    Binary(state, spv::OpINotEqual, TypeBool(state), old, ConstantU32(state, 0u)),
+			    Binary(state, spv::OpINotEqual, TypeBool(state), old, key));
 			EmitIfCondition(state, taken, [&] { probe(i + 1u); });
 		};
 		probe(0);

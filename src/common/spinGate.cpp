@@ -11,8 +11,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <string>
 #include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -188,18 +188,20 @@ int64_t ParseUs(const char* value, int64_t fallback) {
 	if (value == nullptr || *value == '\0') {
 		return fallback;
 	}
-	return static_cast<int64_t>(std::min<unsigned long long>(std::strtoull(value, nullptr, 10), 1000000ull));
+	return static_cast<int64_t>(
+	    std::min<unsigned long long>(std::strtoull(value, nullptr, 10), 1000000ull));
 }
 
 // KYTY_SPIN_BUDGET_SITES (live, default 0x3F = all six): the sites the closed gate caps, bit per
 // Site (1 sequencer, 2 recorder, 4 commit-head, 8 recorder-drain, 16 resolver, 32 worker).
 Live::Switch g_sites_switch("KYTY_SPIN_BUDGET_SITES", [](const char* value) -> int64_t {
-	return value == nullptr || *value == '\0' ? 0x3F
-	                                          : static_cast<int64_t>(std::strtoull(value, nullptr, 0) & 0x3Fu);
+	return value == nullptr || *value == '\0'
+	           ? 0x3F
+	           : static_cast<int64_t>(std::strtoull(value, nullptr, 0) & 0x3Fu);
 });
-// KYTY_SPIN_BUDGET_SHORT_US (live, default 2): the closed gate's spin. KYTY_SPIN_BUDGET_PIPE_SHORT_US
-// (live, default: the same): the sequencer's and recorder's (their parks are wake-ups on the
-// commit thread's path).
+// KYTY_SPIN_BUDGET_SHORT_US (live, default 2): the closed gate's spin.
+// KYTY_SPIN_BUDGET_PIPE_SHORT_US (live, default: the same): the sequencer's and recorder's (their
+// parks are wake-ups on the commit thread's path).
 Live::Switch g_short_switch("KYTY_SPIN_BUDGET_SHORT_US",
                             [](const char* value) -> int64_t { return ParseUs(value, 2); });
 Live::Switch g_pipe_short_switch("KYTY_SPIN_BUDGET_PIPE_SHORT_US",
@@ -218,7 +220,7 @@ uint64_t ShortNs(Site site) {
 // relaxed load and store, no locked instruction; the monitor reads them.
 struct alignas(64) ThreadSlot {
 	std::atomic<uint32_t> tid {0};
-	std::atomic<uint32_t> sites {0}; // bit per site it waited at
+	std::atomic<uint32_t> sites {0};        // bit per site it waited at
 	std::atomic<void*>    handle {nullptr}; // a kept thread handle (the monitor's cycle reads)
 	std::array<std::atomic<uint64_t>, SiteCount> waits {};
 	std::array<std::atomic<uint64_t>, SiteCount> spin {};
@@ -379,8 +381,8 @@ struct ThreadWatch {
 	bool                                primed         = false;
 
 	ThreadSample Take(uint32_t tid, uint64_t cycles, uint64_t spin, bool registered) {
-		auto [it, added] = threads.try_emplace(tid);
-		auto& entry      = it->second;
+		auto [it, added]   = threads.try_emplace(tid);
+		auto&        entry = it->second;
 		ThreadSample sample;
 		if (!added) {
 			sample.cycles = cycles >= entry.cycles ? cycles - entry.cycles : 0;
@@ -393,7 +395,8 @@ struct ThreadWatch {
 		return sample;
 	}
 
-	// One interval's samples (cycles and spin since the previous call; a thread's first sample is 0).
+	// One interval's samples (cycles and spin since the previous call; a thread's first sample is
+	// 0).
 	void Sample() {
 		samples.clear();
 		measured = 0;
@@ -402,7 +405,7 @@ struct ThreadWatch {
 		}
 		const auto count = std::min(g_slot_count.load(std::memory_order_acquire), MaxSlots);
 		for (uint32_t i = 0; i < count; i++) {
-			auto* handle = static_cast<HANDLE>(g_slots[i].handle.load(std::memory_order_acquire));
+			auto*   handle = static_cast<HANDLE>(g_slots[i].handle.load(std::memory_order_acquire));
 			ULONG64 cycles = 0;
 			if (handle == nullptr || QueryThreadCycleTime(handle, &cycles) == 0) {
 				continue;
@@ -411,16 +414,19 @@ struct ThreadWatch {
 			for (size_t site = 0; site < SiteCount; site++) {
 				spin += g_slots[i].spin[site].load(std::memory_order_relaxed);
 			}
-			samples.push_back(Take(g_slots[i].tid.load(std::memory_order_acquire), cycles, spin, true));
+			samples.push_back(
+			    Take(g_slots[i].tid.load(std::memory_order_acquire), cycles, spin, true));
 		}
 		VisitPlacedThreads(
 		    [](void* context, uint32_t tid, void* handle, bool /*guest*/) {
 			    auto&   self   = *static_cast<ThreadWatch*>(context);
 			    ULONG64 cycles = 0;
-			    if (handle == nullptr || QueryThreadCycleTime(static_cast<HANDLE>(handle), &cycles) == 0) {
+			    if (handle == nullptr ||
+			        QueryThreadCycleTime(static_cast<HANDLE>(handle), &cycles) == 0) {
 				    return;
 			    }
-			    if (const auto it = self.threads.find(tid); it != self.threads.end() && it->second.seen) {
+			    if (const auto it = self.threads.find(tid);
+			        it != self.threads.end() && it->second.seen) {
 				    return; // a registered spinner as well
 			    }
 			    self.samples.push_back(self.Take(tid, cycles, 0, false));
@@ -454,8 +460,9 @@ void MonitorLoop() {
 	LowerCurrentThreadPriority();
 	const auto interval_ms = EnvU64("KYTY_SPIN_BUDGET_INTERVAL_MS", 250, 20, 10000);
 	const auto period_s    = EnvU64("KYTY_SPIN_STATS_PERIOD_S", 10, 0, 1000000);
-	const auto busy_share  = static_cast<double>(EnvU64("KYTY_SPIN_BUDGET_BUSY_PCT", 25, 1, 100)) / 100.0;
-	const auto margin      = static_cast<uint32_t>(EnvU64("KYTY_SPIN_BUDGET_MARGIN", 0, 0, 64));
+	const auto busy_share =
+	    static_cast<double>(EnvU64("KYTY_SPIN_BUDGET_BUSY_PCT", 25, 1, 100)) / 100.0;
+	const auto margin = static_cast<uint32_t>(EnvU64("KYTY_SPIN_BUDGET_MARGIN", 0, 0, 64));
 	GateConfig config;
 	config.window         = static_cast<uint32_t>(EnvU64("KYTY_SPIN_BUDGET_WINDOW", 4, 1, 32));
 	config.hold_closed_ms = EnvU64("KYTY_SPIN_BUDGET_HOLD_CLOSED_MS", 2000, 0, 600000);
@@ -464,21 +471,21 @@ void MonitorLoop() {
 	ThreadWatch watch;
 #endif
 	std::optional<GateFilter> filter;
-	uint64_t closes_seen = 0; // the filter's closes at the last line
-	bool     watching    = false;
-	uint64_t closed_ns   = 0;
-	auto     start_ns    = NowNs();
-	auto     last_ns     = start_ns;
-	auto     last_tsc    = Tsc();
-	auto     period_ns0  = last_ns;
-	auto     period_tsc0 = last_tsc;
-	auto     last_totals = SumSites();
-	uint64_t scan_ns     = 0;
-	uint64_t scan_max_ns = 0;
-	uint32_t scans       = 0;
-	uint32_t threads     = 0;
-	Demand   demand;
-	GateInput input;
+	uint64_t                  closes_seen = 0; // the filter's closes at the last line
+	bool                      watching    = false;
+	uint64_t                  closed_ns   = 0;
+	auto                      start_ns    = NowNs();
+	auto                      last_ns     = start_ns;
+	auto                      last_tsc    = Tsc();
+	auto                      period_ns0  = last_ns;
+	auto                      period_tsc0 = last_tsc;
+	auto                      last_totals = SumSites();
+	uint64_t                  scan_ns     = 0;
+	uint64_t                  scan_max_ns = 0;
+	uint32_t                  scans       = 0;
+	uint32_t                  threads     = 0;
+	Demand                    demand;
+	GateInput                 input;
 	for (;;) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
 		const auto now_ns  = NowNs();
@@ -525,7 +532,8 @@ void MonitorLoop() {
 		}
 		last_ns  = now_ns;
 		last_tsc = now_tsc;
-		if (period_s == 0 || static_cast<uint64_t>(now_ns - period_ns0) < period_s * 1'000'000'000ull) {
+		if (period_s == 0 ||
+		    static_cast<uint64_t>(now_ns - period_ns0) < period_s * 1'000'000'000ull) {
 			continue;
 		}
 		const auto   totals  = SumSites();
@@ -546,18 +554,22 @@ void MonitorLoop() {
 		const auto closes = filter ? filter->Closes() - closes_seen : 0;
 		closes_seen       = filter ? filter->Closes() : 0;
 		const auto mean   = filter ? filter->Mean() : input;
-		std::printf("SpinBudget %.0fs: KYTY_SPIN_BUDGET=%d profile=%d legacy_gate=%d sites=0x%llx short=%lld/%lldus, gate %s "
-		            "(closed %.1f%% of the time, %llu closes), budget %u lps, demand busy %.1f spinning %.1f "
-		            "idle-spinners %.1f (window mean; busy %.2f spin %.2f cores), scan %u threads %.0f us avg "
+		std::printf("SpinBudget %.0fs: KYTY_SPIN_BUDGET=%d profile=%d legacy_gate=%d sites=0x%llx "
+		            "short=%lld/%lldus, gate %s "
+		            "(closed %.1f%% of the time, %llu closes), budget %u lps, demand busy %.1f "
+		            "spinning %.1f "
+		            "idle-spinners %.1f (window mean; busy %.2f spin %.2f cores), scan %u threads "
+		            "%.0f us avg "
 		            "%.0f us max (%.3f ms/s)%s\n",
 		            seconds, on ? 1 : 0, CoreBudgetProfileOn() ? 1 : 0, Enabled() ? 1 : 0,
-		            static_cast<unsigned long long>(g_sites_switch.Get()), static_cast<long long>(g_short_switch.Get()),
+		            static_cast<unsigned long long>(g_sites_switch.Get()),
+		            static_cast<long long>(g_short_switch.Get()),
 		            static_cast<long long>(g_pipe_short_switch.Get()),
 		            g_closed.load(std::memory_order_relaxed) ? "closed" : "open",
 		            100.0 * static_cast<double>(closed_ns) / (seconds * 1e9),
 		            static_cast<unsigned long long>(closes), input.budget_logical, mean.busy,
-		            mean.spinning, mean.idle_spinners, demand.busy_cores, demand.spin_cores, threads,
-		            scans != 0 ? static_cast<double>(scan_ns) / scans / 1000.0 : 0.0,
+		            mean.spinning, mean.idle_spinners, demand.busy_cores, demand.spin_cores,
+		            threads, scans != 0 ? static_cast<double>(scan_ns) / scans / 1000.0 : 0.0,
 		            static_cast<double>(scan_max_ns) / 1000.0,
 		            static_cast<double>(scan_ns) / 1e6 / seconds, sites.c_str());
 		std::fflush(stdout);

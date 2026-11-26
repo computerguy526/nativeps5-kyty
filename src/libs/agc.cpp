@@ -36,7 +36,6 @@
 
 #include <algorithm>
 #include <array>
-#include <span>
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
@@ -47,6 +46,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -330,9 +330,9 @@ static RegisterDefaults* get_public_register_defaults(uint32_t ver) {
 static std::atomic<uint32_t> g_register_defaults_version {UINT32_MAX};
 
 const std::vector<std::pair<uint32_t, uint32_t>>& AgcContextClearDefaults() {
-	static std::mutex                                  mutex;
-	static std::vector<std::pair<uint32_t, uint32_t>> context;
-	static uint32_t                                    built_for = UINT32_MAX;
+	static std::mutex                                       mutex;
+	static std::vector<std::pair<uint32_t, uint32_t>>       context;
+	static uint32_t                                         built_for = UINT32_MAX;
 	static const std::vector<std::pair<uint32_t, uint32_t>> none;
 	const uint32_t ver = g_register_defaults_version.load(std::memory_order_acquire);
 	if (ver == UINT32_MAX) {
@@ -345,15 +345,16 @@ const std::vector<std::pair<uint32_t, uint32_t>>& AgcContextClearDefaults() {
 		                                          g_agc_internal_reg_defaults_by_version[index]};
 		std::map<uint32_t, uint32_t>   values;
 		for (const auto* blob: blobs) {
-			for (uint32_t i = 0; blob != nullptr && blob->tbl0_regs != nullptr && i < blob->tbl0_register_count;
+			for (uint32_t i = 0;
+			     blob != nullptr && blob->tbl0_regs != nullptr && i < blob->tbl0_register_count;
 			     i++) {
 				values[blob->tbl0_regs[i].offset] = blob->tbl0_regs[i].value;
 			}
 		}
 		context.assign(values.begin(), values.end());
 		built_for = ver;
-		LOGF("KYTY_CONTEXT_CLEAR_DEFAULTS: %zu context register defaults (version %u)\n", context.size(),
-		     index);
+		LOGF("KYTY_CONTEXT_CLEAR_DEFAULTS: %zu context register defaults (version %u)\n",
+		     context.size(), index);
 	}
 	return context;
 }
@@ -1842,12 +1843,17 @@ int KYTY_SYSV_ABI AgcJumpPatchSetTarget(uint32_t* cmd, const volatile uint32_t* 
 // boundary is recorded (once per guest frame, on the thread that ends the frame);
 // KYTY_LIVE_TEST_SUBMIT_SPIN_NS busy-waits that long in every graphics DCB submit before the
 // submission is queued (on the submitting guest thread).
-static Live::Switch g_test_suspend_spin_us("KYTY_LIVE_TEST_SUSPEND_SPIN_US", [](const char* value) -> int64_t {
-	return value != nullptr ? std::clamp<int64_t>(std::strtoll(value, nullptr, 10), 0, 100000) : 0;
-});
-static Live::Switch g_test_submit_spin_ns("KYTY_LIVE_TEST_SUBMIT_SPIN_NS", [](const char* value) -> int64_t {
-	return value != nullptr ? std::clamp<int64_t>(std::strtoll(value, nullptr, 10), 0, 100000000) : 0;
-});
+static Live::Switch
+    g_test_suspend_spin_us("KYTY_LIVE_TEST_SUSPEND_SPIN_US", [](const char* value) -> int64_t {
+	    return value != nullptr ? std::clamp<int64_t>(std::strtoll(value, nullptr, 10), 0, 100000)
+	                            : 0;
+    });
+static Live::Switch
+    g_test_submit_spin_ns("KYTY_LIVE_TEST_SUBMIT_SPIN_NS", [](const char* value) -> int64_t {
+	    return value != nullptr
+	               ? std::clamp<int64_t>(std::strtoll(value, nullptr, 10), 0, 100000000)
+	               : 0;
+    });
 
 int KYTY_SYSV_ABI AgcSuspendPoint() {
 	HleWait::Scope hle_wait_scope(HleWait::AgcSuspend); // wholecp measurement (KYTY_HLE_WAIT_STATS)
@@ -2455,10 +2461,11 @@ uint32_t* KYTY_SYSV_ABI AgcDcbWaitUntilSafeForRendering(CommandBuffer* buf,
 	return cmd;
 }
 
-// The asynchronous-compute form (sceAgcAcbWaitUntilSafeForRendering, PPSA28997): the same wait-for-flip packet in an
-// Acb command buffer.
-uint32_t* KYTY_SYSV_ABI AgcAcbWaitUntilSafeForRendering(CommandBuffer* buf, uint32_t video_out_handle,
-                                                        uint32_t display_buffer_index) {
+// The asynchronous-compute form (sceAgcAcbWaitUntilSafeForRendering, PPSA28997): the same
+// wait-for-flip packet in an Acb command buffer.
+uint32_t* KYTY_SYSV_ABI AgcAcbWaitUntilSafeForRendering(CommandBuffer* buf,
+                                                        uint32_t       video_out_handle,
+                                                        uint32_t       display_buffer_index) {
 	return AgcDcbWaitUntilSafeForRendering(buf, video_out_handle, display_buffer_index);
 }
 
@@ -3449,8 +3456,8 @@ uint32_t* KYTY_SYSV_ABI AgcAcbMemSemaphore(CommandBuffer* buf, const volatile vo
 
 	const auto address_value = Guest::Addr(address); // nps5: guest value of a host pointer
 	const bool signal        = (op == 6u);
-	cmd[0] = KYTY_PM4(AGC_WAIT_USER_DATA_BEGIN_DW, Pm4::IT_SET_UCONFIG_REG, 1u);
-	cmd[1] = AGC_INTERNAL_DATA_REGISTER;
+	cmd[0]                   = KYTY_PM4(AGC_WAIT_USER_DATA_BEGIN_DW, Pm4::IT_SET_UCONFIG_REG, 1u);
+	cmd[1]                   = AGC_INTERNAL_DATA_REGISTER;
 	cmd[2] = (signal ? AGC_MEM_SEMAPHORE_SIGNAL_BEGIN_TAG : AGC_MEM_SEMAPHORE_WAIT_BEGIN_TAG) |
 	         static_cast<uint32_t>((address_value >> 32u) & 0xffffu);
 	cmd[3] = static_cast<uint32_t>(address_value);
@@ -4202,7 +4209,8 @@ int KYTY_SYSV_ABI AgcQueueEndOfPipeActionPatchAddress(uint32_t*             cmd,
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 			std::fprintf(stderr,
 			             "[memtrk] AgcQueueEndOfPipeActionPatchAddress: cmd 0x%016" PRIx64
-			             " header 0x%08" PRIx32 " is not an end-of-pipe packet: kInvalidPacket, nothing written\n",
+			             " header 0x%08" PRIx32
+			             " is not an end-of-pipe packet: kInvalidPacket, nothing written\n",
 			             Guest::Addr(cmd), cmd[0]);
 		}
 		return GRAPHICS5_ERROR_INVALID_PACKET;

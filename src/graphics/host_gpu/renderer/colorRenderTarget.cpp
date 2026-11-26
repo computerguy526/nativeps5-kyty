@@ -1,11 +1,10 @@
 #include "graphics/host_gpu/renderer/colorRenderTarget.h"
-#include "common/staticOnce.h"
 
-#include "graphics/host_gpu/renderer/drawPrep/imgSide.h"
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "common/onceValue.h"
 #include "common/profiler.h"
+#include "common/staticOnce.h"
 #include "graphics/guest_gpu/gpu_defs.h"
 #include "graphics/guest_gpu/gpu_format.h"
 #include "graphics/guest_gpu/hardwareContext.h"
@@ -13,6 +12,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/debug.h"
 #include "graphics/host_gpu/renderer/drawPrep/commitStats.h"
+#include "graphics/host_gpu/renderer/drawPrep/imgSide.h"
 #include "graphics/host_gpu/renderer/image/textureCommon.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -170,10 +170,10 @@ bool SameImageDesc(const TextureCache::ImageDesc& a, const TextureCache::ImageDe
 	const auto& [b_info, b_view, b_type, b_cmask] = b;
 	const auto& [a_data, a_stencil, a_meta, a_htile_clear_mask, a_pixel_format, a_guest_format,
 	             a_image_type, a_extent, a_resources, a_pitch, a_bytes_per_block, a_samples,
-	             a_tile_mode, a_bgra16, a_layout_levels, a_mip_layout] = a_info;
+	             a_tile_mode, a_bgra16, a_layout_levels, a_mip_layout]              = a_info;
 	const auto& [b_data, b_stencil, b_meta, b_htile_clear_mask, b_pixel_format, b_guest_format,
 	             b_image_type, b_extent, b_resources, b_pitch, b_bytes_per_block, b_samples,
-	             b_tile_mode, b_bgra16, b_layout_levels, b_mip_layout] = b_info;
+	             b_tile_mode, b_bgra16, b_layout_levels, b_mip_layout]              = b_info;
 	const auto& [a_range, a_kind, a_control, a_dcc_clear_word, a_dcc_clear_word1, a_compression,
 	             a_stencil_compressed, a_dcc_clear_register_valid, a_dcc_alpha_msb] = a_meta;
 	const auto& [b_range, b_kind, b_control, b_dcc_clear_word, b_dcc_clear_word1, b_compression,
@@ -183,16 +183,16 @@ bool SameImageDesc(const TextureCache::ImageDesc& a, const TextureCache::ImageDe
 	// ImageViewInfo::operator== compares all of its fields.
 	return a_data == b_data && a_stencil == b_stencil && a_range == b_range && a_kind == b_kind &&
 	       a_control == b_control && a_dcc_clear_word == b_dcc_clear_word &&
-	       a_dcc_clear_word1 == b_dcc_clear_word1 &&
-	       a_compression == b_compression && a_stencil_compressed == b_stencil_compressed &&
+	       a_dcc_clear_word1 == b_dcc_clear_word1 && a_compression == b_compression &&
+	       a_stencil_compressed == b_stencil_compressed &&
 	       a_dcc_clear_register_valid == b_dcc_clear_register_valid &&
 	       a_dcc_alpha_msb == b_dcc_alpha_msb && a_htile_clear_mask == b_htile_clear_mask &&
 	       a_pixel_format == b_pixel_format && a_guest_format == b_guest_format &&
 	       a_image_type == b_image_type && a_extent == b_extent && a_resources == b_resources &&
-	       a_pitch == b_pitch && a_bytes_per_block == b_bytes_per_block &&
-	       a_samples == b_samples && a_tile_mode == b_tile_mode && a_bgra16 == b_bgra16 &&
-	       a_layout_levels == b_layout_levels && a_mip_layout == b_mip_layout && a_view == b_view && a_type == b_type &&
-	       a_cmask_range == b_cmask_range && a_clear_word0 == b_clear_word0 &&
+	       a_pitch == b_pitch && a_bytes_per_block == b_bytes_per_block && a_samples == b_samples &&
+	       a_tile_mode == b_tile_mode && a_bgra16 == b_bgra16 &&
+	       a_layout_levels == b_layout_levels && a_mip_layout == b_mip_layout && a_view == b_view &&
+	       a_type == b_type && a_cmask_range == b_cmask_range && a_clear_word0 == b_clear_word0 &&
 	       a_clear_word1 == b_clear_word1 && a_cmask_valid == b_cmask_valid;
 }
 
@@ -438,7 +438,8 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 	uint64_t   size   = 0;
 	bool       tile   = false;
 	// Experimental Pro mode: Miles Morales renders to 256B-tiled targets (the PSSR output layout);
-	// they are texture-tiled like the 4KB ones. Base PS5 titles never reached this (it stopped here).
+	// they are texture-tiled like the 4KB ones. Base PS5 titles never reached this (it stopped
+	// here).
 	const bool     standard256  = rt.attrib3.tile_mode == Prospero::TileMode::kStandard256B;
 	const bool     standard4    = rt.attrib3.tile_mode == Prospero::TileMode::kStandard4KB;
 	const bool     depth_tile   = rt.attrib3.tile_mode == Prospero::TileMode::kDepth;
@@ -585,9 +586,9 @@ void RenderExecutor::ResolveRenderColorTarget(CommandBuffer& buffer, RenderColor
 		LOGF("RenderColorTarget: slot=%" PRIu32 " addr=0x%010" PRIx64 " size=0x%016" PRIx64
 		     " extent=%ux%ux%u view_mip=%u view_extent=%ux%u levels=%u pitch=%u"
 		     " fmt=0x%08" PRIx32 " nfmt=0x%08" PRIx32 " order=0x%08" PRIx32 " samples=%u tile=%s\n",
-		     rt_slot, rt.base.addr, backing_size, width, height, depth, mip,
-		     view_extent.width, view_extent.height, levels, pitch,
-		     static_cast<uint32_t>(rt.info.format), static_cast<uint32_t>(rt.info.channel_type),
+		     rt_slot, rt.base.addr, backing_size, width, height, depth, mip, view_extent.width,
+		     view_extent.height, levels, pitch, static_cast<uint32_t>(rt.info.format),
+		     static_cast<uint32_t>(rt.info.channel_type),
 		     static_cast<uint32_t>(rt.info.channel_order), samples, tile ? "tiled" : "linear");
 	}
 

@@ -144,10 +144,10 @@ public:
 	void            BufferFlushAndWait();
 	// The flush at the end of a queue's slice that made progress (complete: the submission ended;
 	// otherwise it stopped at a wait or yielded).
-	void            SliceEndFlush(bool complete);
+	void SliceEndFlush(bool complete);
 	// KYTY_FLUSH_DEFER: a held slice-end flush submitted once the GPU is down to its last
 	// submission (checked every 16 units of weight: a draw 1, a dispatch 4); true when submitted.
-	bool            MaybeReleaseHeldFlush(uint32_t weight);
+	bool MaybeReleaseHeldFlush(uint32_t weight);
 	// KYTY_FLUSH_DEFER: the held flush, if any, before the GPU thread waits for work.
 	void            ReleaseHeldFlush();
 	static uint32_t EopFlushPacketLimit();
@@ -155,13 +155,13 @@ public:
 	// Early submit when the GPU ran out of submitted work (KYTY_IDLE_FLUSH_DRAWS). Call after
 	// recording a draw or dispatch, at a packet boundary.
 	// After each recorded draw (dispatch: a dispatch): an early submit when the GPU is idle
-	// (KYTY_IDLE_FLUSH_DRAWS) or every KYTY_DRAW_FLUSH_INTERVAL draws / KYTY_DISPATCH_FLUSH_INTERVAL
-	// dispatches of one recording.
-	void            MaybeFlushIdleGpu(bool dispatch = false);
-	void            MaybeFlushBatched(uint32_t every); // KYTY_SUBMIT_EVERY
+	// (KYTY_IDLE_FLUSH_DRAWS) or every KYTY_DRAW_FLUSH_INTERVAL draws /
+	// KYTY_DISPATCH_FLUSH_INTERVAL dispatches of one recording.
+	void MaybeFlushIdleGpu(bool dispatch = false);
+	void MaybeFlushBatched(uint32_t every); // KYTY_SUBMIT_EVERY
 	// The periodic part (KYTY_DRAW_FLUSH_INTERVAL / KYTY_DISPATCH_FLUSH_INTERVAL): true when it
 	// submitted.
-	bool            MaybeFlushPeriodic(bool dispatch);
+	bool MaybeFlushPeriodic(bool dispatch);
 	// Graphics queue: after KYTY_GFX_SLICE_DRAWS draws in a slice, end the slice after the
 	// current packet when another queue has runnable work. Call after recording a draw.
 	void            MaybeYieldSlice();
@@ -344,8 +344,8 @@ private:
 		uint8_t  value[64] {};
 	};
 	std::vector<FrontValue> m_front_values;
-	void NoteFrontValue(CpSeq::OpKind kind, const void* payload, const void* data, uint32_t data_size,
-	                    uint64_t begin, uint64_t end);
+	void NoteFrontValue(CpSeq::OpKind kind, const void* payload, const void* data,
+	                    uint32_t data_size, uint64_t begin, uint64_t end);
 	// All of [address, address + size) has known values (labels only with `allow_labels`);
 	// `pending`: some CP write emitted since overlaps the bytes.
 	[[nodiscard]] bool FrontKnown(uint64_t address, uint64_t size, void* dst, bool allow_labels,
@@ -567,16 +567,16 @@ private:
 	// MaybeFlushIdleGpu: recording tick being counted and its draws/dispatches so far.
 	uint64_t  m_idle_flush_tick             = 0;
 	uint32_t  m_idle_flush_draws            = 0;
-	uint64_t  m_idle_flush_refresh_ns       = 0; // KYTY_IDLE_FLUSH_REFRESH_US: the last timeline query
-	uint32_t  m_held_flush_checks           = 0; // KYTY_FLUSH_DEFER (MaybeReleaseHeldFlush)
+	uint64_t  m_idle_flush_refresh_ns = 0; // KYTY_IDLE_FLUSH_REFRESH_US: the last timeline query
+	uint32_t  m_held_flush_checks     = 0; // KYTY_FLUSH_DEFER (MaybeReleaseHeldFlush)
 	// KYTY_SUBMIT_EVERY: the recording's idle-early submit is armed (its first command after a
 	// non-batch submit found the GPU idle), and the tick our last batch submit opened.
-	bool      m_idle_flush_armed            = false;
-	uint64_t  m_batch_flush_tick            = 0;
+	bool     m_idle_flush_armed = false;
+	uint64_t m_batch_flush_tick = 0;
 	// MaybeFlushIdleGpu's periodic submits: recording tick being counted, its draws and dispatches.
-	uint64_t  m_periodic_flush_tick         = 0;
-	uint32_t  m_periodic_flush_draws        = 0;
-	uint32_t  m_periodic_flush_dispatches   = 0;
+	uint64_t m_periodic_flush_tick       = 0;
+	uint32_t m_periodic_flush_draws      = 0;
+	uint32_t m_periodic_flush_dispatches = 0;
 	// Draws recorded in the current graphics slice (MaybeYieldSlice).
 	uint32_t  m_slice_draws                 = 0;
 	// KYTY_PASS_SUBMIT_DEFER: deferred submission, slice yield and carried recording.

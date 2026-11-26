@@ -1482,7 +1482,8 @@ int KYTY_SYSV_ABI KernelFsync(int d) {
 	}
 
 	// The written data already reached the host, so a failed flush only loses durability
-	LOGF("\tFsync: %s, %s\n", Common::PathToString(file->real_name).c_str(), flushed ? "[ok]" : "[flush failed]");
+	LOGF("\tFsync: %s, %s\n", Common::PathToString(file->real_name).c_str(),
+	     flushed ? "[ok]" : "[flush failed]");
 	return OK;
 }
 

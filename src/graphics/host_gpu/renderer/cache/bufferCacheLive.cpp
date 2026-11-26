@@ -6,13 +6,15 @@
 // write-protects it again; the guest's next write to it faults. With this switch a qualifying
 // CPU-dirty caching page is not uploaded: its BDA page-table entry points into an imported window
 // of the guest backing alias (bdaLiveWindows.h), so a BDA read of it reads the guest bytes as they
-// are when the GPU reads them (as on the console). The page stays CPU-dirty and writable: no upload,
-// no re-protection, no fault. The tracker state is untouched (it is the state after a write fault).
+// are when the GPU reads them (as on the console). The page stays CPU-dirty and writable: no
+// upload, no re-protection, no fault. The tracker state is untouched (it is the state after a write
+// fault).
 //
 // Invariants (rtskip DESIGN.md section 4):
 //   I1   redirected => CPU-dirty, not GPU-dirty, not hot, no GPU-modified image, no pending backing
 //        publication, no early-released download, not CP-written since (verify V2 after each pass);
-//   I2   after a full pass during which the fault epoch did not move, every CPU-dirty non-hot page of
+//   I2   after a full pass during which the fault epoch did not move, every CPU-dirty non-hot page
+//   of
 //        a registered buffer in the GPU mappings is redirected or was uploaded (verify V1);
 //   I3   an entry that goes back to the cache without an upload queues its page in the forced set,
 //        which the next full pass (LivePagesPrePass) or a BDA-writing program uploads first;
@@ -29,7 +31,8 @@
 //        it (the guest bytes the entry reads are at least as new as the uploaded copy); settled
 //        pages go back in one batch at the next pre-pass (verify V5: none of them GPU-written);
 //   I-B2 entry writes of one flush (a pass's redirects, the pre-pass restores) are one copy; a
-//        restore first flushes the queued redirects. KYTY_BDA_LIVE_BATCH=0: one copy per run, at once.
+//        restore first flushes the queued redirects. KYTY_BDA_LIVE_BATCH=0: one copy per run, at
+//        once.
 // Do not combine with KYTY_BDA_REACH=verify, the BdaHotSync / BdaDirtyLog / BdaSyncEpoch verify
 // modes or KYTY_BDA_ACCESS_TAGS=1 / verify (they rewrite entries or rescan pages themselves).
 // With the KYTY_BDA_ACCESS_TAGS codegen option, a page read through its redirect is reported (its
@@ -38,12 +41,11 @@
 //   KYTY_BDA_LIVE_WINDOW_MB (default 64): import window, a power of two.
 //   KYTY_BDA_LIVE_MAX_MB (default 1024): cap of imported (pinned) memory.
 
-#include "graphics/host_gpu/renderer/cache/bufferCache.h"
-
 #include "common/liveSwitch.h"
 #include "graphics/guest_gpu/graphicsRun.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/cache/bdaLiveWindows.h"
+#include "graphics/host_gpu/renderer/cache/bufferCache.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/watchRange.h"
@@ -84,7 +86,9 @@ bool Redirects(int64_t mode) {
 Live::Switch g_bda_live_pages("KYTY_BDA_LIVE_PAGES", ParseLivePages);
 Live::Switch g_bda_live_batch("KYTY_BDA_LIVE_BATCH", Live::ParseDefaultOn);
 Live::Switch g_bda_live_bound("KYTY_BDA_LIVE_BOUND_PASSES", [](const char* value) -> int64_t {
-	return value != nullptr && value[0] != '\0' ? static_cast<int64_t>(std::min<uint64_t>(std::strtoull(value, nullptr, 0), 1u << 20u)) : 0;
+	return value != nullptr && value[0] != '\0' ? static_cast<int64_t>(std::min<uint64_t>(
+	                                                  std::strtoull(value, nullptr, 0), 1u << 20u))
+	                                            : 0;
 });
 
 BufferCache* g_live_cache = nullptr; // the cache whose state the StreamCopyDefer hooks reach
@@ -94,7 +98,7 @@ uint64_t LiveEnvU64(const char* name, uint64_t fallback) {
 	return value != nullptr && value[0] != '\0' ? std::strtoull(value, nullptr, 0) : fallback;
 }
 
-constexpr uint64_t PAGE = BufferCache::CACHING_PAGESIZE;
+constexpr uint64_t PAGE     = BufferCache::CACHING_PAGESIZE;
 constexpr uint64_t SUBPAGES = PAGE / TRACKER_PAGE_SIZE;
 
 using LiveWrites = std::vector<std::pair<uint64_t, vk::DeviceAddress>>;
@@ -103,50 +107,52 @@ using LiveWrites = std::vector<std::pair<uint64_t, vk::DeviceAddress>>;
 
 struct BufferCache::BdaLive {
 	struct Page {
-		vk::DeviceAddress entry      = 0; // redirect entry (untagged)
-		uint64_t          pass       = 0; // full-pass number of the redirect
-		uint8_t           cpu_mask   = 0; // verify: CPU-dirty 4 KiB sub-pages at the redirect
+		vk::DeviceAddress entry    = 0; // redirect entry (untagged)
+		uint64_t          pass     = 0; // full-pass number of the redirect
+		uint8_t           cpu_mask = 0; // verify: CPU-dirty 4 KiB sub-pages at the redirect
 	};
-	mutable std::mutex                     mutex;
-	std::map<uint64_t, Page>               pages;      // caching page -> redirect
-	std::set<uint64_t>                     settled;    // redirected pages a read upload made current (I-B1)
-	LiveWrites                             queued;     // redirect entries of the running pass (I-B2)
-	std::unordered_set<uint64_t>           cp_written; // pages a CP write hit while redirected
-	std::set<uint64_t>                     cp_pending;   // redirected pages a CP write hit (restored at the pre-pass)
-	std::set<uint64_t>                     read_pending; // redirected pages a shader read (tag report)
-	RangeSet                               forced;     // entries given back without an upload
-	std::unique_ptr<BdaLiveWindows>        windows;
-	std::vector<std::unique_ptr<Buffer>>   imports;
-	uint64_t                               read_tick = 0; // last full pass that left redirects
+	mutable std::mutex           mutex;
+	std::map<uint64_t, Page>     pages;      // caching page -> redirect
+	std::set<uint64_t>           settled;    // redirected pages a read upload made current (I-B1)
+	LiveWrites                   queued;     // redirect entries of the running pass (I-B2)
+	std::unordered_set<uint64_t> cp_written; // pages a CP write hit while redirected
+	std::set<uint64_t> cp_pending;   // redirected pages a CP write hit (restored at the pre-pass)
+	std::set<uint64_t> read_pending; // redirected pages a shader read (tag report)
+	RangeSet           forced;       // entries given back without an upload
+	std::unique_ptr<BdaLiveWindows>      windows;
+	std::vector<std::unique_ptr<Buffer>> imports;
+	uint64_t                             read_tick = 0; // last full pass that left redirects
 	// Verify diagnostics: the last event of each page (1 = redirected, 2 + LiveRestore = restored).
-	std::unordered_map<uint64_t, uint8_t>  history;
-	// Performance only: pages a cache binding uploaded after their redirect are not redirected again
-	// until this many full passes later (KYTY_BDA_LIVE_BOUND_PASSES, live, default 0 = off: with the
-	// batched restores the churn costs one batched entry write per pass, while a blocked page is uploaded,
-	// re-protected and faults again; Astro's Playroom: 35 rejects/f, faults 15 -> 19/f, 0.7 -> 1.5 MB/f).
+	std::unordered_map<uint64_t, uint8_t> history;
+	// Performance only: pages a cache binding uploaded after their redirect are not redirected
+	// again until this many full passes later (KYTY_BDA_LIVE_BOUND_PASSES, live, default 0 = off:
+	// with the batched restores the churn costs one batched entry write per pass, while a blocked
+	// page is uploaded, re-protected and faults again; Astro's Playroom: 35 rejects/f, faults 15 ->
+	// 19/f, 0.7 -> 1.5 MB/f).
 	std::unordered_map<uint64_t, uint64_t> bound_until;
-	uint64_t                               passes       = 0;
-	// KYTY_BDA_LIVE_LOG=N (diagnostic, default 0): the first N full passes that redirect print one line
-	// each (tick, new redirects as guest ranges, held, windows); imports name the page that made them.
-	uint64_t                               log_left     = 0;
-	std::vector<uint64_t>                  pass_new;      // pages the running pass redirected (log only)
-	uint64_t                               trigger        = 0; // page address whose window is imported
-	uint64_t                               trigger_buffer = 0;
-	uint64_t                               trigger_size   = 0;
-	uint64_t                               first_tick     = 0; // tick of the first pass that redirected
-	uint64_t                               last_tick      = 0; // tick of the latest pass that redirected
-	uint64_t                               last_pass_new  = 0;
-	std::vector<uint64_t>                  last_new;      // pages the latest redirecting pass added (sorted)
-	void Note(uint64_t page, uint8_t event) {
+	uint64_t                               passes = 0;
+	// KYTY_BDA_LIVE_LOG=N (diagnostic, default 0): the first N full passes that redirect print one
+	// line each (tick, new redirects as guest ranges, held, windows); imports name the page that
+	// made them.
+	uint64_t              log_left = 0;
+	std::vector<uint64_t> pass_new;           // pages the running pass redirected (log only)
+	uint64_t              trigger        = 0; // page address whose window is imported
+	uint64_t              trigger_buffer = 0;
+	uint64_t              trigger_size   = 0;
+	uint64_t              first_tick     = 0; // tick of the first pass that redirected
+	uint64_t              last_tick      = 0; // tick of the latest pass that redirected
+	uint64_t              last_pass_new  = 0;
+	std::vector<uint64_t> last_new; // pages the latest redirecting pass added (sorted)
+	void                  Note(uint64_t page, uint8_t event) {
 		if (history.size() < (1u << 20u) || history.contains(page)) {
 			history[page] = event;
 		}
 	}
-	BdaLiveTotals                          totals;
-	BdaLiveTotals                          reported;
-	std::chrono::steady_clock::time_point  report_time {};
-	uint32_t                               report_frames = 0;
-	BufferCache*                           owner         = nullptr;
+	BdaLiveTotals                         totals;
+	BdaLiveTotals                         reported;
+	std::chrono::steady_clock::time_point report_time {};
+	uint32_t                              report_frames = 0;
+	BufferCache*                          owner         = nullptr;
 	~BdaLive() {
 		if (g_live_cache == owner) {
 			g_live_cache = nullptr;
@@ -160,44 +166,49 @@ void BufferCache::CreateBdaLive() {
 		return;
 	}
 	if (LiveEnvU64("KYTY_DROP_RELEASED", 0) != 0) {
-		std::printf("Kyty BDA live pages: refused, KYTY_DROP_RELEASED hands backing pages back under the imports\n");
+		std::printf("Kyty BDA live pages: refused, KYTY_DROP_RELEASED hands backing pages back "
+		            "under the imports\n");
 		return;
 	}
 	const auto base = LibKernel::Memory::GuestBackingBase();
 	const auto size = LibKernel::Memory::GuestBackingSize();
 	if (!m_graphics.external_memory_host_enabled || base == 0 || size == 0) {
-		std::printf("Kyty BDA live pages: refused (no VK_EXT_external_memory_host or no backing alias)\n");
+		std::printf(
+		    "Kyty BDA live pages: refused (no VK_EXT_external_memory_host or no backing alias)\n");
 		return;
 	}
-	auto live          = std::make_shared<BdaLive>();
-	live->owner        = this;
-	auto* state = live.get();
-	const uint64_t window = std::clamp<uint64_t>(LiveEnvU64("KYTY_BDA_LIVE_WINDOW_MB", 64), 1, 1024) << 20u;
+	auto live             = std::make_shared<BdaLive>();
+	live->owner           = this;
+	auto*          state  = live.get();
+	const uint64_t window = std::clamp<uint64_t>(LiveEnvU64("KYTY_BDA_LIVE_WINDOW_MB", 64), 1, 1024)
+	                        << 20u;
 	const uint64_t cap    = LiveEnvU64("KYTY_BDA_LIVE_MAX_MB", 1024) << 20u;
 	live->windows         = std::make_unique<BdaLiveWindows>(
-        base, size, window, cap, [this, state](uint64_t host, uint64_t bytes) -> uint64_t {
-            const auto start  = std::chrono::steady_clock::now();
-            auto       buffer = std::make_unique<Buffer>(m_graphics, m_scheduler, reinterpret_cast<void*>(host), bytes,
-                                                   ImportHostTag {});
-            const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-            if (!buffer->Handle()) {
-                std::printf("Kyty BDA live pages: importing the backing window 0x%" PRIx64 " + %" PRIu64
-                            " MiB failed\n",
-                            host - LibKernel::Memory::GuestBackingBase(), bytes >> 20u);
-                std::fflush(stdout);
-                return 0;
-            }
-            const auto device = buffer->BufferDeviceAddress();
-            state->imports.push_back(std::move(buffer));
-            std::printf("Kyty BDA live pages: imported backing window 0x%" PRIx64 " + %" PRIu64
-                        " MiB in %.1f ms (%zu windows; device 0x%" PRIx64 ", for page 0x%" PRIx64
-                        " of buffer 0x%" PRIx64 " + 0x%" PRIx64 ", tick %" PRIu64 ")\n",
-                        host - LibKernel::Memory::GuestBackingBase(), bytes >> 20u, ms, state->imports.size(),
-                        static_cast<uint64_t>(device), state->trigger, state->trigger_buffer, state->trigger_size,
-                        m_scheduler.CurrentTick());
-            std::fflush(stdout);
-            return device;
-        });
+	    base, size, window, cap, [this, state](uint64_t host, uint64_t bytes) -> uint64_t {
+		    const auto start  = std::chrono::steady_clock::now();
+		    auto       buffer = std::make_unique<Buffer>(
+		        m_graphics, m_scheduler, reinterpret_cast<void*>(host), bytes, ImportHostTag {});
+		    const auto ms =
+		        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+		            .count();
+		    if (!buffer->Handle()) {
+			    std::printf("Kyty BDA live pages: importing the backing window 0x%" PRIx64
+			                " + %" PRIu64 " MiB failed\n",
+			                host - LibKernel::Memory::GuestBackingBase(), bytes >> 20u);
+			    std::fflush(stdout);
+			    return 0;
+		    }
+		    const auto device = buffer->BufferDeviceAddress();
+		    state->imports.push_back(std::move(buffer));
+		    std::printf("Kyty BDA live pages: imported backing window 0x%" PRIx64 " + %" PRIu64
+		                " MiB in %.1f ms (%zu windows; device 0x%" PRIx64 ", for page 0x%" PRIx64
+		                " of buffer 0x%" PRIx64 " + 0x%" PRIx64 ", tick %" PRIu64 ")\n",
+		                host - LibKernel::Memory::GuestBackingBase(), bytes >> 20u, ms,
+		                state->imports.size(), static_cast<uint64_t>(device), state->trigger,
+		                state->trigger_buffer, state->trigger_size, m_scheduler.CurrentTick());
+		    std::fflush(stdout);
+		    return device;
+	    });
 	if (!live->windows->Valid()) {
 		std::printf("Kyty BDA live pages: refused, the backing (0x%" PRIx64 ", %" PRIu64
 		            " bytes) or the window size breaks the 4 KiB import rule\n",
@@ -205,11 +216,11 @@ void BufferCache::CreateBdaLive() {
 		return;
 	}
 	live->log_left = LiveEnvU64("KYTY_BDA_LIVE_LOG", 0);
-	m_bda_live   = std::move(live);
-	g_live_cache = this;
+	m_bda_live     = std::move(live);
+	g_live_cache   = this;
 	SetDeviceLossNote(&BufferCache::LiveDeviceLossNote);
-	std::printf("Kyty BDA live pages: built (KYTY_BDA_LIVE_PAGES=%s), windows %" PRIu64 " MiB, cap %" PRIu64
-	            " MiB, backing %" PRIu64 " MiB\n",
+	std::printf("Kyty BDA live pages: built (KYTY_BDA_LIVE_PAGES=%s), windows %" PRIu64
+	            " MiB, cap %" PRIu64 " MiB, backing %" PRIu64 " MiB\n",
 	            value, window >> 20u, cap >> 20u, size >> 20u);
 	std::fflush(stdout);
 }
@@ -263,12 +274,13 @@ void BufferCache::WriteLiveEntries(LiveWrites& writes, bool batch) {
 		return;
 	}
 	// I-S1 (DESIGN.md 7): the entries go through the staging ring; an open reservation there (an
-	// upload staged but not committed) would be overwritten by them. Every caller restores only after
-	// the reservation is committed; V6 counts a regression (always on, one stderr line).
+	// upload staged but not committed) would be overwritten by them. Every caller restores only
+	// after the reservation is committed; V6 counts a regression (always on, one stderr line).
 	if (m_staging_buffer.ReservationPending()) {
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 4) {
-			std::fprintf(stderr, "BdaLiveVerify V6: page-table entries written while a staging reservation is open\n");
+			std::fprintf(stderr, "BdaLiveVerify V6: page-table entries written while a staging "
+			                     "reservation is open\n");
 		}
 		std::scoped_lock lock(m_bda_live->mutex);
 		m_bda_live->totals.v6++;
@@ -278,24 +290,24 @@ void BufferCache::WriteLiveEntries(LiveWrites& writes, bool batch) {
 	for (const auto& run: plan.runs) {
 		EnsureBdaTableResident(run.first_page, run.count);
 	}
-	constexpr uint64_t E     = sizeof(vk::DeviceAddress);
-	const uint64_t     bytes = plan.data.size() * E;
+	constexpr uint64_t E      = sizeof(vk::DeviceAddress);
+	const uint64_t     bytes  = plan.data.size() * E;
 	uint64_t           copies = 0;
 	if (batch && plan.runs.size() > 1 && bytes <= m_staging_buffer.Size()) {
 		const auto                  offset = m_staging_buffer.Copy(plan.data.data(), bytes, E);
 		std::vector<vk::BufferCopy> regions;
 		regions.reserve(plan.runs.size());
 		for (const auto& run: plan.runs) {
-			regions.emplace_back(offset + run.data_index * E, m_bda_pagetable_buffer.Offset(run.first_page * E),
-			                     run.count * E);
+			regions.emplace_back(offset + run.data_index * E,
+			                     m_bda_pagetable_buffer.Offset(run.first_page * E), run.count * E);
 		}
 		m_bda_pagetable_buffer.CopyRegionsFrom(m_scheduler.Current(), m_staging_buffer, regions,
 		                                       vk::AccessFlagBits::eHostWrite);
 		copies = 1;
 	} else {
 		for (const auto& run: plan.runs) {
-			WriteDataBuffer(m_bda_pagetable_buffer, run.first_page * E, plan.data.data() + run.data_index,
-			                run.count * E);
+			WriteDataBuffer(m_bda_pagetable_buffer, run.first_page * E,
+			                plan.data.data() + run.data_index, run.count * E);
 			copies++;
 		}
 	}
@@ -346,7 +358,8 @@ void BufferCache::SettleLivePages(uint64_t vaddr, uint64_t size) {
 	std::scoped_lock lock(live.mutex);
 	const auto       first = vaddr >> CACHING_PAGEBITS;
 	const auto       last  = (vaddr + size - 1) >> CACHING_PAGEBITS;
-	for (auto it = live.pages.lower_bound(first); it != live.pages.end() && it->first <= last; ++it) {
+	for (auto it = live.pages.lower_bound(first); it != live.pages.end() && it->first <= last;
+	     ++it) {
 		if (live.settled.insert(it->first).second) {
 			live.totals.settled++;
 			if (WatchRange::Enabled()) {
@@ -356,7 +369,8 @@ void BufferCache::SettleLivePages(uint64_t vaddr, uint64_t size) {
 	}
 }
 
-void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size, BdaSyncStats* stats) {
+void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size,
+                                      BdaSyncStats* stats) {
 	const auto t0         = std::chrono::steady_clock::now();
 	auto&      buffer     = m_slot_buffers[id];
 	auto&      live       = *m_bda_live;
@@ -365,8 +379,9 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 	const auto last_page  = (end - 1) >> CACHING_PAGEBITS;
 	uint64_t   walked = 0, dirty = 0, segments = 0, bound = 0;
 	const auto account = [&](bool fast) {
-		const auto ns = static_cast<uint64_t>(
-		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+		const auto ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		                                          std::chrono::steady_clock::now() - t0)
+		                                          .count());
 		std::scoped_lock lock(live.mutex);
 		auto&            t = live.totals;
 		t.qual_calls++;
@@ -381,7 +396,8 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 	std::vector<uint64_t> held;
 	{
 		std::scoped_lock lock(live.mutex);
-		for (auto it = live.pages.lower_bound(first_page); it != live.pages.end() && it->first <= last_page; ++it) {
+		for (auto it = live.pages.lower_bound(first_page);
+		     it != live.pages.end() && it->first <= last_page; ++it) {
 			held.push_back(it->first);
 		}
 	}
@@ -396,7 +412,8 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 			return;
 		}
 	}
-	// Conservative: no redirect while early-released downloads are pending (their bytes are the GPU's).
+	// Conservative: no redirect while early-released downloads are pending (their bytes are the
+	// GPU's).
 	const bool may_redirect = m_early_released.empty();
 	const bool verify       = BdaLivePagesMode() == 2;
 	struct Fresh {
@@ -409,8 +426,9 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 	size_t             h   = 0;
 	for (auto page = first_page; page <= last_page; ++page) {
 		walked++;
-		const auto address   = page << CACHING_PAGEBITS;
-		const bool in_buffer = address >= buffer.CpuAddress() && address + PAGE <= buffer.CpuAddress() + buffer.Size();
+		const auto address = page << CACHING_PAGEBITS;
+		const bool in_buffer =
+		    address >= buffer.CpuAddress() && address + PAGE <= buffer.CpuAddress() + buffer.Size();
 		while (h < held.size() && held[h] < page) {
 			++h;
 		}
@@ -418,7 +436,8 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 		vk::DeviceAddress entry   = 0;
 		uint8_t           mask    = 0;
 		if (!is_live && may_redirect && in_buffer) {
-			// A page the lock-free mirror shows clean synchronizes with its run (nothing to upload).
+			// A page the lock-free mirror shows clean synchronizes with its run (nothing to
+			// upload).
 			bool page_cpu = true;
 			if (!(m_memory_tracker.QueryCpuDirtyRelaxed(address, PAGE, page_cpu) && !page_cpu)) {
 				dirty++;
@@ -426,8 +445,9 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 				{
 					std::scoped_lock lock(live.mutex);
 					blocked = live.cp_written.contains(page);
-					// Performance only: a page a cache binding uploaded after its redirect is read by
-					// draws anyway; redirecting it again would only add entry writes every frame.
+					// Performance only: a page a cache binding uploaded after its redirect is read
+					// by draws anyway; redirecting it again would only add entry writes every
+					// frame.
 					if (!blocked) {
 						const auto b = live.bound_until.find(page);
 						if (b != live.bound_until.end()) {
@@ -441,9 +461,9 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 					}
 				}
 				if (!blocked) {
-					// Cheapest checks first: the lock-free dirty mirrors (exact on the GPU thread), then
-					// the window (I-A2: the page and the 64 bytes after it lie in one imported window),
-					// then the locked queries.
+					// Cheapest checks first: the lock-free dirty mirrors (exact on the GPU thread),
+					// then the window (I-A2: the page and the 64 bytes after it lie in one imported
+					// window), then the locked queries.
 					MemoryTracker::DirtyState state;
 					if (!m_memory_tracker.QueryDirtyRelaxed(address, PAGE, state)) {
 						state = m_memory_tracker.QueryDirty(address, PAGE);
@@ -452,22 +472,27 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 						live.trigger        = address; // names the page in an import line
 						live.trigger_buffer = buffer.CpuAddress();
 						live.trigger_size   = buffer.Size();
-						const auto* host =
-						    static_cast<const uint8_t*>(LibKernel::Memory::GuestBackingAlias(address, PAGE));
-						const auto dev =
-						    host != nullptr ? live.windows->Translate(reinterpret_cast<uint64_t>(host), PAGE + 64) : 0;
+						const auto* host    = static_cast<const uint8_t*>(
+						    LibKernel::Memory::GuestBackingAlias(address, PAGE));
+						const auto dev = host != nullptr
+						                     ? live.windows->Translate(
+						                           reinterpret_cast<uint64_t>(host), PAGE + 64)
+						                     : 0;
 						if (dev == 0) {
 							std::scoped_lock lock(live.mutex);
 							live.totals.rejects_window++;
-						} else if (!BdaTagAccessed(page) && !m_memory_tracker.IsRegionHot(address, PAGE) &&
-						           !HasGpuDirtyBytes(address, PAGE) && !HasPendingBackingPublication(address, PAGE) &&
+						} else if (!BdaTagAccessed(page) &&
+						           !m_memory_tracker.IsRegionHot(address, PAGE) &&
+						           !HasGpuDirtyBytes(address, PAGE) &&
+						           !HasPendingBackingPublication(address, PAGE) &&
 						           !m_texture_cache.IsRegionGpuModified(address, PAGE)) {
 							entry = dev;
 							if (verify) {
 								for (uint64_t k = 0; k < SUBPAGES; ++k) {
 									bool sub = false;
-									if (m_memory_tracker.QueryCpuDirtyRelaxed(address + k * TRACKER_PAGE_SIZE,
-									                                          TRACKER_PAGE_SIZE, sub) &&
+									if (m_memory_tracker.QueryCpuDirtyRelaxed(
+									        address + k * TRACKER_PAGE_SIZE, TRACKER_PAGE_SIZE,
+									        sub) &&
 									    sub) {
 										mask |= static_cast<uint8_t>(1u << k);
 									}
@@ -526,29 +551,34 @@ void BufferCache::LiveSyncBufferRange(BufferId id, uint64_t start, uint64_t size
 	account(false);
 }
 
-void BufferCache::RestoreLivePages(uint64_t vaddr, uint64_t size, LiveRestore why, LiveWrites* writes) {
+void BufferCache::RestoreLivePages(uint64_t vaddr, uint64_t size, LiveRestore why,
+                                   LiveWrites* writes) {
 	if (m_bda_live == nullptr || size == 0) {
 		return;
 	}
-	auto&                 live  = *m_bda_live;
-	const auto            first = vaddr >> CACHING_PAGEBITS;
-	const auto            last  = (vaddr + size - 1) >> CACHING_PAGEBITS;
+	auto&      live  = *m_bda_live;
+	const auto first = vaddr >> CACHING_PAGEBITS;
+	const auto last  = (vaddr + size - 1) >> CACHING_PAGEBITS;
 	if (why == LiveRestore::Register) {
-		// ChangeRegister rewrote these entries already: a queued redirect of them must not land after.
+		// ChangeRegister rewrote these entries already: a queued redirect of them must not land
+		// after.
 		std::scoped_lock lock(live.mutex);
-		std::erase_if(live.queued, [&](const auto& w) { return w.first >= first && w.first <= last; });
+		std::erase_if(live.queued,
+		              [&](const auto& w) { return w.first >= first && w.first <= last; });
 	} else {
 		FlushLiveRedirects(); // I-B2: a queued redirect never lands after the restore of its page
 	}
 	std::vector<uint64_t> pages;
 	{
 		std::scoped_lock lock(live.mutex);
-		for (auto it = live.pages.lower_bound(first); it != live.pages.end() && it->first <= last;) {
+		for (auto it = live.pages.lower_bound(first);
+		     it != live.pages.end() && it->first <= last;) {
 			pages.push_back(it->first);
 			live.Note(it->first, static_cast<uint8_t>(2 + static_cast<uint8_t>(why)));
-			if ((why == LiveRestore::Upload || why == LiveRestore::Written) && g_bda_live_bound.Get() != 0 &&
-			    live.bound_until.size() < (1u << 20u)) {
-				live.bound_until[it->first] = live.passes + static_cast<uint64_t>(g_bda_live_bound.Get());
+			if ((why == LiveRestore::Upload || why == LiveRestore::Written) &&
+			    g_bda_live_bound.Get() != 0 && live.bound_until.size() < (1u << 20u)) {
+				live.bound_until[it->first] =
+				    live.passes + static_cast<uint64_t>(g_bda_live_bound.Get());
 			}
 			live.settled.erase(it->first);
 			live.cp_pending.erase(it->first);
@@ -571,16 +601,19 @@ void BufferCache::RestoreLivePages(uint64_t vaddr, uint64_t size, LiveRestore wh
 			case LiveRestore::Writes: t.restore_writes += pages.size(); break;
 		}
 		if (why != LiveRestore::Register && why != LiveRestore::Unmap) {
-			// I3: CPU-dirty bytes may remain under the cache entry; uploaded first by the next full pass.
+			// I3: CPU-dirty bytes may remain under the cache entry; uploaded first by the next full
+			// pass.
 			for (const auto page: pages) {
 				live.forced.Add(page << CACHING_PAGEBITS, PAGE);
 			}
 		}
 	}
 	if (WatchRange::Enabled()) {
-		static const char* const kWhy[] = {"upload", "written", "register", "unmap", "read", "cp", "off", "writers"};
+		static const char* const kWhy[] = {"upload", "written", "register", "unmap",
+		                                   "read",   "cp",      "off",      "writers"};
 		const auto               index  = static_cast<size_t>(why);
-		const std::string        what   = std::string("live pages: restore ") + (index < std::size(kWhy) ? kWhy[index] : "?");
+		const std::string        what =
+		    std::string("live pages: restore ") + (index < std::size(kWhy) ? kWhy[index] : "?");
 		for (const auto page: pages) {
 			WatchRange::Note(what.c_str(), page << CACHING_PAGEBITS, PAGE);
 		}
@@ -595,7 +628,8 @@ void BufferCache::RestoreLivePages(uint64_t vaddr, uint64_t size, LiveRestore wh
 		const auto*       owner = m_page_table.Find(page);
 		if (owner != nullptr && *owner) {
 			const auto& buffer = m_slot_buffers[*owner];
-			entry = buffer.BufferDeviceAddress() + ((page - (buffer.CpuAddress() >> CACHING_PAGEBITS)) << CACHING_PAGEBITS);
+			entry = buffer.BufferDeviceAddress() +
+			        ((page - (buffer.CpuAddress() >> CACHING_PAGEBITS)) << CACHING_PAGEBITS);
 		}
 		out.emplace_back(page, TaggedBdaEntry(page, entry));
 	}
@@ -619,14 +653,16 @@ uint64_t BufferCache::CheckSettledLivePages() {
 	uint64_t v5 = 0;
 	for (const auto page: settled) {
 		const auto address = page << CACHING_PAGEBITS;
-		const bool gpu     = m_memory_tracker.QueryDirty(address, PAGE).gpu || HasGpuDirtyBytes(address, PAGE);
-		const bool image   = m_texture_cache.IsRegionGpuModified(address, PAGE);
+		const bool gpu =
+		    m_memory_tracker.QueryDirty(address, PAGE).gpu || HasGpuDirtyBytes(address, PAGE);
+		const bool image = m_texture_cache.IsRegionGpuModified(address, PAGE);
 		if (gpu || image) {
 			v5++;
 			static std::atomic<uint32_t> logged {0};
 			if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-				std::fprintf(stderr, "BdaLiveVerify V5: settled page 0x%" PRIx64 " is%s%s at the pre-pass\n", address,
-				             gpu ? " GPU-dirty" : "", image ? " image-written" : "");
+				std::fprintf(
+				    stderr, "BdaLiveVerify V5: settled page 0x%" PRIx64 " is%s%s at the pre-pass\n",
+				    address, gpu ? " GPU-dirty" : "", image ? " image-written" : "");
 			}
 		}
 	}
@@ -700,7 +736,9 @@ void BufferCache::LivePagesPrePass() {
 	const auto epoch = m_memory_tracker.FaultMutationEpoch();
 	{
 		const UploadBatch upload_batch(*this);
-		forced.ForEach([this](uint64_t begin, uint64_t end) { SynchronizeBuffersInRange(begin, end - begin, nullptr); });
+		forced.ForEach([this](uint64_t begin, uint64_t end) {
+			SynchronizeBuffersInRange(begin, end - begin, nullptr);
+		});
 	}
 	if (BdaLivePagesMode() != 2 || m_memory_tracker.FaultMutationEpoch() != epoch) {
 		return;
@@ -710,15 +748,18 @@ void BufferCache::LivePagesPrePass() {
 	uint64_t v4 = 0;
 	forced.ForEach([&](uint64_t begin, uint64_t end) {
 		for (auto page = begin >> CACHING_PAGEBITS; (page << CACHING_PAGEBITS) < end; ++page) {
-			const auto address = page << CACHING_PAGEBITS;
-			bool       cpu     = false;
+			const auto  address = page << CACHING_PAGEBITS;
+			bool        cpu     = false;
 			const auto* owner   = m_page_table.Find(page);
-			if (owner != nullptr && *owner && m_memory_tracker.QueryCpuDirtyRelaxed(address, PAGE, cpu) &&
-			    cpu && !m_memory_tracker.IsRegionHot(address, PAGE) && !IsBdaLivePage(address)) {
+			if (owner != nullptr && *owner &&
+			    m_memory_tracker.QueryCpuDirtyRelaxed(address, PAGE, cpu) && cpu &&
+			    !m_memory_tracker.IsRegionHot(address, PAGE) && !IsBdaLivePage(address)) {
 				v4++;
 				static std::atomic<uint32_t> logged {0};
 				if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
-					std::fprintf(stderr, "BdaLiveVerify V4: forced page 0x%" PRIx64 " still CPU-dirty after its upload\n",
+					std::fprintf(stderr,
+					             "BdaLiveVerify V4: forced page 0x%" PRIx64
+					             " still CPU-dirty after its upload\n",
 					             address);
 				}
 			}
@@ -744,7 +785,9 @@ void BufferCache::LivePagesBeforeBdaWrites() {
 	}
 	if (!forced.Empty()) {
 		const UploadBatch upload_batch(*this);
-		forced.ForEach([this](uint64_t begin, uint64_t end) { SynchronizeBuffersInRange(begin, end - begin, nullptr); });
+		forced.ForEach([this](uint64_t begin, uint64_t end) {
+			SynchronizeBuffersInRange(begin, end - begin, nullptr);
+		});
 	}
 	std::scoped_lock lock(m_bda_live->mutex);
 	m_bda_live->totals.v3 += m_bda_live->pages.size(); // must stay 0 (I-W1)
@@ -755,7 +798,8 @@ void BufferCache::DropLivePages(uint64_t vaddr, uint64_t size) {
 		return;
 	}
 	// Off the GPU thread only at teardown (the GPU stops): the entries are not rewritten then.
-	RestoreLivePages(vaddr, size, GuestGpu::IsGpuThread() ? LiveRestore::Unmap : LiveRestore::Register);
+	RestoreLivePages(vaddr, size,
+	                 GuestGpu::IsGpuThread() ? LiveRestore::Unmap : LiveRestore::Register);
 	std::scoped_lock lock(m_bda_live->mutex);
 	m_bda_live->forced.Subtract(vaddr, size);
 }
@@ -767,7 +811,8 @@ void BufferCache::LiveCpWriteHook(uint64_t vaddr, uint64_t size) {
 }
 
 void BufferCache::LivePagesBeforeCpWrite(uint64_t vaddr, uint64_t size) {
-	if (m_bda_live == nullptr || size == 0 || m_bda_live_count.load(std::memory_order_relaxed) == 0) {
+	if (m_bda_live == nullptr || size == 0 ||
+	    m_bda_live_count.load(std::memory_order_relaxed) == 0) {
 		return;
 	}
 	auto&    live = *m_bda_live;
@@ -777,10 +822,12 @@ void BufferCache::LivePagesBeforeCpWrite(uint64_t vaddr, uint64_t size) {
 		std::scoped_lock lock(live.mutex);
 		const auto       first = vaddr >> CACHING_PAGEBITS;
 		const auto       last  = (vaddr + size - 1) >> CACHING_PAGEBITS;
-		for (auto it = live.pages.lower_bound(first); it != live.pages.end() && it->first <= last; ++it) {
+		for (auto it = live.pages.lower_bound(first); it != live.pages.end() && it->first <= last;
+		     ++it) {
 			hit = true;
 			if (live.cp_written.size() < (1u << 20u)) {
-				live.cp_written.insert(it->first); // never redirected again; restored at the next pre-pass
+				live.cp_written.insert(
+				    it->first); // never redirected again; restored at the next pre-pass
 			}
 			live.cp_pending.insert(it->first);
 		}
@@ -815,8 +862,8 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 			live.read_tick = m_scheduler.CurrentTick();
 		}
 		if (!live.pass_new.empty()) {
-			const auto tick = m_scheduler.CurrentTick();
-			live.first_tick = live.first_tick != 0 ? live.first_tick : tick;
+			const auto tick    = m_scheduler.CurrentTick();
+			live.first_tick    = live.first_tick != 0 ? live.first_tick : tick;
 			live.last_tick     = tick;
 			live.last_pass_new = live.pass_new.size();
 			std::sort(live.pass_new.begin(), live.pass_new.end());
@@ -827,21 +874,25 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 				uint32_t    listed = 0;
 				for (size_t k = 0; k < live.pass_new.size();) {
 					size_t j = k + 1;
-					while (j < live.pass_new.size() && live.pass_new[j] == live.pass_new[j - 1] + 1) {
+					while (j < live.pass_new.size() &&
+					       live.pass_new[j] == live.pass_new[j - 1] + 1) {
 						++j;
 					}
 					if (listed++ < 24u) {
 						char text[64];
-						std::snprintf(text, sizeof(text), " 0x%" PRIx64 "+0x%" PRIx64, live.pass_new[k] << CACHING_PAGEBITS,
+						std::snprintf(text, sizeof(text), " 0x%" PRIx64 "+0x%" PRIx64,
+						              live.pass_new[k] << CACHING_PAGEBITS,
 						              static_cast<uint64_t>(j - k) << CACHING_PAGEBITS);
 						ranges += text;
 					}
 					k = j;
 				}
-				std::printf("BdaLiveLog: pass %" PRIu64 " tick %" PRIu64 " kind %u: +%zu redirects in %u range(s)%s%s | held %zu, "
+				std::printf("BdaLiveLog: pass %" PRIu64 " tick %" PRIu64
+				            " kind %u: +%zu redirects in %u range(s)%s%s | held %zu, "
 				            "windows %" PRIu64 " (%" PRIu64 " MiB)\n",
-				            live.passes, tick, static_cast<uint32_t>(m_bda_pass_kind), live.pass_new.size(), listed,
-				            ranges.c_str(), listed > 24u ? " ..." : "", live.pages.size(), live.windows->Windows(),
+				            live.passes, tick, static_cast<uint32_t>(m_bda_pass_kind),
+				            live.pass_new.size(), listed, ranges.c_str(),
+				            listed > 24u ? " ..." : "", live.pages.size(), live.windows->Windows(),
 				            live.windows->PinnedBytes() >> 20u);
 				std::fflush(stdout);
 			}
@@ -854,8 +905,9 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 	if (mode != 2 && mode != 3) {
 		return;
 	}
-	// V2 (I1): every redirect is still not GPU-dirty, not hot and not image-written. Split by cause;
-	// hot alone is not a stale read (a hot page is CPU-dirty: the redirect reads the guest bytes).
+	// V2 (I1): every redirect is still not GPU-dirty, not hot and not image-written. Split by
+	// cause; hot alone is not a stale read (a hot page is CPU-dirty: the redirect reads the guest
+	// bytes).
 	std::vector<std::pair<uint64_t, BdaLive::Page>> held;
 	{
 		std::scoped_lock lock(live.mutex);
@@ -879,8 +931,8 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 		v2_image += image ? 1 : 0;
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
-			// Diagnostics: the 4 KiB sub-page bits (bit k = sub-page k) now and at the redirect, the
-			// passes since the redirect, settled, and the page's last live-pages event.
+			// Diagnostics: the 4 KiB sub-page bits (bit k = sub-page k) now and at the redirect,
+			// the passes since the redirect, settled, and the page's last live-pages event.
 			uint32_t cpu_now = 0, hot_now = 0, gpu_now = 0;
 			for (uint64_t k = 0; k < SUBPAGES; ++k) {
 				const auto sub = address + k * TRACKER_PAGE_SIZE;
@@ -897,13 +949,17 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 				passes  = live.passes - info.pass;
 			}
 			std::fprintf(stderr,
-			             "BdaLiveVerify V2: redirected page 0x%" PRIx64 " is%s%s%s | sub-pages now cpu 0x%x gpu 0x%x hot 0x%x, "
-			             "cpu at redirect 0x%x, %" PRIu64 " passes since the redirect, settled %d, tags %d\n",
-			             address, gpu ? " GPU-dirty" : "", hot ? " hot" : "", image ? " image-written" : "", cpu_now,
-			             gpu_now, hot_now, info.cpu_mask, passes, settled ? 1 : 0, BdaTagAccessed(page) ? 1 : 0);
+			             "BdaLiveVerify V2: redirected page 0x%" PRIx64
+			             " is%s%s%s | sub-pages now cpu 0x%x gpu 0x%x hot 0x%x, "
+			             "cpu at redirect 0x%x, %" PRIu64
+			             " passes since the redirect, settled %d, tags %d\n",
+			             address, gpu ? " GPU-dirty" : "", hot ? " hot" : "",
+			             image ? " image-written" : "", cpu_now, gpu_now, hot_now, info.cpu_mask,
+			             passes, settled ? 1 : 0, BdaTagAccessed(page) ? 1 : 0);
 		}
 	}
-	// V1 (I2): only when no fault moved the epoch during the pass (racing guest writes are allowed).
+	// V1 (I2): only when no fault moved the epoch during the pass (racing guest writes are
+	// allowed).
 	uint64_t v1      = 0;
 	bool     checked = m_memory_tracker.FaultMutationEpoch() == fault_epoch_before;
 	if (checked) {
@@ -924,8 +980,8 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 					continue;
 				}
 				for (auto page = lo >> CACHING_PAGEBITS; (page << CACHING_PAGEBITS) < hi; ++page) {
-					const auto a  = std::max(page << CACHING_PAGEBITS, lo);
-					const auto b  = std::min((page + 1) << CACHING_PAGEBITS, hi);
+					const auto a   = std::max(page << CACHING_PAGEBITS, lo);
+					const auto b   = std::min((page + 1) << CACHING_PAGEBITS, hi);
 					bool       cpu = false;
 					if (!m_memory_tracker.QueryCpuDirtyRelaxed(a, b - a, cpu) || !cpu) {
 						continue;
@@ -934,26 +990,36 @@ void BufferCache::LivePagesAfterPass(const RangeSet& mapped_ranges, uint64_t fau
 						continue;
 					}
 					std::scoped_lock lock(live.mutex);
-					if (live.pages.contains(page) || live.forced.Intersects(page << CACHING_PAGEBITS, PAGE)) {
+					if (live.pages.contains(page) ||
+					    live.forced.Intersects(page << CACHING_PAGEBITS, PAGE)) {
 						continue;
 					}
 					v1++;
 					static std::atomic<uint32_t> logged {0};
 					if (logged.fetch_add(1, std::memory_order_relaxed) < 64) {
-						// Diagnostics: the page's last live-pages event (none / redirected / restored by
-						// cause), the pass kind, and the buffer around it.
-						static const char* const kEvents[] = {"none",     "redirected", "restored upload",
-						                                      "restored written", "restored register",
-						                                      "restored unmap", "restored read", "restored cp",
-						                                      "restored off", "restored writers"};
-						const auto h     = live.history.find(page);
-						const auto event = h != live.history.end() ? h->second : 0;
+						// Diagnostics: the page's last live-pages event (none / redirected /
+						// restored by cause), the pass kind, and the buffer around it.
+						static const char* const kEvents[] = {"none",
+						                                      "redirected",
+						                                      "restored upload",
+						                                      "restored written",
+						                                      "restored register",
+						                                      "restored unmap",
+						                                      "restored read",
+						                                      "restored cp",
+						                                      "restored off",
+						                                      "restored writers"};
+						const auto               h         = live.history.find(page);
+						const auto               event = h != live.history.end() ? h->second : 0;
 						std::fprintf(stderr,
 						             "BdaLiveVerify V1: CPU-dirty page 0x%" PRIx64
-						             " left on its cache entry after a full pass (mode %" PRId64 ", pass kind %u, last event %s, "
+						             " left on its cache entry after a full pass (mode %" PRId64
+						             ", pass kind %u, last event %s, "
 						             "buffer 0x%" PRIx64 " + 0x%" PRIx64 ")\n",
-						             page << CACHING_PAGEBITS, mode, static_cast<uint32_t>(m_bda_pass_kind),
-						             event < std::size(kEvents) ? kEvents[event] : "?", buffer.CpuAddress(), buffer.Size());
+						             page << CACHING_PAGEBITS, mode,
+						             static_cast<uint32_t>(m_bda_pass_kind),
+						             event < std::size(kEvents) ? kEvents[event] : "?",
+						             buffer.CpuAddress(), buffer.Size());
 					}
 				}
 			}
@@ -977,19 +1043,22 @@ void BufferCache::LiveDeviceLossNote() {
 	if (cache == nullptr || cache->m_bda_live == nullptr) {
 		return;
 	}
-	auto&             live = *cache->m_bda_live;
+	auto&            live = *cache->m_bda_live;
 	std::unique_lock lock(live.mutex, std::try_to_lock);
 	if (!lock.owns_lock()) {
-		std::printf("  BDA live pages: state locked by another thread at the loss (mode %" PRId64 ")\n",
+		std::printf("  BDA live pages: state locked by another thread at the loss (mode %" PRId64
+		            ")\n",
 		            cache->BdaLivePagesMode());
 		return;
 	}
-	std::printf("  BDA live pages at the loss: mode %" PRId64 ", held %zu pages, settled %zu, passes %" PRIu64
-	            ", first redirecting pass at tick %" PRIu64 ", latest at tick %" PRIu64 " (+%" PRIu64
-	            "), last read tick %" PRIu64 ", windows %" PRIu64 " (%" PRIu64 " MiB), redirects %" PRIu64 " total\n",
-	            cache->BdaLivePagesMode(), live.pages.size(), live.settled.size(), live.passes, live.first_tick,
-	            live.last_tick, live.last_pass_new, live.read_tick, live.windows->Windows(),
-	            live.windows->PinnedBytes() >> 20u, live.totals.redirects);
+	std::printf("  BDA live pages at the loss: mode %" PRId64
+	            ", held %zu pages, settled %zu, passes %" PRIu64
+	            ", first redirecting pass at tick %" PRIu64 ", latest at tick %" PRIu64
+	            " (+%" PRIu64 "), last read tick %" PRIu64 ", windows %" PRIu64 " (%" PRIu64
+	            " MiB), redirects %" PRIu64 " total\n",
+	            cache->BdaLivePagesMode(), live.pages.size(), live.settled.size(), live.passes,
+	            live.first_tick, live.last_tick, live.last_pass_new, live.read_tick,
+	            live.windows->Windows(), live.windows->PinnedBytes() >> 20u, live.totals.redirects);
 	{
 		std::string ranges;
 		uint32_t    runs = 0;
@@ -1000,14 +1069,16 @@ void BufferCache::LiveDeviceLossNote() {
 			}
 			if (runs++ < 64u) {
 				char text[64];
-				std::snprintf(text, sizeof(text), " 0x%" PRIx64 "+0x%" PRIx64, live.last_new[k] << CACHING_PAGEBITS,
+				std::snprintf(text, sizeof(text), " 0x%" PRIx64 "+0x%" PRIx64,
+				              live.last_new[k] << CACHING_PAGEBITS,
 				              static_cast<uint64_t>(j - k) << CACHING_PAGEBITS);
 				ranges += text;
 			}
 			k = j;
 		}
-		std::printf("  latest redirecting pass (tick %" PRIu64 ") added %zu pages in %u run(s):%s%s\n", live.last_tick,
-		            live.last_new.size(), runs, ranges.c_str(), runs > 64u ? " ..." : "");
+		std::printf(
+		    "  latest redirecting pass (tick %" PRIu64 ") added %zu pages in %u run(s):%s%s\n",
+		    live.last_tick, live.last_new.size(), runs, ranges.c_str(), runs > 64u ? " ..." : "");
 	}
 	uint32_t listed = 0;
 	for (auto it = live.pages.begin(); it != live.pages.end() && listed < 96u;) {
@@ -1016,8 +1087,10 @@ void BufferCache::LiveDeviceLossNote() {
 		while (next != live.pages.end() && next->first == last->first + 1) {
 			last = next++;
 		}
-		std::printf("    held 0x%" PRIx64 "+0x%" PRIx64 " -> device 0x%" PRIx64 "\n", it->first << CACHING_PAGEBITS,
-		            (last->first - it->first + 1) << CACHING_PAGEBITS, static_cast<uint64_t>(it->second.entry));
+		std::printf("    held 0x%" PRIx64 "+0x%" PRIx64 " -> device 0x%" PRIx64 "\n",
+		            it->first << CACHING_PAGEBITS,
+		            (last->first - it->first + 1) << CACHING_PAGEBITS,
+		            static_cast<uint64_t>(it->second.entry));
 		listed++;
 		it = next;
 	}
@@ -1051,41 +1124,52 @@ void BufferCache::ReportBdaLive() {
 	if (elapsed < 10.0) {
 		return;
 	}
-	const auto   t = GetBdaLiveTotals();
-	const auto&  r = live.reported;
-	const double f = std::max<uint32_t>(live.report_frames, 1);
+	const auto   t    = GetBdaLiveTotals();
+	const auto&  r    = live.reported;
+	const double f    = std::max<uint32_t>(live.report_frames, 1);
 	const auto   mode = BdaLivePagesMode();
 	const auto   per  = [f](uint64_t a, uint64_t b) { return static_cast<double>(a - b) / f; };
-	std::printf("BdaLivePages %.0fs (%s): %u frames | per frame: redirects %.1f (%.2f MB not uploaded at redirect), "
-	            "restores upload %.1f written %.1f read %.1f cp %.1f unmap %.1f register %.1f off %.1f writers %.1f, "
-	            "forced syncs %.1f, faults %.1f | held %" PRIu64 " pages (%.1f MB) | cp hits %.2f/f waits %.2f/f "
-	            "unordered %.2f/f, window rejects %.1f/f, bound rejects %.1f/f, blocked passes %.2f/f | windows %" PRIu64 " (%" PRIu64
-	            " MiB pinned, %" PRIu64 " failed) | verify V1 (global, includes what the pass leaves without this "
-	            "switch) %" PRIu64 " (checks %" PRIu64 ", skipped %" PRIu64 "), V2 %" PRIu64 ", V3 %" PRIu64
-	            ", V4 %" PRIu64 " (checks %" PRIu64 ") (totals)\n",
-	            elapsed, mode == 3 ? "check" : (mode == 2 ? "verify" : (mode == 1 ? "on" : "off")), live.report_frames,
-	            per(t.redirects, r.redirects), per(t.redirects, r.redirects) * PAGE / 1e6,
-	            per(t.restore_upload, r.restore_upload), per(t.restore_written, r.restore_written),
-	            per(t.restore_read, r.restore_read), per(t.restore_cp, r.restore_cp),
-	            per(t.restore_unmap, r.restore_unmap), per(t.restore_register, r.restore_register),
-	            per(t.restore_off, r.restore_off), per(t.restore_writes, r.restore_writes),
-	            per(t.forced_syncs, r.forced_syncs), per(t.faults, r.faults), t.held,
-	            static_cast<double>(t.held * PAGE) / 1e6, per(t.cp_hits, r.cp_hits), per(t.cp_waits, r.cp_waits),
+	std::printf("BdaLivePages %.0fs (%s): %u frames | per frame: redirects %.1f (%.2f MB not "
+	            "uploaded at redirect), "
+	            "restores upload %.1f written %.1f read %.1f cp %.1f unmap %.1f register %.1f off "
+	            "%.1f writers %.1f, "
+	            "forced syncs %.1f, faults %.1f | held %" PRIu64
+	            " pages (%.1f MB) | cp hits %.2f/f waits %.2f/f "
+	            "unordered %.2f/f, window rejects %.1f/f, bound rejects %.1f/f, blocked passes "
+	            "%.2f/f | windows %" PRIu64 " (%" PRIu64 " MiB pinned, %" PRIu64
+	            " failed) | verify V1 (global, includes what the pass leaves without this "
+	            "switch) %" PRIu64 " (checks %" PRIu64 ", skipped %" PRIu64 "), V2 %" PRIu64
+	            ", V3 %" PRIu64 ", V4 %" PRIu64 " (checks %" PRIu64 ") (totals)\n",
+	            elapsed, mode == 3 ? "check" : (mode == 2 ? "verify" : (mode == 1 ? "on" : "off")),
+	            live.report_frames, per(t.redirects, r.redirects),
+	            per(t.redirects, r.redirects) * PAGE / 1e6, per(t.restore_upload, r.restore_upload),
+	            per(t.restore_written, r.restore_written), per(t.restore_read, r.restore_read),
+	            per(t.restore_cp, r.restore_cp), per(t.restore_unmap, r.restore_unmap),
+	            per(t.restore_register, r.restore_register), per(t.restore_off, r.restore_off),
+	            per(t.restore_writes, r.restore_writes), per(t.forced_syncs, r.forced_syncs),
+	            per(t.faults, r.faults), t.held, static_cast<double>(t.held * PAGE) / 1e6,
+	            per(t.cp_hits, r.cp_hits), per(t.cp_waits, r.cp_waits),
 	            per(t.cp_unordered, r.cp_unordered), per(t.rejects_window, r.rejects_window),
-	            per(t.rejects_bound, r.rejects_bound),
-	            per(t.blocked_passes, r.blocked_passes), t.windows, t.pinned_bytes >> 20u, t.import_failures, t.v1,
-	            t.v1_checks, t.v1_skipped, t.v2, t.v3, t.v4, t.v4_checks);
+	            per(t.rejects_bound, r.rejects_bound), per(t.blocked_passes, r.blocked_passes),
+	            t.windows, t.pinned_bytes >> 20u, t.import_failures, t.v1, t.v1_checks,
+	            t.v1_skipped, t.v2, t.v3, t.v4, t.v4_checks);
 	// KYTY_BDA_LIVE_BATCH and the qualification walk (DESIGN.md 4.4). Entry copies are page-table
 	// copy commands of this switch; "in rendering" ones ended an active rendering instance.
-	std::printf("BdaLivePages batch (%s): per frame: entry copies %.2f (in rendering %.2f, %.1f entries), settled %.1f | "
-	            "qualification calls %.1f (fast %.1f), pages walked %.1f, dirty candidates %.1f, sync segments %.1f, "
-	            "%.3f ms in the walk incl. its synchronizations | pre-pass calls %.1f (with work %.1f) | V2 split gpu %" PRIu64 " image %" PRIu64 " hot %" PRIu64
-	            ", V5 %" PRIu64 " (checks %" PRIu64 "), V6 %" PRIu64 " (totals)\n",
+	std::printf("BdaLivePages batch (%s): per frame: entry copies %.2f (in rendering %.2f, %.1f "
+	            "entries), settled %.1f | "
+	            "qualification calls %.1f (fast %.1f), pages walked %.1f, dirty candidates %.1f, "
+	            "sync segments %.1f, "
+	            "%.3f ms in the walk incl. its synchronizations | pre-pass calls %.1f (with work "
+	            "%.1f) | V2 split gpu %" PRIu64 " image %" PRIu64 " hot %" PRIu64 ", V5 %" PRIu64
+	            " (checks %" PRIu64 "), V6 %" PRIu64 " (totals)\n",
 	            g_bda_live_batch.Get() != 0 ? "on" : "off", per(t.entry_copies, r.entry_copies),
-	            per(t.entry_copies_rendering, r.entry_copies_rendering), per(t.entry_pages, r.entry_pages),
-	            per(t.settled, r.settled), per(t.qual_calls, r.qual_calls), per(t.qual_fast, r.qual_fast),
-	            per(t.qual_pages, r.qual_pages), per(t.qual_dirty, r.qual_dirty), per(t.qual_segments, r.qual_segments),
-	            per(t.qual_ns, r.qual_ns) / 1e6, per(t.prepass_calls, r.prepass_calls), per(t.prepass_work, r.prepass_work), t.v2_gpu, t.v2_image, t.v2_hot, t.v5, t.v5_checks, t.v6);
+	            per(t.entry_copies_rendering, r.entry_copies_rendering),
+	            per(t.entry_pages, r.entry_pages), per(t.settled, r.settled),
+	            per(t.qual_calls, r.qual_calls), per(t.qual_fast, r.qual_fast),
+	            per(t.qual_pages, r.qual_pages), per(t.qual_dirty, r.qual_dirty),
+	            per(t.qual_segments, r.qual_segments), per(t.qual_ns, r.qual_ns) / 1e6,
+	            per(t.prepass_calls, r.prepass_calls), per(t.prepass_work, r.prepass_work),
+	            t.v2_gpu, t.v2_image, t.v2_hot, t.v5, t.v5_checks, t.v6);
 	std::fflush(stdout);
 	live.report_time   = now;
 	live.reported      = t;

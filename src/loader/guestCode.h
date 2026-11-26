@@ -13,13 +13,17 @@ namespace Loader {
 struct Program;
 namespace GuestCode {
 
-// Code as every build of a game seen has it: hex bytes, "??" for a byte a build may change (call and jump
-// displacements, RIP-relative addresses, stack frame sizes), e.g. "55 48 89 e5 48 81 ec ?? ?? ?? ??".
+// Code as every build of a game seen has it: hex bytes, "??" for a byte a build may change (call
+// and jump displacements, RIP-relative addresses, stack frame sizes), e.g. "55 48 89 e5 48 81 ec ??
+// ?? ?? ??".
 class Pattern {
 public:
 	explicit Pattern(std::string_view text) {
 		const auto digit = [](char c) {
-			return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+			return c >= '0' && c <= '9'   ? c - '0'
+			       : c >= 'a' && c <= 'f' ? c - 'a' + 10
+			       : c >= 'A' && c <= 'F' ? c - 'A' + 10
+			                              : -1;
 		};
 		for (size_t i = 0; i < text.size();) {
 			if (text[i] == ' ') {
@@ -44,7 +48,8 @@ public:
 		}
 		for (size_t i = 0; i < m_mask.size();) {
 			size_t run = 0;
-			while (i + run < m_mask.size() && m_mask[i + run] != 0) run++;
+			while (i + run < m_mask.size() && m_mask[i + run] != 0)
+				run++;
 			if (run > m_anchor_size) {
 				m_anchor      = i;
 				m_anchor_size = run;
@@ -73,7 +78,8 @@ public:
 		const auto* end   = code.data() + code.size() - (m_bytes.size() - m_anchor - m_anchor_size);
 		for (auto* at = std::search(begin, end, searcher); at != end && found.size() < limit;
 		     at       = std::search(at + 1, end, searcher)) {
-			if (Matches(at - m_anchor)) found.push_back(static_cast<size_t>(at - m_anchor - code.data()));
+			if (Matches(at - m_anchor))
+				found.push_back(static_cast<size_t>(at - m_anchor - code.data()));
 		}
 		return found;
 	}
@@ -84,11 +90,12 @@ private:
 		m_mask.clear();
 	}
 
-	std::vector<uint8_t> m_bytes, m_mask; // mask 0xff: the byte must match
+	std::vector<uint8_t> m_bytes, m_mask;                 // mask 0xff: the byte must match
 	size_t               m_anchor = 0, m_anchor_size = 0; // the longest run without "??"
 };
 
-// The addresses where the pattern starts in the program's executable segments, at most `limit` of them.
+// The addresses where the pattern starts in the program's executable segments, at most `limit` of
+// them.
 std::vector<uint64_t> Find(const Program& program, const Pattern& pattern, size_t limit);
 // The one place the pattern starts in the program's code; nothing when there are none or several.
 std::optional<uint64_t> FindUnique(const Program& program, const Pattern& pattern);

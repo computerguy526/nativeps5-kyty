@@ -56,7 +56,8 @@ RecordDiagnosticCheckpoint(const DiagnosticCheckpoint& checkpoint);
 void               AddressBindingReportCreateMessenger(vk::Instance instance);
 void               AddressBindingReportDump(uint64_t address);
 void DumpDeviceLossDiagnostics(GraphicContext& graphics, uint64_t tick = 0, bool queue_locked = false);
-// A component's own lines for the device-loss report (printed after the device fault; up to 4 notes).
+// A component's own lines for the device-loss report (printed after the device fault; up to 4
+// notes).
 void SetDeviceLossNote(void (*note)());
 // A thread about to exit on a device loss: lets a device-loss report another thread is writing
 // (the VK_EXT_device_fault vendor dump, _device_fault.nv-gpudmp) finish first. Waits up to
@@ -76,10 +77,11 @@ void WaitForDeviceLossDiagnostics(uint32_t start_ms = 500);
 // themselves always work (tests).
 [[nodiscard]] bool DeadViewScrubEnabled();
 void               NoteImageViewCreated(vk::ImageView view);
-void               NoteImageViewDestroyed(vk::ImageView view, uint64_t guest_address, vk::Format format);
+void NoteImageViewDestroyed(vk::ImageView view, uint64_t guest_address, vk::Format format);
 [[nodiscard]] bool DiagnosticViewIsLive(vk::ImageView view);
 void               ScrubDeadRenderingViews(const vk::RenderingInfo& info, const char* where);
-void ScrubDeadDescriptorViews(const vk::WriteDescriptorSet* writes, uint32_t count, const char* where);
+void               ScrubDeadDescriptorViews(const vk::WriteDescriptorSet* writes, uint32_t count,
+                                            const char* where);
 
 struct GraphicContext {
 	vk::Instance                       instance                              = nullptr;
@@ -91,10 +93,10 @@ struct GraphicContext {
 	VmaAllocator                       allocator                             = nullptr;
 	bool                               memory_budget_ext_enabled             = false;
 	// VK_EXT_external_memory_host, requested only with KYTY_INPLACE (InplaceHeap).
-	bool                               external_memory_host_enabled          = false;
-	// KYTY_FULLSCREEN_EXCLUSIVE=0|1 (Windows): the swapchain asks the driver to keep out of exclusive
-	// fullscreen (0) or allows it (1), through VK_EXT_full_screen_exclusive; -1 (unset, or the
-	// extension missing): the driver's own choice.
+	bool external_memory_host_enabled = false;
+	// KYTY_FULLSCREEN_EXCLUSIVE=0|1 (Windows): the swapchain asks the driver to keep out of
+	// exclusive fullscreen (0) or allows it (1), through VK_EXT_full_screen_exclusive; -1 (unset,
+	// or the extension missing): the driver's own choice.
 	int                                full_screen_exclusive                 = -1;
 	bool                               diagnostic_checkpoints_enabled        = false;
 	bool                               device_fault_enabled                  = false;
@@ -114,7 +116,7 @@ struct GraphicContext {
 	// fragment count). AMD allows either side to be larger; NV only colour < depth, rasterizing at
 	// the depth count. None: the switch is off or the device has neither extension.
 	enum class MixedAttachmentSamples : uint8_t { None, Amd, Nv };
-	MixedAttachmentSamples             mixed_attachment_samples              = MixedAttachmentSamples::None;
+	MixedAttachmentSamples mixed_attachment_samples = MixedAttachmentSamples::None;
 	// Whether one draw can attach colour and depth at these sample counts (0 colour: depth only).
 	[[nodiscard]] bool AcceptsMixedSamples(uint32_t color_samples,
 	                                       uint32_t depth_samples) const noexcept {
@@ -159,10 +161,10 @@ struct GraphicContext {
 	// behaviour). Without it, pipelines clamp only where the guest turns Z clipping off.
 	bool                               depth_clip_enable_enabled             = false;
 	// robustBufferAccess2 (ee034be4b): out-of-range storage accesses read zero / drop writes.
-	bool                               robust_buffer_access_enabled          = false;
+	bool robust_buffer_access_enabled = false;
 	// R8/R8G8 sRGB formats sample with linear filtering (e914ec6db): 8 and 8_8 sRGB textures.
-	bool                               r8_srgb_views                         = false;
-	bool                               r8g8_srgb_views                       = false;
+	bool                               r8_srgb_views                          = false;
+	bool                               r8g8_srgb_views                        = false;
 	bool                               conditional_rendering_enabled         = false;
 	bool                               supports_block_texel_view              = false;
 	// shaderStorageImageReadWithoutFormat (TileManager::TileFromImage).
@@ -177,12 +179,12 @@ struct GraphicContext {
 	// non-uniformly, partially bound, updated after bind. Enabled when supported unless
 	// KYTY_BINDLESS=0. The limit is the update-after-bind sampled images one set and one stage may
 	// hold; bindless_layout is created on first use (BindlessSetLayout, under its mutex).
-	bool                               bindless_enabled                      = false;
-	uint32_t                           bindless_max_sampled_images           = 0;
+	bool     bindless_enabled            = false;
+	uint32_t bindless_max_sampled_images = 0;
 	// KYTY_BINDLESS_SAMPLERS: the update-after-bind samplers one set and one stage may hold.
-	uint32_t                           bindless_max_samplers                 = 0;
-	vk::DescriptorSetLayout            bindless_layout                       = nullptr;
-	Common::Mutex                      bindless_layout_mutex;
+	uint32_t                bindless_max_samplers = 0;
+	vk::DescriptorSetLayout bindless_layout       = nullptr;
+	Common::Mutex           bindless_layout_mutex;
 	// VK_KHR_maintenance8: vkCmdCopyImage between a depth aspect and a compatible color format
 	// (D32 <-> R32, D16 <-> R16). KYTY_DIRECT_IMAGE_COPY_M8=0 leaves the extension disabled.
 	bool                               maintenance8_enabled                  = false;
@@ -202,7 +204,7 @@ struct GraphicContext {
 	// KYTY_TEXTURE_SPARSE_RESIDENCY=1: sparseBinding + sparseResidencyImage2D enabled, strict.
 	bool                               sparse_residency_image_enabled        = false;
 	bool                                      mesh_shader_enabled                   = false;
-	bool                                      task_shader_enabled                   = false; // nps5: taskShader (KosmicKrisp: none)
+	bool task_shader_enabled = false; // nps5: taskShader (KosmicKrisp: none)
 	// KYTY_RT_HW: VK_KHR_acceleration_structure + VK_KHR_ray_query enabled (NativeRayTracing).
 	bool                                      native_ray_tracing_enabled            = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
@@ -318,7 +320,8 @@ struct GraphicContext {
 	void               LogMemoryBudget() const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
-	// The planning budget, scaled down while the nps5 footprint governor is active (KYTY_FOOTPRINT_GOVERNOR).
+	// The planning budget, scaled down while the nps5 footprint governor is active
+	// (KYTY_FOOTPRINT_GOVERNOR).
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudgetUnscaled() const;
 

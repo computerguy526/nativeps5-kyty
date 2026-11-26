@@ -653,9 +653,10 @@ void Translator::IMAGE_ATOMIC(const Decoder::Instruction& inst, IR::ValueOpcode 
 	}
 }
 
-// KYTY_GDS_M0_BASE (adapted from Erlou93/KytyPS5-Yotei Translator::DsAddress): a DS instruction on GDS
-// addresses M0[31:16] (the base) + its address, as DS_APPEND/DS_CONSUME already do (GCN3 ISA 3.7 "M#
-// Memory Descriptor": for GDS M0 holds {base[15:0], size[15:0]}; RDNA2 DS_APPEND/DS_CONSUME: "M0.base
+// KYTY_GDS_M0_BASE (adapted from Erlou93/KytyPS5-Yotei Translator::DsAddress): a DS instruction on
+// GDS addresses M0[31:16] (the base) + its address, as DS_APPEND/DS_CONSUME already do (GCN3
+// ISA 3.7 "M# Memory Descriptor": for GDS M0 holds {base[15:0], size[15:0]}; RDNA2
+// DS_APPEND/DS_CONSUME: "M0.base
 // ... will have the physical GDS address"). Without the switch the base is ignored.
 IR::U32 Translator::DsAddress(const Decoder::Instruction& inst, IR::U32 address) {
 	if (!inst.gds || !GetCodegenOptions().gds_m0_base) {

@@ -2,14 +2,15 @@
 //
 // SDL's default (SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS unset = "0"): while the process has a
 // window but that window is not the key window, SDL drops button presses, stick moves away from the
-// centre and EVERY motion sensor sample (SDL_SendJoystickSensor returns before it stores the sample,
-// so SDL_GetGamepadSensorData stays frozen too, while SDL_GamepadSensorEnabled still says "on" and
-// the pad keeps sending reports). A game started from a launcher, a terminal or a script opens its
-// window WITHOUT keyboard focus on macOS until the player clicks it, and loses it whenever the player
-// looks at another window: the game then saw a pad with sensors that never delivered a sample
-// ("sensors=yes live=NO, sdl_events total=0"), and tilt / shake / steering did nothing. Measured with
-// a standalone SDL 3.4.18 probe on the DualSense: 250 raw HID reports/s, 0 sensor events until the
-// probe's window was clicked; all events with the hint on.
+// centre and EVERY motion sensor sample (SDL_SendJoystickSensor returns before it stores the
+// sample, so SDL_GetGamepadSensorData stays frozen too, while SDL_GamepadSensorEnabled still says
+// "on" and the pad keeps sending reports). A game started from a launcher, a terminal or a script
+// opens its window WITHOUT keyboard focus on macOS until the player clicks it, and loses it
+// whenever the player looks at another window: the game then saw a pad with sensors that never
+// delivered a sample
+// ("sensors=yes live=NO, sdl_events total=0"), and tilt / shake / steering did nothing. Measured
+// with a standalone SDL 3.4.18 probe on the DualSense: 250 raw HID reports/s, 0 sensor events until
+// the probe's window was clicked; all events with the hint on.
 //
 // A pad is not shared with other applications the way a keyboard is, so the library takes pad input
 // (buttons, sticks, sensors) whether or not its window has the focus. KYTY_PAD_BACKGROUND_INPUT=0
@@ -18,7 +19,6 @@
 #pragma once
 
 #include <SDL3/SDL.h>
-
 #include <cstdlib>
 
 namespace Libs::Graphics {

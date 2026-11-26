@@ -18,8 +18,7 @@ bool ShaderReadVertexMetadata(const ShaderMappedData& data, uint32_t max_user_sg
 
 	constexpr uint32_t DirectResourceCount = static_cast<uint32_t>(DirectResourceType::Last) + 1u;
 	if (user_data.direct_resource_count > DirectResourceCount) {
-		return ShaderError::Fail(error,
-		                         "direct-resource count exceeds the known resource domain");
+		return ShaderError::Fail(error, "direct-resource count exceeds the known resource domain");
 	}
 
 	std::array<uint16_t, DirectResourceCount> direct_offsets {};

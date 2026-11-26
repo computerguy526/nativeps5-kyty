@@ -1513,7 +1513,10 @@ KYTY_CP_OP_PARSER(CpOpCondExec) {
 			uint32_t dispatches = 0, indirect = 0, draws = 0, packets = 0, ibs = 0;
 			for (uint32_t i = payload_dw; i < payload_dw + exec_count;) {
 				const uint32_t header = buffer[i];
-				if ((header >> 30u) != 3u) { i++; continue; }
+				if ((header >> 30u) != 3u) {
+					i++;
+					continue;
+				}
 				const uint32_t opcode = (header >> 8u) & 0xffu;
 				packets++;
 				if (opcode == Pm4::IT_DISPATCH_DIRECT) dispatches++;
@@ -1521,16 +1524,18 @@ KYTY_CP_OP_PARSER(CpOpCondExec) {
 				if (opcode == Pm4::IT_INDIRECT_BUFFER) ibs++;
 				if (opcode == Pm4::IT_DRAW_INDEX_2 || opcode == Pm4::IT_DRAW_INDEX_AUTO ||
 				    opcode == Pm4::IT_DRAW_INDEX_OFFSET_2 || opcode == Pm4::IT_DRAW_INDIRECT ||
-				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT || opcode == Pm4::IT_DRAW_INDIRECT_MULTI ||
+				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT ||
+				    opcode == Pm4::IT_DRAW_INDIRECT_MULTI ||
 				    opcode == Pm4::IT_DRAW_INDEX_INDIRECT_MULTI) {
 					draws++;
 				}
 				i += KYTY_PM4_LEN(header);
 			}
 			std::fprintf(stderr,
-			             "[sarosn] condexec guard addr 0x%010llx %u dw: %u packets, %u dispatch, %u dispatch-indirect, %u draws, %u ib -> %s\n",
-			             static_cast<unsigned long long>(addr), exec_count, packets, dispatches, indirect, draws, ibs,
-			             exec ? "exec" : "SKIP");
+			             "[sarosn] condexec guard addr 0x%010llx %u dw: %u packets, %u dispatch, "
+			             "%u dispatch-indirect, %u draws, %u ib -> %s\n",
+			             static_cast<unsigned long long>(addr), exec_count, packets, dispatches,
+			             indirect, draws, ibs, exec ? "exec" : "SKIP");
 		}
 	}
 	if (!exec) {
@@ -1717,7 +1722,8 @@ static bool IndirectVertexBaseEnabled() {
 
 // KYTY_INDIRECT_RUNS (default on, upstream b30f2d6c9; read once; "0" emits one draw per packet as
 // before): runs of DRAW_INDIRECT / DRAW_INDEX_INDIRECT packets with identical words on consecutive
-// records are one indirect draw of several records (CpOpDrawIndirect, CommandProcessor::DrawIndirect).
+// records are one indirect draw of several records (CpOpDrawIndirect,
+// CommandProcessor::DrawIndirect).
 static bool IndirectRunsEnabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_INDIRECT_RUNS");
@@ -1808,13 +1814,14 @@ KYTY_CP_OP_PARSER(CpOpDrawIndirect) {
 	    indexed && (buffer[2] & (1u << 28u)) != 0 ? buffer[1] >> 16u : Pm4::SH_NOP};
 
 	// KYTY_INDIRECT_RUNS (upstream b30f2d6c9): following packets with the same other words (the
-	// header without a predicate bit, registers, initiator), each drawing the record right after the
-	// previous one, join this draw as records of one multi-draw (DrawIndirect's `records`). Nothing
-	// runs between them on the GPU either, the front state is the same for all of them, and the
-	// bytes were checked with the rest of the command buffer (CheckCommandBytes) before this parse.
-	constexpr uint32_t packet_dw   = 5;
-	const uint32_t     record_size = indexed ? 20u : 16u; // DrawIndexedIndirectArgs, DrawIndirectArgs
-	uint32_t           records     = 1;
+	// header without a predicate bit, registers, initiator), each drawing the record right after
+	// the previous one, join this draw as records of one multi-draw (DrawIndirect's `records`).
+	// Nothing runs between them on the GPU either, the front state is the same for all of them, and
+	// the bytes were checked with the rest of the command buffer (CheckCommandBytes) before this
+	// parse.
+	constexpr uint32_t packet_dw = 5;
+	const uint32_t record_size   = indexed ? 20u : 16u; // DrawIndexedIndirectArgs, DrawIndirectArgs
+	uint32_t       records       = 1;
 	if (IndirectRunsEnabled()) {
 		for (uint32_t at = 4; at + packet_dw < dw; at += packet_dw, records++) {
 			const auto* next = buffer + at;
@@ -1932,15 +1939,16 @@ KYTY_CP_OP_PARSER(CpOpContextState) {
 	const auto operation = static_cast<ContextStateOperation>(buffer[0]);
 	cp.ApplyContextStateOperation(operation);
 	// KYTY_CONTEXT_CLEAR_DEFAULTS=1 (default off; adapted from superkeka/KytyPS5-bc250 08d150a2 and
-	// 72d4449e): libSceAgc's context-state clear loads its default context (SET_CONTEXT_REG_INDIRECT
-	// of the register defaults), not zeros. Registers the command processor does not model are
-	// skipped. (Dead Cells depth failures went from 2% to ~0 in the fork.)
+	// 72d4449e): libSceAgc's context-state clear loads its default context
+	// (SET_CONTEXT_REG_INDIRECT of the register defaults), not zeros. Registers the command
+	// processor does not model are skipped. (Dead Cells depth failures went from 2% to ~0 in the
+	// fork.)
 	static const bool clear_defaults = [] {
 		const char* value = std::getenv("KYTY_CONTEXT_CLEAR_DEFAULTS");
 		return value != nullptr && value[0] == '1';
 	}();
-	if (clear_defaults &&
-	    (operation == ContextStateOperation::Clear || operation == ContextStateOperation::PushClear)) {
+	if (clear_defaults && (operation == ContextStateOperation::Clear ||
+	                       operation == ContextStateOperation::PushClear)) {
 		for (const auto& [offset, value]: Gen5::AgcContextClearDefaults()) {
 			if (offset < Pm4::CX_NUM && g_hw_ctx_indirect_func[offset] != nullptr) {
 				g_hw_ctx_indirect_func[offset](cp, offset, value);
@@ -2237,7 +2245,8 @@ KYTY_CP_OP_PARSER(CpOpIndirectCxRegs) {
 		EXIT("indirect CX registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
 	indirect_buffer = ReadIndirectRegisterPairs(cp, indirect_buffer, indirect_num_dw);
-	if (IndirectRegisterListIsStale(indirect_buffer, indirect_num_dw, Pm4::CX_NUM, Pm4::CX_NOP, "CX")) {
+	if (IndirectRegisterListIsStale(indirect_buffer, indirect_num_dw, Pm4::CX_NUM, Pm4::CX_NOP,
+	                                "CX")) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {
@@ -2322,7 +2331,8 @@ KYTY_CP_OP_PARSER(CpOpIndirectShRegs) {
 	}
 	const auto indirect_address = reinterpret_cast<uint64_t>(indirect_buffer);
 	indirect_buffer = ReadIndirectRegisterPairs(cp, indirect_buffer, indirect_num_dw);
-	if (IndirectRegisterListIsStale(indirect_buffer, indirect_num_dw, Pm4::SH_NUM, Pm4::SH_NOP, "SH")) {
+	if (IndirectRegisterListIsStale(indirect_buffer, indirect_num_dw, Pm4::SH_NUM, Pm4::SH_NOP,
+	                                "SH")) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 
@@ -2407,7 +2417,8 @@ KYTY_CP_OP_PARSER(CpOpIndirectUcRegs) {
 		EXIT("indirect UC registers have null address, num_regs = %" PRIu32 "\n", indirect_num_dw);
 	}
 	indirect_buffer = ReadIndirectRegisterPairs(cp, indirect_buffer, indirect_num_dw);
-	if (IndirectRegisterListIsStale(indirect_buffer, indirect_num_dw, Pm4::UC_NUM, Pm4::UC_NOP, "UC")) {
+	if (IndirectRegisterListIsStale(indirect_buffer, indirect_num_dw, Pm4::UC_NUM, Pm4::UC_NOP,
+	                                "UC")) {
 		return KYTY_PM4_LEN(cmd_id) - 1u;
 	}
 	for (uint32_t i = 0; i < indirect_num_dw; i++, indirect_buffer += 2) {

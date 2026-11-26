@@ -93,17 +93,17 @@ void EncodeSpecialization(const ResourceSpecialization& value, std::vector<uint8
                                         ResourceSpecialization& value);
 // A specialization as int21 (744705ee1) journals stored it: image records end after `fmask`.
 [[nodiscard]] bool DecodeSpecializationInt21(std::span<const uint8_t> bytes,
-                                             ResourceSpecialization& value);
+                                             ResourceSpecialization&  value);
 
 // A specialization as the v1.3.x release builds stored it: the int21 image record plus a U32
 // `indirect_group` before `cube`. This build has no indirect image groups, so a record with a group
 // set is refused (it names a resource this build cannot bind); every other record reads as int21.
 [[nodiscard]] bool DecodeSpecializationV13(std::span<const uint8_t> bytes,
-                                           ResourceSpecialization& value);
+                                           ResourceSpecialization&  value);
 
-// Replay and offline tools: DecodeSpecialization, and when that fails the int21 layout and the v1.3.x
-// layout that older program caches, lists and journals hold. `legacy` tells which layout matched; `value` is left alone on failure.
-// The runtime cache keeps the strict decoders.
+// Replay and offline tools: DecodeSpecialization, and when that fails the int21 layout and the
+// v1.3.x layout that older program caches, lists and journals hold. `legacy` tells which layout
+// matched; `value` is left alone on failure. The runtime cache keeps the strict decoders.
 [[nodiscard]] bool DecodeSpecializationCompat(std::span<const uint8_t> bytes,
                                               ResourceSpecialization&  value,
                                               bool*                    legacy = nullptr);

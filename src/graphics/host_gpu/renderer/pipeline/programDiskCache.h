@@ -39,12 +39,13 @@ namespace Libs::Graphics {
 //   it with this run's records (so a build or switch change costs one cold run).
 //
 // File: header (magic, format, identity, checksum), then records (magic, kind, size, XXH3-64 of
-// the payload, payload). Packed records (KYTY_PROGRAM_CACHE_COMPRESS) keep their lookup keys plain and the
-// rest as one checksummed zstd frame: a packed permutation's info and SPIR-V are expanded on every
-// hit into a buffer the returned record owns (nothing stays expanded in the cache); a packed
-// source's plan is expanded on its first hit and kept (plans are referenced for the run). The
-// size cap counts stored bytes, so about four times as many programs fit. Loading rejects the whole file on any header mismatch and keeps records
-// up to the first damaged one (bad magic, size or checksum: a truncated or corrupt tail).
+// the payload, payload). Packed records (KYTY_PROGRAM_CACHE_COMPRESS) keep their lookup keys plain
+// and the rest as one checksummed zstd frame: a packed permutation's info and SPIR-V are expanded
+// on every hit into a buffer the returned record owns (nothing stays expanded in the cache); a
+// packed source's plan is expanded on its first hit and kept (plans are referenced for the run).
+// The size cap counts stored bytes, so about four times as many programs fit. Loading rejects the
+// whole file on any header mismatch and keeps records up to the first damaged one (bad magic, size
+// or checksum: a truncated or corrupt tail).
 //
 // Threads: the file is read and indexed on a loader thread started by the constructor; lookups
 // wait for it. Records are immutable once added. Saves (whole file to "<file>.tmp", flushed, then
@@ -66,10 +67,10 @@ public:
 		// dropped (oldest first in file order) to make room for new ones, and saves write the
 		// unused loaded records first, then the used ones, then this run's: the file order is the
 		// order of last use across runs, so the oldest-unused records go first.
-		bool                  evict_unused = false;
+		bool evict_unused = false;
 		// KYTY_PROGRAM_CACHE_COMPRESS: zstd level for permutations added by this run (0: stored
 		// plain). Loading reads plain and packed records either way.
-		int                   compress_level = 0;
+		int compress_level = 0;
 		// Coalescing (see Due()), like the driver pipeline cache saves: after a burst (at least
 		// min_new new records, none for settle_ns, a third of an interval since the last save),
 		// after a trickle (none for settle_ns, an interval since the last save), and after three
@@ -91,7 +92,8 @@ public:
 		uint32_t                  wave_size       = 0;
 		uint32_t                  user_data_base  = 0;
 		bool                      plain_mip_stats_variant = false;
-		// sarosperf: SAROS hand-shader / Nanite-raw switch state (sarosProgramCache.h); 0 = absent from the key bytes.
+		// sarosperf: SAROS hand-shader / Nanite-raw switch state (sarosProgramCache.h); 0 = absent
+		// from the key bytes.
 		uint64_t                  variant = 0;
 		std::span<const uint32_t> code;
 		std::span<const uint32_t> back_code;
@@ -137,16 +139,16 @@ public:
 		uint64_t save_ns          = 0;
 		uint64_t save_failures    = 0;
 		bool     over_capacity    = false;
-		uint64_t evicted          = 0; // loaded records dropped for room (evict_unused)
-		uint64_t evicted_bytes    = 0;
-		uint64_t restored         = 0; // evicted records used again this run and kept
-		uint64_t packed_added     = 0; // permutations this run stored packed
-		uint64_t packed_raw_bytes = 0; // their payload bytes before / after packing
-		uint64_t packed_bytes     = 0;
-		uint64_t pack_ns          = 0;
-		uint64_t expanded         = 0; // packed records expanded by a hit
-		uint64_t expanded_bytes   = 0;
-		uint64_t expand_ns        = 0;
+		uint64_t evicted             = 0; // loaded records dropped for room (evict_unused)
+		uint64_t evicted_bytes       = 0;
+		uint64_t restored            = 0; // evicted records used again this run and kept
+		uint64_t packed_added        = 0; // permutations this run stored packed
+		uint64_t packed_raw_bytes    = 0; // their payload bytes before / after packing
+		uint64_t packed_bytes        = 0;
+		uint64_t pack_ns             = 0;
+		uint64_t expanded            = 0; // packed records expanded by a hit
+		uint64_t expanded_bytes      = 0;
+		uint64_t expand_ns           = 0;
 	};
 
 	explicit ProgramDiskCache(Settings settings);
@@ -159,7 +161,8 @@ public:
 	// permutation's: while its record's `body` lives).
 	// note_use=false (a precompile replay of the journal): the hit does not count as a use for
 	// evict_unused, so the journal alone does not pin every record.
-	[[nodiscard]] std::optional<SourceRecord> FindSource(const SourceKey& key, bool note_use = true);
+	[[nodiscard]] std::optional<SourceRecord> FindSource(const SourceKey& key,
+	                                                     bool             note_use = true);
 	[[nodiscard]] std::optional<PermutationRecord>
 	FindPermutation(const Digest& source, uint32_t push_data_cursor,
 	                std::span<const uint8_t> specialization, bool note_use = true);
@@ -216,8 +219,8 @@ private:
 		bool                     expanded = true;
 		bool                     invalid = false;
 		// evict_unused: returned by a lookup this run; left out of saves.
-		bool                     used    = false;
-		bool                     evicted = false;
+		bool used    = false;
+		bool evicted = false;
 	};
 
 	void Load();
@@ -227,14 +230,14 @@ private:
 	static bool ParseBody(std::span<const uint8_t> body, Record& record);
 	// Decompresses a packed record's frame (no lock needed: the stored bytes are immutable).
 	static std::shared_ptr<std::vector<uint8_t>> Unpack(std::span<const uint8_t> packed,
-	                                                    uint32_t raw_size);
+	                                                    uint32_t                 raw_size);
 	// Packs `body` at m_settings.compress_level; empty when packing fails or does not pay.
 	std::vector<uint8_t> Pack(std::span<const uint8_t> body) const;
 	// Takes and returns `lock` (on m_mutex): expands the packed source `id`'s plan, unlocked while
 	// decompressing. False when the frame is damaged (the record is then invalidated).
 	bool ExpandSource(uint32_t id, std::unique_lock<std::mutex>& lock);
 	// Requires m_mutex.
-	void InvalidateLocked(uint32_t id);
+	void                      InvalidateLocked(uint32_t id);
 	[[nodiscard]] static bool IsSourceKind(uint32_t kind) {
 		return kind == RecordSource || kind == RecordSourcePacked;
 	}
@@ -243,7 +246,8 @@ private:
 	bool IndexRecord(uint32_t id);
 	// Requires m_mutex. A lookup returned the record (evict_unused bookkeeping).
 	void NoteUsed(uint32_t id);
-	// Requires m_mutex. Evicts unused loaded records until `bytes` more fit; false when they do not.
+	// Requires m_mutex. Evicts unused loaded records until `bytes` more fit; false when they do
+	// not.
 	bool MakeRoom(uint64_t bytes);
 	void AppendRecord(uint32_t kind, const std::vector<uint8_t>& payload, const Digest& digest);
 	bool Save(bool final_save);
@@ -259,8 +263,8 @@ private:
 	std::deque<std::vector<uint8_t>> m_added; // records added by this run (stable storage)
 	std::deque<std::vector<uint8_t>> m_expanded; // plans of expanded packed sources
 	std::vector<Record>     m_records;
-	uint32_t                m_loaded_count = 0; // records [0, m_loaded_count) came from the file
-	bool                    m_order_dirty  = false; // evict_unused: use order changed since the last save
+	uint32_t m_loaded_count = 0;     // records [0, m_loaded_count) came from the file
+	bool     m_order_dirty  = false; // evict_unused: use order changed since the last save
 	std::unordered_map<Digest, std::vector<uint32_t>, DigestHash> m_sources;
 	std::unordered_map<Digest, std::vector<uint32_t>, DigestHash> m_permutations;
 	std::unordered_set<Digest, DigestHash>                        m_ambiguous;

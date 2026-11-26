@@ -27,12 +27,13 @@ namespace Kyty::CpuCheck {
 
 namespace {
 
-constexpr uint64_t XcrSse       = 1u << 1;
-constexpr uint64_t XcrYmm       = 1u << 2;
-constexpr uint64_t XcrAvx512    = (1u << 5) | (1u << 6) | (1u << 7); // opmask, ZMM 0-15 upper, ZMM 16-31
-constexpr uint32_t Ecx1OsXsave  = 1u << 27;
-constexpr uint32_t Ecx1Avx      = 1u << 28;
-constexpr uint32_t Ebx7Avx512f  = 1u << 16;
+constexpr uint64_t XcrSse = 1u << 1;
+constexpr uint64_t XcrYmm = 1u << 2;
+constexpr uint64_t XcrAvx512 =
+    (1u << 5) | (1u << 6) | (1u << 7); // opmask, ZMM 0-15 upper, ZMM 16-31
+constexpr uint32_t Ecx1OsXsave = 1u << 27;
+constexpr uint32_t Ecx1Avx     = 1u << 28;
+constexpr uint32_t Ebx7Avx512f = 1u << 16;
 
 struct Bit {
 	Feature  feature;
@@ -41,20 +42,22 @@ struct Bit {
 
 // CPUID.1:ECX
 constexpr Bit Leaf1[] = {
-    {Sse3, 1u << 0},   {Ssse3, 1u << 9},   {Fma, 1u << 12},    {Cx16, 1u << 13}, {Sse41, 1u << 19},
+    {Sse3, 1u << 0},   {Ssse3, 1u << 9},  {Fma, 1u << 12},    {Cx16, 1u << 13}, {Sse41, 1u << 19},
     {Sse42, 1u << 20}, {Movbe, 1u << 22}, {Popcnt, 1u << 23}, {Avx, Ecx1Avx},   {F16c, 1u << 29},
 };
 // CPUID.(7,0):EBX
 constexpr Bit Leaf7[] = {
-    {Bmi1, 1u << 3},      {Avx2, 1u << 5},       {Bmi2, 1u << 8},       {Avx512f, Ebx7Avx512f},
+    {Bmi1, 1u << 3},      {Avx2, 1u << 5},      {Bmi2, 1u << 8},      {Avx512f, Ebx7Avx512f},
     {Avx512dq, 1u << 17}, {Avx512cd, 1u << 28}, {Avx512bw, 1u << 30}, {Avx512vl, 1u << 31},
 };
 // CPUID.80000001h:ECX
 constexpr Bit Extended1[] = {{LahfSahf, 1u << 0}, {Lzcnt, 1u << 5}};
 
 constexpr uint32_t Level2 = Sse3 | Ssse3 | Sse41 | Sse42 | Popcnt | Cx16 | LahfSahf;
-constexpr uint32_t Level3 = Level2 | Avx | Avx2 | Bmi1 | Bmi2 | Fma | F16c | Lzcnt | Movbe | OsAvxState;
-constexpr uint32_t Level4 = Level3 | Avx512f | Avx512bw | Avx512cd | Avx512dq | Avx512vl | OsAvx512State;
+constexpr uint32_t Level3 =
+    Level2 | Avx | Avx2 | Bmi1 | Bmi2 | Fma | F16c | Lzcnt | Movbe | OsAvxState;
+constexpr uint32_t Level4 =
+    Level3 | Avx512f | Avx512bw | Avx512cd | Avx512dq | Avx512vl | OsAvx512State;
 
 // Order of the names in messages.
 constexpr struct {
@@ -173,7 +176,8 @@ size_t Message(int level, uint32_t missing, bool test, wchar_t* out, size_t capa
 	if (level >= 4) {
 		writer.Add(L"This build needs a CPU with AVX-512 (x86-64-v4).");
 	} else if (level == 3) {
-		writer.Add(L"This build needs a CPU with AVX2, BMI2 and FMA (Intel Core 4th generation / AMD Ryzen or "
+		writer.Add(L"This build needs a CPU with AVX2, BMI2 and FMA (Intel Core 4th generation / "
+		           L"AMD Ryzen or "
 		           L"newer; x86-64-v3).");
 	} else {
 		writer.Add(L"This build needs a CPU with SSE4.2 and POPCNT (x86-64-v2).");
@@ -241,8 +245,8 @@ CpuIdValues ReadCpu() {
 namespace {
 
 bool TestFailure() {
-	wchar_t value[16] = {};
-	const DWORD n     = GetEnvironmentVariableW(L"KYTY_TEST_CPU_CHECK", value, 16);
+	wchar_t     value[16] = {};
+	const DWORD n         = GetEnvironmentVariableW(L"KYTY_TEST_CPU_CHECK", value, 16);
 	return n == 4 && value[0] == L'f' && value[1] == L'a' && value[2] == L'i' && value[3] == L'l';
 }
 
@@ -255,18 +259,20 @@ int __cdecl StartupCheck() {
 	if (missing == 0 && !test) {
 		return 0;
 	}
-	wchar_t text[1024];
-	const size_t length = Message(KYTY_CPU_CHECK_LEVEL, missing, test, text, sizeof(text) / sizeof(text[0]));
+	wchar_t      text[1024];
+	const size_t length =
+	    Message(KYTY_CPU_CHECK_LEVEL, missing, test, text, sizeof(text) / sizeof(text[0]));
 
 	// The text goes to standard error when there is one. A message box as well when nobody would
 	// read that: no standard error (the launcher), or a console of the program's own, which closes
-	// with it (a double-clicked kyty_emulator.exe). Redirected output (a pipe or a file: a script, or
-	// the launcher's precompile window) gets the text alone.
+	// with it (a double-clicked kyty_emulator.exe). Redirected output (a pipe or a file: a script,
+	// or the launcher's precompile window) gets the text alone.
 	bool         shown   = false;
 	bool         console = false;
 	const HANDLE error   = GetStdHandle(STD_ERROR_HANDLE);
 	DWORD        list[2];
-	const DWORD  sharing = GetConsoleProcessList(list, 2); // processes on this console, 0 without one
+	const DWORD  sharing =
+	    GetConsoleProcessList(list, 2); // processes on this console, 0 without one
 	if (error != nullptr && error != INVALID_HANDLE_VALUE) {
 		DWORD written = 0;
 		DWORD mode    = 0;
@@ -277,7 +283,7 @@ int __cdecl StartupCheck() {
 			        WriteConsoleW(error, L"\n", 1, &written, nullptr);
 		} else {
 			// A file or a pipe: the text is ASCII.
-			char narrow[1024];
+			char  narrow[1024];
 			DWORD n = 0;
 			for (; n < length && n + 1 < sizeof(narrow); n++) {
 				narrow[n] = text[n] < 128 ? static_cast<char>(text[n]) : '?';
@@ -287,7 +293,8 @@ int __cdecl StartupCheck() {
 		}
 	}
 	if (!shown || (console && sharing <= 1)) {
-		MessageBoxW(nullptr, text, L"Kyty: unsupported CPU", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+		MessageBoxW(nullptr, text, L"Kyty: unsupported CPU",
+		            MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
 	}
 	ExitProcess(3);
 }
@@ -297,7 +304,8 @@ int __cdecl StartupCheck() {
 // .CRT$XIA..XIZ: the C initializers, run by the CRT before the C++ initializers (.CRT$XC*). The
 // CRT's own pre-C initialization is in .CRT$XIAA, before this.
 #pragma section(".CRT$XIB", long, read)
-extern "C" __declspec(allocate(".CRT$XIB")) int(__cdecl* kyty_cpu_check_startup)(void) = StartupCheck;
+extern "C"
+    __declspec(allocate(".CRT$XIB")) int(__cdecl* kyty_cpu_check_startup)(void) = StartupCheck;
 #pragma comment(linker, "/include:kyty_cpu_check_startup")
 
 #endif

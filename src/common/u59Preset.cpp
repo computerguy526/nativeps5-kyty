@@ -23,7 +23,8 @@ bool Parse(std::string_view text, std::vector<Entry>& entries, std::string& erro
 		                                 /*ignore_comments=*/true, /*ignore_trailing_commas=*/true);
 	} catch (const nlohmann::json::parse_error& e) {
 		std::string_view what = e.what();
-		if (const auto at = what.find("] "); what.starts_with("[json.exception") && at != what.npos) {
+		if (const auto at = what.find("] ");
+		    what.starts_with("[json.exception") && at != what.npos) {
 			what.remove_prefix(at + 2);
 		}
 		error = fmt::format("not valid JSON ({}); check for a missing comma or quote", what);
@@ -87,10 +88,10 @@ std::string TitleFileName(std::string_view title_id) {
 }
 
 LoadResult LoadTitle(const std::vector<std::filesystem::path>& dirs, std::string_view title_id) {
-	const bool valid = title_id.size() == 9 &&
-	                   std::all_of(title_id.begin(), title_id.end(), [](char ch) {
-		                   return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
-	                   });
+	const bool valid =
+	    title_id.size() == 9 && std::all_of(title_id.begin(), title_id.end(), [](char ch) {
+		    return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+	    });
 	if (!valid) {
 		return {};
 	}

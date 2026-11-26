@@ -62,13 +62,13 @@ struct CallTableStep {
 };
 
 struct CallTable {
-	uint32_t                   call_pc      = 0;
-	uint32_t                   user_sgpr    = 0;
-	uint32_t                   return_sgpr  = 0;
-	uint32_t                   record_shift = 0;
-	uint32_t                   target_word  = 0;
+	uint32_t                   call_pc       = 0;
+	uint32_t                   user_sgpr     = 0;
+	uint32_t                   return_sgpr   = 0;
+	uint32_t                   record_shift  = 0;
+	uint32_t                   target_word   = 0;
 	uint32_t                   record_offset = 0; // the record load's immediate byte offset
-	uint32_t                   table_index  = 0;
+	uint32_t                   table_index   = 0;
 	std::vector<CallTableStep> steps;
 };
 
@@ -81,7 +81,7 @@ struct ShaderCall {
 	uint32_t                 user_sgpr  = UINT32_MAX;
 	std::optional<CallTable> table;
 	// KYTY_RAY_HIT_CALLS_RETURN: an untraced call of a ray-tracing program that returns at once.
-	bool                     null_callee = false;
+	bool null_callee = false;
 
 	[[nodiscard]] bool Traced() const {
 		return user_sgpr != UINT32_MAX || table.has_value() || null_callee;
@@ -96,21 +96,22 @@ struct ShaderCallAnalysis {
 // The calls of a program and the origin of their targets (the traces the S_SWAPPC_B64 skip
 // diagnostics log), from the code and the user-data count alone.
 [[nodiscard]] ShaderCallAnalysis AnalyzeShaderCalls(std::span<const uint32_t> code,
-                                                    const CompileOptions& options);
+                                                    const CompileOptions&     options);
 
 struct TranslateResult {
 	IR::Program program;
 	std::string decoded_dump;
 	std::string cfg_dump;
 	bool        skip_dispatch = false;
-	// A skipped program's first unresolved instruction (pc) and why (diagnostics; UINT32_MAX: none).
+	// A skipped program's first unresolved instruction (pc) and why (diagnostics; UINT32_MAX:
+	// none).
 	uint32_t    skip_pc = UINT32_MAX;
 	std::string skip_reason;
 	// Only for a program skipped because it calls through S_SWAPPC_B64 (KYTY_SRT_VARIANT_READS).
 	std::vector<CallTarget> call_targets;
 	std::vector<CallTable>  call_tables;
-	// A call-split planning translation (CallSplit::FlagLiveness or FlagProbe): what it found. Such a
-	// translation is skipped (never compiled).
+	// A call-split planning translation (CallSplit::FlagLiveness or FlagProbe): what it found. Such
+	// a translation is skipped (never compiled).
 	std::shared_ptr<const CallSplit::Report> call_split;
 };
 

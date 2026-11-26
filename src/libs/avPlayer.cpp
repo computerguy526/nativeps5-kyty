@@ -10,9 +10,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cinttypes>
 #include <cctype>
 #include <cerrno>
+#include <cinttypes>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -408,13 +408,13 @@ static const AVCodec* find_decoder(AVCodecID codec_id) {
 	return decoder;
 }
 
-// KYTY_AVPLAYER_THREADS=auto|<n> (default 1 when unset; auto in the Astro Bot title presets): FFmpeg frame and slice threads per video decoder.
-// One thread decoded ASTRO's PLAYROOM's 3840x2160 HEVC intro at 45-49 frames/s, behind its 59.94 fps
-// and the audio. 0 or 1: one thread, as before. auto: half of the processors the emulator's threads
-// may use outside the cores KYTY_CPU_RESERVE keeps for the CP and the recorder, from 2 to 8; every
-// FFmpeg thread keeps its own decoding state and frame threads add a frame of start-up latency each.
-// <n> is capped at 16. FFmpeg's threads take the process default CPU sets, which keep them off the
-// reserved cores.
+// KYTY_AVPLAYER_THREADS=auto|<n> (default 1 when unset; auto in the Astro Bot title presets):
+// FFmpeg frame and slice threads per video decoder. One thread decoded ASTRO's PLAYROOM's 3840x2160
+// HEVC intro at 45-49 frames/s, behind its 59.94 fps and the audio. 0 or 1: one thread, as before.
+// auto: half of the processors the emulator's threads may use outside the cores KYTY_CPU_RESERVE
+// keeps for the CP and the recorder, from 2 to 8; every FFmpeg thread keeps its own decoding state
+// and frame threads add a frame of start-up latency each. <n> is capped at 16. FFmpeg's threads
+// take the process default CPU sets, which keep them off the reserved cores.
 static uint32_t AutoVideoDecoderThreads(uint32_t usable_processors) {
 	return std::clamp(usable_processors / 2, 2u, 8u);
 }
@@ -444,19 +444,21 @@ static uint32_t VideoDecoderThreads() {
 	static const uint32_t threads = [] {
 		const auto usable = UsableProcessors();
 		// Unset: one thread, as before int22 (per-title presets set auto; Astro Bot tested it).
-		const auto* env   = std::getenv("KYTY_AVPLAYER_THREADS");
-		const auto n      = ParseVideoDecoderThreads(env != nullptr ? env : "1", usable);
-		::printf("AvPlayer: %u video decoder thread(s) (KYTY_AVPLAYER_THREADS, %u usable processors)\n",
-		         n, usable);
+		const auto* env = std::getenv("KYTY_AVPLAYER_THREADS");
+		const auto  n   = ParseVideoDecoderThreads(env != nullptr ? env : "1", usable);
+		::printf(
+		    "AvPlayer: %u video decoder thread(s) (KYTY_AVPLAYER_THREADS, %u usable processors)\n",
+		    n, usable);
 		return n;
 	}();
 	return threads;
 }
-// KYTY_AVPLAYER_DROP_LATE=0|1|<ms> (unset: 0; 1 = 20 ms in the Astro Bot title presets): Video() skips a due frame when the frame
-// after it is already this late, so a slow decoder cannot let the picture drift behind the audio.
-// The tolerance keeps a decoder that does keep up from skipping on timing jitter: with a 60 Hz game
-// polling a 60 fps video, frame times sit on the poll boundary, and skipping at 0 ms alternated
-// skipped and repeated frames (about 4% of them). 0 shows every decoded frame.
+// KYTY_AVPLAYER_DROP_LATE=0|1|<ms> (unset: 0; 1 = 20 ms in the Astro Bot title presets): Video()
+// skips a due frame when the frame after it is already this late, so a slow decoder cannot let the
+// picture drift behind the audio. The tolerance keeps a decoder that does keep up from skipping on
+// timing jitter: with a 60 Hz game polling a 60 fps video, frame times sit on the poll boundary,
+// and skipping at 0 ms alternated skipped and repeated frames (about 4% of them). 0 shows every
+// decoded frame.
 static uint64_t ParseLateDropMs(const char* text) {
 	if (text == nullptr || text[0] == '\0' || std::strcmp(text, "1") == 0) {
 		return 20;
@@ -488,15 +490,15 @@ static bool VideoStatsPeriodic() {
 // because a later frame was already due, and the decoder thread's time in FFmpeg, in the NV12 copy
 // and waiting for a free output buffer (the game holding them: the decoder is ahead).
 struct VideoStats {
-	std::atomic<uint64_t> decoded {0};
-	std::atomic<uint64_t> shown {0};
-	std::atomic<uint64_t> dropped {0};
-	std::atomic<uint64_t> decode_ns {0};
-	std::atomic<uint64_t> prepare_ns {0};
-	std::atomic<uint64_t> wait_ns {0};
+	std::atomic<uint64_t>                 decoded {0};
+	std::atomic<uint64_t>                 shown {0};
+	std::atomic<uint64_t>                 dropped {0};
+	std::atomic<uint64_t>                 decode_ns {0};
+	std::atomic<uint64_t>                 prepare_ns {0};
+	std::atomic<uint64_t>                 wait_ns {0};
 	std::chrono::steady_clock::time_point start {};
 	std::chrono::steady_clock::time_point last_report {};
-	void Reset() {
+	void                                  Reset() {
 		decoded = shown = dropped = decode_ns = prepare_ns = wait_ns = 0;
 		start = last_report = std::chrono::steady_clock::now();
 	}
@@ -512,15 +514,15 @@ struct VideoStats {
 		         "ms/frame, buffer wait %.2f ms/frame\n",
 		         when, codec != nullptr && codec->codec != nullptr ? codec->codec->name : "?",
 		         codec != nullptr ? codec->width : 0, codec != nullptr ? codec->height : 0,
-		         codec != nullptr ? codec->thread_count : 0, n, shown.load(), dropped.load(), elapsed,
-		         elapsed > 0 ? static_cast<double>(n) / elapsed : 0.0, per(decode_ns), per(prepare_ns),
-		         per(wait_ns));
+		         codec != nullptr ? codec->thread_count : 0, n, shown.load(), dropped.load(),
+		         elapsed, elapsed > 0 ? static_cast<double>(n) / elapsed : 0.0, per(decode_ns),
+		         per(prepare_ns), per(wait_ns));
 	}
 };
 static uint64_t ElapsedNs(std::chrono::steady_clock::time_point since) {
-	return static_cast<uint64_t>(
-	    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - since)
-	        .count());
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+	                                 std::chrono::steady_clock::now() - since)
+	                                 .count());
 }
 
 struct PacketDeleter {
@@ -1145,9 +1147,9 @@ public:
 			return false;
 		}
 		// When the following frame is already late by the tolerance too (KYTY_AVPLAYER_DROP_LATE),
-		// skip to it and give the skipped frame's buffer back to the decoder, so the picture keeps up
-		// with the playback clock instead of drifting behind the audio. Never for a seek frame or
-		// game-side sync.
+		// skip to it and give the skipped frame's buffer back to the decoder, so the picture keeps
+		// up with the playback clock instead of drifting behind the audio. Never for a seek frame
+		// or game-side sync.
 		if (const auto tolerance = LateDropMs();
 		    tolerance != UINT64_MAX && !deliver_seek_frame && sync_mode == 0) {
 			while (auto next = video_frames.TryPopIf([&](const ReadyFrame& candidate) {
@@ -1164,9 +1166,9 @@ public:
 		}
 		video_stats.shown.fetch_add(1, std::memory_order_relaxed);
 		// The previously shown frame's buffer goes back to the decoder one Video() call later: the
-		// game's GPU work may still sample it, and a decoder that runs ahead overwrote it while that
-		// was pending (torn chroma in ASTRO's PLAYROOM's intro). With only two buffers holding one
-		// would leave the decoder none, so it goes back at once as before.
+		// game's GPU work may still sample it, and a decoder that runs ahead overwrote it while
+		// that was pending (torn chroma in ASTRO's PLAYROOM's intro). With only two buffers holding
+		// one would leave the decoder none, so it goes back at once as before.
 		if (previous_video) {
 			video_buffers.Push(std::move(previous_video));
 		}
@@ -1640,8 +1642,8 @@ private:
 			if (stats != nullptr) {
 				stats->prepare_ns.fetch_add(ElapsedNs(since), std::memory_order_relaxed);
 				stats->decoded.fetch_add(1, std::memory_order_relaxed);
-				if (VideoStatsPeriodic() &&
-				    std::chrono::steady_clock::now() - stats->last_report >= std::chrono::seconds(5)) {
+				if (VideoStatsPeriodic() && std::chrono::steady_clock::now() - stats->last_report >=
+				                                std::chrono::seconds(5)) {
 					stats->last_report = std::chrono::steady_clock::now();
 					stats->Print("stats", codec);
 				}

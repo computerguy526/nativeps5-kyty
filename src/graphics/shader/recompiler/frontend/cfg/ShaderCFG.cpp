@@ -717,17 +717,17 @@ void PruneUnreachableBlocks(Graph& graph) {
 	RebuildPredecessors(graph);
 }
 
-// Dominator sets through immediate dominators (Cooper, Harvey and Kennedy, "A Simple, Fast Dominance
-// Algorithm"): on large programs (an S_SWAPPC_B64 expansion has thousands of blocks) the iterative
-// set intersection below costs time and memory quadratic in the block count. `edges(block)` lists
-// the edges into a block in the direction of the analysis (predecessors for dominators, successors
-// for post-dominators), `roots` the blocks the analysis starts from. The sets equal the iterative
-// fixed point for every block a root reaches; false (nothing written) when some block is not
-// reached, so the caller keeps the iterative algorithm for those graphs.
+// Dominator sets through immediate dominators (Cooper, Harvey and Kennedy, "A Simple, Fast
+// Dominance Algorithm"): on large programs (an S_SWAPPC_B64 expansion has thousands of blocks) the
+// iterative set intersection below costs time and memory quadratic in the block count.
+// `edges(block)` lists the edges into a block in the direction of the analysis (predecessors for
+// dominators, successors for post-dominators), `roots` the blocks the analysis starts from. The
+// sets equal the iterative fixed point for every block a root reaches; false (nothing written) when
+// some block is not reached, so the caller keeps the iterative algorithm for those graphs.
 template <typename Edges, typename Forward, typename Store>
 bool ComputeDominatorSetsFast(const Graph& graph, const std::vector<uint32_t>& roots, Edges&& edges,
                               Forward&& forward, Store&& store) {
-	const auto count   = static_cast<uint32_t>(graph.blocks.size());
+	const auto count        = static_cast<uint32_t>(graph.blocks.size());
 	const auto virtual_root = count; // joins several roots
 	// Reverse postorder of the forward walk from the roots.
 	std::vector<uint32_t> order_index(count + 1u, UINT32_MAX);
@@ -739,7 +739,7 @@ bool ComputeDominatorSetsFast(const Graph& graph, const std::vector<uint32_t>& r
 		visited[virtual_root] = true;
 		stack.emplace_back(virtual_root, 0u);
 		while (!stack.empty()) {
-			auto& [block, next] = stack.back();
+			auto& [block, next]    = stack.back();
 			const auto& successors = block == virtual_root ? roots : forward(block);
 			if (next < successors.size()) {
 				const auto successor = successors[next++];
@@ -760,16 +760,18 @@ bool ComputeDominatorSetsFast(const Graph& graph, const std::vector<uint32_t>& r
 		order_index[postorder[i]] = static_cast<uint32_t>(postorder.size()) - 1u - i;
 	}
 	std::vector<uint32_t> idom(count + 1u, UINT32_MAX);
-	idom[virtual_root] = virtual_root;
+	idom[virtual_root]   = virtual_root;
 	const auto intersect = [&](uint32_t a, uint32_t b) {
 		while (a != b) {
-			while (order_index[a] > order_index[b]) a = idom[a];
-			while (order_index[b] > order_index[a]) b = idom[b];
+			while (order_index[a] > order_index[b])
+				a = idom[a];
+			while (order_index[b] > order_index[a])
+				b = idom[b];
 		}
 		return a;
 	};
 	const auto is_root = [&](uint32_t block) { return Contains(roots, block); };
-	bool changed = true;
+	bool       changed = true;
 	while (changed) {
 		changed = false;
 		for (auto it = postorder.rbegin(); it != postorder.rend(); ++it) {
@@ -810,9 +812,13 @@ void ComputeDominators(Graph& graph) {
 	if (graph.entry_block < count &&
 	    ComputeDominatorSetsFast(
 	        graph, {graph.entry_block},
-	        [&](uint32_t block) -> const std::vector<uint32_t>& { return graph.blocks[block].predecessors; },
+	        [&](uint32_t block) -> const std::vector<uint32_t>& {
+		        return graph.blocks[block].predecessors;
+	        },
 	        [&](uint32_t block) -> const std::vector<uint32_t>& { return forward[block]; },
-	        [&](uint32_t block, const std::vector<uint32_t>& set) { graph.blocks[block].dominators = set; })) {
+	        [&](uint32_t block, const std::vector<uint32_t>& set) {
+		        graph.blocks[block].dominators = set;
+	        })) {
 		return;
 	}
 	const auto all   = AllBlockIds(count);
@@ -863,9 +869,13 @@ void ComputePostDominators(Graph& graph) {
 	if (!exits.empty() &&
 	    ComputeDominatorSetsFast(
 	        graph, exits,
-	        [&](uint32_t block) -> const std::vector<uint32_t>& { return graph.blocks[block].successors; },
+	        [&](uint32_t block) -> const std::vector<uint32_t>& {
+		        return graph.blocks[block].successors;
+	        },
 	        [&](uint32_t block) -> const std::vector<uint32_t>& { return backward[block]; },
-	        [&](uint32_t block, const std::vector<uint32_t>& set) { graph.blocks[block].post_dominators = set; })) {
+	        [&](uint32_t block, const std::vector<uint32_t>& set) {
+		        graph.blocks[block].post_dominators = set;
+	        })) {
 		return;
 	}
 	const auto all   = AllBlockIds(count);
@@ -1706,8 +1716,10 @@ bool CloneEnteredRegion(Graph& graph, uint32_t header_id, const std::vector<uint
 		    block->terminator.kind == TerminatorKind::Unsupported) {
 			return false;
 		}
-		if (std::ranges::any_of(graph.natural_loops, [&](const auto& loop) { return loop.header == id; }) ||
-		    std::ranges::any_of(graph.back_edges, [&](const auto& edge) { return edge.to == id; })) {
+		if (std::ranges::any_of(graph.natural_loops,
+		                        [&](const auto& loop) { return loop.header == id; }) ||
+		    std::ranges::any_of(graph.back_edges,
+		                        [&](const auto& edge) { return edge.to == id; })) {
 			return false;
 		}
 		instructions += block->inst_end - block->inst_begin;
@@ -1721,8 +1733,7 @@ bool CloneEnteredRegion(Graph& graph, uint32_t header_id, const std::vector<uint
 			AddUnique(outside, predecessor);
 		}
 	}
-	if (outside.empty() ||
-	    std::ranges::any_of(outside, [&](uint32_t id) {
+	if (outside.empty() || std::ranges::any_of(outside, [&](uint32_t id) {
 		    const auto* block = graph.FindBlock(id);
 		    return block == nullptr || block->terminator.kind == TerminatorKind::IndirectBranch;
 	    })) {
@@ -1730,7 +1741,7 @@ bool CloneEnteredRegion(Graph& graph, uint32_t header_id, const std::vector<uint
 	}
 	g_clone_instructions_left -= instructions;
 
-	const auto base = static_cast<uint32_t>(graph.blocks.size());
+	const auto base    = static_cast<uint32_t>(graph.blocks.size());
 	const auto copy_of = [&](uint32_t id) {
 		const auto at = std::ranges::lower_bound(shared, id);
 		return base + static_cast<uint32_t>(at - shared.begin());

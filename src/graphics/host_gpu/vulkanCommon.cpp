@@ -1,5 +1,4 @@
 #include "graphics/host_gpu/vulkanCommon.h"
-#include "graphics/host_gpu/spirvCacheSalt.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -7,13 +6,10 @@
 #include "graphics/host_gpu/aftermath.h"
 #include "graphics/host_gpu/gpuBreadcrumbs.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/spirvCacheSalt.h"
 #include "graphics/host_gpu/spirvLocalArrays.h"
 #include "graphics/host_gpu/vramStats.h"
 #include "graphics/shader/recompiler/backend/spirv/SpirvEmitter.h"
-
-#include <spirv-tools/libspirv.hpp>
-
-#include <xxhash.h>
 
 #include <algorithm>
 #include <array>
@@ -24,9 +20,11 @@
 #include <cstring>
 #include <mutex>
 #include <set>
+#include <spirv-tools/libspirv.hpp>
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <xxhash.h>
 
 VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
@@ -262,16 +260,18 @@ public:
 	uint64_t Open(const std::string& path) {
 		std::scoped_lock lock(m_mutex);
 		if (m_file != nullptr || path.empty()) return m_known.size();
-		const auto header = Header();
+		const auto           header = Header();
 		std::vector<uint8_t> bytes;
 		if (std::FILE* in = std::fopen(path.c_str(), "rb"); in != nullptr) {
 			std::array<uint8_t, 65536> chunk {};
 			for (size_t got; (got = std::fread(chunk.data(), 1, chunk.size(), in)) != 0;) {
-				bytes.insert(bytes.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(got));
+				bytes.insert(bytes.end(), chunk.begin(),
+				             chunk.begin() + static_cast<std::ptrdiff_t>(got));
 			}
 			std::fclose(in);
 		}
-		if (bytes.size() >= header.size() && std::equal(header.begin(), header.end(), bytes.begin())) {
+		if (bytes.size() >= header.size() &&
+		    std::equal(header.begin(), header.end(), bytes.begin())) {
 			for (size_t at = header.size(); at + sizeof(Key) <= bytes.size(); at += sizeof(Key)) {
 				Key key {};
 				std::memcpy(&key, bytes.data() + at, sizeof(Key));
@@ -283,7 +283,8 @@ public:
 		m_file = std::fopen(path.c_str(), "wb");
 		if (m_file == nullptr) return m_known.size();
 		std::fwrite(header.data(), 1, header.size(), m_file);
-		for (const auto& key: m_known) std::fwrite(&key, sizeof(Key), 1, m_file);
+		for (const auto& key: m_known)
+			std::fwrite(&key, sizeof(Key), 1, m_file);
 		std::fflush(m_file);
 		m_enabled.store(true, std::memory_order_release);
 		return m_known.size();
@@ -292,13 +293,13 @@ public:
 	[[nodiscard]] bool Enabled() const { return m_enabled.load(std::memory_order_acquire); }
 
 	[[nodiscard]] bool Known(std::span<const uint32_t> words) {
-		const auto key = KeyOf(words);
+		const auto       key = KeyOf(words);
 		std::scoped_lock lock(m_mutex);
 		return m_known.contains(key);
 	}
 
 	void Remember(std::span<const uint32_t> words) {
-		const auto key = KeyOf(words);
+		const auto       key = KeyOf(words);
 		std::scoped_lock lock(m_mutex);
 		if (!m_known.insert(key).second || m_file == nullptr) return;
 		std::fwrite(&key, sizeof(Key), 1, m_file);
@@ -307,12 +308,14 @@ public:
 
 private:
 	struct Key {
-		uint64_t low  = 0;
-		uint64_t high = 0;
+		uint64_t low                          = 0;
+		uint64_t high                         = 0;
 		bool     operator==(const Key&) const = default;
 	};
 	struct KeyHash {
-		size_t operator()(const Key& key) const { return static_cast<size_t>(key.low ^ (key.high * 31u)); }
+		size_t operator()(const Key& key) const {
+			return static_cast<size_t>(key.low ^ (key.high * 31u));
+		}
 	};
 	static Key KeyOf(std::span<const uint32_t> words) {
 		const auto hash = XXH3_128bits(words.data(), words.size_bytes());
@@ -323,23 +326,24 @@ private:
 		std::array<uint8_t, 32> header {};
 		constexpr char          magic[16] = "KYTY SHRINKVAL1";
 		std::memcpy(header.data(), magic, sizeof(magic));
-		const std::string identity = std::string(spvSoftwareVersionDetailsString()) + "; vulkan1.3 default options";
-		const uint64_t    hash     = XXH3_64bits(identity.data(), identity.size());
+		const std::string identity =
+		    std::string(spvSoftwareVersionDetailsString()) + "; vulkan1.3 default options";
+		const uint64_t hash = XXH3_64bits(identity.data(), identity.size());
 		std::memcpy(header.data() + 16, &hash, sizeof(hash));
 		return header;
 	}
 
-	std::mutex                        m_mutex;
-	std::unordered_set<Key, KeyHash>  m_known;
-	std::FILE*                        m_file = nullptr;
-	std::atomic<bool>                 m_enabled {false};
+	std::mutex                       m_mutex;
+	std::unordered_set<Key, KeyHash> m_known;
+	std::FILE*                       m_file = nullptr;
+	std::atomic<bool>                m_enabled {false};
 };
 
 // Returns the rewritten module, or nothing (unchanged or invalid). `declared` / `created`: the
 // module's Function-storage bytes per invocation before and as given to the driver.
 std::vector<uint32_t> ShrinkFunctionArrays(std::span<const uint32_t> code, uint64_t& declared,
                                            uint64_t& created) {
-	const bool            stats       = StatsOn();
+	const bool            stats = StatsOn();
 	CompileSpvTimes       times;
 	const auto            shrink_from = stats ? ClockNs() : 0;
 	std::vector<uint32_t> shrunk;
@@ -351,7 +355,7 @@ std::vector<uint32_t> ShrinkFunctionArrays(std::span<const uint32_t> code, uint6
 		if (stats) AddSpvTimes(times);
 		return {};
 	}
-	times.shrunk = 1;
+	times.shrunk         = 1;
 	auto&       verdicts = ShrinkVerdicts::Instance();
 	const bool  memo     = verdicts.Enabled();
 	std::string messages;
@@ -361,8 +365,8 @@ std::vector<uint32_t> ShrinkFunctionArrays(std::span<const uint32_t> code, uint6
 	} else {
 		const auto           validate_from = stats ? ClockNs() : 0;
 		spvtools::SpirvTools tools(SPV_ENV_VULKAN_1_3);
-		tools.SetMessageConsumer([&messages](spv_message_level_t, const char*, const spv_position_t&,
-		                                     const char* message) {
+		tools.SetMessageConsumer([&messages](spv_message_level_t, const char*,
+		                                     const spv_position_t&, const char* message) {
 			if (messages.size() < 512) {
 				messages += message;
 				messages += "; ";
@@ -372,7 +376,8 @@ std::vector<uint32_t> ShrinkFunctionArrays(std::span<const uint32_t> code, uint6
 		// layout rules the device enables for them (as the pipeline cache validates).
 		spvtools::ValidatorOptions options;
 		options.SetUniformBufferStandardLayout(
-		    Libs::Graphics::ShaderRecompiler::Spirv::GetHostBufferRobustness().uniform_dword_loads_return_zero);
+		    Libs::Graphics::ShaderRecompiler::Spirv::GetHostBufferRobustness()
+		        .uniform_dword_loads_return_zero);
 		valid = tools.Validate(shrunk.data(), shrunk.size(), options);
 		if (stats) {
 			times.validated   = 1;
@@ -459,7 +464,9 @@ CompileSpvTimes CompileSpvThreadTimes() {
 }
 
 CompileSpvTimes CompileSpvTotals() {
-	const auto load = [](const std::atomic<uint64_t>& v) { return v.load(std::memory_order_relaxed); };
+	const auto load = [](const std::atomic<uint64_t>& v) {
+		return v.load(std::memory_order_relaxed);
+	};
 	return {.calls            = load(g_spv_times.calls),
 	        .shrunk           = load(g_spv_times.shrunk),
 	        .validated        = load(g_spv_times.validated),
@@ -470,7 +477,8 @@ CompileSpvTimes CompileSpvTotals() {
 }
 
 uint64_t UseShrinkVerdictFile(const std::string& path) {
-	if (const auto* value = std::getenv("KYTY_SHRINK_VERDICTS"); value != nullptr && std::strcmp(value, "0") == 0) {
+	if (const auto* value = std::getenv("KYTY_SHRINK_VERDICTS");
+	    value != nullptr && std::strcmp(value, "0") == 0) {
 		return 0;
 	}
 	return ShrinkVerdicts::Instance().Open(path);
@@ -481,13 +489,13 @@ vk::Pipeline CreateComputePipeline(vk::Device device, std::span<const uint32_t> 
                                    const vk::SpecializationInfo* specialization) {
 	const auto                    shader = CompileSPV(code, device);
 	vk::ComputePipelineCreateInfo create {};
-	create.stage.stage    = vk::ShaderStageFlagBits::eCompute;
-	create.stage.module   = shader;
-	create.stage.pName    = "main";
+	create.stage.stage               = vk::ShaderStageFlagBits::eCompute;
+	create.stage.module              = shader;
+	create.stage.pName               = "main";
 	create.stage.pSpecializationInfo = specialization;
-	create.layout         = layout;
-	vk::Pipeline pipeline = nullptr;
-	const auto   result   = device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
+	create.layout                    = layout;
+	vk::Pipeline pipeline            = nullptr;
+	const auto   result = device.createComputePipelines(nullptr, 1, &create, nullptr, &pipeline);
 	device.destroyShaderModule(shader, nullptr);
 	RequireVulkanSuccess(result, operation);
 	return pipeline;

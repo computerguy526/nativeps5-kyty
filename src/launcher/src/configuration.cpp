@@ -7,7 +7,7 @@
 QString Configuration::NormalizeResolution(const QString& text) {
 	// Older settings stored the enum key, e.g. "R1920X1080".
 	static const QRegularExpression re(QStringLiteral("^\\s*R?(\\d+)\\s*[xX]\\s*(\\d+)\\s*$"));
-	const auto match = re.match(text);
+	const auto                      match = re.match(text);
 	if (!match.hasMatch()) {
 		return {};
 	}
@@ -153,8 +153,8 @@ void Configuration::ReadGameSettingsValues(const Settings& s) {
 	}
 	KYTY_CFG_GET(vulkan_validation_enabled);
 	KYTY_CFG_GET(shader_validation_enabled);
-	shader_optimization_type = ShaderOptimizationTypeFromText(
-	    s.value("shader_optimization_type").toString());
+	shader_optimization_type =
+	    ShaderOptimizationTypeFromText(s.value("shader_optimization_type").toString());
 	KYTY_CFG_GET(shader_log_direction);
 	KYTY_CFG_GET(shader_log_folder);
 	KYTY_CFG_GET(command_buffer_dump_enabled);
@@ -227,8 +227,8 @@ bool Configuration::SetGameSettings(const QJsonObject& imported_settings, QStrin
 			return fail(tr("Game setting %1 must be a string.").arg(it.key()));
 		}
 		const auto value = it.value().toString();
-		values.insert(it.key(), it.key() == "screen_resolution" ? NormalizeResolution(value)
-		                                                       : value);
+		values.insert(it.key(),
+		              it.key() == "screen_resolution" ? NormalizeResolution(value) : value);
 	}
 
 	ReadGameSettingsValues(values);

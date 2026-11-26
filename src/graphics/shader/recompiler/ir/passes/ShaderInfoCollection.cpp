@@ -2,8 +2,8 @@
 
 #include "common/assert.h"
 #include "graphics/shader/recompiler/CodegenOptions.h"
-#include "graphics/shader/recompiler/sarosHandShaders.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/sarosHandShaders.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -258,9 +258,9 @@ void CollectPixelInputs(const Program& program, const ShaderPixelInputInfo* pixe
 				const auto input = inst.Arg(0).U32();
 				const auto mode  = inst.Arg(2).U32();
 				used[input] = true;
-				// KYTY_PS_PER_VERTEX=0: no raw-vertex inputs (the reads take the interpolated value).
-				// sarosnanite: KYTY_SAROS_NANITE_RAW pixel shaders read the raw vertices from the mesh
-				// program's per-primitive copy.
+				// KYTY_PS_PER_VERTEX=0: no raw-vertex inputs (the reads take the interpolated
+				// value). sarosnanite: KYTY_SAROS_NANITE_RAW pixel shaders read the raw vertices
+				// from the mesh program's per-primitive copy.
 				per_vertex[input] =
 				    (ShaderPixelRawVertexInputs(*pixel) || SarosNaniteRawPs(program.shader_hash)) &&
 				    (per_vertex[input] || mode < 2u || !ShaderPixelParameterIsFlat(*pixel, input));
@@ -368,9 +368,7 @@ void CollectBuiltinInputs(const Program& program, ShaderInfo& info) {
 				case StageInputKind::BaseInstance:
 					AddInput(info, kind, 0, 1, "gl_BaseInstance");
 					break;
-				case StageInputKind::BaseVertex:
-					AddInput(info, kind, 0, 1, "gl_BaseVertex");
-					break;
+				case StageInputKind::BaseVertex: AddInput(info, kind, 0, 1, "gl_BaseVertex"); break;
 				case StageInputKind::InvocationId:
 					AddInput(info, kind, 0, 1, "gl_InvocationID");
 					break;
@@ -546,7 +544,8 @@ void CollectShaderInfo(Program& program, ShaderStageInputInfo input_info) {
 		    })) {
 			return Fail("ObjPrimID slot is also an exported MRT");
 		}
-		AddOutput(next, StageOutputKind::ObjPrimId, 0, input_info.pixel->objprim_slot, "out_objprim_id");
+		AddOutput(next, StageOutputKind::ObjPrimId, 0, input_info.pixel->objprim_slot,
+		          "out_objprim_id");
 		if (input_info.pixel->objprim_add_prim_id) {
 			AddInput(next, StageInputKind::PrimitiveId, 0, 1, "gl_PrimitiveID");
 		}

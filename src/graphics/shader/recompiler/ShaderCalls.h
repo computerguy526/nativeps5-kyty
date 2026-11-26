@@ -33,8 +33,8 @@ struct CallTableView {
 	bool operator==(const CallTableView&) const = default;
 };
 
-constexpr uint64_t MaxCallTableBytes   = 16ull << 20u;
-constexpr size_t   MaxCallSiteTargets  = 256;
+constexpr uint64_t MaxCallTableBytes       = 16ull << 20u;
+constexpr size_t   MaxCallSiteTargets      = 256;
 constexpr size_t   MaxExpansionsPerProgram = 8;
 
 // Follows the table's load steps from the user data. False with `failure` when a step reads
@@ -76,10 +76,11 @@ void CallTableTargets(const CallTableView& view, std::span<const uint32_t> words
 [[nodiscard]] uint32_t CallPartitionMinTargets();
 [[nodiscard]] uint32_t CallPartitionMaxParts();
 // KYTY_CALL_PARTITION_MEMORY=1 (default off; on in the GT7 / PPSA03671 presets): the targets each
-// partitioned shader (by hash) reported are remembered in a file (_PipelineCache/<title>.partitions,
-// "shader_hash target" in hex per line, appended as they are reported). The next start makes the
-// remembered targets that the shader's table still holds known at its first dispatch, so their
-// partitions (cached programs by then) run from the start instead of after a probe and readbacks.
+// partitioned shader (by hash) reported are remembered in a file
+// (_PipelineCache/<title>.partitions, "shader_hash target" in hex per line, appended as they are
+// reported). The next start makes the remembered targets that the shader's table still holds known
+// at its first dispatch, so their partitions (cached programs by then) run from the start instead
+// of after a probe and readbacks.
 [[nodiscard]] bool CallPartitionMemoryEnabled();
 // KYTY_CALL_LEARN=1 (default off; adapted from usa-ratt/KytyPS5-GT7 8b76a992a, which learns
 // table variants from the GPU's miss reports): a compute program whose one call is a table call
@@ -149,7 +150,7 @@ private:
 		std::vector<uint64_t> targets; // ascending
 	};
 	struct Call {
-		ShaderCall trace;
+		ShaderCall                                                               trace;
 		std::map<std::tuple<uint64_t, uint64_t, uint32_t, uint32_t>, TableState> tables; // by view
 	};
 	struct Cached {
@@ -164,22 +165,23 @@ private:
 		uint32_t                   dispatches = 0;
 		Expanded                   current;
 		std::map<uint64_t, Cached> expansions; // by target set
-		uint64_t                   pinned = 0; // KYTY_SHADER_CALLS_STICKY: the expansion kept for every table
-		std::string                last_failure;
+		uint64_t    pinned = 0; // KYTY_SHADER_CALLS_STICKY: the expansion kept for every table
+		std::string last_failure;
 		// KYTY_CALL_PARTITIONS: 0 not decided, 1 partitioned, -1 not.
-		int                                    partition_state = 0;
-		std::vector<uint64_t>                  partition_targets; // the table's, ascending
-		std::vector<uint64_t>                  partition_known;   // in the order they were reported
-		std::map<uint64_t, CallPartitionPart>  partition_parts;   // by target (0: the probe)
-		uint64_t                               shader_hash     = 0;
-		bool                                   memory_seeded   = false; // KYTY_CALL_PARTITION_MEMORY
+		int                                   partition_state = 0;
+		std::vector<uint64_t>                 partition_targets; // the table's, ascending
+		std::vector<uint64_t>                 partition_known;   // in the order they were reported
+		std::map<uint64_t, CallPartitionPart> partition_parts;   // by target (0: the probe)
+		uint64_t                              shader_hash   = 0;
+		bool                                  memory_seeded = false; // KYTY_CALL_PARTITION_MEMORY
 		// KYTY_CALL_LEARN: the expansion of the learned targets and the set it holds (by key).
-		CallPartitionPart                      learn_part;
-		uint64_t                               learn_key = 0;
+		CallPartitionPart learn_part;
+		uint64_t          learn_key = 0;
 	};
 	// KYTY_CALL_LEARN: the run of a program in the learned mode (Partition takes it).
 	bool Learn(Program& program, uint64_t key, std::span<const uint32_t> code, uint64_t base,
-	           const CompileOptions& options, const Decoder::ShaderCodeReader& read, CallPartitionRun& run);
+	           const CompileOptions& options, const Decoder::ShaderCodeReader& read,
+	           CallPartitionRun& run);
 
 	bool Refresh(Program& program, std::span<const uint32_t> code, uint64_t base,
 	             const CompileOptions& options, const Decoder::ShaderCodeReader& read);

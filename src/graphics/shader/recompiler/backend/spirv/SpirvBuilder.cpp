@@ -194,7 +194,8 @@ void Builder::DefineGlobalVariable(uint32_t id, uint32_t pointer_type,
 uint32_t Builder::DefineGlobalVariable(uint32_t pointer_type, spv::StorageClass storage_class,
                                        uint32_t initializer) {
 	const auto id = AllocateId();
-	AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class, initializer);
+	AppendInstruction(m_declarations, spv::OpVariable, pointer_type, id, storage_class,
+	                  initializer);
 	return id;
 }
 

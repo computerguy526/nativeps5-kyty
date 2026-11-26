@@ -43,14 +43,15 @@ inline constexpr auto EmitCompositeExtractU32x3 = EmitCompositeExtractU32x2;
 inline constexpr auto EmitCompositeExtractU32x4 = EmitCompositeExtractU32x2;
 inline constexpr auto EmitGlslPackHalf2x16 =
     EmitGlsl<GLSLstd450PackHalf2x16, IR::Type::U32, uint32_t>;
-// IR PackHalf2x16: GLSL PackHalf2x16, or with KYTY_F16_EXACT_ROUND an integer round-to-nearest-even.
-uint32_t EmitPackHalf2x16(EmitterState& state, uint32_t pair);
+// IR PackHalf2x16: GLSL PackHalf2x16, or with KYTY_F16_EXACT_ROUND an integer
+// round-to-nearest-even.
+uint32_t              EmitPackHalf2x16(EmitterState& state, uint32_t pair);
 inline constexpr auto EmitPackSnorm2x16 =
     EmitGlsl<GLSLstd450PackSnorm2x16, IR::Type::U32, uint32_t>;
 inline constexpr auto EmitPackUnorm2x16 =
     EmitGlsl<GLSLstd450PackUnorm2x16, IR::Type::U32, uint32_t>;
 uint32_t              EmitPackFloat2x16Rtz(EmitterState& state, uint32_t arg0, uint32_t arg1);
-inline uint32_t EmitHalfPkAdd(EmitterState& state, uint32_t arg0, uint32_t arg1) {
+inline uint32_t       EmitHalfPkAdd(EmitterState& state, uint32_t arg0, uint32_t arg1) {
 	return EmitHalfPk(state, HalfPkOp::Add, arg0, arg1);
 }
 inline uint32_t EmitHalfPkMul(EmitterState& state, uint32_t arg0, uint32_t arg1) {
@@ -154,10 +155,9 @@ uint32_t EmitFloatCompare32(ValueEmitContext& ctx, const IR::Inst& inst) {
 	// checked with dynamic operands only); a compare with an immediate keeps the explicit flush, as
 	// the driver may lower it to an integer test.
 	const bool host_flush = F32FlushHost(ctx.state, F32FlushClassCompare) &&
-	                        !inst.Arg(0).IsImmediate() &&
-	                        !inst.Arg(1).IsImmediate();
-	const bool flush   = inst.Flags<IR::FPCompareFlags>().flush_input_denorms &&
-	                     !DenormFlushSkipped(ctx.state) && FastMathLevel(ctx.state) < 2;
+	                        !inst.Arg(0).IsImmediate() && !inst.Arg(1).IsImmediate();
+	const bool flush      = inst.Flags<IR::FPCompareFlags>().flush_input_denorms &&
+	                        !DenormFlushSkipped(ctx.state) && FastMathLevel(ctx.state) < 2;
 	const auto operand = [&](size_t index) {
 		const auto value = inst.Arg(index);
 		if (flush && value.IsImmediate()) {
@@ -268,10 +268,10 @@ uint32_t              EmitLaneId(EmitterState& state);
 uint32_t              EmitCallStateParam(EmitterState& state, IR::Value index);
 uint32_t              EmitCallStateLoad(EmitterState& state, uint32_t address);
 void                  EmitCallStateStore(EmitterState& state, uint32_t address, uint32_t value);
-void                  EmitCallStateStoreChanged(EmitterState& state, uint32_t address, uint32_t value,
-                                                uint32_t original);
-void                  EmitCallStateProbe(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  EmitCallStateReport(EmitterState& state, uint32_t base, uint32_t key, uint32_t leader);
+void EmitCallStateStoreChanged(EmitterState& state, uint32_t address, uint32_t value,
+                               uint32_t original);
+void EmitCallStateProbe(ValueEmitContext& ctx, const IR::Inst& inst);
+void EmitCallStateReport(EmitterState& state, uint32_t base, uint32_t key, uint32_t leader);
 uint32_t              EmitBallot(ValueEmitContext& ctx, IR::Value predicate);
 uint32_t              EmitAnyLane(ValueEmitContext& ctx, IR::Value predicate);
 uint32_t              EmitReadFirstLane(ValueEmitContext& ctx, const IR::Inst& inst);
@@ -318,19 +318,19 @@ inline constexpr auto EmitStoreAddressU32       = EmitStoreMemory;
 uint32_t              EmitBvhIntersectRay(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitBvhIntersectRayStub(EmitterState& state, uint32_t node_lo);
 // Native ray tracing (KYTY_RT_HW, spirvEmitterRayQuery.cpp).
-uint32_t              EmitRayQueryInit(ValueEmitContext& ctx, const IR::Inst& inst);
-uint32_t              EmitRayQueryNext(ValueEmitContext& ctx, const IR::Inst& inst);
-uint32_t              EmitRayQueryMatch(ValueEmitContext& ctx, const IR::Inst& inst);
-uint32_t              EmitRayQueryCandidate(ValueEmitContext& ctx, const IR::Inst& inst);
-uint32_t              EmitRayQueryFlag(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  EmitRayQuerySave(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  EmitRayQueryResolve(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  EmitRayQueryExit(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  EmitRayQueryKeep(ValueEmitContext& ctx, const IR::Inst& inst);
-uint32_t              EmitRayQueryKept(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  EmitRayQueryCount(ValueEmitContext& ctx, const IR::Inst& inst);
-void                  DeclareRayQueryVariables(EmitterState& state);
-void                  InitializeRayQueryVariables(EmitterState& state);
+uint32_t EmitRayQueryInit(ValueEmitContext& ctx, const IR::Inst& inst);
+uint32_t EmitRayQueryNext(ValueEmitContext& ctx, const IR::Inst& inst);
+uint32_t EmitRayQueryMatch(ValueEmitContext& ctx, const IR::Inst& inst);
+uint32_t EmitRayQueryCandidate(ValueEmitContext& ctx, const IR::Inst& inst);
+uint32_t EmitRayQueryFlag(ValueEmitContext& ctx, const IR::Inst& inst);
+void     EmitRayQuerySave(ValueEmitContext& ctx, const IR::Inst& inst);
+void     EmitRayQueryResolve(ValueEmitContext& ctx, const IR::Inst& inst);
+void     EmitRayQueryExit(ValueEmitContext& ctx, const IR::Inst& inst);
+void     EmitRayQueryKeep(ValueEmitContext& ctx, const IR::Inst& inst);
+uint32_t EmitRayQueryKept(ValueEmitContext& ctx, const IR::Inst& inst);
+void     EmitRayQueryCount(ValueEmitContext& ctx, const IR::Inst& inst);
+void     DeclareRayQueryVariables(EmitterState& state);
+void     InitializeRayQueryVariables(EmitterState& state);
 // PS5 Pro IMAGE_BVH8_INTERSECT_RAY (spirvEmitterBvh8.cpp).
 uint32_t              EmitBvh8IntersectRay(ValueEmitContext& ctx, const IR::Inst& inst);
 uint32_t              EmitBvh8Extract(ValueEmitContext& ctx, const IR::Inst& inst);

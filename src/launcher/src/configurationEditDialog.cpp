@@ -3,7 +3,6 @@
 #include "common/emulatorConfig.h"
 #include "configuration.h"
 #include "mandatoryLineEdit.h"
-#include <SDL3/SDL.h>
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -36,6 +35,8 @@
 #include <QTreeView>
 #include <QVBoxLayout>
 #include <QtAlgorithms>
+
+#include <SDL3/SDL.h>
 
 #if QT_CONFIG(vulkan)
 #include <QVulkanInstance>
@@ -197,9 +198,8 @@ ConfigurationEditDialog::ConfigurationEditDialog(Configuration& info, QWidget* p
 	});
 	connect(m_ui->comboBox_present_mode, &QComboBox::currentTextChanged, this,
 	        [this](const QString& text) {
-		        const bool immediate =
-		            TextToEnum<Configuration::PresentMode>(text) ==
-		            Configuration::PresentMode::Immediate;
+		        const bool immediate = TextToEnum<Configuration::PresentMode>(text) ==
+		                               Configuration::PresentMode::Immediate;
 		        m_ui->graphicsLayout->setRowVisible(m_ui->checkBox_smooth_frametime_fix, immediate);
 	        });
 	InitGameDirectories();
@@ -370,9 +370,8 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 	m_ui->comboBox_screen_resolution->setCurrentText(info.screen_resolution);
 	ListInit(m_ui->comboBox_present_mode, info.present_mode);
 	m_ui->checkBox_smooth_frametime_fix->setChecked(info.smooth_frametime_fix);
-	m_ui->graphicsLayout->setRowVisible(
-	    m_ui->checkBox_smooth_frametime_fix,
-	    info.present_mode == Configuration::PresentMode::Immediate);
+	m_ui->graphicsLayout->setRowVisible(m_ui->checkBox_smooth_frametime_fix,
+	                                    info.present_mode == Configuration::PresentMode::Immediate);
 	m_ui->comboBox_gpu->clear();
 	m_ui->comboBox_gpu->addItem(tr("Auto"));
 	// Keep Auto when Qt is built without Vulkan support.
@@ -453,8 +452,9 @@ void ConfigurationEditDialog::Init(const Configuration& info) {
 #endif
 	// Upstream hid this row and stopped filling the combo; the row is visible in this form, so
 	// fill it (an unknown value shows as Performance).
-	ListInit(m_ui->comboBox_shader_optimization_type,
-	         Configuration::ShaderOptimizationTypeFromText(EnumToText(info.shader_optimization_type)));
+	ListInit(
+	    m_ui->comboBox_shader_optimization_type,
+	    Configuration::ShaderOptimizationTypeFromText(EnumToText(info.shader_optimization_type)));
 	ListInit(m_ui->comboBox_shader_log_direction, info.shader_log_direction);
 	m_ui->lineEdit_shader_log_folder->setText(info.shader_log_folder);
 	m_ui->lineEdit_shader_log_folder->setEnabled(info.shader_log_direction ==
@@ -652,14 +652,14 @@ static void UpdateInfo(Configuration& info, Ui::ConfigurationEditDialog& ui, boo
 		for (const auto& mix: AudioMixSliders(ui)) {
 			info.audio_mix.*mix.field = mix.slider->value();
 		}
-		info.audio_mix.objects_enabled = ui.checkBox_audio_objects->isChecked();
+		info.audio_mix.objects_enabled      = ui.checkBox_audio_objects->isChecked();
 		info.controller.keyboard_player     = ui.comboBox_keyboard_player->currentData().toInt();
 	}
 	info.screen_resolution =
 	    Configuration::NormalizeResolution(ui.comboBox_screen_resolution->currentText());
 	info.present_mode =
 	    TextToEnum<Configuration::PresentMode>(ui.comboBox_present_mode->currentText());
-	info.smooth_frametime_fix = ui.checkBox_smooth_frametime_fix->isChecked();
+	info.smooth_frametime_fix      = ui.checkBox_smooth_frametime_fix->isChecked();
 	info.gpu_index                 = ui.comboBox_gpu->currentIndex() - 1;
 	info.fullscreen_enabled        = ui.checkBox_fullscreen->isChecked();
 	info.hdr_enabled               = ui.checkBox_hdr->isChecked();
