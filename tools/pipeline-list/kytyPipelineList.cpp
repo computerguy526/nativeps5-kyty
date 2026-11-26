@@ -37,6 +37,7 @@
 //       hash=0x..." / "KYTY_RT_STUB: ... shader 0x...", or a dropped.tsv) from a list, with their permutations and the pipelines using them.
 //       --dropped writes one tsv row per dropped program (hash, kind, runtime|executable, reason). Prints the counts. The harvest
 //       compile probe: a program the recompiler refuses ends the launch-phase compile of the whole list.
+//   hashes <list>                       One line per shader: 0x<hash>, kind (vertex|pixel|compute); the compile probe's input (kyty_spv_dump --probe).
 //   scenedb build|merge|info|query|tiers|check ...   the shader level database (sceneDbCommands.h)
 //   retarget --list <list> --exe <executable> --title <id> --app-ver <version> --out <list>
 //       Re-stamps a list for another copy of the game (another version or SKU): each shader is looked up in
@@ -973,6 +974,18 @@ int Check(const Arguments& args) {
 	return stats.resolved + stats.runtime_pending == stats.shaders ? 0 : 1;
 }
 
+int Hashes(const Arguments& args) {
+	if (args.inputs.size() != 1) return 2;
+	PipelineList::File file;
+	if (!Load(args.inputs[0], file)) return 2;
+	static const char* const Kinds[3] = {"vertex", "pixel", "compute"};
+	for (const auto& shader: file.shaders) {
+		const auto kind = static_cast<size_t>(shader.kind);
+		std::printf("0x%016llx\t%s\n", static_cast<unsigned long long>(shader.hash), kind < 3 ? Kinds[kind] : "?");
+	}
+	return 0;
+}
+
 int Drop(const Arguments& args) {
 	if (args.list.empty() || args.hashes.empty() || args.out.empty()) {
 		std::fprintf(stderr, "drop needs --list, --hashes and --out\n");
@@ -1211,6 +1224,7 @@ int main(int argc, char** argv) {
 	if (args.command == "check") return Check(args);
 	if (args.command == "retarget") return Retarget(args);
 	if (args.command == "drop") return Drop(args);
+	if (args.command == "hashes") return Hashes(args);
 	if (args.command == "verify") return Verify(args);
 	if (args.command == "upgrade") return Upgrade(args);
 	std::fprintf(stderr, "unknown command %s\n", args.command.c_str());

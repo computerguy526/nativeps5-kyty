@@ -12,11 +12,17 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/shader.h"
+#include "graphics/shader/recompiler/frontend/decode/ShaderDecoder.h"
+#include "listProbe.h"
 
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <fstream>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -272,7 +278,122 @@ int Translate(const Src& s, const char* out_path, bool comments, uint32_t lanes,
 
 } // namespace
 
+// --probe: the list-builder compile probe (tools/pipeline-list/listProbe.h). Every permutation of every listed program found in the
+// program caches is translated and compiled through the title's own path in a child process; programs the recompiler refuses
+// (EXIT / assert / signal / hang) go to --out as `0x<hash>` TAB reason rows, the input of `kyty_pipeline_list drop`.
+//   kyty_spv_dump --probe --hashes <file with 0x<hash> tokens> --programs <programs.bin>... --out <rows.tsv>
+//                 [--rt] [--jobs N] [--timeout SEC] [--log <tsv>] [--unprobed <file>]
+// --rt: programs with ray-tracing (BVH intersection) instructions are not translated but listed as dropped (a title run with ray
+// tracing off never runs them). The process env applies exactly as in the title (KYTY_* codegen words).
+int ProbeMain(int argc, char** argv) {
+	std::vector<std::string> programs;
+	std::string hashes_path, out_path, log_path, unprobed_path;
+	bool rt = false;
+	ListProbe::Options opt;
+	opt.jobs = 4; opt.timeout_ms = 120000;
+	for (int i = 2; i < argc; i++) {
+		std::string_view a = argv[i];
+		auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
+		if (a == "--programs") programs.push_back(next());
+		else if (a == "--hashes") hashes_path = next();
+		else if (a == "--out") out_path = next();
+		else if (a == "--log") log_path = next();
+		else if (a == "--unprobed") unprobed_path = next();
+		else if (a == "--rt") rt = true;
+		else if (a == "--jobs") opt.jobs = std::atoi(next().c_str());
+		else if (a == "--timeout") opt.timeout_ms = std::atoi(next().c_str()) * 1000;
+		else { std::fprintf(stderr, "unknown option %.*s\n", (int)a.size(), a.data()); return 2; }
+	}
+	if (programs.empty() || hashes_path.empty() || out_path.empty()) { std::fprintf(stderr, "--probe needs --programs, --hashes and --out\n"); return 2; }
+	std::set<uint64_t> wanted;
+	{
+		std::ifstream in(hashes_path);
+		if (!in) { std::fprintf(stderr, "cannot read %s\n", hashes_path.c_str()); return 2; }
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		for (size_t at = text.find("0x"); at != std::string::npos; at = text.find("0x", at + 2))
+			if (at + 18 <= text.size()) {
+				char* end = nullptr;
+				const std::string h = text.substr(at + 2, 16);
+				const uint64_t v = std::strtoull(h.c_str(), &end, 16);
+				if (end == h.c_str() + 16) wanted.insert(v);
+			}
+	}
+	struct Item { Src src; std::vector<Perm> perms; };
+	std::vector<Item> items;
+	std::set<std::pair<uint64_t, std::string>> seen; // (hash, digest) across caches
+	for (const auto& path: programs) {
+		std::vector<Perm> perms;
+		auto srcs = LoadPrograms(path.c_str(), &perms);
+		const size_t read = srcs.size();
+		for (auto& s: srcs) {
+			if (!wanted.contains(s.hash) || !seen.insert({s.hash, s.digest}).second) continue;
+			Item it; it.src = std::move(s);
+			for (const auto& pm: perms) if (pm.digest == it.src.digest) it.perms.push_back(pm);
+			items.push_back(std::move(it));
+		}
+		std::fprintf(stderr, "probe: %s: %zu programs read, %zu wanted so far\n", path.c_str(), read, items.size());
+	}
+	std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.src.hash < b.src.hash; });
+	std::vector<ListProbe::Unit> units;
+	std::vector<std::pair<size_t, int>> where; // item, perm index in item (-1: none recorded, default spec)
+	std::set<uint64_t> found;
+	for (size_t k = 0; k < items.size(); k++) {
+		found.insert(items[k].src.hash);
+		const int n = items[k].perms.empty() ? 1 : static_cast<int>(items[k].perms.size());
+		for (int j = 0; j < n; j++) {
+			units.push_back({items[k].src.hash, items[k].src.stage, static_cast<int>(units.size())});
+			where.push_back({k, items[k].perms.empty() ? -1 : j});
+		}
+	}
+	const int RtCode = 77;
+	auto fn = [&](const ListProbe::Unit& u) -> int {
+		const auto& w = where[static_cast<size_t>(u.perm)];
+		const Item& it = items[w.first];
+		if (rt) {
+			SR::Decoder::Program dp;
+			SR::Decoder::DecodeProgram(it.src.code, dp, true);
+			if (dp.has_bvh) { std::fprintf(stderr, "ray tracing: BVH intersection instructions"); return RtCode; }
+		}
+		const int rc = Translate(it.src, "/dev/null", false, 0, nullptr, w.second >= 0 ? &it.perms[static_cast<size_t>(w.second)] : nullptr, nullptr);
+		return rc == 4 || rc == 5 ? 0 : rc; // 4: the title skips such dispatches; 5: a static key this tool cannot decode (mesh / tessellation): not probed
+	};
+	std::fprintf(stderr, "probe: %zu of %zu listed programs found in the caches, %zu permutations, %d jobs\n", found.size(), wanted.size(), units.size(), opt.jobs);
+	const auto outcomes = ListProbe::RunUnits(units, fn, opt);
+	auto is_rt = [&](size_t i) { return outcomes[i].verdict == ListProbe::Verdict::Refused && outcomes[i].code == RtCode; };
+	std::map<uint64_t, std::string> rows, rt_rows;
+	std::vector<ListProbe::Unit> u2; std::vector<ListProbe::Outcome> o2;
+	for (size_t i = 0; i < units.size(); i++) {
+		if (is_rt(i)) rt_rows.emplace(units[i].hash, "ray tracing (BVH): the title runs with ray tracing off");
+		else { u2.push_back(units[i]); o2.push_back(outcomes[i]); }
+	}
+	rows = ListProbe::Refused(u2, o2);
+	const size_t refused = rows.size();
+	ListProbe::AddRayTracing(rows, [&] { std::vector<uint64_t> v; for (const auto& kv: rt_rows) v.push_back(kv.first); return v; }(), "ray tracing (BVH): the title runs with ray tracing off");
+	{
+		std::ofstream o(out_path, std::ios::trunc);
+		o << ListProbe::FormatRows(rows);
+	}
+	if (!log_path.empty()) {
+		std::ofstream o(log_path, std::ios::trunc);
+		for (size_t i = 0; i < units.size(); i++) {
+			char h[40]; std::snprintf(h, sizeof(h), "0x%016" PRIx64, units[i].hash);
+			static const char* const V[] = {"ok", "refused", "crashed", "timeout"};
+			o << h << '\t' << units[i].stage << '\t' << where[static_cast<size_t>(units[i].perm)].second << '\t' << V[static_cast<int>(outcomes[i].verdict)] << '\t' << outcomes[i].code << '\t' << outcomes[i].reason << '\n';
+		}
+	}
+	size_t unprobed = 0;
+	{
+		std::ofstream o;
+		if (!unprobed_path.empty()) o.open(unprobed_path, std::ios::trunc);
+		for (const auto h: wanted) if (!found.contains(h)) { unprobed++; char b[40]; std::snprintf(b, sizeof(b), "0x%016" PRIx64, h); if (o.is_open()) o << b << '\n'; }
+	}
+	std::printf("probe: %zu programs probed (%zu permutations), %zu dropped (%zu refused/crashed/timeout, %zu ray tracing), %zu listed programs not in any cache\n",
+	            found.size(), units.size(), rows.size(), refused, rows.size() - refused, unprobed);
+	return 0;
+}
+
 int main(int argc, char** argv) {
+	if (argc > 1 && std::string_view(argv[1]) == "--probe") return ProbeMain(argc, argv);
 	const char *programs = nullptr, *bin = nullptr, *out = nullptr, *manifest = nullptr;
 	long index = -1, perm_sel = -1, link_perm = -1;
 	const char* all_dir = nullptr;

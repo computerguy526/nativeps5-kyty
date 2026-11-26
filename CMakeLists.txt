@@ -1204,6 +1204,10 @@ add_executable(kyty_pipeline_list EXCLUDE_FROM_ALL
 target_link_libraries(kyty_pipeline_list xxhash libzstd_static nlohmann_json::nlohmann_json ZArchive::zarchive)
 target_include_directories(kyty_pipeline_list PRIVATE ${inc_headers})
 
+# The list-builder compile probe (tools/pipeline-list/listProbe.h): one program per child process, fake translator; no game data.
+add_executable(list_probe_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/ListProbeTests.cpp")
+target_include_directories(list_probe_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list")
+
 # The `<runtime>` shaders of a list (UE5 titles): the KYCODE1 per-player code store (pipeline/pipelineCodeStore.h), the
 # library group split (pipeline/ue5Group.h), Resolve with a ReadHashFn, and the tool's runtime helpers
 # (tools/pipeline-list/runtimeCode.h). Synthetic data only.
@@ -2118,6 +2122,8 @@ if(BUILD_TESTING)
 	add_test(NAME pipeline_list COMMAND $<TARGET_FILE:pipeline_list_tests>)
 	add_test(NAME pipeline_list_programs COMMAND $<TARGET_FILE:pipeline_list_programs_tests>)
 	add_test(NAME pipeline_ue5warm COMMAND $<TARGET_FILE:pipeline_ue5warm_tests>)
+	add_test(NAME list_probe COMMAND $<TARGET_FILE:list_probe_tests>)
+	set_tests_properties(list_probe PROPERTIES TIMEOUT 60)
 	set_tests_properties(pipeline_ue5warm PROPERTIES TIMEOUT 60)
 	add_test(NAME ue5_code_warm COMMAND $<TARGET_FILE:ue5_code_warm_tests>)
 	set_tests_properties(ue5_code_warm PROPERTIES TIMEOUT 60)
@@ -3396,6 +3402,7 @@ if(BUILD_TESTING)
 		pipeline_list_tests
 		pipeline_list_programs_tests
 		pipeline_ue5warm_tests
+		list_probe_tests
 		ue5_code_warm_tests
 		ue5_bridge_tests
 		pipeline_list_game_files_tests
@@ -3666,7 +3673,7 @@ if(APPLE)
 	add_executable(kyty_spv_dump EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/tools/spirv-dump/kytySpvDump.cpp" "${KYTY_SOURCE_DIR}/hybrid/kytyGpuBridge.cpp" ${kyty_gpu_src})
 	target_compile_definitions(kyty_spv_dump PRIVATE KYTY_GPU_DYLIB=1)
 	target_link_libraries(kyty_spv_dump PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
-	target_include_directories(kyty_spv_dump PRIVATE ${inc_headers})
+	target_include_directories(kyty_spv_dump PRIVATE ${inc_headers} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list")
 	# KYTY_GPU_IPO=ON (default off): ThinLTO of the kyty_gpu dylib (the emulator-only KYTY_EMULATOR_IPO
 	# never reached it). With KYTY_PGO_GENERATE the dylib dumps its profile from a thread started at
 	# load (kytyGpuBridge.cpp, KYTY_PGO_FILE / KYTY_PGO_DUMP_SECONDS).
