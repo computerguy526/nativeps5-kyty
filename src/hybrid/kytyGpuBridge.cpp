@@ -839,18 +839,18 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 			query.max_raw_bytes = 64u << 20u;
 			query.threads       = 0;
 			query.group         = [](void* arg, const KytyGpuUe5Group* g) -> int {
-                try {
-                    Ue5::GroupView view;
-                    view.library      = g->library;
-                    view.group        = g->group;
-                    view.shader_count = g->shader_count;
-                    if (g->frequencies != nullptr)
-                        view.frequencies = {g->frequencies, g->shader_count};
-                    view.bytes = {g->bytes, g->raw_bytes};
-                    return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
-                } catch (...) {
-                    return 1;
-                }
+				try {
+					Ue5::GroupView view;
+					view.library      = g->library;
+					view.group        = g->group;
+					view.shader_count = g->shader_count;
+					if (g->frequencies != nullptr)
+						view.frequencies = {g->frequencies, g->shader_count};
+					view.bytes = {g->bytes, g->raw_bytes};
+					return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
+				} catch (...) {
+					return 1;
+				}
 			};
 			query.progress = [](void* arg, uint32_t done, uint32_t total) {
 				try {
@@ -861,7 +861,7 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 			query.arg = &context;
 			KytyGpuUe5Result result {};
 			Ue5::HostResult  out;
-			out.code = g_host.extract_ue5_shader_groups(g_host.user, &query, &result);
+			out.code             = g_host.extract_ue5_shader_groups(g_host.user, &query, &result);
 			out.groups_total     = result.groups_total;
 			out.decoded          = result.groups_decoded;
 			out.failed           = result.groups_failed;
@@ -873,10 +873,11 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 		});
 		Ue5::SetRunOnMain([](std::function<void()> fn) {
 			if (g_host.run_on_main_thread == nullptr ||
-			    (g_host_info.flags & KYTY_GPU_HOST_MAIN_QUEUE) == 0 || Common::Thread::IsMainThread() ||
+			    (g_host_info.flags & KYTY_GPU_HOST_MAIN_QUEUE) == 0 ||
+			    Common::Thread::IsMainThread() ||
 			    g_host.run_on_main_thread(
-			        g_host.user, [](void* arg) { (*static_cast<std::function<void()>*>(arg))(); }, &fn,
-			        1) != 0) {
+			        g_host.user, [](void* arg) { (*static_cast<std::function<void()>*>(arg))(); },
+			        &fn, 1) != 0) {
 				fn();
 			}
 		});
@@ -890,9 +891,9 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 			}
 #if defined(__APPLE__)
 			mach_vm_size_t got = 0;
-			return mach_vm_read_overwrite(mach_task_self(), address + g_host_info.guest_bias,
-			                              out.size(), reinterpret_cast<mach_vm_address_t>(out.data()),
-			                              &got) == KERN_SUCCESS &&
+			return mach_vm_read_overwrite(
+			           mach_task_self(), address + g_host_info.guest_bias, out.size(),
+			           reinterpret_cast<mach_vm_address_t>(out.data()), &got) == KERN_SUCCESS &&
 			       got == out.size();
 #else
 			return false;

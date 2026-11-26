@@ -18,8 +18,8 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // nps5 UE5 warm list: the logic around the host's shader library extraction (ABI 1.8) that needs no
@@ -51,7 +51,7 @@ struct AbiRow {
 	const char* name;
 	uint32_t    id;
 };
-inline constexpr AbiRow Abis[] = {{"oodlelz14", 1}};
+inline constexpr AbiRow       Abis[] = {{"oodlelz14", 1}};
 [[nodiscard]] inline uint32_t AbiId(std::string_view name) {
 	for (const auto& row: Abis)
 		if (name == row.name) return row.id;
@@ -60,11 +60,11 @@ inline constexpr AbiRow Abis[] = {{"oodlelz14", 1}};
 
 struct Config {
 	std::string store_path;
-	uint64_t    decoder           = 0;
-	uint64_t    fp                = 0;
+	uint64_t    decoder = 0;
+	uint64_t    fp      = 0;
 	std::string abi;
-	std::string layout;                 // KYTY_UE5_LAYOUT (ue5Group.h Layouts); empty = the first
-	bool        enabled           = true;  // KYTY_UE5_CODE != 0
+	std::string layout;                   // KYTY_UE5_LAYOUT (ue5Group.h Layouts); empty = the first
+	bool        enabled           = true; // KYTY_UE5_CODE != 0
 	bool        words_ok          = false; // decoder, fp and abi parsed
 	uint64_t    max_s             = 120;   // KYTY_UE5_CODE_MAX_S (0 = no limit)
 	bool        wait_before_entry = false; // KYTY_LAUNCH_WAIT_BEFORE_ENTRY
@@ -81,10 +81,14 @@ using GetEnvFn = std::function<const char*(const char*)>;
 	uint64_t value = 0;
 	for (const char c: v) {
 		uint32_t d;
-		if (c >= '0' && c <= '9') d = static_cast<uint32_t>(c - '0');
-		else if (c >= 'a' && c <= 'f') d = static_cast<uint32_t>(c - 'a' + 10);
-		else if (c >= 'A' && c <= 'F') d = static_cast<uint32_t>(c - 'A' + 10);
-		else return false;
+		if (c >= '0' && c <= '9')
+			d = static_cast<uint32_t>(c - '0');
+		else if (c >= 'a' && c <= 'f')
+			d = static_cast<uint32_t>(c - 'a' + 10);
+		else if (c >= 'A' && c <= 'F')
+			d = static_cast<uint32_t>(c - 'A' + 10);
+		else
+			return false;
 		value = (value << 4u) | d;
 	}
 	out = value;
@@ -92,21 +96,22 @@ using GetEnvFn = std::function<const char*(const char*)>;
 }
 
 [[nodiscard]] inline Config ParseEnv(const GetEnvFn& get) {
-	Config      c;
-	const auto  text = [&](const char* name) -> const char* {
-        const char* v = get(name);
-        return v != nullptr && *v != '\0' ? v : nullptr;
+	Config     c;
+	const auto text = [&](const char* name) -> const char* {
+		const char* v = get(name);
+		return v != nullptr && *v != '\0' ? v : nullptr;
 	};
 	if (const auto* v = text("KYTY_PIPELINE_LIST_CODE_STORE")) c.store_path = v;
 	if (const auto* v = text("KYTY_UE5_CODE")) c.enabled = std::string_view(v) != "0";
 	if (const auto* v = text("KYTY_UE5_DECODER_ABI")) c.abi = v;
 	if (const auto* v = text("KYTY_UE5_LAYOUT")) c.layout = v;
 	if (const auto* v = text("KYTY_UE5_CODE_MAX_S")) {
-		char* end = nullptr;
-		const auto n = std::strtoull(v, &end, 10);
+		char*      end = nullptr;
+		const auto n   = std::strtoull(v, &end, 10);
 		if (end != v && *end == '\0') c.max_s = n;
 	}
-	if (const auto* v = text("KYTY_LAUNCH_WAIT_BEFORE_ENTRY")) c.wait_before_entry = std::string_view(v) != "0";
+	if (const auto* v = text("KYTY_LAUNCH_WAIT_BEFORE_ENTRY"))
+		c.wait_before_entry = std::string_view(v) != "0";
 	c.words_ok = ParseHex(text("KYTY_UE5_DECODER"), c.decoder) && c.decoder != 0 &&
 	             ParseHex(text("KYTY_UE5_DECODER_FP"), c.fp, 16) && AbiId(c.abi) != 0;
 	return c;
@@ -129,7 +134,8 @@ using GetEnvFn = std::function<const char*(const char*)>;
 	       " listed runtime shaders: extraction skipped";
 }
 [[nodiscard]] inline std::string FpMismatchLine() {
-	return "UE5 code: decoder fingerprint mismatch (game version?): the list's runtime shaders stay pending";
+	return "UE5 code: decoder fingerprint mismatch (game version?): the list's runtime shaders "
+	       "stay pending";
 }
 [[nodiscard]] inline std::string HostFailedLine(int code) {
 	return "UE5 code: the host could not read the shader library (code " + std::to_string(code) +
@@ -153,16 +159,16 @@ struct GroupView {
 	std::span<const uint8_t>  bytes;
 };
 struct HostResult {
-	int      code = 0; // 0 done, -1 unsupported, -2 decoder failed, -3 cancelled
+	int      code         = 0; // 0 done, -1 unsupported, -2 decoder failed, -3 cancelled
 	uint32_t groups_total = 0, decoded = 0, failed = 0, skipped = 0;
 	uint64_t compressed_bytes = 0, raw_bytes = 0, ms = 0;
 };
-using GroupFn    = std::function<bool(const GroupView&)>; // true = stop
-using ProgressFn = std::function<void(uint32_t done, uint32_t total)>;
-using ExtractFn  = std::function<HostResult(uint64_t decoder, uint32_t abi, const GroupFn& group,
-                                           const ProgressFn& progress)>;
-using RunOnMainFn   = std::function<void(std::function<void()>)>;
-using ReadGuestFn   = std::function<bool(uint64_t guest_address, std::span<uint8_t> out)>;
+using GroupFn     = std::function<bool(const GroupView&)>; // true = stop
+using ProgressFn  = std::function<void(uint32_t done, uint32_t total)>;
+using ExtractFn   = std::function<HostResult(uint64_t decoder, uint32_t abi, const GroupFn& group,
+                                             const ProgressFn& progress)>;
+using RunOnMainFn = std::function<void(std::function<void()>)>;
+using ReadGuestFn = std::function<bool(uint64_t guest_address, std::span<uint8_t> out)>;
 
 struct Seam {
 	ExtractFn   extract;
@@ -173,13 +179,23 @@ inline Seam& GetSeam() {
 	static Seam seam;
 	return seam;
 }
-inline void SetHostExtract(ExtractFn fn) { GetSeam().extract = std::move(fn); }
-inline void SetRunOnMain(RunOnMainFn fn) { GetSeam().run_on_main = std::move(fn); }
-inline void SetGuestReader(ReadGuestFn fn) { GetSeam().read_guest = std::move(fn); }
-[[nodiscard]] inline bool HostHasReader() { return static_cast<bool>(GetSeam().extract); }
+inline void SetHostExtract(ExtractFn fn) {
+	GetSeam().extract = std::move(fn);
+}
+inline void SetRunOnMain(RunOnMainFn fn) {
+	GetSeam().run_on_main = std::move(fn);
+}
+inline void SetGuestReader(ReadGuestFn fn) {
+	GetSeam().read_guest = std::move(fn);
+}
+[[nodiscard]] inline bool HostHasReader() {
+	return static_cast<bool>(GetSeam().extract);
+}
 inline void RunOnMain(std::function<void()> fn) {
-	if (GetSeam().run_on_main) GetSeam().run_on_main(std::move(fn));
-	else fn();
+	if (GetSeam().run_on_main)
+		GetSeam().run_on_main(std::move(fn));
+	else
+		fn();
 }
 // FNV-1a 64 over the 64 bytes at the decoder; false when they cannot be read (= mismatch).
 [[nodiscard]] inline bool FingerprintMatches(uint64_t decoder, uint64_t fp) {
@@ -209,8 +225,8 @@ public:
 	using ClockFn = std::function<uint64_t()>;
 
 	// `wanted`: code hash -> expected bytes, for the listed runtime codes not in the store yet.
-	Collector(WantedMap wanted, AddFn add, UnitSink sink,
-	          uint64_t max_s, const Ue5Group::Layout* layout = nullptr, ClockFn clock = SteadyMs)
+	Collector(WantedMap wanted, AddFn add, UnitSink sink, uint64_t max_s,
+	          const Ue5Group::Layout* layout = nullptr, ClockFn clock = SteadyMs)
 	    : m_wanted(std::move(wanted)), m_add(std::move(add)), m_sink(std::move(sink)),
 	      m_max_ms(max_s * 1000u), m_layout(layout), m_clock(std::move(clock)) {
 		m_start = m_clock();
@@ -218,8 +234,8 @@ public:
 
 	// True = stop (all wanted found, or the time budget is over).
 	bool OnGroup(const GroupView& g) {
-		Ue5Group::Stats stats;
-		const auto      shaders = Ue5Group::Split(g.bytes, g.frequencies, &stats, m_layout);
+		Ue5Group::Stats  stats;
+		const auto       shaders = Ue5Group::Split(g.bytes, g.frequencies, &stats, m_layout);
 		std::scoped_lock lock(m_mutex);
 		m_groups++;
 		m_split.markers += stats.markers;
@@ -275,44 +291,66 @@ public:
 		}
 	}
 
-	[[nodiscard]] size_t   Remaining() const { std::scoped_lock l(m_mutex); return m_wanted.size(); }
-	[[nodiscard]] bool     TimedOut() const { std::scoped_lock l(m_mutex); return m_timed_out; }
-	[[nodiscard]] uint64_t Added() const { std::scoped_lock l(m_mutex); return m_added; }
-	[[nodiscard]] uint64_t AddedBytes() const { std::scoped_lock l(m_mutex); return m_added_bytes; }
-	[[nodiscard]] uint64_t AddFailed() const { std::scoped_lock l(m_mutex); return m_add_failed; }
-	[[nodiscard]] uint64_t SizeConflicts() const { std::scoped_lock l(m_mutex); return m_size_conflicts; }
-	[[nodiscard]] Ue5Group::Stats SplitStats() const { std::scoped_lock l(m_mutex); return m_split; }
+	[[nodiscard]] size_t Remaining() const {
+		std::scoped_lock l(m_mutex);
+		return m_wanted.size();
+	}
+	[[nodiscard]] bool TimedOut() const {
+		std::scoped_lock l(m_mutex);
+		return m_timed_out;
+	}
+	[[nodiscard]] uint64_t Added() const {
+		std::scoped_lock l(m_mutex);
+		return m_added;
+	}
+	[[nodiscard]] uint64_t AddedBytes() const {
+		std::scoped_lock l(m_mutex);
+		return m_added_bytes;
+	}
+	[[nodiscard]] uint64_t AddFailed() const {
+		std::scoped_lock l(m_mutex);
+		return m_add_failed;
+	}
+	[[nodiscard]] uint64_t SizeConflicts() const {
+		std::scoped_lock l(m_mutex);
+		return m_size_conflicts;
+	}
+	[[nodiscard]] Ue5Group::Stats SplitStats() const {
+		std::scoped_lock l(m_mutex);
+		return m_split;
+	}
 	[[nodiscard]] uint64_t ElapsedS() const { return (m_clock() - m_start) / 1000u; }
 
 	// The I8 line. `listed`: distinct listed runtime codes (M); K = M - what is still wanted.
 	[[nodiscard]] std::string Summary(const HostResult& r, uint64_t listed) const {
 		const uint64_t found = listed - std::min<uint64_t>(listed, Remaining());
 		char           text[320];
-		std::snprintf(text, sizeof(text),
-		              "UE5 code: %u groups (%.1f MB) decoded in %llu ms, %u failed, %u skipped; listed "
-		              "runtime shaders found %llu of %llu; store +%llu codes (%.1f MB)",
-		              r.decoded, static_cast<double>(r.raw_bytes) / 1048576.0,
-		              static_cast<unsigned long long>(r.ms), r.failed, r.skipped,
-		              static_cast<unsigned long long>(found), static_cast<unsigned long long>(listed),
-		              static_cast<unsigned long long>(Added()),
-		              static_cast<double>(AddedBytes()) / 1048576.0);
+		std::snprintf(
+		    text, sizeof(text),
+		    "UE5 code: %u groups (%.1f MB) decoded in %llu ms, %u failed, %u skipped; listed "
+		    "runtime shaders found %llu of %llu; store +%llu codes (%.1f MB)",
+		    r.decoded, static_cast<double>(r.raw_bytes) / 1048576.0,
+		    static_cast<unsigned long long>(r.ms), r.failed, r.skipped,
+		    static_cast<unsigned long long>(found), static_cast<unsigned long long>(listed),
+		    static_cast<unsigned long long>(Added()),
+		    static_cast<double>(AddedBytes()) / 1048576.0);
 		std::string line = text;
 		if (TimedOut()) line += "; stopped after " + std::to_string(ElapsedS()) + " s";
 		return line;
 	}
 
 private:
-	mutable std::mutex m_mutex, m_progress_mutex;
-	WantedMap                                     m_wanted;
-	AddFn                                         m_add;
-	UnitSink                                      m_sink;
-	uint64_t                                      m_max_ms, m_start = 0;
-	const Ue5Group::Layout*                       m_layout;
-	ClockFn                                       m_clock;
+	mutable std::mutex      m_mutex, m_progress_mutex;
+	WantedMap               m_wanted;
+	AddFn                   m_add;
+	UnitSink                m_sink;
+	uint64_t                m_max_ms, m_start = 0;
+	const Ue5Group::Layout* m_layout;
+	ClockFn                 m_clock;
 	uint64_t m_groups = 0, m_added = 0, m_added_bytes = 0, m_add_failed = 0, m_size_conflicts = 0;
-	bool                                          m_timed_out = false;
-	Ue5Group::Stats                               m_split;
-	uint32_t                                      m_total = 0, m_done = 0;
+	bool     m_timed_out = false;
+	Ue5Group::Stats m_split;
+	uint32_t        m_total = 0, m_done = 0;
 };
 
 // ---- the guest_ready flow ----
@@ -330,13 +368,13 @@ struct Flow {
 	bool wait_before_entry = false;
 };
 struct Hooks {
-	std::function<bool()>     fingerprint_ok;
-	std::function<int()>      extract; // the host code
-	std::function<void()>     flush_store;
-	std::function<void()>     finish_unit;
-	std::function<void()>     on_main; // re-resolve, then the two list consumers
-	std::function<void()>     run_prepare;
-	std::function<void()>     wait_entry;
+	std::function<bool()>             fingerprint_ok;
+	std::function<int()>              extract; // the host code
+	std::function<void()>             flush_store;
+	std::function<void()>             finish_unit;
+	std::function<void()>             on_main; // re-resolve, then the two list consumers
+	std::function<void()>             run_prepare;
+	std::function<void()>             wait_entry;
 	std::function<void(Outcome, int)> report;
 };
 
@@ -422,7 +460,7 @@ public:
 		h.extract        = [this] { return Extract(); };
 		h.flush_store    = [this] { Flush(); };
 		h.finish_unit    = [this] {
-            if (m_collector != nullptr) m_collector->Finish();
+			if (m_collector != nullptr) m_collector->Finish();
 		};
 		h.report = [this](Outcome outcome, int code) {
 			switch (outcome) {
@@ -453,7 +491,8 @@ private:
 		    m_sink, m_config.max_s, Ue5Group::FindLayout(m_config.layout.c_str()), m_clock);
 		auto* c  = m_collector.get();
 		m_result = extract(
-		    m_config.decoder, AbiId(m_config.abi), [c](const GroupView& view) { return c->OnGroup(view); },
+		    m_config.decoder, AbiId(m_config.abi),
+		    [c](const GroupView& view) { return c->OnGroup(view); },
 		    [c](uint32_t done, uint32_t total) { c->OnProgress(done, total); });
 		return m_result.code;
 	}
@@ -476,19 +515,19 @@ private:
 		if (LowFound(found, m_listed)) m_log(LowFoundLine(found, m_listed));
 	}
 
-	Config                      m_config;
-	PipelineCodeStore*          m_store;
-	WantedMap                   m_wanted;
-	uint64_t                    m_listed;
-	LogFn                       m_log;
-	UnitSink                    m_sink;
-	Collector::ClockFn          m_clock;
-	std::unique_ptr<Collector>  m_collector;
-	HostResult                  m_result;
+	Config                     m_config;
+	PipelineCodeStore*         m_store;
+	WantedMap                  m_wanted;
+	uint64_t                   m_listed;
+	LogFn                      m_log;
+	UnitSink                   m_sink;
+	Collector::ClockFn         m_clock;
+	std::unique_ptr<Collector> m_collector;
+	HostResult                 m_result;
 };
 
 // Set while the two list consumers wait for guest_ready (read by agc.cpp on every shader create).
-inline std::atomic<bool> g_deferred {false};
+inline std::atomic<bool>  g_deferred {false};
 [[nodiscard]] inline bool DeferredPending() {
 	return g_deferred.load(std::memory_order_relaxed);
 }

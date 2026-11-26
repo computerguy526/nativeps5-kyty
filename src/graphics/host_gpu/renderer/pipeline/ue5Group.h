@@ -89,10 +89,10 @@ inline T Get(std::span<const uint8_t> bytes, size_t at) {
                                                Stats*                    stats  = nullptr,
                                                const Layout*             layout = nullptr) {
 	if (layout == nullptr) layout = &Layouts[0];
-	const auto& marker_          = layout->marker;
-	const auto  CodeOffsetBack_ = layout->code_offset_back;
-	const auto  SizeBack_       = layout->size_back;
-	const auto  ShaderSizeAt_   = layout->shader_size_at;
+	const auto&         marker_         = layout->marker;
+	const auto          CodeOffsetBack_ = layout->code_offset_back;
+	const auto          SizeBack_       = layout->size_back;
+	const auto          ShaderSizeAt_   = layout->shader_size_at;
 	Stats               local;
 	std::vector<Shader> found;
 	std::vector<size_t> markers,

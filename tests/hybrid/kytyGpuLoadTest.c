@@ -144,6 +144,13 @@ int main(int argc, char** argv) {
 	CHECK(api->struct_size == sizeof(KytyGpuApi), "KytyGpuApi is %u bytes in the DLL, %zu here", api->struct_size, sizeof(KytyGpuApi));
 	CHECK(api->abi_version == KYTY_GPU_ABI_VERSION, "DLL ABI %#x, header %#x", api->abi_version, KYTY_GPU_ABI_VERSION);
 	printf("kyty_gpu %s, ABI %u.%u\n", api->build, api->abi_version >> 16u, api->abi_version & 0xffffu);
+	/* ABI 1.8: guest_ready is the library's, appended after protect_memory; a 1.7-sized table (the oldest a 1.8 host still
+	 * accepts) ends where it starts. */
+	CHECK(KYTY_GPU_ABI_VERSION_MINOR == 8u, "header ABI minor %u", KYTY_GPU_ABI_VERSION_MINOR);
+	CHECK(api->guest_ready != NULL, "guest_ready is null");
+	CHECK(KYTY_GPU_API_SIZE_1_7 == offsetof(KytyGpuApi, protect_memory) + sizeof(void*), "KYTY_GPU_API_SIZE_1_7");
+	CHECK(KYTY_GPU_HOST_CALLBACKS_SIZE_1_7 == offsetof(KytyGpuHostCallbacks, fault_load_apply) + sizeof(void*), "KYTY_GPU_HOST_CALLBACKS_SIZE_1_7");
+	CHECK(api->struct_size >= KYTY_GPU_API_SIZE_1_7, "struct_size below the 1.7 size");
 
 	if (lazy) {
 		/* No init: the first call reaches the trap, which loads the host module, starts Kyty and

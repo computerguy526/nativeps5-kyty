@@ -721,7 +721,8 @@ void PipelineCacheSaveForClose();
 // KYTY_PIPELINE_LIST_PREPARE=1: runs the prepare (and ends the process) once the presenter exists,
 // so its window shows the loading card; a no-op otherwise.
 void PipelineCacheRunListPrepare();
-// ABI 1.8 guest_ready (kytyGpuBridge.cpp), and the safety net of AgcCreateShader when it never came.
+// ABI 1.8 guest_ready (kytyGpuBridge.cpp), and the safety net of AgcCreateShader when it never
+// came.
 void PipelineCacheGuestReady();
 void PipelineCacheUe5AtCreate();
 

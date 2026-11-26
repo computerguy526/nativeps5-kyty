@@ -152,29 +152,32 @@ typedef struct KytyGpuHostInfo {
 #define KYTY_GPU_WATCH_ACCESS 2u /* trap the first load or store */
 
 /* ---- ABI 1.8 (nativeps5): UE5 shader library extraction ----
- * Called by the library from a host thread (never a guest thread), before or while the game runs. The host reads every IoStore
- * container under app0 (through its file layer: plain files and .nps5seg packs), parses the shader library chunks (type 8), and
- * for each shader group (type 9 chunk) decodes it by calling the guest decoder at `decoder` with convention `abi` on a guest
- * context the host owns (own guest stack + decoder memory), then calls `group` with the decoded bytes. Groups are taken in
- * container/library order (with threads > 1 they are delivered as they complete, so the order of delivery is only guaranteed
- * with threads = 1); decoded bytes are valid only during the call. progress(done, total) counts groups (total known after
- * the TOCs are read). Returns 0 = done (see out), -1 unsupported (no IoStore / abi unknown), -2 decoder call failed on the first
- * group, -3 cancelled. Null on hosts older than 1.8 (struct_size tells). */
+ * Called by the library from a host thread (never a guest thread), before or while the game runs.
+ * The host reads every IoStore container under app0 (through its file layer: plain files and
+ * .nps5seg packs), parses the shader library chunks (type 8), and for each shader group (type 9
+ * chunk) decodes it by calling the guest decoder at `decoder` with convention `abi` on a guest
+ * context the host owns (own guest stack + decoder memory), then calls `group` with the decoded
+ * bytes. Groups are taken in container/library order (with threads > 1 they are delivered as they
+ * complete, so the order of delivery is only guaranteed with threads = 1); decoded bytes are valid
+ * only during the call. progress(done, total) counts groups (total known after the TOCs are read).
+ * Returns 0 = done (see out), -1 unsupported (no IoStore / abi unknown), -2 decoder call failed on
+ * the first group, -3 cancelled. Null on hosts older than 1.8 (struct_size tells). */
 typedef struct KytyGpuUe5Group {
-	uint32_t library;            /* index of the library in delivery order */
-	uint32_t group;              /* group index in its library */
-	uint32_t shader_count;       /* from the library's group entry */
-	uint32_t raw_bytes;          /* decoded size (= the library's uncompressed size) */
-	const uint32_t* frequencies; /* shader_count entries: low 4 bits of the library shader entry (stage) */
-	const uint8_t*  bytes;       /* raw_bytes decoded bytes */
+	uint32_t library;      /* index of the library in delivery order */
+	uint32_t group;        /* group index in its library */
+	uint32_t shader_count; /* from the library's group entry */
+	uint32_t raw_bytes;    /* decoded size (= the library's uncompressed size) */
+	const uint32_t*
+	    frequencies;      /* shader_count entries: low 4 bits of the library shader entry (stage) */
+	const uint8_t* bytes; /* raw_bytes decoded bytes */
 } KytyGpuUe5Group;
 typedef struct KytyGpuUe5Query {
 	uint32_t struct_size;
-	uint32_t abi;               /* 1 = oodlelz14 */
-	uint64_t decoder;           /* guest vaddr */
-	uint32_t max_raw_bytes;     /* a group above this is skipped and counted (default 64 MiB) */
-	uint32_t threads;           /* decode contexts (1..8; 0 = host default 2) */
-	int  (*group)(void* arg, const KytyGpuUe5Group* g);     /* nonzero = stop (cancel) */
+	uint32_t abi;           /* 1 = oodlelz14 */
+	uint64_t decoder;       /* guest vaddr */
+	uint32_t max_raw_bytes; /* a group above this is skipped and counted (default 64 MiB) */
+	uint32_t threads;       /* decode contexts (1..8; 0 = host default 2) */
+	int (*group)(void* arg, const KytyGpuUe5Group* g); /* nonzero = stop (cancel) */
 	void (*progress)(void* arg, uint32_t done, uint32_t total);
 	void* arg;
 } KytyGpuUe5Query;
@@ -352,10 +355,11 @@ typedef struct KytyGpuApi {
 	int (*protect_memory)(uint64_t base, uint64_t size, uint32_t flags);
 
 	/* ---- ABI 1.8 (nativeps5) ---- May be null (struct_size tells).
-	 * Called once by the host on its launch thread after the guest image, static TLS and preloaded modules are up and before
-	 * the guest entry runs; only when the host set extract_ue5_shader_groups. May block for the whole launch phase (the host's
-	 * main thread keeps running its window loop meanwhile). extract_ue5_shader_groups may be called from inside it, and from
-	 * other host threads. */
+	 * Called once by the host on its launch thread after the guest image, static TLS and preloaded
+	 * modules are up and before the guest entry runs; only when the host set
+	 * extract_ue5_shader_groups. May block for the whole launch phase (the host's main thread keeps
+	 * running its window loop meanwhile). extract_ue5_shader_groups may be called from inside it,
+	 * and from other host threads. */
 	int (*guest_ready)(void);
 } KytyGpuApi;
 

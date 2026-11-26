@@ -9450,9 +9450,9 @@ public:
 	}
 
 private:
-	const PipelineList::File*                                  m_file;
-	std::filesystem::path                                      m_executable;
-	PipelineListGameFile                                       m_code;
+	const PipelineList::File*                                 m_file;
+	std::filesystem::path                                     m_executable;
+	PipelineListGameFile                                      m_code;
 	std::map<uint32_t, std::unique_ptr<PipelineListGameFile>> m_data;
 };
 
@@ -9469,13 +9469,13 @@ void LogListIgnored(const PipelineList::ResolveStats& stats, const std::string& 
 // The part of InitializePipelineList after Resolve: this device's inputs, the permutations'
 // identities and the log lines. Called again by ResolveUe5List once the runtime code is in.
 struct PipelineCache::ListBuild {
-	PipelineList::File*          file = nullptr;
-	PipelineList::Resolved       resolved;
-	PipelineList::ResolveStats   stats;
-	std::filesystem::path        path;
-	bool                         prepare = false, cross = false, keep_file = false;
-	std::string                  title_id, version;
-	uint64_t                     begin = 0;
+	PipelineList::File*        file = nullptr;
+	PipelineList::Resolved     resolved;
+	PipelineList::ResolveStats stats;
+	std::filesystem::path      path;
+	bool                       prepare = false, cross = false, keep_file = false;
+	std::string                title_id, version;
+	uint64_t                   begin = 0;
 };
 
 struct PipelineCache::Ue5Warm {
@@ -9484,7 +9484,7 @@ struct PipelineCache::Ue5Warm {
 	std::unique_ptr<PipelineList::File> file_holder;
 	std::unique_ptr<ListSource>         source;
 	std::array<uint32_t, 3>             sizes {};
-	Ue5CodeWarm::WantedMap              wanted; // listed codes the store lacks: hash -> bytes
+	Ue5CodeWarm::WantedMap              wanted;     // listed codes the store lacks: hash -> bytes
 	uint64_t                            listed = 0; // distinct listed runtime codes
 	ListBuild                           build;      // for the second BuildListState
 };
@@ -9528,11 +9528,13 @@ std::unique_ptr<PipelineCache::ListState> PipelineCache::BuildListState(ListBuil
 	uint64_t pipelines = 0;
 	for (const auto& pipeline: file.pipelines) {
 		pipelines += std::all_of(pipeline.stages.begin(), pipeline.stages.end(),
-		                         [&](const PipelineList::Stage& stage) { return state->identities[stage.permutation] != 0; })
+		                         [&](const PipelineList::Stage& stage) {
+			                         return state->identities[stage.permutation] != 0;
+		                         })
 		                 ? 1
 		                 : 0;
 	}
-	state->sources   = std::move(resolved.sources);
+	state->sources = std::move(resolved.sources);
 	if (build.keep_file) {
 		state->levels    = file.levels;
 		state->pipelines = file.pipelines;
@@ -9540,20 +9542,23 @@ std::unique_ptr<PipelineCache::ListState> PipelineCache::BuildListState(ListBuil
 		state->levels    = std::move(file.levels);
 		state->pipelines = std::move(file.pipelines);
 	}
-	state->prepare   = build.prepare;
+	state->prepare = build.prepare;
 	if (build.cross) {
 		PipelineCacheLog(
 		    "Pipeline list: retargeted list: {} of {} shaders matched (list {} {}, game {} {})",
 		    stats.resolved - not_here, stats.shaders, file.info.title_id, file.info.app_version,
 		    build.title_id, build.version);
 	}
-	PipelineCacheLog("Pipeline list: {} ({} {}, by {}): {} of {} shaders match the game ({} found at another offset, "
-	                 "{} differ, {} unreadable, {} with another input layout, {} not usable on this device); {} "
-	                 "permutations, {} of {} pipelines usable, {} levels ({:.0f} ms)",
-	                 Common::PathToString(build.path), file.info.title_id, file.info.app_version, file.info.producer,
-	                 stats.resolved - not_here, stats.shaders, stats.relocated, stats.mismatched, stats.unreadable,
-	                 stats.other_input_layout, not_here, state->entries.size(), pipelines, state->pipelines.size(),
-	                 state->levels.size(), static_cast<double>(CompileClockNs() - build.begin) / 1e6);
+	PipelineCacheLog(
+	    "Pipeline list: {} ({} {}, by {}): {} of {} shaders match the game ({} found at another "
+	    "offset, "
+	    "{} differ, {} unreadable, {} with another input layout, {} not usable on this device); {} "
+	    "permutations, {} of {} pipelines usable, {} levels ({:.0f} ms)",
+	    Common::PathToString(build.path), file.info.title_id, file.info.app_version,
+	    file.info.producer, stats.resolved - not_here, stats.shaders, stats.relocated,
+	    stats.mismatched, stats.unreadable, stats.other_input_layout, not_here,
+	    state->entries.size(), pipelines, state->pipelines.size(), state->levels.size(),
+	    static_cast<double>(CompileClockNs() - build.begin) / 1e6);
 	if (stats.runtime_shaders != 0) {
 		PipelineCacheLog("Pipeline list: {} runtime shaders resolved, {} pending",
 		                 stats.runtime_resolved - not_here_runtime, stats.runtime_pending);
@@ -9615,7 +9620,8 @@ void PipelineCache::InitializePipelineList() {
 			return;
 		}
 	}
-	// On the heap: a UE5 start that has to extract the runtime code keeps it for the second Resolve.
+	// On the heap: a UE5 start that has to extract the runtime code keeps it for the second
+	// Resolve.
 	auto               file_holder = std::make_unique<PipelineList::File>();
 	auto&              file        = *file_holder;
 	std::string        error;
@@ -9696,9 +9702,9 @@ void PipelineCache::InitializePipelineList() {
 			}
 		}
 	}
-	auto resolved = PipelineList::Resolve(file, sizes, source->ReadFn(), source->ImageFn(), stats,
-	                                      ue5 != nullptr ? ue5->store.ReadFn()
-	                                                     : PipelineList::ReadHashFn {});
+	auto resolved =
+	    PipelineList::Resolve(file, sizes, source->ReadFn(), source->ImageFn(), stats,
+	                          ue5 != nullptr ? ue5->store.ReadFn() : PipelineList::ReadHashFn {});
 	const auto real_stats = stats;
 	bool       defer      = false;
 	if (ue5 != nullptr) {
@@ -9707,8 +9713,10 @@ void PipelineCache::InitializePipelineList() {
 		const auto  plan = Ue5CodeWarm::PlanAtCtor(ue5->cfg, stats, Ue5CodeWarm::HostHasReader(),
 		                                           ue5->listed, line);
 		if (!line.empty()) PipelineCacheLog("{}", line);
-		if (plan == Ue5CodeWarm::CtorPlan::Defer) defer = true;
-		else ue5.reset();
+		if (plan == Ue5CodeWarm::CtorPlan::Defer)
+			defer = true;
+		else
+			ue5.reset();
 	}
 	// Pending code that nobody will extract is not found: it counts against the 50 % rule.
 	if (!defer) stats.runtime_pending = 0;
@@ -9748,13 +9756,13 @@ void PipelineCache::InitializePipelineList() {
 		PipelineCacheLog("UE5 code: {} of {} listed runtime shaders are not in the store yet: the "
 		                 "game's shader library is read when it is ready",
 		                 ue5->wanted.size(), ue5->listed);
-		ue5->file_holder = std::move(file_holder);
-		ue5->source      = std::move(source);
-		ue5->sizes       = sizes;
-		ue5->build       = std::move(build);
-		ue5->build.file  = ue5->file_holder.get();
+		ue5->file_holder    = std::move(file_holder);
+		ue5->source         = std::move(source);
+		ue5->sizes          = sizes;
+		ue5->build          = std::move(build);
+		ue5->build.file     = ue5->file_holder.get();
 		ue5->build.resolved = {};
-		m_ue5            = std::move(ue5);
+		m_ue5               = std::move(ue5);
 		Ue5CodeWarm::g_deferred.store(true, std::memory_order_release);
 	}
 }
@@ -10214,9 +10222,9 @@ void PipelineCache::RunListPrepareNow() {
 void PipelineCache::ResolveUe5List() {
 	auto&                      u = *m_ue5;
 	PipelineList::ResolveStats stats;
-	auto resolved = PipelineList::Resolve(*u.file_holder, u.sizes, u.source->ReadFn(),
-	                                      u.source->ImageFn(), stats, u.store.ReadFn());
-	const auto real = stats;
+	auto       resolved   = PipelineList::Resolve(*u.file_holder, u.sizes, u.source->ReadFn(),
+	                                              u.source->ImageFn(), stats, u.store.ReadFn());
+	const auto real       = stats;
 	stats.runtime_pending = 0; // what the store still lacks is not found
 	if (!PipelineList::MostlyMatches(stats)) {
 		LogListIgnored(real, u.file_holder->info.producer);
@@ -10245,11 +10253,11 @@ void PipelineCache::FinishUe5Warm(bool never_ready) {
 		flow.wait_before_entry = !never_ready && config.wait_before_entry;
 		if (!flow.deferred && !flow.wait_before_entry) return;
 
-		Ue5CodeWarm::Session session(
-		    config, m_ue5 != nullptr ? &m_ue5->store : nullptr, m_ue5 != nullptr ? m_ue5->wanted : Ue5CodeWarm::WantedMap {},
-		    m_ue5 != nullptr ? m_ue5->listed : 0,
-		    [](const std::string& line) { PipelineCacheLog("{}", line); });
-		auto hooks = session.MakeHooks(
+		Ue5CodeWarm::Session session(config, m_ue5 != nullptr ? &m_ue5->store : nullptr,
+		                             m_ue5 != nullptr ? m_ue5->wanted : Ue5CodeWarm::WantedMap {},
+		                             m_ue5 != nullptr ? m_ue5->listed : 0,
+		                             [](const std::string& line) { PipelineCacheLog("{}", line); });
+		auto                 hooks = session.MakeHooks(
 		    [&] {
 			    Ue5CodeWarm::RunOnMain([&] {
 				    ResolveUe5List();
