@@ -48,6 +48,7 @@
 #include "graphics/host_gpu/renderer/pipeline/levelSchedule.h"
 #include "graphics/host_gpu/renderer/pipeline/levelTier.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCacheMappedFile.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineCodeStore.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCompileQueue.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineFastFirst.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineFeedback.h"
@@ -66,6 +67,7 @@
 #include "graphics/host_gpu/renderer/pipeline/shaderPrecompile.h"
 #include "graphics/host_gpu/renderer/pipeline/stagePrepWorker.h"
 #include "graphics/host_gpu/renderer/pipeline/tierGate.h"
+#include "graphics/host_gpu/renderer/pipeline/ue5CodeWarm.h"
 #include "graphics/host_gpu/renderer/pipeline/upgradeCompletion.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -9408,6 +9410,157 @@ bool NormalizeListSource(const GraphicContext& graphics, ShaderJournal::Source& 
 
 } // namespace
 
+namespace {
+
+// The game files the list's shaders are read from (the executable, and data files next to it by
+// name), opened once each.
+class ListSource {
+public:
+	ListSource(const PipelineList::File* file, std::filesystem::path executable)
+	    : m_file(file), m_executable(std::move(executable)), m_code(m_executable) {}
+
+	[[nodiscard]] bool ExecutableOk() const { return m_code.Ok(); }
+
+	PipelineList::ReadCodeFn ReadFn() {
+		return [this](PipelineList::CodeFile which, uint64_t offset, std::span<uint8_t> out) {
+			PipelineListGameFile* in    = &m_code;
+			const auto            index = static_cast<uint32_t>(which);
+			if (index != 0) {
+				auto& opened = m_data[index];
+				if (opened == nullptr && index <= m_file->files.size()) {
+					opened = std::make_unique<PipelineListGameFile>(
+					    m_executable.parent_path() /
+					    Common::PathFromUtf8(m_file->files[index - 1]));
+				}
+				if (opened == nullptr || !opened->Ok()) return false;
+				in = opened.get();
+			}
+			return in->Read(offset, out);
+		};
+	}
+	PipelineList::ReadImageFn ImageFn() {
+		return [this](PipelineList::CodeFile) {
+			std::vector<uint8_t> image;
+			uint64_t             size = 0;
+			if (!m_code.Size(size) || size > 4ull * 1024 * 1024 * 1024) return image;
+			image.resize(static_cast<size_t>(size));
+			if (!m_code.Read(0, image)) image.clear();
+			return image;
+		};
+	}
+
+private:
+	const PipelineList::File*                                  m_file;
+	std::filesystem::path                                      m_executable;
+	PipelineListGameFile                                       m_code;
+	std::map<uint32_t, std::unique_ptr<PipelineListGameFile>> m_data;
+};
+
+void LogListIgnored(const PipelineList::ResolveStats& stats, const std::string& producer) {
+	PipelineCacheLog(
+	    "Pipeline list: only {} of {} shaders match this game's files ({} differ, {} with "
+	    "another input layout, made by {}): ignored",
+	    stats.resolved, stats.shaders - stats.runtime_pending, stats.mismatched,
+	    stats.other_input_layout, producer);
+}
+
+} // namespace
+
+// The part of InitializePipelineList after Resolve: this device's inputs, the permutations'
+// identities and the log lines. Called again by ResolveUe5List once the runtime code is in.
+struct PipelineCache::ListBuild {
+	PipelineList::File*          file = nullptr;
+	PipelineList::Resolved       resolved;
+	PipelineList::ResolveStats   stats;
+	std::filesystem::path        path;
+	bool                         prepare = false, cross = false, keep_file = false;
+	std::string                  title_id, version;
+	uint64_t                     begin = 0;
+};
+
+struct PipelineCache::Ue5Warm {
+	Ue5CodeWarm::Config                 cfg;
+	PipelineCodeStore                   store;
+	std::unique_ptr<PipelineList::File> file_holder;
+	std::unique_ptr<ListSource>         source;
+	std::array<uint32_t, 3>             sizes {};
+	Ue5CodeWarm::WantedMap              wanted; // listed codes the store lacks: hash -> bytes
+	uint64_t                            listed = 0; // distinct listed runtime codes
+	ListBuild                           build;      // for the second BuildListState
+};
+
+std::unique_ptr<PipelineCache::ListState> PipelineCache::BuildListState(ListBuild& build) {
+	auto&       file     = *build.file;
+	auto&       resolved = build.resolved;
+	const auto& stats    = build.stats;
+	// This device's inputs and static keys; the permutations' identities follow from them.
+	uint64_t              not_here = 0, not_here_runtime = 0;
+	const auto            runtime_file = PipelineList::RuntimeFileOf(file);
+	std::vector<uint32_t> source_waves(resolved.sources.size(), 0);
+	for (size_t i = 0; i < resolved.sources.size(); i++) {
+		if (resolved.usable[i] &&
+		    !NormalizeListSource(m_graphics, resolved.sources[i], &source_waves[i])) {
+			resolved.usable[i] = false;
+			resolved.sources[i].code.clear();
+			not_here++;
+			if (runtime_file != PipelineList::CodeFile::Executable &&
+			    file.shaders[i].file == runtime_file)
+				not_here_runtime++;
+		}
+	}
+	auto state = std::make_unique<ListState>();
+	state->identities.assign(file.permutations.size(), 0);
+	state->wave_sizes.assign(file.permutations.size(), 0);
+	for (size_t k = 0; k < resolved.entries.size(); k++) {
+		const auto& entry = resolved.entries[k];
+		if (!resolved.usable[entry.source]) continue;
+		// The identity hashes the encoded specialization; a list recorded before indirect_group
+		// holds the older bytes, whose hash no published module carries: hash the current encoding.
+		const auto& src   = resolved.sources[entry.source];
+		const auto  bytes = CurrentSpecializationBytes(entry.specialization);
+		state->wave_sizes[resolved.entry_permutation[k]] = source_waves[entry.source];
+		state->identities[resolved.entry_permutation[k]] =
+		    PermutationIdentity(src.stage, src.hash, src.user_data_count, src.code_size,
+		                        src.wave_size, src.user_data_base, src.plain_mip_stats_variant,
+		                        entry.push_data_cursor, src.static_state, bytes);
+		state->entries.push_back(entry);
+	}
+	uint64_t pipelines = 0;
+	for (const auto& pipeline: file.pipelines) {
+		pipelines += std::all_of(pipeline.stages.begin(), pipeline.stages.end(),
+		                         [&](const PipelineList::Stage& stage) { return state->identities[stage.permutation] != 0; })
+		                 ? 1
+		                 : 0;
+	}
+	state->sources   = std::move(resolved.sources);
+	if (build.keep_file) {
+		state->levels    = file.levels;
+		state->pipelines = file.pipelines;
+	} else {
+		state->levels    = std::move(file.levels);
+		state->pipelines = std::move(file.pipelines);
+	}
+	state->prepare   = build.prepare;
+	if (build.cross) {
+		PipelineCacheLog(
+		    "Pipeline list: retargeted list: {} of {} shaders matched (list {} {}, game {} {})",
+		    stats.resolved - not_here, stats.shaders, file.info.title_id, file.info.app_version,
+		    build.title_id, build.version);
+	}
+	PipelineCacheLog("Pipeline list: {} ({} {}, by {}): {} of {} shaders match the game ({} found at another offset, "
+	                 "{} differ, {} unreadable, {} with another input layout, {} not usable on this device); {} "
+	                 "permutations, {} of {} pipelines usable, {} levels ({:.0f} ms)",
+	                 Common::PathToString(build.path), file.info.title_id, file.info.app_version, file.info.producer,
+	                 stats.resolved - not_here, stats.shaders, stats.relocated, stats.mismatched, stats.unreadable,
+	                 stats.other_input_layout, not_here, state->entries.size(), pipelines, state->pipelines.size(),
+	                 state->levels.size(), static_cast<double>(CompileClockNs() - build.begin) / 1e6);
+	if (stats.runtime_shaders != 0) {
+		PipelineCacheLog("Pipeline list: {} runtime shaders resolved, {} pending",
+		                 stats.runtime_resolved - not_here_runtime, stats.runtime_pending);
+	}
+	return state;
+}
+
 void PipelineCache::InitializePipelineList() {
 	// Unset (default): PipelineLists/<title>.kyplst next to the emulator when it exists (a release
 	// ships them; nothing is logged when there is none). "1": that file, logged when missing. "0":
@@ -9462,7 +9615,9 @@ void PipelineCache::InitializePipelineList() {
 			return;
 		}
 	}
-	PipelineList::File file;
+	// On the heap: a UE5 start that has to extract the runtime code keeps it for the second Resolve.
+	auto               file_holder = std::make_unique<PipelineList::File>();
+	auto&              file        = *file_holder;
 	std::string        error;
 	if (!PipelineList::Decode(bytes, file, &error)) {
 		PipelineCacheLog("Pipeline list: {} is not usable ({})", Common::PathToString(path), error);
@@ -9485,38 +9640,18 @@ void PipelineCache::InitializePipelineList() {
 	}
 	// A game folder's file, or a member of a game archive (a .zar game: "<game>.zar!/eboot.bin").
 	const auto executable = PipelineListExecutable();
-	PipelineListGameFile code_file(executable);
-	if (executable.empty() || !code_file.Ok()) {
+	// A UE5 list whose shaders all come from the game's shader library needs no executable.
+	const bool runtime_only =
+	    PipelineList::RuntimeFileOf(file) != PipelineList::CodeFile::Executable &&
+	    std::none_of(file.shaders.begin(), file.shaders.end(), [](const PipelineList::Shader& s) {
+		    return s.file == PipelineList::CodeFile::Executable;
+	    });
+	auto source = std::make_unique<ListSource>(&file, executable);
+	if (!runtime_only && (executable.empty() || !source->ExecutableOk())) {
 		PipelineCacheLog("Pipeline list: the game executable ({}) cannot be read: ignored",
 		                 Common::PathToString(executable));
 		return;
 	}
-	// Data files (list format with a files section): opened once each, next to the executable
-	// (/app0).
-	std::map<uint32_t, std::unique_ptr<PipelineListGameFile>> data_files;
-	const PipelineList::ReadCodeFn read = [&](PipelineList::CodeFile which, uint64_t offset,
-	                                          std::span<uint8_t> out) {
-		PipelineListGameFile* in    = &code_file;
-		const auto            index = static_cast<uint32_t>(which);
-		if (index != 0) {
-			auto& opened = data_files[index];
-			if (opened == nullptr && index <= file.files.size()) {
-				opened = std::make_unique<PipelineListGameFile>(
-				    executable.parent_path() / Common::PathFromUtf8(file.files[index - 1]));
-			}
-			if (opened == nullptr || !opened->Ok()) return false;
-			in = opened.get();
-		}
-		return in->Read(offset, out);
-	};
-	const PipelineList::ReadImageFn read_image = [&](PipelineList::CodeFile) {
-		std::vector<uint8_t> image;
-		uint64_t             size = 0;
-		if (!code_file.Size(size) || size > 4ull * 1024 * 1024 * 1024) return image;
-		image.resize(static_cast<size_t>(size));
-		if (!code_file.Read(0, image)) image.clear();
-		return image;
-	};
 	const std::array<uint32_t, 3> sizes {ShaderStoredInputInfoSize<ShaderVertexInputInfo>(),
 	                                     ShaderStoredInputInfoSize<ShaderPixelInputInfo>(),
 	                                     ShaderStoredInputInfoSize<ShaderComputeInputInfo>()};
@@ -9545,13 +9680,40 @@ void PipelineCache::InitializePipelineList() {
 		                 upgrade_stats.upgraded, upgrade_stats.skipped, specializations);
 	}
 	PipelineList::ResolveStats stats;
-	auto resolved = PipelineList::Resolve(file, sizes, read, read_image, stats);
+	// UE5 warm list: the `<runtime>` shaders' code comes from the per-player store (ue5CodeWarm.h).
+	std::unique_ptr<Ue5Warm> ue5;
+	if (PipelineList::RuntimeFileOf(file) != PipelineList::CodeFile::Executable) {
+		auto config = Ue5CodeWarm::ParseEnv([](const char* name) { return std::getenv(name); });
+		if (!config.store_path.empty()) {
+			ue5      = std::make_unique<Ue5Warm>();
+			ue5->cfg = std::move(config);
+			if (!ue5->store.Open(Common::PathFromUtf8(ue5->cfg.store_path), title_id, version,
+			                     ue5->cfg.fp)) {
+				PipelineCacheLog("UE5 code: the code store {} cannot be opened: the list's runtime "
+				                 "shaders stay pending",
+				                 ue5->cfg.store_path);
+				ue5.reset();
+			}
+		}
+	}
+	auto resolved = PipelineList::Resolve(file, sizes, source->ReadFn(), source->ImageFn(), stats,
+	                                      ue5 != nullptr ? ue5->store.ReadFn()
+	                                                     : PipelineList::ReadHashFn {});
+	const auto real_stats = stats;
+	bool       defer      = false;
+	if (ue5 != nullptr) {
+		Ue5CodeWarm::CollectWanted(file, resolved, sizes, ue5->store, ue5->wanted, ue5->listed);
+		std::string line;
+		const auto  plan = Ue5CodeWarm::PlanAtCtor(ue5->cfg, stats, Ue5CodeWarm::HostHasReader(),
+		                                           ue5->listed, line);
+		if (!line.empty()) PipelineCacheLog("{}", line);
+		if (plan == Ue5CodeWarm::CtorPlan::Defer) defer = true;
+		else ue5.reset();
+	}
+	// Pending code that nobody will extract is not found: it counts against the 50 % rule.
+	if (!defer) stats.runtime_pending = 0;
 	if (!PipelineList::MostlyMatches(stats)) {
-		PipelineCacheLog(
-		    "Pipeline list: only {} of {} shaders match this game's files ({} differ, {} with "
-		    "another input layout, made by {}): ignored",
-		    stats.resolved, stats.shaders - stats.runtime_pending, stats.mismatched,
-		    stats.other_input_layout, file.info.producer);
+		LogListIgnored(real_stats, file.info.producer);
 		return;
 	}
 	if (file.info.state_format == 0 && !file.pipelines.empty()) {
@@ -9570,67 +9732,31 @@ void PipelineCache::InitializePipelineList() {
 		    PipelineList::StateFormat, file.pipelines.size());
 		file.pipelines.clear();
 	}
-	// This device's inputs and static keys; the permutations' identities follow from them.
-	uint64_t              not_here = 0, not_here_runtime = 0;
-	const auto            runtime_file = PipelineList::RuntimeFileOf(file);
-	std::vector<uint32_t> source_waves(resolved.sources.size(), 0);
-	for (size_t i = 0; i < resolved.sources.size(); i++) {
-		if (resolved.usable[i] &&
-		    !NormalizeListSource(m_graphics, resolved.sources[i], &source_waves[i])) {
-			resolved.usable[i] = false;
-			resolved.sources[i].code.clear();
-			not_here++;
-			if (runtime_file != PipelineList::CodeFile::Executable &&
-			    file.shaders[i].file == runtime_file)
-				not_here_runtime++;
-		}
+	ListBuild build;
+	build.file      = &file;
+	build.resolved  = std::move(resolved);
+	build.stats     = real_stats;
+	build.path      = path;
+	build.prepare   = prepare;
+	build.cross     = cross;
+	build.keep_file = defer;
+	build.title_id  = title_id;
+	build.version   = version;
+	build.begin     = begin;
+	m_list          = BuildListState(build);
+	if (defer) {
+		PipelineCacheLog("UE5 code: {} of {} listed runtime shaders are not in the store yet: the "
+		                 "game's shader library is read when it is ready",
+		                 ue5->wanted.size(), ue5->listed);
+		ue5->file_holder = std::move(file_holder);
+		ue5->source      = std::move(source);
+		ue5->sizes       = sizes;
+		ue5->build       = std::move(build);
+		ue5->build.file  = ue5->file_holder.get();
+		ue5->build.resolved = {};
+		m_ue5            = std::move(ue5);
+		Ue5CodeWarm::g_deferred.store(true, std::memory_order_release);
 	}
-	auto state = std::make_unique<ListState>();
-	state->identities.assign(file.permutations.size(), 0);
-	state->wave_sizes.assign(file.permutations.size(), 0);
-	for (size_t k = 0; k < resolved.entries.size(); k++) {
-		const auto& entry = resolved.entries[k];
-		if (!resolved.usable[entry.source]) continue;
-		// The identity hashes the encoded specialization; a list recorded before indirect_group
-		// holds the older bytes, whose hash no published module carries: hash the current encoding.
-		const auto& src   = resolved.sources[entry.source];
-		const auto  bytes = CurrentSpecializationBytes(entry.specialization);
-		state->wave_sizes[resolved.entry_permutation[k]] = source_waves[entry.source];
-		state->identities[resolved.entry_permutation[k]] =
-		    PermutationIdentity(src.stage, src.hash, src.user_data_count, src.code_size,
-		                        src.wave_size, src.user_data_base, src.plain_mip_stats_variant,
-		                        entry.push_data_cursor, src.static_state, bytes);
-		state->entries.push_back(entry);
-	}
-	uint64_t pipelines = 0;
-	for (const auto& pipeline: file.pipelines) {
-		pipelines += std::all_of(pipeline.stages.begin(), pipeline.stages.end(),
-		                         [&](const PipelineList::Stage& stage) { return state->identities[stage.permutation] != 0; })
-		                 ? 1
-		                 : 0;
-	}
-	state->sources   = std::move(resolved.sources);
-	state->levels    = std::move(file.levels);
-	state->pipelines = std::move(file.pipelines);
-	state->prepare   = prepare;
-	if (cross) {
-		PipelineCacheLog(
-		    "Pipeline list: retargeted list: {} of {} shaders matched (list {} {}, game {} {})",
-		    stats.resolved - not_here, stats.shaders, file.info.title_id, file.info.app_version,
-		    title_id, version);
-	}
-	PipelineCacheLog("Pipeline list: {} ({} {}, by {}): {} of {} shaders match the game ({} found at another offset, "
-	                 "{} differ, {} unreadable, {} with another input layout, {} not usable on this device); {} "
-	                 "permutations, {} of {} pipelines usable, {} levels ({:.0f} ms)",
-	                 Common::PathToString(path), file.info.title_id, file.info.app_version, file.info.producer,
-	                 stats.resolved - not_here, stats.shaders, stats.relocated, stats.mismatched, stats.unreadable,
-	                 stats.other_input_layout, not_here, state->entries.size(), pipelines, state->pipelines.size(),
-	                 state->levels.size(), static_cast<double>(CompileClockNs() - begin) / 1e6);
-	if (stats.runtime_shaders != 0) {
-		PipelineCacheLog("Pipeline list: {} runtime shaders resolved, {} pending",
-		                 stats.runtime_resolved - not_here_runtime, stats.runtime_pending);
-	}
-	m_list = std::move(state);
 }
 
 // KYTY_PIPELINE_LIST_PREPARE=1: waits for the shader replay, the pipeline replay, the compute prewarm
@@ -9934,8 +10060,12 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 	}
 	InitializeMadExactFilter();
 	InitializeProgramDiskCache();
-	InitializeShaderPrecompile();
-	InitializePipelineJournal();
+	// A UE5 start that still has to extract the list's runtime code starts these two in
+	// FinishUe5Warm (guest_ready).
+	if (!Ue5CodeWarm::DeferredPending()) {
+		InitializeShaderPrecompile();
+		InitializePipelineJournal();
+	}
 	if (GraphicsPipelineLibrary::Enabled(m_graphics)) {
 		m_library = std::make_unique<LibraryState>(*this);
 		PipelineCacheLog("Graphics pipeline libraries: enabled (fast link, {})",
@@ -10055,6 +10185,7 @@ void PipelineCacheSaveForClose() {
 // before the presenter exists).
 void PipelineCache::RunListPrepareIfRequested() {
 	g_live_pipeline_cache.store(this, std::memory_order_release);
+	if (Ue5CodeWarm::DeferredPending()) return; // FinishUe5Warm runs it
 	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0 && !PipelineCacheFileTitleId().empty() &&
 	    EnvU64("KYTY_PIPELINE_LIST_PREPARE_CARD", 1) == 0) {
 		RunListPrepare();
@@ -10066,6 +10197,7 @@ void PipelineCache::RunListPrepareIfRequested() {
 // does not start, exactly as before; the card thread presents "PREPARING SHADERS X / T" from the
 // replay's counters until the process ends.
 void PipelineCacheRunListPrepare() {
+	if (Ue5CodeWarm::DeferredPending()) return; // FinishUe5Warm runs it
 	if (EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) == 0 || PipelineCacheFileTitleId().empty()) return;
 	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr)
 		cache->RunListPrepareNow();
@@ -10078,7 +10210,83 @@ void PipelineCache::RunListPrepareNow() {
 	RunListPrepare();
 }
 
+// UE5 warm list (ue5CodeWarm.h): the second Resolve with the code the store holds now.
+void PipelineCache::ResolveUe5List() {
+	auto&                      u = *m_ue5;
+	PipelineList::ResolveStats stats;
+	auto resolved = PipelineList::Resolve(*u.file_holder, u.sizes, u.source->ReadFn(),
+	                                      u.source->ImageFn(), stats, u.store.ReadFn());
+	const auto real = stats;
+	stats.runtime_pending = 0; // what the store still lacks is not found
+	if (!PipelineList::MostlyMatches(stats)) {
+		LogListIgnored(real, u.file_holder->info.producer);
+		m_list.reset();
+		return;
+	}
+	u.build.resolved  = std::move(resolved);
+	u.build.stats     = real;
+	u.build.keep_file = false;
+	u.build.begin     = CompileClockNs();
+	m_list            = BuildListState(u.build);
+}
+
+// Called by the host (guest_ready, on its launch thread, before the guest entry) or, as a safety
+// net, by the first AgcCreateShader when the host never did. See ue5CodeWarm.h RunGuestReady.
+void PipelineCache::FinishUe5Warm(bool never_ready) {
+	std::call_once(m_ue5_once, [&] {
+		const auto config =
+		    m_ue5 != nullptr
+		        ? m_ue5->cfg
+		        : Ue5CodeWarm::ParseEnv([](const char* name) { return std::getenv(name); });
+		Ue5CodeWarm::Flow flow;
+		flow.deferred          = m_ue5 != nullptr;
+		flow.never_ready       = never_ready;
+		flow.prepare           = flow.deferred && EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0;
+		flow.wait_before_entry = !never_ready && config.wait_before_entry;
+		if (!flow.deferred && !flow.wait_before_entry) return;
+
+		Ue5CodeWarm::Session session(
+		    config, m_ue5 != nullptr ? &m_ue5->store : nullptr, m_ue5 != nullptr ? m_ue5->wanted : Ue5CodeWarm::WantedMap {},
+		    m_ue5 != nullptr ? m_ue5->listed : 0,
+		    [](const std::string& line) { PipelineCacheLog("{}", line); });
+		auto hooks = session.MakeHooks(
+		    [&] {
+			    Ue5CodeWarm::RunOnMain([&] {
+				    ResolveUe5List();
+				    InitializeShaderPrecompile();
+				    InitializePipelineJournal();
+				    Ue5CodeWarm::g_deferred.store(false, std::memory_order_release);
+			    });
+			    m_ue5.reset();
+		    },
+		    [&] { RunListPrepareNow(); },
+		    [&] {
+			    const auto begin = CompileClockNs();
+			    const auto limit =
+			        std::chrono::seconds(EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900));
+			    const auto until = std::chrono::steady_clock::now() + limit;
+			    while (!LaunchHoldDone() && std::chrono::steady_clock::now() < until)
+				    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			    PipelineCacheLog("Launch phase: the game starts after it ({:.0f} ms{})",
+			                     static_cast<double>(CompileClockNs() - begin) / 1e6,
+			                     LaunchHoldDone() ? "" : ", given up");
+		    });
+		Ue5CodeWarm::RunGuestReady(flow, hooks);
+	});
+}
+
+void PipelineCacheGuestReady() {
+	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr)
+		cache->FinishUe5Warm(false);
+}
+
+void PipelineCacheUe5AtCreate() {
+	if (auto* cache = g_live_pipeline_cache.load(std::memory_order_acquire); cache != nullptr)
+		cache->FinishUe5Warm(true);
+}
+
 PipelineCache::~PipelineCache() {
+	Ue5CodeWarm::g_deferred.store(false, std::memory_order_release);
 	LaunchHoldRelease();
 	g_live_pipeline_cache.store(nullptr, std::memory_order_release);
 	m_stats_reporter.reset();

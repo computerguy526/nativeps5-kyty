@@ -36,6 +36,26 @@ inline constexpr size_t ShaderSizeAt =
     0x44; // the header's shader_size, from the marker (cross-check)
 inline constexpr uint32_t UnknownStage = 0xFFFFFFFFu;
 
+// The per-UE-version knobs of the split, as data: adding a UE version is one row here and one
+// fixture in the tests. `name` is the word the profile gives (KYTY_UE5_LAYOUT; unset = the first
+// row); an unknown name turns the feature off with one log line (ue5CodeWarm.h).
+struct Layout {
+	const char* name;
+	uint8_t     marker[8];        // the AGC shader header's first 8 bytes
+	size_t      code_offset_back; // the u32 code offset sits this far before the marker
+	size_t      size_back;        // the u32 code size sits this far before the marker
+	size_t      shader_size_at;   // the header's shader_size, from the marker (cross-check)
+};
+inline constexpr Layout Layouts[] = {
+    {"agc18", {'1', '2', '3', '4', 0x18, 0, 0, 0}, CodeOffsetBack, SizeBack, ShaderSizeAt},
+};
+[[nodiscard]] inline const Layout* FindLayout(const char* name) {
+	if (name == nullptr || *name == '\0') return &Layouts[0];
+	for (const auto& layout: Layouts)
+		if (std::strcmp(layout.name, name) == 0) return &layout;
+	return nullptr;
+}
+
 struct Shader {
 	uint32_t                 stage = UnknownStage; // the library entry's frequency (low 4 bits)
 	uint32_t                 size  = 0;            // code bytes
@@ -66,24 +86,30 @@ inline T Get(std::span<const uint8_t> bytes, size_t at) {
 // (KytyGpuUe5Group::frequencies); may be empty. The result's spans point into `group`.
 [[nodiscard]] inline std::vector<Shader> Split(std::span<const uint8_t>  group,
                                                std::span<const uint32_t> frequencies,
-                                               Stats*                    stats = nullptr) {
+                                               Stats*                    stats  = nullptr,
+                                               const Layout*             layout = nullptr) {
+	if (layout == nullptr) layout = &Layouts[0];
+	const auto& marker_          = layout->marker;
+	const auto  CodeOffsetBack_ = layout->code_offset_back;
+	const auto  SizeBack_       = layout->size_back;
+	const auto  ShaderSizeAt_   = layout->shader_size_at;
 	Stats               local;
 	std::vector<Shader> found;
 	std::vector<size_t> markers,
 	    ordinal;           // header offsets; per yielded shader the index of its header
 	size_t skip_until = 0; // markers inside an accepted code are not headers
-	for (size_t at = 0; at + sizeof(Marker) <= group.size();) {
+	for (size_t at = 0; at + sizeof(marker_) <= group.size();) {
 		const auto* hit = static_cast<const uint8_t*>(
-		    std::memchr(group.data() + at, Marker[0], group.size() - sizeof(Marker) + 1 - at));
+		    std::memchr(group.data() + at, marker_[0], group.size() - sizeof(marker_) + 1 - at));
 		if (hit == nullptr) break;
 		at = static_cast<size_t>(hit - group.data());
-		if (at >= skip_until && std::memcmp(hit, Marker, sizeof(Marker)) == 0) {
+		if (at >= skip_until && std::memcmp(hit, marker_, sizeof(marker_)) == 0) {
 			markers.push_back(at);
-			if (at >= CodeOffsetBack && at + sizeof(Marker) <= group.size()) {
-				const uint64_t start = at + Detail::Get<uint32_t>(group, at - CodeOffsetBack);
-				const uint32_t size  = Detail::Get<uint32_t>(group, at - SizeBack);
-				if (at + ShaderSizeAt + 4 <= group.size() &&
-				    Detail::Get<uint32_t>(group, at + ShaderSizeAt) != size) {
+			if (at >= CodeOffsetBack_ && at + sizeof(marker_) <= group.size()) {
+				const uint64_t start = at + Detail::Get<uint32_t>(group, at - CodeOffsetBack_);
+				const uint32_t size  = Detail::Get<uint32_t>(group, at - SizeBack_);
+				if (at + ShaderSizeAt_ + 4 <= group.size() &&
+				    Detail::Get<uint32_t>(group, at + ShaderSizeAt_) != size) {
 					local.size_mismatch++;
 				}
 				if (size == 0 || size % 4u != 0) {
@@ -101,13 +127,13 @@ inline T Get(std::span<const uint8_t> bytes, size_t at) {
 					found.push_back(shader);
 					ordinal.push_back(markers.size() - 1);
 					skip_until = static_cast<size_t>(start + size);
-					at += sizeof(Marker);
+					at += sizeof(marker_);
 					continue;
 				}
 			} else {
 				local.out_of_bounds++;
 			}
-			at += sizeof(Marker);
+			at += sizeof(marker_);
 			continue;
 		}
 		at++;

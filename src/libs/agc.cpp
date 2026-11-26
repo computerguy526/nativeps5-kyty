@@ -20,6 +20,8 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/guest_gpu/tile.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/ue5CodeWarm.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/renderer/sync.h"
@@ -921,6 +923,12 @@ static void patch_shader_register_address(ShaderRegister* regs, uint32_t num_reg
 
 int KYTY_SYSV_ABI AgcCreateShader(Shader** dst, void* header, const volatile void* code) {
 	PRINT_NAME();
+
+	// nps5 UE5 warm list: the host never reported the guest ready (guest_ready); start what the
+	// list's loader deferred, without the extraction.
+	if (Ue5CodeWarm::DeferredPending()) [[unlikely]] {
+		PipelineCacheUe5AtCreate();
+	}
 
 	EXIT_NOT_IMPLEMENTED(dst == nullptr);
 	EXIT_NOT_IMPLEMENTED(header == nullptr);

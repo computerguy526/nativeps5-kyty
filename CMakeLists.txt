@@ -1207,6 +1207,18 @@ add_executable(pipeline_ue5warm_tests EXCLUDE_FROM_ALL
 target_link_libraries(pipeline_ue5warm_tests Vulkan::Headers xxhash libzstd_static)
 target_include_directories(pipeline_ue5warm_tests PRIVATE ${inc_headers} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list")
 
+# nps5 UE5 warm list, the loader side (pipeline/ue5CodeWarm.h): env words, host seam with a fake host, collector, card unit,
+# the guest_ready flow and every failure path. Synthetic data only, no GPU.
+add_executable(ue5_code_warm_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/Ue5CodeWarmTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineList.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineCodeStore.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineSnapshot.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/shaderPrecompile.cpp"
+)
+target_link_libraries(ue5_code_warm_tests Vulkan::Headers xxhash libzstd_static)
+target_include_directories(ue5_code_warm_tests PRIVATE ${inc_headers} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list")
+
 # export --programs (tools/pipeline-list/programsSource.h): program cache -> list sources; synthetic caches, no game.
 add_executable(pipeline_list_programs_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineListProgramsTests.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/shaderPrecompile.cpp"
@@ -2083,6 +2095,8 @@ if(BUILD_TESTING)
 	add_test(NAME pipeline_list_programs COMMAND $<TARGET_FILE:pipeline_list_programs_tests>)
 	add_test(NAME pipeline_ue5warm COMMAND $<TARGET_FILE:pipeline_ue5warm_tests>)
 	set_tests_properties(pipeline_ue5warm PROPERTIES TIMEOUT 60)
+	add_test(NAME ue5_code_warm COMMAND $<TARGET_FILE:ue5_code_warm_tests>)
+	set_tests_properties(ue5_code_warm PROPERTIES TIMEOUT 60)
 	set_tests_properties(pipeline_list PROPERTIES TIMEOUT 60)
 	add_test(NAME pipeline_list_game_files COMMAND $<TARGET_FILE:pipeline_list_game_files_tests>)
 	set_tests_properties(pipeline_list_game_files PROPERTIES TIMEOUT 60)
@@ -3356,6 +3370,7 @@ if(BUILD_TESTING)
 		pipeline_list_tests
 		pipeline_list_programs_tests
 		pipeline_ue5warm_tests
+		ue5_code_warm_tests
 		pipeline_list_game_files_tests
 		vram_budget_tests
 		footprint_governor_tests

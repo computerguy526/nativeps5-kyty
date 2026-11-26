@@ -561,6 +561,13 @@ private:
 	// The loaded pipeline list (KYTY_PIPELINE_LIST) until the replays take its content; null when off.
 	struct ListState;
 	std::unique_ptr<ListState> m_list;
+	// UE5 warm list (ue5CodeWarm.h): while the list's `<runtime>` code is not in the per-player
+	// store yet, the list's consumers wait for the host's guest_ready call, which extracts it
+	// from the game's shader library first. Null on every other start.
+	struct Ue5Warm;
+	struct ListBuild;
+	std::unique_ptr<Ue5Warm> m_ue5;
+	std::once_flag           m_ue5_once;
 	// Background builds of every replayed compute program's pipeline (KYTY_PIPELINE_PREWARM_COMPUTE).
 	struct ComputePrewarm;
 	std::unique_ptr<ComputePrewarm> m_compute_prewarm;
@@ -652,6 +659,8 @@ private:
 	void InitializeDriverCache();
 	void InitializeKnownPipelines();
 	void InitializePipelineList();
+	std::unique_ptr<ListState> BuildListState(ListBuild& build);
+	void                       ResolveUe5List();
 	void InitializePipelineJournal();
 	// KYTY_PIPELINE_LIST_PREPARE: builds the list's shaders and pipelines, saves and ends the process.
 	[[noreturn]] void RunListPrepare();
@@ -661,6 +670,9 @@ public:
 	void RunListPrepareIfRequested();
 	// The prepare, once the window can show the loading card (PipelineCacheRunListPrepare).
 	void RunListPrepareNow();
+	// The host reported the guest ready (never_ready: the first AgcCreateShader came before it):
+	// extracts the runtime code, then starts what InitializePipelineList deferred.
+	void FinishUe5Warm(bool never_ready);
 	// The window was closed: writes the pending driver cache data now.
 	void SaveForClose();
 
@@ -709,6 +721,9 @@ void PipelineCacheSaveForClose();
 // KYTY_PIPELINE_LIST_PREPARE=1: runs the prepare (and ends the process) once the presenter exists,
 // so its window shows the loading card; a no-op otherwise.
 void PipelineCacheRunListPrepare();
+// ABI 1.8 guest_ready (kytyGpuBridge.cpp), and the safety net of AgcCreateShader when it never came.
+void PipelineCacheGuestReady();
+void PipelineCacheUe5AtCreate();
 
 void LogPipelineTrace(const char* phase, uint64_t vertex_program_id, uint64_t pixel_program_id);
 // Stops the emulator at a mesh (NGG) draw on a device without mesh shaders, naming the missing

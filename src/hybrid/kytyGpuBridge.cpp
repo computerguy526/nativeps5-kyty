@@ -26,6 +26,8 @@
 #include "graphics/host_gpu/faultCost.h"
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/renderer/dlss.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/pipeline/ue5CodeWarm.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/padFocus.h"
@@ -48,6 +50,10 @@
 #include "loader/x64InstructionEmulator.h"
 
 #include <SDL3/SDL.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -816,6 +822,84 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 		    g_host_info.tracker_page_size);
 	}
 
+	// ABI 1.8: the host reads the game's UE5 shader library for the pipeline list's `<runtime>`
+	// shaders (ue5CodeWarm.h). A host without it leaves the field null.
+	if (g_host.extract_ue5_shader_groups != nullptr) {
+		namespace Ue5 = Libs::Graphics::Ue5CodeWarm;
+		Ue5::SetHostExtract([](uint64_t decoder, uint32_t abi, const Ue5::GroupFn& group,
+		                       const Ue5::ProgressFn& progress) {
+			struct Context {
+				const Ue5::GroupFn*    group;
+				const Ue5::ProgressFn* progress;
+			} context {&group, &progress};
+			KytyGpuUe5Query query {};
+			query.struct_size   = sizeof(query);
+			query.abi           = abi;
+			query.decoder       = decoder;
+			query.max_raw_bytes = 64u << 20u;
+			query.threads       = 0;
+			query.group         = [](void* arg, const KytyGpuUe5Group* g) -> int {
+                try {
+                    Ue5::GroupView view;
+                    view.library      = g->library;
+                    view.group        = g->group;
+                    view.shader_count = g->shader_count;
+                    if (g->frequencies != nullptr)
+                        view.frequencies = {g->frequencies, g->shader_count};
+                    view.bytes = {g->bytes, g->raw_bytes};
+                    return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
+                } catch (...) {
+                    return 1;
+                }
+			};
+			query.progress = [](void* arg, uint32_t done, uint32_t total) {
+				try {
+					(*static_cast<Context*>(arg)->progress)(done, total);
+				} catch (...) {
+				}
+			};
+			query.arg = &context;
+			KytyGpuUe5Result result {};
+			Ue5::HostResult  out;
+			out.code = g_host.extract_ue5_shader_groups(g_host.user, &query, &result);
+			out.groups_total     = result.groups_total;
+			out.decoded          = result.groups_decoded;
+			out.failed           = result.groups_failed;
+			out.skipped          = result.groups_skipped;
+			out.compressed_bytes = result.compressed_bytes;
+			out.raw_bytes        = result.raw_bytes;
+			out.ms               = result.ms;
+			return out;
+		});
+		Ue5::SetRunOnMain([](std::function<void()> fn) {
+			if (g_host.run_on_main_thread == nullptr ||
+			    (g_host_info.flags & KYTY_GPU_HOST_MAIN_QUEUE) == 0 || Common::Thread::IsMainThread() ||
+			    g_host.run_on_main_thread(
+			        g_host.user, [](void* arg) { (*static_cast<std::function<void()>*>(arg))(); }, &fn,
+			        1) != 0) {
+				fn();
+			}
+		});
+		// Never a raw read of an address taken from a profile: inside the guest window, and through
+		// the kernel's checked read.
+		Ue5::SetGuestReader([](uint64_t address, std::span<uint8_t> out) {
+			const uint64_t end = address + out.size();
+			if (g_host_info.guest_hi <= g_host_info.guest_lo || address < g_host_info.guest_lo ||
+			    end < address || end > g_host_info.guest_hi) {
+				return false;
+			}
+#if defined(__APPLE__)
+			mach_vm_size_t got = 0;
+			return mach_vm_read_overwrite(mach_task_self(), address + g_host_info.guest_bias,
+			                              out.size(), reinterpret_cast<mach_vm_address_t>(out.data()),
+			                              &got) == KERN_SUCCESS &&
+			       got == out.size();
+#else
+			return false;
+#endif
+		});
+	}
+
 	Loader::SymbolDatabase symbols;
 	Libs::InitAgcDriver_1(&symbols);
 	Libs::LibGen5::InitVideoOut_1(&symbols);
@@ -1466,6 +1550,17 @@ int ApiProtectMemory(uint64_t base, uint64_t size, uint32_t flags) {
 	                                                                 : KYTY_GPU_E_ARGUMENT;
 }
 
+// ABI 1.8: the host's guest image, static TLS and preloaded modules are up and the guest has not
+// started: extracts the UE5 shader library code for the pipeline list, then starts the list's
+// replay (and, with KYTY_LAUNCH_WAIT_BEFORE_ENTRY, returns when the launch phase is over).
+int ApiGuestReady() {
+	if (g_state.load() != State::Graphics) {
+		return KYTY_GPU_E_STATE;
+	}
+	Libs::Graphics::PipelineCacheGuestReady();
+	return KYTY_GPU_OK;
+}
+
 // A CPU access trapped on a tracker page Kyty armed (guest address). Signal-handler context.
 int ApiHandleFault(uint64_t address, int is_write) {
 	if (!g_memory_ready.load(std::memory_order_acquire)) {
@@ -1643,6 +1738,7 @@ const KytyGpuApi g_api = {
     ApiNidEntry,
     ApiHandleFault,
     ApiProtectMemory,
+    ApiGuestReady,
 };
 
 } // namespace
