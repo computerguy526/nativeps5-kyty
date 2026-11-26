@@ -1001,8 +1001,9 @@ void Builder::AddList(const File& other, ExportStats& stats, bool normalize_pipe
 
 // Resolving ----------------------------------------------------------------------------------------
 
-Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_sizes, const ReadCodeFn& read,
-                 const ReadImageFn& read_image, ResolveStats& stats, const ReadHashFn& read_hash) {
+Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_sizes,
+                 const ReadCodeFn& read, const ReadImageFn& read_image, ResolveStats& stats,
+                 const ReadHashFn& read_hash) {
 	Resolved out;
 	out.sources.resize(file.shaders.size());
 	out.usable.assign(file.shaders.size(), false);
@@ -1021,8 +1022,8 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 		uint64_t              offset = 0;
 		std::vector<uint32_t> code;
 		bool                  found = false;
-		bool                  runtime = false; // `<runtime>`: code by hash from the store, never relocated
-		bool                  pending = false; // runtime and not in the store
+		bool runtime = false; // `<runtime>`: code by hash from the store, never relocated
+		bool pending = false; // runtime and not in the store
 	};
 	std::vector<Piece> pieces;
 	std::vector<bool>  readable(file.shaders.size(), true);
@@ -1052,7 +1053,8 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 					piece.pending = true;
 				} else {
 					// The store is keyed by the hash alone: size and prefix must agree too.
-					piece.found = CodeHash(bytes) == piece.query.hash && CodePrefixHash(bytes) == piece.query.prefix_hash;
+					piece.found = CodeHash(bytes) == piece.query.hash &&
+					              CodePrefixHash(bytes) == piece.query.prefix_hash;
 				}
 			} else if (!read(s.file, piece.offset, bytes)) {
 				readable[i] = false;
@@ -1131,7 +1133,8 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 		}
 		out.usable[i] = true;
 		stats.resolved++;
-		if (runtime_file != CodeFile::Executable && file.shaders[i].file == runtime_file) stats.runtime_resolved++;
+		if (runtime_file != CodeFile::Executable && file.shaders[i].file == runtime_file)
+			stats.runtime_resolved++;
 		stats.relocated += moved[i];
 	}
 	out.permutation_entry.assign(file.permutations.size(), UINT32_MAX);

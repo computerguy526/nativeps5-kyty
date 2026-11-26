@@ -9550,8 +9550,8 @@ void PipelineCache::InitializePipelineList() {
 		PipelineCacheLog(
 		    "Pipeline list: only {} of {} shaders match this game's files ({} differ, {} with "
 		    "another input layout, made by {}): ignored",
-		    stats.resolved, stats.shaders - stats.runtime_pending, stats.mismatched, stats.other_input_layout,
-		    file.info.producer);
+		    stats.resolved, stats.shaders - stats.runtime_pending, stats.mismatched,
+		    stats.other_input_layout, file.info.producer);
 		return;
 	}
 	if (file.info.state_format == 0 && !file.pipelines.empty()) {
@@ -9580,7 +9580,9 @@ void PipelineCache::InitializePipelineList() {
 			resolved.usable[i] = false;
 			resolved.sources[i].code.clear();
 			not_here++;
-			if (runtime_file != PipelineList::CodeFile::Executable && file.shaders[i].file == runtime_file) not_here_runtime++;
+			if (runtime_file != PipelineList::CodeFile::Executable &&
+			    file.shaders[i].file == runtime_file)
+				not_here_runtime++;
 		}
 	}
 	auto state = std::make_unique<ListState>();
@@ -9625,8 +9627,8 @@ void PipelineCache::InitializePipelineList() {
 	                 stats.other_input_layout, not_here, state->entries.size(), pipelines, state->pipelines.size(),
 	                 state->levels.size(), static_cast<double>(CompileClockNs() - begin) / 1e6);
 	if (stats.runtime_shaders != 0) {
-		PipelineCacheLog("Pipeline list: {} runtime shaders resolved, {} pending", stats.runtime_resolved - not_here_runtime,
-		                 stats.runtime_pending);
+		PipelineCacheLog("Pipeline list: {} runtime shaders resolved, {} pending",
+		                 stats.runtime_resolved - not_here_runtime, stats.runtime_pending);
 	}
 	m_list = std::move(state);
 }

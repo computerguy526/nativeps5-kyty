@@ -35,7 +35,8 @@ T GetAt(const uint8_t* bytes) {
 	return value;
 }
 
-// Header layout: magic 0, version 8, header bytes 12, title 16, app_ver 32, fingerprint 48, reserved 56.
+// Header layout: magic 0, version 8, header bytes 12, title 16, app_ver 32, fingerprint 48,
+// reserved 56.
 std::vector<uint8_t> MakeHeader(const std::string& title, const std::string& app_ver, uint64_t fp) {
 	std::vector<uint8_t> header(PipelineCodeStore::HeaderBytes, 0);
 	std::memcpy(header.data(), PipelineCodeStore::FileMagic, 8);
@@ -51,7 +52,8 @@ std::vector<uint8_t> MakeHeader(const std::string& title, const std::string& app
 std::FILE* OpenFile(const std::filesystem::path& path, const char* mode) {
 #if defined(_WIN32)
 	std::wstring wide_mode;
-	for (const char* c = mode; *c != '\0'; c++) wide_mode.push_back(static_cast<wchar_t>(*c));
+	for (const char* c = mode; *c != '\0'; c++)
+		wide_mode.push_back(static_cast<wchar_t>(*c));
 	return _wfopen(path.c_str(), wide_mode.c_str());
 #else
 	return std::fopen(path.c_str(), mode);
@@ -77,9 +79,9 @@ void PipelineCodeStore::Close() {
 }
 
 // Reads the header and records of the file at m_path into the index. `allow_any_header`: the tool's
-// read-only open takes the stamps as they are (and keeps them in m_fp). Returns false when the header is
-// not this store's (or, without allow_any_header, is another title/version/decoder's). `m_size` is left at
-// the end of the last intact record; a damaged tail is counted in m_truncated.
+// read-only open takes the stamps as they are (and keeps them in m_fp). Returns false when the
+// header is not this store's (or, without allow_any_header, is another title/version/decoder's).
+// `m_size` is left at the end of the last intact record; a damaged tail is counted in m_truncated.
 bool PipelineCodeStore::Scan(bool allow_any_header) {
 	std::FILE* in = OpenFile(m_path, "rb");
 	if (in == nullptr) return false;
@@ -88,8 +90,9 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 	std::fseek(in, 0, SEEK_SET);
 	std::vector<uint8_t> header(HeaderBytes);
 	bool                 ok = total >= HeaderBytes && ReadExact(in, header.data(), header.size()) &&
-	          std::memcmp(header.data(), FileMagic, 8) == 0 && GetAt<uint32_t>(header.data() + 8) == FormatVersion &&
-	          GetAt<uint32_t>(header.data() + 12) == HeaderBytes;
+	                          std::memcmp(header.data(), FileMagic, 8) == 0 &&
+	                          GetAt<uint32_t>(header.data() + 8) == FormatVersion &&
+	                          GetAt<uint32_t>(header.data() + 12) == HeaderBytes;
 	if (ok) {
 		const auto want = MakeHeader(m_title, m_app_ver, m_fp);
 		if (allow_any_header) {
@@ -103,23 +106,28 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 		return false;
 	}
 	m_index.clear();
-	m_code_bytes = 0;
-	uint64_t at  = HeaderBytes;
+	m_code_bytes            = 0;
+	uint64_t             at = HeaderBytes;
 	std::vector<uint8_t> record;
 	while (at + RecordHead + 8 <= total) {
 		std::fseek(in, static_cast<long>(at), SEEK_SET);
 		uint8_t head[RecordHead];
 		if (!ReadExact(in, head, sizeof(head))) break;
 		const auto code_bytes = GetAt<uint32_t>(head + 4);
-		if (GetAt<uint32_t>(head) != RecordMagic || code_bytes == 0 || code_bytes > MaxCodeBytes) break;
+		if (GetAt<uint32_t>(head) != RecordMagic || code_bytes == 0 || code_bytes > MaxCodeBytes)
+			break;
 		const uint64_t body = RecordHead + Align8(code_bytes);
 		if (at + body + 8 > total) break;
 		record.resize(static_cast<size_t>(body + 8));
 		std::memcpy(record.data(), head, sizeof(head));
-		if (!ReadExact(in, record.data() + RecordHead, static_cast<size_t>(body + 8 - RecordHead))) break;
-		if (XXH3_64bits(record.data(), static_cast<size_t>(body)) != GetAt<uint64_t>(record.data() + body)) break;
+		if (!ReadExact(in, record.data() + RecordHead, static_cast<size_t>(body + 8 - RecordHead)))
+			break;
+		if (XXH3_64bits(record.data(), static_cast<size_t>(body)) !=
+		    GetAt<uint64_t>(record.data() + body))
+			break;
 		const Hash128 hash {GetAt<uint64_t>(head + 8), GetAt<uint64_t>(head + 16)};
-		if (m_index.try_emplace(hash, Entry {at + RecordHead, code_bytes}).second) m_code_bytes += code_bytes;
+		if (m_index.try_emplace(hash, Entry {at + RecordHead, code_bytes}).second)
+			m_code_bytes += code_bytes;
 		at += body + 8;
 	}
 	std::fclose(in);
@@ -128,8 +136,8 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 	return true;
 }
 
-bool PipelineCodeStore::Open(const std::filesystem::path& path, const std::string& title, const std::string& app_ver,
-                             uint64_t decoder_fp) {
+bool PipelineCodeStore::Open(const std::filesystem::path& path, const std::string& title,
+                             const std::string& app_ver, uint64_t decoder_fp) {
 	std::lock_guard lock(m_mutex);
 	Close();
 	m_index.clear();
@@ -146,12 +154,14 @@ bool PipelineCodeStore::Open(const std::filesystem::path& path, const std::strin
 	m_size       = 0;
 	std::error_code error;
 	if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), error);
-	const auto existing = std::filesystem::exists(path, error) ? std::filesystem::file_size(path, error) : 0;
-	bool       fresh    = true;
+	const auto existing =
+	    std::filesystem::exists(path, error) ? std::filesystem::file_size(path, error) : 0;
+	bool fresh = true;
 	if (existing != 0) {
 		if (Scan(false)) {
 			fresh = false;
-			if (m_truncated != 0) std::filesystem::resize_file(path, m_size, error); // the intact prefix stays
+			if (m_truncated != 0)
+				std::filesystem::resize_file(path, m_size, error); // the intact prefix stays
 			if (error) return false;
 		} else {
 			// Another title, version or decoder (or not a store): kept aside, a fresh one started.
@@ -205,7 +215,8 @@ bool PipelineCodeStore::Find(const Hash128& hash, std::span<uint8_t> out) {
 		std::fflush(m_file);
 		m_dirty = false;
 	}
-	return std::fseek(m_file, static_cast<long>(it->second.offset), SEEK_SET) == 0 && ReadExact(m_file, out.data(), out.size());
+	return std::fseek(m_file, static_cast<long>(it->second.offset), SEEK_SET) == 0 &&
+	       ReadExact(m_file, out.data(), out.size());
 }
 
 uint32_t PipelineCodeStore::Size(const Hash128& hash) const {
@@ -214,9 +225,11 @@ uint32_t PipelineCodeStore::Size(const Hash128& hash) const {
 	return it == m_index.end() ? 0 : it->second.bytes;
 }
 
-bool PipelineCodeStore::Add(const Hash128& hash, uint64_t prefix_hash, std::span<const uint8_t> code) {
+bool PipelineCodeStore::Add(const Hash128& hash, uint64_t prefix_hash,
+                            std::span<const uint8_t> code) {
 	std::lock_guard lock(m_mutex);
-	if (m_file == nullptr || m_read_only || code.empty() || code.size() > MaxCodeBytes) return false;
+	if (m_file == nullptr || m_read_only || code.empty() || code.size() > MaxCodeBytes)
+		return false;
 	if (m_index.contains(hash)) {
 		m_duplicates++;
 		return false;
@@ -230,7 +243,8 @@ bool PipelineCodeStore::Add(const Hash128& hash, uint64_t prefix_hash, std::span
 	PutAt<uint64_t>(record, 16, hash.high);
 	PutAt<uint64_t>(record, 24, prefix_hash);
 	std::memcpy(record.data() + RecordHead, code.data(), code.size());
-	PutAt<uint64_t>(record, static_cast<size_t>(body), XXH3_64bits(record.data(), static_cast<size_t>(body)));
+	PutAt<uint64_t>(record, static_cast<size_t>(body),
+	                XXH3_64bits(record.data(), static_cast<size_t>(body)));
 	if (std::fseek(m_file, static_cast<long>(m_size), SEEK_SET) != 0 ||
 	    std::fwrite(record.data(), 1, record.size(), m_file) != record.size()) {
 		return false;
@@ -256,7 +270,8 @@ bool PipelineCodeStore::Flush() {
 
 bool PipelineCodeStore::ContainsAll(const std::vector<Hash128>& hashes) const {
 	std::lock_guard lock(m_mutex);
-	return std::all_of(hashes.begin(), hashes.end(), [&](const Hash128& hash) { return m_index.contains(hash); });
+	return std::all_of(hashes.begin(), hashes.end(),
+	                   [&](const Hash128& hash) { return m_index.contains(hash); });
 }
 
 bool PipelineCodeStore::Full() const {
