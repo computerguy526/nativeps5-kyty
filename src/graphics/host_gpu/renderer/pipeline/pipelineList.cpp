@@ -699,6 +699,13 @@ uint64_t CodePrefixHash(std::span<const uint8_t> code) {
 	return XXH3_64bits(code.data(), std::min<size_t>(64, code.size()));
 }
 
+CodeFile RuntimeFileOf(const File& file) {
+	for (size_t i = 0; i < file.files.size(); i++) {
+		if (file.files[i] == RuntimeFileName) return static_cast<CodeFile>(i + 1);
+	}
+	return CodeFile::Executable;
+}
+
 CodeQuery QueryFor(std::span<const uint8_t> code) {
 	CodeQuery query;
 	query.size_bytes  = static_cast<uint32_t>(code.size());
@@ -995,10 +1002,12 @@ void Builder::AddList(const File& other, ExportStats& stats, bool normalize_pipe
 // Resolving ----------------------------------------------------------------------------------------
 
 Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_sizes, const ReadCodeFn& read,
-                 const ReadImageFn& read_image, ResolveStats& stats) {
+                 const ReadImageFn& read_image, ResolveStats& stats, const ReadHashFn& read_hash) {
 	Resolved out;
 	out.sources.resize(file.shaders.size());
 	out.usable.assign(file.shaders.size(), false);
+	out.pending.assign(file.shaders.size(), false);
+	const auto runtime_file = RuntimeFileOf(file);
 	out.offsets.assign(file.shaders.size(), 0);
 	out.back_offsets.assign(file.shaders.size(), 0);
 	stats.shaders += file.shaders.size();
@@ -1012,11 +1021,15 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 		uint64_t              offset = 0;
 		std::vector<uint32_t> code;
 		bool                  found = false;
+		bool                  runtime = false; // `<runtime>`: code by hash from the store, never relocated
+		bool                  pending = false; // runtime and not in the store
 	};
 	std::vector<Piece> pieces;
 	std::vector<bool>  readable(file.shaders.size(), true);
 	for (size_t i = 0; i < file.shaders.size(); i++) {
 		const auto& s = file.shaders[i];
+		const bool  runtime = runtime_file != CodeFile::Executable && s.file == runtime_file;
+		if (runtime) stats.runtime_shaders++;
 		if (s.input_info.size() != input_info_sizes[static_cast<size_t>(s.kind)]) {
 			stats.other_input_layout++;
 			continue;
@@ -1032,7 +1045,16 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 			piece.query.hash        = back ? Hash128 {s.back_hash_low, s.back_hash_high} : Hash128 {s.code_hash_low, s.code_hash_high};
 			piece.code.resize(piece.query.size_bytes / 4u);
 			const std::span bytes(reinterpret_cast<uint8_t*>(piece.code.data()), piece.query.size_bytes);
-			if (!read(s.file, piece.offset, bytes)) {
+			if (runtime) {
+				piece.runtime = true;
+				piece.offset  = 0;
+				if (!read_hash || !read_hash(piece.query.hash, piece.query.size_bytes, bytes)) {
+					piece.pending = true;
+				} else {
+					// The store is keyed by the hash alone: size and prefix must agree too.
+					piece.found = CodeHash(bytes) == piece.query.hash && CodePrefixHash(bytes) == piece.query.prefix_hash;
+				}
+			} else if (!read(s.file, piece.offset, bytes)) {
 				readable[i] = false;
 			} else {
 				piece.found = CodeHash(bytes) == piece.query.hash;
@@ -1043,7 +1065,7 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 	std::vector<size_t>    relocate;
 	std::vector<CodeQuery> queries;
 	for (size_t p = 0; p < pieces.size(); p++) {
-		if (pieces[p].found) continue;
+		if (pieces[p].found || pieces[p].runtime) continue;
 		relocate.push_back(p);
 		queries.push_back(pieces[p].query);
 	}
@@ -1065,6 +1087,7 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 	for (const auto& piece: pieces) {
 		(piece.back ? out.back_offsets : out.offsets)[piece.shader] = piece.offset;
 		missing[piece.shader] |= piece.found ? 0 : 1;
+		if (piece.pending) out.pending[piece.shader] = true;
 		moved[piece.shader] |= piece.found && piece.offset != (piece.back ? file.shaders[piece.shader].back_offset
 		                                                                  : file.shaders[piece.shader].offset)
 		                           ? 1
@@ -1094,6 +1117,12 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 	for (size_t i = 0; i < file.shaders.size(); i++) {
 		if (file.shaders[i].input_info.size() != input_info_sizes[static_cast<size_t>(file.shaders[i].kind)]) continue;
 		auto& source = out.sources[i];
+		if (out.pending[i]) {
+			// A `<runtime>` shader the store does not have (every half of it): waits for the store.
+			source = {};
+			stats.runtime_pending++;
+			continue;
+		}
 		if (missing[i] != 0 || MergedSourceHash(source.code, source.back_code) != file.shaders[i].hash) {
 			source = {};
 			stats.mismatched++;
@@ -1102,6 +1131,7 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 		}
 		out.usable[i] = true;
 		stats.resolved++;
+		if (runtime_file != CodeFile::Executable && file.shaders[i].file == runtime_file) stats.runtime_resolved++;
 		stats.relocated += moved[i];
 	}
 	out.permutation_entry.assign(file.permutations.size(), UINT32_MAX);

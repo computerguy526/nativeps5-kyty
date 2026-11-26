@@ -9546,11 +9546,11 @@ void PipelineCache::InitializePipelineList() {
 	}
 	PipelineList::ResolveStats stats;
 	auto resolved = PipelineList::Resolve(file, sizes, read, read_image, stats);
-	if (stats.resolved * 2 < stats.shaders) {
+	if (!PipelineList::MostlyMatches(stats)) {
 		PipelineCacheLog(
 		    "Pipeline list: only {} of {} shaders match this game's files ({} differ, {} with "
 		    "another input layout, made by {}): ignored",
-		    stats.resolved, stats.shaders, stats.mismatched, stats.other_input_layout,
+		    stats.resolved, stats.shaders - stats.runtime_pending, stats.mismatched, stats.other_input_layout,
 		    file.info.producer);
 		return;
 	}
@@ -9571,7 +9571,8 @@ void PipelineCache::InitializePipelineList() {
 		file.pipelines.clear();
 	}
 	// This device's inputs and static keys; the permutations' identities follow from them.
-	uint64_t              not_here = 0;
+	uint64_t              not_here = 0, not_here_runtime = 0;
+	const auto            runtime_file = PipelineList::RuntimeFileOf(file);
 	std::vector<uint32_t> source_waves(resolved.sources.size(), 0);
 	for (size_t i = 0; i < resolved.sources.size(); i++) {
 		if (resolved.usable[i] &&
@@ -9579,6 +9580,7 @@ void PipelineCache::InitializePipelineList() {
 			resolved.usable[i] = false;
 			resolved.sources[i].code.clear();
 			not_here++;
+			if (runtime_file != PipelineList::CodeFile::Executable && file.shaders[i].file == runtime_file) not_here_runtime++;
 		}
 	}
 	auto state = std::make_unique<ListState>();
@@ -9622,6 +9624,10 @@ void PipelineCache::InitializePipelineList() {
 	                 stats.resolved - not_here, stats.shaders, stats.relocated, stats.mismatched, stats.unreadable,
 	                 stats.other_input_layout, not_here, state->entries.size(), pipelines, state->pipelines.size(),
 	                 state->levels.size(), static_cast<double>(CompileClockNs() - begin) / 1e6);
+	if (stats.runtime_shaders != 0) {
+		PipelineCacheLog("Pipeline list: {} runtime shaders resolved, {} pending", stats.runtime_resolved - not_here_runtime,
+		                 stats.runtime_pending);
+	}
 	m_list = std::move(state);
 }
 

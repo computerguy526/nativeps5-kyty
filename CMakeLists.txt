@@ -1188,10 +1188,24 @@ target_include_directories(pipeline_list_tests PRIVATE ${inc_headers})
 add_executable(kyty_pipeline_list EXCLUDE_FROM_ALL
 	"${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list/kytyPipelineList.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineList.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineCodeStore.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/shaderPrecompile.cpp"
 )
 target_link_libraries(kyty_pipeline_list xxhash libzstd_static nlohmann_json::nlohmann_json ZArchive::zarchive)
 target_include_directories(kyty_pipeline_list PRIVATE ${inc_headers})
+
+# The `<runtime>` shaders of a list (UE5 titles): the KYCODE1 per-player code store (pipeline/pipelineCodeStore.h), the
+# library group split (pipeline/ue5Group.h), Resolve with a ReadHashFn, and the tool's runtime helpers
+# (tools/pipeline-list/runtimeCode.h). Synthetic data only.
+add_executable(pipeline_ue5warm_tests EXCLUDE_FROM_ALL
+	"${KYTY_TESTS_DIR}/PipelineUe5WarmTests.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineList.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineCodeStore.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/pipelineSnapshot.cpp"
+	"${KYTY_SOURCE_DIR}/graphics/host_gpu/renderer/pipeline/shaderPrecompile.cpp"
+)
+target_link_libraries(pipeline_ue5warm_tests Vulkan::Headers xxhash libzstd_static)
+target_include_directories(pipeline_ue5warm_tests PRIVATE ${inc_headers} "${CMAKE_CURRENT_SOURCE_DIR}/tools/pipeline-list")
 
 # export --programs (tools/pipeline-list/programsSource.h): program cache -> list sources; synthetic caches, no game.
 add_executable(pipeline_list_programs_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PipelineListProgramsTests.cpp"
@@ -2067,6 +2081,8 @@ if(BUILD_TESTING)
 	set_tests_properties(pipeline_fast_first PROPERTIES TIMEOUT 60)
 	add_test(NAME pipeline_list COMMAND $<TARGET_FILE:pipeline_list_tests>)
 	add_test(NAME pipeline_list_programs COMMAND $<TARGET_FILE:pipeline_list_programs_tests>)
+	add_test(NAME pipeline_ue5warm COMMAND $<TARGET_FILE:pipeline_ue5warm_tests>)
+	set_tests_properties(pipeline_ue5warm PROPERTIES TIMEOUT 60)
 	set_tests_properties(pipeline_list PROPERTIES TIMEOUT 60)
 	add_test(NAME pipeline_list_game_files COMMAND $<TARGET_FILE:pipeline_list_game_files_tests>)
 	set_tests_properties(pipeline_list_game_files PROPERTIES TIMEOUT 60)
@@ -3339,6 +3355,7 @@ if(BUILD_TESTING)
 		pipeline_snapshot_tests
 		pipeline_list_tests
 		pipeline_list_programs_tests
+		pipeline_ue5warm_tests
 		pipeline_list_game_files_tests
 		vram_budget_tests
 		footprint_governor_tests

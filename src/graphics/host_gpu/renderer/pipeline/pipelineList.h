@@ -92,6 +92,12 @@ enum class CodeFile : uint32_t {
 	Executable = 0,
 };
 inline constexpr uint32_t MaxDataFiles = 4096;
+// The reserved name of a Files entry whose shaders have no place in the game's files (UE5: the code
+// comes from the game's shader library, decoded at run time into the per-player code store). Such a
+// shader has offset 0 and is identified by code_size, prefix_hash and code_hash (the back half the
+// same way). No format bump: a reader that does not know the name opens it as an app0 file, fails,
+// and counts the shaders unreadable.
+inline constexpr const char* RuntimeFileName = "<runtime>";
 
 struct Info {
 	std::string title_id;    // TITLE_ID of param.json / param.sfo
@@ -208,6 +214,8 @@ struct Hash128 {
 	uint64_t low = 0, high = 0;
 	bool     operator==(const Hash128&) const = default;
 };
+// The CodeFile of the `<runtime>` Files entry, or Executable (0) when the list has none.
+[[nodiscard]] CodeFile RuntimeFileOf(const File& file);
 [[nodiscard]] Hash128  CodeHash(std::span<const uint8_t> code);
 [[nodiscard]] uint64_t CodePrefixHash(std::span<const uint8_t> code);
 
@@ -275,6 +283,9 @@ private:
 // identities.
 struct ResolveStats {
 	uint64_t shaders = 0, resolved = 0, relocated = 0, mismatched = 0, unreadable = 0, other_input_layout = 0;
+	// `<runtime>` shaders (counted in `shaders`; the resolved ones also in `resolved`): the ones whose code the
+	// store (ReadHashFn) did not give are pending, not mismatched or unreadable.
+	uint64_t runtime_shaders = 0, runtime_resolved = 0, runtime_pending = 0;
 	uint64_t permutations = 0, permutations_kept = 0;
 	uint64_t pipelines = 0, pipelines_kept = 0;
 };
@@ -284,10 +295,17 @@ using ReadCodeFn = std::function<bool(CodeFile file, uint64_t offset, std::span<
 // The whole file (relocation search); empty when unavailable.
 using ReadImageFn = std::function<std::vector<uint8_t>(CodeFile file)>;
 
+// Reads the code named by `hash` (XXH3-128, `bytes` long) into `out` (`bytes` bytes): the per-player code store.
+// False when it has no such code.
+using ReadHashFn = std::function<bool(const Hash128& hash, uint32_t bytes, std::span<uint8_t> out)>;
+
 struct Resolved {
 	// Index-aligned with the list's shaders: code filled when the shader matched (else empty).
 	std::vector<ShaderJournal::Source> sources;
 	std::vector<bool>                  usable;
+	// Index-aligned: a `<runtime>` shader whose code (or a merged stage's back half) is not in the store yet. Not
+	// usable, and in no mismatch count; a later Resolve with a fuller store may make it usable.
+	std::vector<bool> pending;
 	// The usable permutations, as shader journal entries (source = list shader index), and the list
 	// permutation index of each.
 	std::vector<ShaderJournal::Entry> entries;
@@ -299,8 +317,16 @@ struct Resolved {
 	std::vector<uint64_t> offsets, back_offsets;
 };
 
+// `read_hash` (optional) gives `<runtime>` shaders their code; without it they are all pending. `read` is never
+// called for them.
 [[nodiscard]] Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_sizes, const ReadCodeFn& read,
-                               const ReadImageFn& read_image, ResolveStats& stats);
+                               const ReadImageFn& read_image, ResolveStats& stats, const ReadHashFn& read_hash = {});
+
+// The loader's 50 % rule: a list is used when at least half of its shaders match the game. `<runtime>` shaders still
+// pending (not in the code store yet) do not count either way.
+[[nodiscard]] inline bool MostlyMatches(const ResolveStats& stats) {
+	return stats.resolved * 2 >= stats.shaders - stats.runtime_pending;
+}
 
 // A stored vertex input info layout of an earlier release and the fields this build added to it:
 // `bytes` go in at byte `at` of the old layout (inserts in ascending order). A shader whose dword
