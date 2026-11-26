@@ -44,6 +44,7 @@
 #include "graphics/host_gpu/renderer/inputProfileDraw.h"
 #include "graphics/host_gpu/renderer/lodStatsEarlyDraw.h"
 #include "graphics/host_gpu/renderer/meshIndirect.h"
+#include "graphics/host_gpu/renderer/meshIndirectStats.h"
 #include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/nanProbe.h"
 #include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
@@ -10304,6 +10305,39 @@ static uint64_t NowNs() {
 	                                 std::chrono::steady_clock::now().time_since_epoch())
 	                                 .count());
 }
+// The "MeshIndirect 10s:" line (meshIndirectStats.h): the window's delta of MeshIndirect::GetTotals()
+// and the decline counters. Called from the same 10 s tick, so it only runs with KYTY_CP_OP_STATS=1.
+static void PrintMeshIndirect() {
+	static MeshIndirectStats::Snapshot last;
+	const auto&                        t  = MeshIndirect::GetTotals();
+	const auto&                        dc = MeshIndirectStats::GetDeclines();
+	MeshIndirectStats::Snapshot        now;
+	now.draws              = t.draws.load(std::memory_order_relaxed);
+	now.always_empty       = t.always_empty.load(std::memory_order_relaxed);
+	now.checks             = t.checks.load(std::memory_order_relaxed);
+	now.mismatches         = t.mismatches.load(std::memory_order_relaxed);
+	now.status_overflow    = t.status_overflow.load(std::memory_order_relaxed);
+	now.status_limits      = t.status_limits.load(std::memory_order_relaxed);
+	now.status_index_range = t.status_index_range.load(std::memory_order_relaxed);
+	now.stale              = t.stale.load(std::memory_order_relaxed);
+	now.declined_off       = dc.off.load(std::memory_order_relaxed);
+	now.declined_multi     = dc.multi.load(std::memory_order_relaxed);
+	now.declined_restart   = dc.restart.load(std::memory_order_relaxed);
+	now.declined_clear     = dc.clear.load(std::memory_order_relaxed);
+	now.declined_program   = dc.program.load(std::memory_order_relaxed);
+	const char* mode = "off";
+	switch (MeshIndirect::GetMode()) {
+		case MeshIndirect::Mode::Off: mode = "off"; break;
+		case MeshIndirect::Mode::Empty: mode = "empty"; break;
+		case MeshIndirect::Mode::On: mode = "on"; break;
+		case MeshIndirect::Mode::Verify: mode = "verify"; break;
+		case MeshIndirect::Mode::VerifyExit: mode = "exit"; break;
+	}
+	char line[512];
+	MeshIndirectStats::Format(line, sizeof line, MeshIndirectStats::Delta(now, last), mode);
+	last = now;
+	std::printf("%s\n", line);
+}
 struct Totals {
 	std::array<uint64_t, 2> ns {};
 	std::array<uint64_t, 2> count {};
@@ -10327,6 +10361,7 @@ public:
 			std::printf("IndirectDraws 10s: prepare %" PRIu64 " in %.1f ms, execute %" PRIu64 " in %.1f ms\n",
 			            g_totals.count[0], static_cast<double>(g_totals.ns[0]) / 1e6, g_totals.count[1],
 			            static_cast<double>(g_totals.ns[1]) / 1e6);
+			PrintMeshIndirect();
 			std::fflush(stdout);
 			g_totals = {};
 			g_totals.last_print = now;
@@ -10501,7 +10536,9 @@ bool RenderExecutor::DrawIndirectNative(uint64_t submit_id, CommandBuffer& buffe
 			ResetBindings();
 			return false;
 		};
+		auto& mesh_declines = MeshIndirectStats::GetDeclines();
 		if (MeshIndirect::GetMode() == MeshIndirect::Mode::Off) {
+			mesh_declines.off.fetch_add(1, std::memory_order_relaxed);
 			return decline(std::nullopt);
 		}
 		const auto& program         = *state.vertex_info[0].stage.program;
@@ -10530,26 +10567,31 @@ bool RenderExecutor::DrawIndirectNative(uint64_t submit_id, CommandBuffer& buffe
 			return true;
 		}
 		if (!MeshIndirect::ConversionEnabled()) {
+			mesh_declines.off.fetch_add(1, std::memory_order_relaxed); // mode empty, not provably empty
 			return decline(std::nullopt);
 		}
 		// One record without a count: the CPU path draws a multi-draw record by record.
 		if (source.max_count != 1 || source.count_addr != 0) {
+			mesh_declines.multi.fetch_add(1, std::memory_order_relaxed);
 			return decline(Profiler::FrameEvent::MeshIndirectDeclinedMulti);
 		}
 		// Restart segments come from a CPU scan of the indices (KYTY_MESH_RESTART=1).
 		if (primitive_restart && MeshRestartEnabled()) {
+			mesh_declines.restart.fetch_add(1, std::memory_order_relaxed);
 			return decline(Profiler::FrameEvent::MeshIndirectDeclinedRestart);
 		}
 		// A clear-enable draw clears its depth/stencil attachment when its rendering instance
 		// begins, which a draw with zero counts on the CPU path never does.
 		if (state.depth_info.image_id &&
 		    (state.depth_info.depth_clear_enable || state.depth_info.stencil_clear_enable)) {
+			mesh_declines.clear.fetch_add(1, std::memory_order_relaxed);
 			return decline(Profiler::FrameEvent::MeshIndirectDeclinedClear);
 		}
 		// Programs generated with the parameter-block loads (the codegen option follows the
 		// mode); the CPU path reports an unusable primitive group itself.
 		if (!ShaderRecompiler::GetCodegenOptions().mesh_indirect_params ||
 		    program.stage != ShaderType::Mesh || mesh.primitives_per_group == 0) {
+			mesh_declines.program.fetch_add(1, std::memory_order_relaxed);
 			return decline(Profiler::FrameEvent::MeshIndirectDeclinedProgram);
 		}
 		emit.mesh_indirect = true;

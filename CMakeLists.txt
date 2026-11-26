@@ -763,6 +763,10 @@ target_include_directories(bundle_compact_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(nanite_shade_stats_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/NaniteShadeStatsTests.cpp")
 target_include_directories(nanite_shade_stats_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# c2acct: KYTY_CP_OP_STATS "MeshIndirect 10s" counter line (header only), no GPU.
+add_executable(mesh_indirect_stats_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MeshIndirectStatsTests.cpp")
+target_include_directories(mesh_indirect_stats_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # mfxlayer: FSR 3.1 constant-block detector of the UE upscaler-slot MetalFX adapter (header only), no GPU.
 add_executable(metalfx_ue_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/MetalFxUeTests.cpp")
 target_include_directories(metalfx_ue_tests PRIVATE "${KYTY_SOURCE_DIR}")
