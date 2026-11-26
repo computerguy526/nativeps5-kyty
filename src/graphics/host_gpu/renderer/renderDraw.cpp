@@ -10305,8 +10305,9 @@ static uint64_t NowNs() {
 	                                 std::chrono::steady_clock::now().time_since_epoch())
 	                                 .count());
 }
-// The "MeshIndirect 10s:" line (meshIndirectStats.h): the window's delta of MeshIndirect::GetTotals()
-// and the decline counters. Called from the same 10 s tick, so it only runs with KYTY_CP_OP_STATS=1.
+// The "MeshIndirect 10s:" line (meshIndirectStats.h): the window's delta of
+// MeshIndirect::GetTotals() and the decline counters. Called from the same 10 s tick, so it only
+// runs with KYTY_CP_OP_STATS=1.
 static void PrintMeshIndirect() {
 	static MeshIndirectStats::Snapshot last;
 	const auto&                        t  = MeshIndirect::GetTotals();
@@ -10325,7 +10326,7 @@ static void PrintMeshIndirect() {
 	now.declined_restart   = dc.restart.load(std::memory_order_relaxed);
 	now.declined_clear     = dc.clear.load(std::memory_order_relaxed);
 	now.declined_program   = dc.program.load(std::memory_order_relaxed);
-	const char* mode = "off";
+	const char* mode       = "off";
 	switch (MeshIndirect::GetMode()) {
 		case MeshIndirect::Mode::Off: mode = "off"; break;
 		case MeshIndirect::Mode::Empty: mode = "empty"; break;
@@ -10567,7 +10568,8 @@ bool RenderExecutor::DrawIndirectNative(uint64_t submit_id, CommandBuffer& buffe
 			return true;
 		}
 		if (!MeshIndirect::ConversionEnabled()) {
-			mesh_declines.off.fetch_add(1, std::memory_order_relaxed); // mode empty, not provably empty
+			mesh_declines.off.fetch_add(
+			    1, std::memory_order_relaxed); // mode empty, not provably empty
 			return decline(std::nullopt);
 		}
 		// One record without a count: the CPU path draws a multi-draw record by record.

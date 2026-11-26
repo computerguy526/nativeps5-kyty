@@ -1480,7 +1480,7 @@ struct BufferCache::SideReadbackState {
 		}
 		// The blocking part is a GPU wait, not command-processor work: scoped so CpGaps books it as
 		// gpuwait.other (and in a commit's nested_side column) instead of as commit time.
-		const CpGaps::Scope gap(CpGaps::Cat::GpuWaitOther);
+		const CpGaps::Scope   gap(CpGaps::Cat::GpuWaitOther);
 		vk::SemaphoreWaitInfo wait_info {};
 		wait_info.semaphoreCount = 1;
 		wait_info.pSemaphores    = &semaphore;

@@ -18,11 +18,11 @@ struct Snapshot {
 	uint64_t status_limits      = 0;
 	uint64_t status_index_range = 0;
 	uint64_t stale              = 0;
-	uint64_t declined_off       = 0; // mode off, or mode empty for a draw that is not provably empty
-	uint64_t declined_multi     = 0;
-	uint64_t declined_restart   = 0;
-	uint64_t declined_clear     = 0;
-	uint64_t declined_program   = 0;
+	uint64_t declined_off     = 0; // mode off, or mode empty for a draw that is not provably empty
+	uint64_t declined_multi   = 0;
+	uint64_t declined_restart = 0;
+	uint64_t declined_clear   = 0;
+	uint64_t declined_program = 0;
 };
 
 // Decline reasons of DrawIndirectNative's mesh block (relaxed counters, GPU thread writes).
@@ -70,12 +70,17 @@ inline int Format(char* out, size_t n, const Snapshot& d, const char* mode) {
 	    "clear=%llu program=%llu) verify(checks=%llu mismatches=%llu) status(overflow=%llu "
 	    "limits=%llu index_range=%llu) stale=%llu",
 	    mode != nullptr ? mode : "?", static_cast<unsigned long long>(d.draws),
-	    static_cast<unsigned long long>(d.always_empty), static_cast<unsigned long long>(d.declined_off),
-	    static_cast<unsigned long long>(d.declined_multi), static_cast<unsigned long long>(d.declined_restart),
-	    static_cast<unsigned long long>(d.declined_clear), static_cast<unsigned long long>(d.declined_program),
+	    static_cast<unsigned long long>(d.always_empty),
+	    static_cast<unsigned long long>(d.declined_off),
+	    static_cast<unsigned long long>(d.declined_multi),
+	    static_cast<unsigned long long>(d.declined_restart),
+	    static_cast<unsigned long long>(d.declined_clear),
+	    static_cast<unsigned long long>(d.declined_program),
 	    static_cast<unsigned long long>(d.checks), static_cast<unsigned long long>(d.mismatches),
-	    static_cast<unsigned long long>(d.status_overflow), static_cast<unsigned long long>(d.status_limits),
-	    static_cast<unsigned long long>(d.status_index_range), static_cast<unsigned long long>(d.stale));
+	    static_cast<unsigned long long>(d.status_overflow),
+	    static_cast<unsigned long long>(d.status_limits),
+	    static_cast<unsigned long long>(d.status_index_range),
+	    static_cast<unsigned long long>(d.stale));
 	if (len < 0) {
 		out[0] = '\0';
 		return 0;
