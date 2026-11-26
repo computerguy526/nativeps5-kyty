@@ -30,13 +30,8 @@
 #include <unistd.h>
 #include <vector>
 
-namespace Common {
-int DbgExitIfHandler(const char* e, const char*, int) { std::fprintf(stderr, "EXIT_IF %s\n", e); _exit(3); }
-int DbgNotImplementedHandler(const char* e, const char*, int) { std::fprintf(stderr, "NOTIMPL %s\n", e); _exit(3); }
-int DbgExitHandler(const char*, int, std::string_view t) { std::fprintf(stderr, "EXIT %.*s\n", (int)t.size(), t.data()); _exit(3); }
-int DbgExitHandler(const char*, int, fmt::text_style, std::string_view t) { std::fprintf(stderr, "EXIT %.*s\n", (int)t.size(), t.data()); _exit(3); }
-void DbgExit(int) { _exit(3); }
-} // namespace Common
+// The fatal handlers are the dylib sources' own (common/assert.cpp): the report goes to the console, the process ends with status 321 (65).
+// The probe captures both streams of its children.
 
 using namespace Libs::Graphics;
 namespace SR = Libs::Graphics::ShaderRecompiler;

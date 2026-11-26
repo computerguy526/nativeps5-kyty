@@ -55,7 +55,7 @@ using TranslateFn = std::function<int(const Unit&)>;
 
 // One line of a child's stderr that says why: the first one naming a refusal, else the last non-empty one.
 [[nodiscard]] inline std::string PickReason(const std::string& text) {
-	static const char* const Marks[] = {"validation failed", "EXIT", "NOTIMPL", "assert", "Assert", "ASSERT", "requires", "Fail"};
+	static const char* const Marks[] = {"validation failed", "Error:", "Not implemented", "EXIT", "NOTIMPL", "assert", "Assert", "ASSERT", "requires", "Fail"};
 	std::string last, first_marked;
 	size_t      at = 0;
 	while (at < text.size()) {
@@ -121,8 +121,7 @@ struct Running {
 			if (pid == 0) {
 				close(fds[0]);
 				dup2(fds[1], 2);
-				const int devnull = open("/dev/null", O_WRONLY);
-				if (devnull >= 0) dup2(devnull, 1);
+				dup2(fds[1], 1); // fatal reports of the title's own handlers go to the console (stdout): captured as well
 				if (fds[1] > 2) close(fds[1]);
 				const int rc = fn(units[next]);
 				std::fflush(nullptr);
