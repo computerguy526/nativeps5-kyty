@@ -387,7 +387,8 @@ static_assert(sizeof(KytyGpuUe5Result) == 48, "KytyGpuUe5Result layout");
 static_assert(offsetof(KytyGpuHostCallbacks, extract_ue5_shader_groups) ==
                   offsetof(KytyGpuHostCallbacks, fault_load_apply) + sizeof(void*),
               "ABI 1.8 host callback follows fault_load_apply");
-static_assert(offsetof(KytyGpuApi, guest_ready) == offsetof(KytyGpuApi, protect_memory) + sizeof(void*),
+static_assert(offsetof(KytyGpuApi, guest_ready) ==
+                  offsetof(KytyGpuApi, protect_memory) + sizeof(void*),
               "ABI 1.8 guest_ready follows protect_memory");
 #else
 _Static_assert(sizeof(KytyGpuPadState) == 28, "KytyGpuPadState layout");
@@ -399,9 +400,10 @@ _Static_assert(sizeof(KytyGpuUe5Group) == 32, "KytyGpuUe5Group layout");
 _Static_assert(sizeof(KytyGpuUe5Query) == 48, "KytyGpuUe5Query layout");
 _Static_assert(sizeof(KytyGpuUe5Result) == 48, "KytyGpuUe5Result layout");
 _Static_assert(offsetof(KytyGpuHostCallbacks, extract_ue5_shader_groups) ==
-                  offsetof(KytyGpuHostCallbacks, fault_load_apply) + sizeof(void*),
+                   offsetof(KytyGpuHostCallbacks, fault_load_apply) + sizeof(void*),
                "ABI 1.8 host callback follows fault_load_apply");
-_Static_assert(offsetof(KytyGpuApi, guest_ready) == offsetof(KytyGpuApi, protect_memory) + sizeof(void*),
+_Static_assert(offsetof(KytyGpuApi, guest_ready) ==
+                   offsetof(KytyGpuApi, protect_memory) + sizeof(void*),
                "ABI 1.8 guest_ready follows protect_memory");
 #endif
 

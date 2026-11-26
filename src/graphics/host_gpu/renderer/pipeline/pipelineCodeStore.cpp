@@ -192,7 +192,8 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 			at += body + 8;
 			continue;
 		}
-		if (m_mark_at != 0 || m_mark.state != SearchMark::None) m_mark = {}; // stale: a code came after it
+		if (m_mark_at != 0 || m_mark.state != SearchMark::None)
+			m_mark = {}; // stale: a code came after it
 		m_mark_at = 0;
 		const Hash128 hash {GetAt<uint64_t>(head + 8), GetAt<uint64_t>(head + 16)};
 		if (m_index.try_emplace(hash, Entry {at + RecordHead, code_bytes}).second)
@@ -320,7 +321,8 @@ bool PipelineCodeStore::Add(const Hash128& hash, uint64_t prefix_hash,
 		return false;
 	}
 	const uint64_t body = RecordHead + Align8(code.size());
-	// A mark at the end is overwritten by this record (Flush writes it again); room for it stays free.
+	// A mark at the end is overwritten by this record (Flush writes it again); room for it stays
+	// free.
 	const uint64_t at = m_mark_at != 0 ? m_mark_at : m_size;
 	if (at + body + 8 + MarkReserveBytes > CapBytes) return false;
 	if (m_mark_at != 0) {
@@ -389,7 +391,8 @@ bool PipelineCodeStore::WriteMark(const SearchMark& mark) {
 	if (m_file == nullptr || m_read_only) return false;
 	SearchMark next = mark;
 	if (next.state == SearchMark::Partial && next.done.size() > MaxMarkRanges) return false;
-	if (next.state != SearchMark::Complete) next.state = next.done.empty() ? SearchMark::None : next.state;
+	if (next.state != SearchMark::Complete)
+		next.state = next.done.empty() ? SearchMark::None : next.state;
 	if (m_mark_at != 0) {
 		if (!TruncateFile(m_file, m_mark_at)) return false;
 		m_size    = m_mark_at;

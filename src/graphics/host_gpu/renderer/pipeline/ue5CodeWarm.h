@@ -185,7 +185,8 @@ using GetEnvFn = std::function<const char*(const char*)>;
 }
 [[nodiscard]] inline std::string WatchdogLine(uint64_t waited_s) {
 	return "UE5 code: the host did not finish reading the shader library within " +
-	       std::to_string(waited_s) + " s: extraction abandoned; the list's runtime shaders stay "
+	       std::to_string(waited_s) +
+	       " s: extraction abandoned; the list's runtime shaders stay "
 	       "pending";
 }
 // The list was ignored by the 50 % rule. `pending_excluded`: the rule did not count the runtime
@@ -194,10 +195,9 @@ using GetEnvFn = std::function<const char*(const char*)>;
                                              bool pending_excluded, const std::string& producer) {
 	const uint64_t shown = real.shaders - (pending_excluded ? real.runtime_pending : 0);
 	// Lists without runtime shaders keep the text they always had.
-	const std::string runtime =
-	    real.runtime_shaders == 0
-	        ? std::string()
-	        : std::to_string(real.runtime_pending) + " runtime code not in the store, ";
+	const std::string runtime = real.runtime_shaders == 0 ? std::string()
+	                                                      : std::to_string(real.runtime_pending) +
+	                                                            " runtime code not in the store, ";
 	return "Pipeline list: only " + std::to_string(real.resolved) + " of " + std::to_string(shown) +
 	       " shaders match this game's files (" + std::to_string(real.mismatched) + " differ, " +
 	       std::to_string(real.other_input_layout) + " with another input layout, " + runtime +
@@ -277,7 +277,7 @@ inline uint64_t SteadyMs() {
 inline std::atomic<bool>     g_cancel {false};
 inline std::atomic<uint32_t> g_active {0}; // extractions inside the host
 inline void                  RequestCancel() {
-    g_cancel.store(true, std::memory_order_release);
+	g_cancel.store(true, std::memory_order_release);
 }
 inline void ResetCancel() {
 	g_cancel.store(false, std::memory_order_release);
@@ -350,7 +350,7 @@ public:
 	// True = stop (all wanted found, the time budget is over, a cancel or an abandon).
 	bool OnGroup(const GroupView& g) {
 		if (m_abandoned.load(std::memory_order_acquire)) return true;
-		const bool skip = !m_resume.empty() && RangesCover(m_resume, g.library, g.group);
+		const bool       skip = !m_resume.empty() && RangesCover(m_resume, g.library, g.group);
 		Ue5Group::Stats  stats;
 		const auto       shaders = skip ? std::vector<Ue5Group::Shader> {}
 		                                : Ue5Group::Split(g.bytes, g.frequencies, &stats, m_layout);
@@ -589,7 +589,8 @@ inline void CollectWanted(const PipelineList::File& file, const PipelineList::Re
 	listed = seen.size();
 	if (key != nullptr) {
 		std::vector<std::pair<uint64_t, uint64_t>> all;
-		for (const auto& h: seen) all.emplace_back(h.low, h.high);
+		for (const auto& h: seen)
+			all.emplace_back(h.low, h.high);
 		std::sort(all.begin(), all.end());
 		std::vector<uint64_t> flat;
 		for (const auto& [low, high]: all) {
@@ -613,8 +614,8 @@ struct SearchInfo {
                                              uint64_t missing) {
 	SearchInfo info;
 	const auto mark = store.Mark();
-	info.searched   = key != 0 && mark.state == PipelineCodeStore::SearchMark::Complete &&
-	                mark.key == key;
+	info.searched =
+	    key != 0 && mark.state == PipelineCodeStore::SearchMark::Complete && mark.key == key;
 	info.store_full = store.Full();
 	info.locked     = store.LockedByOther();
 	info.missing    = missing;
@@ -723,13 +724,13 @@ private:
 		}
 		const bool resumed = !resume.empty();
 		m_collector        = std::make_shared<Collector>(
-            m_wanted,
-            [this](const Hash128& hash, uint64_t prefix, std::span<const uint8_t> code) {
-	            if (m_store->Add(hash, prefix, code)) return 1;
-	            return m_store->Size(hash) != 0 ? 0 : -1;
-            },
-            m_sink, m_config.max_s, Ue5Group::FindLayout(m_config.layout.c_str()), m_clock,
-            std::move(resume));
+		    m_wanted,
+		    [this](const Hash128& hash, uint64_t prefix, std::span<const uint8_t> code) {
+			    if (m_store->Add(hash, prefix, code)) return 1;
+			    return m_store->Size(hash) != 0 ? 0 : -1;
+		    },
+		    m_sink, m_config.max_s, Ue5Group::FindLayout(m_config.layout.c_str()), m_clock,
+		    std::move(resume));
 		const auto collector = m_collector;
 		const auto shared    = std::make_shared<Shared>();
 		const auto decoder   = m_config.decoder;
@@ -738,7 +739,8 @@ private:
 		// On a thread of its own so the watchdog can give up on a host call that never returns.
 		std::thread([extract, collector, shared, decoder, abi] {
 			auto result = extract(
-			    decoder, abi, [collector](const GroupView& view) { return collector->OnGroup(view); },
+			    decoder, abi,
+			    [collector](const GroupView& view) { return collector->OnGroup(view); },
 			    [collector](uint32_t done, uint32_t total) { collector->OnProgress(done, total); });
 			{
 				std::scoped_lock lock(shared->mutex);
@@ -752,9 +754,9 @@ private:
 		const uint64_t max_ms = m_config.max_s * 1000u;
 		uint64_t       hard   = m_hard_ms;
 		if (hard == 0 && max_ms != 0) hard = (resumed ? 2 * max_ms : max_ms) + 5000u;
-		const auto begin       = SteadyMs();
-		uint64_t   stop_at     = 0; // when the stop was asked for
-		bool       abandoned   = false;
+		const auto begin     = SteadyMs();
+		uint64_t   stop_at   = 0; // when the stop was asked for
+		bool       abandoned = false;
 		for (;;) {
 			std::unique_lock lock(shared->mutex);
 			if (shared->cv.wait_for(lock, std::chrono::milliseconds(10),
@@ -767,7 +769,8 @@ private:
 			if (stop_at == 0 && ((hard != 0 && now - begin >= hard) || Cancelled())) {
 				stop_at = now;
 				collector->RequestStop();
-			} else if (stop_at != 0 && now - stop_at >= (Cancelled() ? m_cancel_grace_ms : m_grace_ms)) {
+			} else if (stop_at != 0 &&
+			           now - stop_at >= (Cancelled() ? m_cancel_grace_ms : m_grace_ms)) {
 				collector->Abandon();
 				m_result.code = WatchdogCode;
 				abandoned     = true;
@@ -783,9 +786,10 @@ private:
 		if (m_key == 0 || m_collector == nullptr || m_store == nullptr) return;
 		if (m_collector->Remaining() == 0) return; // the store has everything: nothing to remember
 		PipelineCodeStore::SearchMark mark;
-		mark.key        = m_key;
+		mark.key       = m_key;
 		const int code = m_result.code;
-		if (code == 0 && !m_collector->TimedOut() && m_result.failed == 0 && m_result.skipped == 0) {
+		if (code == 0 && !m_collector->TimedOut() && m_result.failed == 0 &&
+		    m_result.skipped == 0) {
 			mark.state = PipelineCodeStore::SearchMark::Complete;
 		} else if (code == 0 || code == -3 || code == WatchdogCode) {
 			mark.state = PipelineCodeStore::SearchMark::Partial;
@@ -872,24 +876,25 @@ struct CtorResult {
 	bool                       defer     = false; // the consumers wait for guest_ready
 	bool                       keep_file = false; // BuildListState copies levels/pipelines
 	CtorPlan                   plan      = CtorPlan::Skip; // what the store/host/marks decided
-	std::unique_ptr<ListWarm>  warm;              // set when defer
+	std::unique_ptr<ListWarm>  warm;                       // set when defer
 };
 
 // The first Resolve of InitializePipelineList and what follows from it for a UE5 start: the code
 // store, the plan (skip / off / defer) and its log lines, the 50 % rule. Shared by the renderer and
 // the tests. The caller keeps `file` (and, when defer, moves it into warm->file_holder).
 [[nodiscard]] inline CtorResult ResolveAtCtor(const CtorInput& in) {
-	CtorResult r;
-	auto&      file = *in.file;
+	CtorResult                r;
+	auto&                     file = *in.file;
 	std::unique_ptr<ListWarm> warm;
 	if (PipelineList::RuntimeFileOf(file) != PipelineList::CodeFile::Executable) {
 		auto config = ParseEnv(in.getenv);
 		if (!config.store_path.empty()) {
 			warm      = std::make_unique<ListWarm>();
 			warm->cfg = std::move(config);
-			const auto path = in.to_path ? in.to_path(warm->cfg.store_path)
-			                             : std::filesystem::path(std::u8string(
-			                                   warm->cfg.store_path.begin(), warm->cfg.store_path.end()));
+			const auto path =
+			    in.to_path ? in.to_path(warm->cfg.store_path)
+			               : std::filesystem::path(std::u8string(warm->cfg.store_path.begin(),
+			                                                     warm->cfg.store_path.end()));
 			if (!warm->store.Open(path, in.title_id, in.version, warm->cfg.fp)) {
 				in.log("UE5 code: the code store " + warm->cfg.store_path +
 				       " cannot be opened: the list's runtime shaders stay pending");
@@ -900,9 +905,9 @@ struct CtorResult {
 		}
 	}
 	PipelineList::ResolveStats stats;
-	r.resolved = PipelineList::Resolve(file, in.sizes, in.read, in.read_image, stats,
-	                                   warm != nullptr ? warm->store.ReadFn()
-	                                                   : PipelineList::ReadHashFn {});
+	r.resolved =
+	    PipelineList::Resolve(file, in.sizes, in.read, in.read_image, stats,
+	                          warm != nullptr ? warm->store.ReadFn() : PipelineList::ReadHashFn {});
 	r.real = stats;
 	if (warm != nullptr) {
 		CollectWanted(file, r.resolved, in.sizes, warm->store, warm->wanted, warm->listed,
@@ -966,7 +971,7 @@ inline void TakeListTables(PipelineList::File& file, bool keep_file, Levels& lev
 	PipelineList::ResolveStats stats;
 	resolved = PipelineList::Resolve(*warm.file_holder, warm.sizes, warm.read, warm.read_image,
 	                                 stats, warm.store.ReadFn());
-	real                  = stats;
+	real     = stats;
 	stats.runtime_pending = 0; // what the store still lacks is not found
 	if (!PipelineList::MostlyMatches(stats)) {
 		log(IgnoredLine(real, false, warm.file_holder->info.producer));
@@ -978,8 +983,10 @@ inline void TakeListTables(PipelineList::File& file, bool keep_file, Levels& lev
 // The renderer side of the launch phase.
 struct LaunchOps {
 	// Builds the list state from the second Resolve (BuildListState, keep_file = false).
-	std::function<void(PipelineList::Resolved&&, const PipelineList::ResolveStats& real)> build_list;
-	std::function<void(const PipelineList::ResolveStats& real)> drop_list; // the second Resolve dropped the list
+	std::function<void(PipelineList::Resolved&&, const PipelineList::ResolveStats& real)>
+	    build_list;
+	std::function<void(const PipelineList::ResolveStats& real)>
+	                      drop_list;       // the second Resolve dropped the list
 	std::function<void()> start_consumers; // InitializeShaderPrecompile + InitializePipelineJournal
 	std::function<void()> run_prepare;
 	std::function<void()> wait_entry;
@@ -1000,8 +1007,9 @@ inline Outcome RunLaunch(ListWarm* warm, const Config& config, bool never_ready,
 	flow.wait_before_entry = !never_ready && config.wait_before_entry;
 	if (!flow.deferred && !flow.wait_before_entry) return Outcome::NotDeferred;
 	Session session(config, warm != nullptr ? &warm->store : nullptr,
-	                warm != nullptr ? warm->wanted : WantedMap {}, warm != nullptr ? warm->listed : 0,
-	                ops.log, std::move(sink), std::move(clock), warm != nullptr ? warm->key : 0);
+	                warm != nullptr ? warm->wanted : WantedMap {},
+	                warm != nullptr ? warm->listed : 0, ops.log, std::move(sink), std::move(clock),
+	                warm != nullptr ? warm->key : 0);
 	session.SetWatchdog(hard_ms, grace_ms);
 	auto hooks = session.MakeHooks(
 	    [&] {
@@ -1026,13 +1034,13 @@ inline Outcome RunLaunch(ListWarm* warm, const Config& config, bool never_ready,
 	return RunGuestReady(flow, hooks);
 }
 
-// The pre-entry wait of KYTY_LAUNCH_WAIT_BEFORE_ENTRY, bounded by ONE deadline: when it gives up the
-// hold is released, so the first draw does not wait again for the same limit.
+// The pre-entry wait of KYTY_LAUNCH_WAIT_BEFORE_ENTRY, bounded by ONE deadline: when it gives up
+// the hold is released, so the first draw does not wait again for the same limit.
 struct WaitResult {
 	uint64_t waited_ms = 0;
 	bool     gave_up   = false;
 };
-inline WaitResult WaitForLaunchHold(const std::function<bool()>&         done, uint64_t max_s,
+inline WaitResult WaitForLaunchHold(const std::function<bool()>& done, uint64_t max_s,
                                     const std::function<uint64_t()>&     now_ms,
                                     const std::function<void(uint64_t)>& sleep_ms,
                                     const std::function<void()>&         release) {

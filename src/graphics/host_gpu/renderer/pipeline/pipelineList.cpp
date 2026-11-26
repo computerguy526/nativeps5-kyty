@@ -1034,7 +1034,8 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 			stats.other_input_layout++;
 			continue;
 		}
-		// Counted with the matching layouts only: runtime_shaders == runtime_resolved + runtime_pending (+ unusable).
+		// Counted with the matching layouts only: runtime_shaders == runtime_resolved +
+		// runtime_pending (+ unusable).
 		if (runtime) stats.runtime_shaders++;
 		for (const bool back: {false, true}) {
 			if (back && s.back_code_size == 0) continue;

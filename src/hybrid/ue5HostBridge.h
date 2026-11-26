@@ -30,15 +30,16 @@ namespace Ue5 = Libs::Graphics::Ue5CodeWarm;
 struct Env {
 	const KytyGpuHostCallbacks* host = nullptr;
 	const KytyGpuHostInfo*      info = nullptr;
-	std::function<bool()>       on_main_thread;   // the calling thread is the process's main thread
-	std::function<bool()>       main_queue_drains; // the host's main queue runs between window steps
+	std::function<bool()>       on_main_thread; // the calling thread is the process's main thread
+	std::function<bool()> main_queue_drains;    // the host's main queue runs between window steps
 	std::function<void(int level, const std::string&)> log;
 };
 
-// extract_ue5_shader_groups: the query's C callbacks forward to the std::function seam. Built without
-// exceptions: nothing here throws.
+// extract_ue5_shader_groups: the query's C callbacks forward to the std::function seam. Built
+// without exceptions: nothing here throws.
 [[nodiscard]] inline Ue5::HostResult Extract(const Env& env, uint64_t decoder, uint32_t abi,
-                                             const Ue5::GroupFn& group, const Ue5::ProgressFn& progress) {
+                                             const Ue5::GroupFn&    group,
+                                             const Ue5::ProgressFn& progress) {
 	struct Context {
 		const Ue5::GroupFn*    group;
 		const Ue5::ProgressFn* progress;
@@ -50,15 +51,15 @@ struct Env {
 	query.max_raw_bytes = 64u << 20u;
 	query.threads       = 0;
 	query.group         = [](void* arg, const KytyGpuUe5Group* g) -> int {
-        if (g == nullptr) return 0;
-        Ue5::GroupView view;
-        view.library      = g->library;
-        view.group        = g->group;
-        view.shader_count = g->shader_count;
-        // A host that hands a null pointer with a size is wrong; an empty view splits to nothing.
-        if (g->frequencies != nullptr) view.frequencies = {g->frequencies, g->shader_count};
-        if (g->bytes != nullptr) view.bytes = {g->bytes, g->raw_bytes};
-        return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
+		if (g == nullptr) return 0;
+		Ue5::GroupView view;
+		view.library      = g->library;
+		view.group        = g->group;
+		view.shader_count = g->shader_count;
+		// A host that hands a null pointer with a size is wrong; an empty view splits to nothing.
+		if (g->frequencies != nullptr) view.frequencies = {g->frequencies, g->shader_count};
+		if (g->bytes != nullptr) view.bytes = {g->bytes, g->raw_bytes};
+		return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
 	};
 	query.progress = [](void* arg, uint32_t done, uint32_t total) {
 		(*static_cast<Context*>(arg)->progress)(done, total);
@@ -123,9 +124,9 @@ inline void RunOnMain(const Env& env, std::function<void()> fn) {
 		bool                    started = false, done = false, abandoned = false;
 		std::function<void()>   fn;
 	};
-	auto  job = std::make_shared<Job>();
-	job->fn   = std::move(fn);
-	auto* arg = new std::shared_ptr<Job>(job);
+	auto job         = std::make_shared<Job>();
+	job->fn          = std::move(fn);
+	auto*     arg    = new std::shared_ptr<Job>(job);
 	const int queued = env.host->run_on_main_thread(
 	    env.host->user,
 	    [](void* a) {

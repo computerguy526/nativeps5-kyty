@@ -9680,8 +9680,8 @@ void PipelineCache::InitializePipelineList() {
 	ctor_in.to_path         = [](const std::string& text) { return Common::PathFromUtf8(text); };
 	auto ctor               = Ue5CodeWarm::ResolveAtCtor(ctor_in);
 	if (ctor.ignored) return;
-	const bool defer       = ctor.defer;
-	const auto real_stats  = ctor.real;
+	const bool defer      = ctor.defer;
+	const auto real_stats = ctor.real;
 	if (file.info.state_format == 0 && !file.pipelines.empty()) {
 		PipelineCacheLog("Pipeline list: {} has no pipeline state stamp (made by {}): its {} "
 		                 "pipelines replay as state "
@@ -9711,13 +9711,13 @@ void PipelineCache::InitializePipelineList() {
 	build.begin     = begin;
 	m_list          = BuildListState(build);
 	if (defer) {
-		auto ue5                  = std::make_unique<Ue5Warm>();
-		ue5->warm                 = std::move(ctor.warm);
-		ue5->warm->file_holder    = std::move(file_holder);
-		ue5->warm->source         = std::shared_ptr<void>(std::move(source));
-		ue5->build                = std::move(build);
-		ue5->build.file           = ue5->warm->file_holder.get();
-		ue5->build.resolved       = {};
+		auto ue5               = std::make_unique<Ue5Warm>();
+		ue5->warm              = std::move(ctor.warm);
+		ue5->warm->file_holder = std::move(file_holder);
+		ue5->warm->source      = std::shared_ptr<void>(std::move(source));
+		ue5->build             = std::move(build);
+		ue5->build.file        = ue5->warm->file_holder.get();
+		ue5->build.resolved    = {};
 		Ue5CodeWarm::ArmDeferred(*ue5->warm,
 		                         [](const std::string& line) { PipelineCacheLog("{}", line); });
 		m_ue5 = std::move(ue5);
@@ -10180,15 +10180,15 @@ void PipelineCache::RunListPrepareNow() {
 // Ue5CodeWarm::RunLaunch (GPU-free, tested); this only wires it to the renderer.
 void PipelineCache::FinishUe5Warm(bool never_ready) {
 	std::call_once(m_ue5_once, [&] {
-		auto*      warm   = m_ue5 != nullptr ? m_ue5->warm.get() : nullptr;
-		const auto config = warm != nullptr ? warm->cfg
-		                                    : Ue5CodeWarm::ParseEnv([](const char* name) {
-			                                      return std::getenv(name);
-		                                      });
-		const auto log = [](const std::string& line) { PipelineCacheLog("{}", line); };
+		auto*      warm = m_ue5 != nullptr ? m_ue5->warm.get() : nullptr;
+		const auto config =
+		    warm != nullptr
+		        ? warm->cfg
+		        : Ue5CodeWarm::ParseEnv([](const char* name) { return std::getenv(name); });
+		const auto             log = [](const std::string& line) { PipelineCacheLog("{}", line); };
 		Ue5CodeWarm::LaunchOps ops;
 		ops.log        = log;
-		ops.build_list = [&](PipelineList::Resolved&& resolved,
+		ops.build_list = [&](PipelineList::Resolved&&          resolved,
 		                     const PipelineList::ResolveStats& real) {
 			m_ue5->build.resolved  = std::move(resolved);
 			m_ue5->build.stats     = real;
@@ -10208,15 +10208,15 @@ void PipelineCache::FinishUe5Warm(bool never_ready) {
 			// first draw does not wait again.
 			const uint64_t limit_s = EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900);
 			const auto     waited  = Ue5CodeWarm::WaitForLaunchHold(
-                [] { return LaunchHoldDone(); }, limit_s,
-                [] { return Ue5CodeWarm::SteadyMs(); },
-                [](uint64_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); },
-                [] { LaunchHoldRelease(); });
+			    [] { return LaunchHoldDone(); }, limit_s, [] { return Ue5CodeWarm::SteadyMs(); },
+			    [](uint64_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); },
+			    [] { LaunchHoldRelease(); });
 			PipelineCacheLog("Launch phase: the game starts after it ({} ms{})", waited.waited_ms,
 			                 waited.gave_up ? ", given up: the hold is released" : "");
 		};
 		Ue5CodeWarm::RunLaunch(warm, config, never_ready,
-		                       warm != nullptr && EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0, ops);
+		                       warm != nullptr && EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0,
+		                       ops);
 	});
 }
 

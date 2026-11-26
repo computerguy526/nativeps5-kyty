@@ -28,7 +28,6 @@
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/ue5CodeWarm.h"
-#include "hybrid/ue5HostBridge.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/padFocus.h"
@@ -37,6 +36,7 @@
 #include "hybrid/mainLoopGate.h"
 #include "hybrid/padMotion.h"
 #include "hybrid/pendingMemory.h"
+#include "hybrid/ue5HostBridge.h"
 #include "hybrid/virtualPad.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
@@ -119,8 +119,9 @@ constexpr uint32_t g_row_count = static_cast<uint32_t>(sizeof(g_rows) / sizeof(g
 KytyGpuNidInfo        g_info[g_row_count];
 KytyGpuHostCallbacks  g_host {};
 KytyGpuHostInfo       g_host_info {}; // ABI 1.6 (nativeps5): zero on an older host
-// The window loop runs one step per main-queue block (KYTY_WINDOW_STEPPED, default): the main queue drains between steps.
-bool g_stepped_loop = false;
+// The window loop runs one step per main-queue block (KYTY_WINDOW_STEPPED, default): the main queue
+// drains between steps.
+bool                  g_stepped_loop  = false;
 bool                  g_hosted_memory = false;
 std::atomic<uint64_t> g_self_loads_served {
     0}; // KYTY_HOSTED_SELF_LOADS: GPU-thread loads completed from the alias
@@ -833,7 +834,7 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 		env.info              = &g_host_info;
 		env.on_main_thread    = [] { return Common::Thread::IsMainThread(); };
 		env.main_queue_drains = [] { return g_stepped_loop; };
-		env.log               = [](int level, const std::string& text) { Log(level, "%s", text.c_str()); };
+		env.log = [](int level, const std::string& text) { Log(level, "%s", text.c_str()); };
 		Hybrid::Ue5Bridge::Install(&env);
 	}
 
@@ -977,7 +978,7 @@ std::atomic<bool>     g_memory_ready {false};
 // The subsystems are deleted by RendererEnd only, never by a static destructor: when the process
 // exits without a clean end of the window loop, the renderer's threads are still running and a
 // teardown from exit()'s destructor pass would race them.
-Common::Subsystems* g_subsystems   = nullptr;
+Common::Subsystems* g_subsystems = nullptr;
 // The window loop runs on the host's main queue (no g_renderer_thread to join): shutdown waits
 // here.
 bool                 g_main_queue_loop = false;
