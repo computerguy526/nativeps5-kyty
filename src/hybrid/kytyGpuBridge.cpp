@@ -838,25 +838,18 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 			query.decoder       = decoder;
 			query.max_raw_bytes = 64u << 20u;
 			query.threads       = 0;
-			query.group         = [](void* arg, const KytyGpuUe5Group* g) -> int {
-				try {
-					Ue5::GroupView view;
-					view.library      = g->library;
-					view.group        = g->group;
-					view.shader_count = g->shader_count;
-					if (g->frequencies != nullptr)
-						view.frequencies = {g->frequencies, g->shader_count};
-					view.bytes = {g->bytes, g->raw_bytes};
-					return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
-				} catch (...) {
-					return 1;
-				}
+			// Built without exceptions: nothing here throws.
+			query.group = [](void* arg, const KytyGpuUe5Group* g) -> int {
+				Ue5::GroupView view;
+				view.library      = g->library;
+				view.group        = g->group;
+				view.shader_count = g->shader_count;
+				if (g->frequencies != nullptr) view.frequencies = {g->frequencies, g->shader_count};
+				view.bytes = {g->bytes, g->raw_bytes};
+				return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
 			};
 			query.progress = [](void* arg, uint32_t done, uint32_t total) {
-				try {
-					(*static_cast<Context*>(arg)->progress)(done, total);
-				} catch (...) {
-				}
+				(*static_cast<Context*>(arg)->progress)(done, total);
 			};
 			query.arg = &context;
 			KytyGpuUe5Result result {};
