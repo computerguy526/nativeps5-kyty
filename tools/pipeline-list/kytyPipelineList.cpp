@@ -32,6 +32,11 @@
 //       Resolves the list against a game copy, as the emulator does at start-up. A list with `<runtime>` shaders also prints
 //       "runtime: X resolved, Y pending": they resolve from --code-store (read only; none: all pending). Pending is not an
 //       error; --require-runtime makes exit 1 when fewer than that percentage of the runtime shaders resolved (the harvest gate).
+//   drop --list <list> --hashes <file> --out <list> [--dropped <tsv>]
+//       Removes the programs named in --hashes (every 0x + 16 hex digits of the file: a probe log with "SPIR-V validation failed:
+//       hash=0x..." / "KYTY_RT_STUB: ... shader 0x...", or a dropped.tsv) from a list, with their permutations and the pipelines using them.
+//       --dropped writes one tsv row per dropped program (hash, kind, runtime|executable, reason). Prints the counts. The harvest
+//       compile probe: a program the recompiler refuses ends the launch-phase compile of the whole list.
 //   scenedb build|merge|info|query|tiers|check ...   the shader level database (sceneDbCommands.h)
 //   retarget --list <list> --exe <executable> --title <id> --app-ver <version> --out <list>
 //       Re-stamps a list for another copy of the game (another version or SKU): each shader is looked up in
@@ -102,6 +107,7 @@ struct Arguments {
 	int                                              require_runtime = -1; // check: percent of runtime shaders that must resolve (-1: none)
 	bool                                             allow_partial = false; // merge/upgrade: keep going when a specialization reads as no known layout
 	std::string                                      base;
+	std::string                                      hashes, dropped; // drop: the hash file and the dropped.tsv
 };
 
 // --scan: the footer every PS5 shader binary ends with (48 bytes, starting with "barefoot").
@@ -967,6 +973,41 @@ int Check(const Arguments& args) {
 	return stats.resolved + stats.runtime_pending == stats.shaders ? 0 : 1;
 }
 
+int Drop(const Arguments& args) {
+	if (args.list.empty() || args.hashes.empty() || args.out.empty()) {
+		std::fprintf(stderr, "drop needs --list, --hashes and --out\n");
+		return 2;
+	}
+	PipelineList::File file;
+	if (!Load(args.list, file)) return 2;
+	std::ifstream in(args.hashes, std::ios::binary);
+	if (!in) {
+		std::fprintf(stderr, "cannot read %s\n", args.hashes.c_str());
+		return 2;
+	}
+	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	const auto        drop = PipelineListTool::ParseDropHashes(text);
+	PipelineListTool::DropStats stats;
+	std::string                 tsv;
+	const auto                  out   = PipelineListTool::DropShaders(file, drop, stats, &tsv);
+	const auto                  bytes = PipelineList::Encode(out);
+	std::ofstream               os(args.out, std::ios::binary | std::ios::trunc);
+	os.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+	if (!os) {
+		std::fprintf(stderr, "cannot write %s\n", args.out.c_str());
+		return 2;
+	}
+	if (!args.dropped.empty()) {
+		std::ofstream ts(args.dropped, std::ios::binary | std::ios::trunc);
+		ts << "# hash\tkind\tcode\treason (dropped by kyty_pipeline_list drop)\n" << tsv;
+	}
+	std::printf("drop: %llu hashes named, %llu shaders dropped, %llu permutations, %llu of %llu pipelines; wrote %s: %zu bytes, %zu shaders\n",
+	            static_cast<unsigned long long>(stats.asked), static_cast<unsigned long long>(stats.shaders),
+	            static_cast<unsigned long long>(stats.permutations), static_cast<unsigned long long>(stats.pipelines_dropped),
+	            static_cast<unsigned long long>(stats.pipelines), args.out.c_str(), bytes.size(), out.shaders.size());
+	return 0;
+}
+
 int Retarget(const Arguments& args) {
 	if (args.list.empty() || args.exe.empty() || args.title.empty() || args.app_ver.empty() || args.out.empty()) {
 		std::fprintf(stderr, "retarget needs --list, --exe, --title, --app-ver and --out\n");
@@ -1148,6 +1189,10 @@ int main(int argc, char** argv) {
 			args.allow_partial = true;
 		} else if (arg == "--runtime-code") {
 			args.runtime_code = true;
+		} else if (arg == "--hashes") {
+			args.hashes = value();
+		} else if (arg == "--dropped") {
+			args.dropped = value();
 		} else if (arg == "--code-store") {
 			args.code_store = value();
 		} else if (arg == "--require-runtime") {
@@ -1165,6 +1210,7 @@ int main(int argc, char** argv) {
 	if (args.command == "info") return Info(args);
 	if (args.command == "check") return Check(args);
 	if (args.command == "retarget") return Retarget(args);
+	if (args.command == "drop") return Drop(args);
 	if (args.command == "verify") return Verify(args);
 	if (args.command == "upgrade") return Upgrade(args);
 	std::fprintf(stderr, "unknown command %s\n", args.command.c_str());

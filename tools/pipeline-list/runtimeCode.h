@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -96,6 +97,86 @@ KeepRuntimeCode(Libs::Graphics::PipelineList::Builder::LocateFn inner, Libs::Gra
 		mixed += runtime_kept.contains({front.low, front.high}) != runtime_kept.contains({back.low, back.high}) ? 1 : 0;
 	}
 	return mixed;
+}
+
+// ---- drop: programs the build of this game cannot compile (harvest compile probe) -----------------------------------
+// The launch phase builds every listed pipeline, and one program the recompiler refuses (e.g. a software ray-tracing kernel
+// with writable global addresses) ends the whole process. A probe run with the title's real settings logs such programs by
+// hash; `drop` removes them, with their permutations and the pipelines that use them, and writes what it dropped.
+
+struct DropStats {
+	uint64_t asked = 0, shaders = 0, permutations = 0, pipelines = 0, pipelines_dropped = 0;
+};
+
+// Every `0x` + 16 hex digits of `text` (a probe log, or a dropped.tsv: its first column) is a source hash; the value is the
+// first line that named it (cut to 160 characters), kept as the reason.
+[[nodiscard]] inline std::map<uint64_t, std::string> ParseDropHashes(const std::string& text) {
+	std::map<uint64_t, std::string> out;
+	size_t                          line_begin = 0;
+	while (line_begin < text.size()) {
+		size_t line_end = text.find('\n', line_begin);
+		if (line_end == std::string::npos) line_end = text.size();
+		const std::string line = text.substr(line_begin, line_end - line_begin);
+		for (size_t at = line.find("0x"); at != std::string::npos; at = line.find("0x", at + 2)) {
+			if (at + 18 > line.size()) break;
+			uint64_t value = 0;
+			bool     ok    = true;
+			for (size_t i = 0; i < 16 && ok; i++) {
+				const char c = line[at + 2 + i];
+				const int  d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+				ok           = d >= 0;
+				value        = (value << 4) | static_cast<uint64_t>(d < 0 ? 0 : d);
+			}
+			if (ok && !out.contains(value)) {
+				std::string reason = line.substr(0, 160);
+				for (auto& c: reason)
+					if (c == '\t' || c == '\r') c = ' ';
+				out.emplace(value, std::move(reason));
+			}
+		}
+		line_begin = line_end + 1;
+	}
+	return out;
+}
+
+// `file` without the shaders whose source hash is in `drop`, their permutations and the pipelines using them. `dropped` (optional)
+// gets one tsv row per dropped shader: hash, kind, runtime|executable, reason.
+[[nodiscard]] inline Libs::Graphics::PipelineList::File DropShaders(const Libs::Graphics::PipelineList::File&   file,
+                                                                    const std::map<uint64_t, std::string>&      drop,
+                                                                    DropStats& stats, std::string* dropped = nullptr) {
+	using namespace Libs::Graphics;
+	PipelineList::Resolved resolved;
+	const auto             n = file.shaders.size();
+	resolved.usable.assign(n, true);
+	resolved.pending.assign(n, false);
+	resolved.offsets.resize(n);
+	resolved.back_offsets.resize(n);
+	const auto runtime = PipelineList::RuntimeFileOf(file);
+	stats.asked        = drop.size();
+	static const char* const Kinds[3] = {"vertex", "pixel", "compute"};
+	for (size_t i = 0; i < n; i++) {
+		const auto& shader      = file.shaders[i];
+		resolved.offsets[i]      = shader.offset;
+		resolved.back_offsets[i] = shader.back_offset;
+		const auto found         = drop.find(shader.hash);
+		if (found == drop.end()) continue;
+		resolved.usable[i] = false;
+		stats.shaders++;
+		if (dropped != nullptr) {
+			char hash[32];
+			std::snprintf(hash, sizeof(hash), "0x%016llx", static_cast<unsigned long long>(shader.hash));
+			const auto kind = static_cast<size_t>(shader.kind);
+			*dropped += std::string(hash) + "\t" + (kind < 3 ? Kinds[kind] : "?") + "\t" +
+			            (runtime != PipelineList::CodeFile::Executable && shader.file == runtime ? "runtime" : "executable") + "\t" +
+			            found->second + "\n";
+		}
+	}
+	PipelineList::RetargetStats rs;
+	auto                        out = PipelineList::Retarget(file, resolved, rs);
+	stats.permutations              = file.permutations.size() - out.permutations.size();
+	stats.pipelines                 = file.pipelines.size();
+	stats.pipelines_dropped         = file.pipelines.size() - out.pipelines.size();
+	return out;
 }
 
 } // namespace PipelineListTool

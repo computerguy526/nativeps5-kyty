@@ -1088,6 +1088,38 @@ void TestToolRuntimeExport() {
 	}
 }
 
+// drop: programs the recompiler refuses are removed with their permutations and pipelines (harvest compile probe).
+void TestDropShaders() {
+	auto list = MakeRuntimeList();
+	// A pipeline per shader pair so one dropped program takes its pipelines with it.
+	PipelineList::Pipeline a, b;
+	a.stages = {{0, false, 1}, {1, false, 1}};
+	b.stages = {{2, false, 1}};
+	list.file.pipelines = {a, b};
+	char       hash[64];
+	std::snprintf(hash, sizeof(hash), "0x%016llx", static_cast<unsigned long long>(list.file.shaders[1].hash));
+	const std::string log = std::string("noise 0x12 short\nSPIR-V validation failed: hash=") + hash + " stage=4 reason=writable FLAT/GLOBAL\nKYTY_RT_STUB: CS shader 0xffffffffffffffff has 1 BVH\n";
+	const auto        parsed = PipelineListTool::ParseDropHashes(log);
+	CHECK(parsed.size() == 2 && parsed.contains(list.file.shaders[1].hash) && parsed.contains(0xffffffffffffffffull));
+	CHECK(parsed.at(list.file.shaders[1].hash).find("SPIR-V validation failed") == 0);
+	PipelineListTool::DropStats stats;
+	std::string                 tsv;
+	const auto                  out = PipelineListTool::DropShaders(list.file, parsed, stats, &tsv);
+	CHECK(stats.asked == 2 && stats.shaders == 1 && stats.permutations == 1 && stats.pipelines == 2 && stats.pipelines_dropped == 1);
+	CHECK(out.shaders.size() == 2 && out.permutations.size() == 2 && out.pipelines.size() == 1 && out.pipelines[0].stages.size() == 1);
+	CHECK(out.shaders[0].hash == list.file.shaders[0].hash && out.shaders[1].hash == list.file.shaders[2].hash);
+	CHECK(out.files == list.file.files && PipelineList::RuntimeFileOf(out) == PipelineList::RuntimeFileOf(list.file));
+	CHECK(tsv.find(hash) == 0 && tsv.find("\tpixel\truntime\t") != std::string::npos);
+	// Nothing named: the list is unchanged. A tsv written by drop is accepted as a hash file again.
+	PipelineListTool::DropStats none;
+	CHECK(PipelineListTool::DropShaders(list.file, {}, none).shaders.size() == 3 && none.shaders == 0 && none.pipelines_dropped == 0);
+	CHECK(PipelineListTool::ParseDropHashes(tsv).contains(list.file.shaders[1].hash));
+	auto bare = out; // the synthetic pipelines carry no snapshot words: round-trip the shaders alone
+	bare.pipelines.clear();
+	PipelineList::File decoded;
+	CHECK(PipelineList::Decode(PipelineList::Encode(bare), decoded) && decoded.shaders.size() == 2);
+}
+
 } // namespace
 
 int main() {
@@ -1108,6 +1140,7 @@ int main() {
 	TestMixedMergedCount();
 	TestGroupSplit();
 	TestToolRuntimeExport();
+	TestDropShaders();
 	if (g_failed != 0) {
 		std::printf("PipelineUe5WarmTests: %d check(s) failed\n", g_failed);
 		return 1;
