@@ -246,7 +246,7 @@ int Translate(const Src& s, const char* out_path, bool comments, uint32_t lanes,
 	else options.input_info.compute = &info;
 	auto translated = SR::TranslateProgram(s.code, options);
 	if (translated.skip_dispatch) {
-		std::fprintf(stderr, "skip_dispatch (unsupported call)\n");
+		std::fprintf(stderr, "skip_dispatch: the recompiler gave up on the program (unsupported call)\n");
 		return 4;
 	}
 	// Specialization from the program's own resource list (numeric class etc. as translated).
@@ -364,7 +364,7 @@ int ProbeMain(int argc, char** argv) {
 			if (dp.has_bvh) { std::fprintf(stderr, "ray tracing: BVH intersection instructions"); return RtCode; }
 		}
 		const int rc = Translate(it.src, "/dev/null", false, 0, nullptr, w.second >= 0 ? &it.perms[static_cast<size_t>(w.second)] : nullptr, nullptr);
-		return rc == 4 || rc == 5 ? 0 : rc; // 4: the title skips such dispatches; 5: a static key this tool cannot decode (mesh / tessellation): not probed
+		return rc == 5 ? 0 : rc; // 4: skip_dispatch (the recompiler gave up on the program: the launch-phase compile of a list ends on it, SAROS 0x9fba2edffc549531); 5: a static key this tool cannot decode (mesh / tessellation): not probed
 	};
 	std::fprintf(stderr, "probe: %zu of %zu listed programs found in the caches, %zu permutations, %d jobs\n", found.size(), wanted.size(), units.size(), opt.jobs);
 	const auto outcomes = ListProbe::RunUnits(units, fn, opt);
