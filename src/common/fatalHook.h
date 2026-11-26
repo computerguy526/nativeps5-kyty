@@ -1,10 +1,11 @@
 #ifndef KYTY_COMMON_FATALHOOK_H_
 #define KYTY_COMMON_FATALHOOK_H_
 
-// One optional callback that runs on the failing thread when a fatal error ends the process (Common::DbgReport in assert.cpp:
-// EXIT / EXIT_IF / EXIT_NOT_IMPLEMENTED), before the report is printed and the process exits. Used by the refused-program record
-// (pipeline/refusedPrograms.h) to note which program the failing thread was translating. Header only so tests need no emulator.
-// The callback must not throw and should not take locks other threads may hold while they translate.
+// One optional callback that runs on the failing thread when a fatal error ends the process
+// (Common::DbgReport in assert.cpp: EXIT / EXIT_IF / EXIT_NOT_IMPLEMENTED), before the report is
+// printed and the process exits. Used by the refused-program record (pipeline/refusedPrograms.h) to
+// note which program the failing thread was translating. Header only so tests need no emulator. The
+// callback must not throw and should not take locks other threads may hold while they translate.
 
 #include <atomic>
 #include <string_view>

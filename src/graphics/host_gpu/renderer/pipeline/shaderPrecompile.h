@@ -311,9 +311,10 @@ public:
 		uint64_t progress_ns      = 5'000'000'000ull;
 		// The lines also give the workers' CPU time (summed per entry from thread times; Windows).
 		bool measure_cpu = false;
-		// Programs an earlier start died on (refusedPrograms.h): their entries are not translated, they are counted and the first
-		// ones are logged by hash. While an entry is translated the worker names its program to the fatal hook, so a fatal error
-		// records it for the next start. nullptr: off.
+		// Programs an earlier start died on (refusedPrograms.h): their entries are not translated,
+		// they are counted and the first ones are logged by hash. While an entry is translated the
+		// worker names its program to the fatal hook, so a fatal error records it for the next
+		// start. nullptr: off.
 		RefusedPrograms* refused = nullptr;
 	};
 
@@ -325,7 +326,8 @@ public:
 		uint64_t skipped  = 0;
 		uint64_t failed   = 0;
 		uint64_t reloaded = 0;
-		uint64_t refused  = 0; // entries of programs in the refused record (counted in skipped as well)
+		uint64_t refused =
+		    0; // entries of programs in the refused record (counted in skipped as well)
 		uint64_t cpu_ns   = 0; // measure_cpu
 		bool     finished = false;
 	};

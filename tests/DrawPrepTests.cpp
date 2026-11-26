@@ -2560,34 +2560,41 @@ void TestGapLedgerWaitSplit() {
 	      "gap wait split: predication wait outside a commit");
 }
 
-// c2acct (cpdraw P4): the side-readback wait (SideReadbackState::Wait, scoped as GpuWaitOther) inside a
-// commit is booked as in-commit gpuwait.other (the nested_side column) and is taken out of the commit's
-// own time; a commit without the wait keeps all of it.
+// c2acct (cpdraw P4): the side-readback wait (SideReadbackState::Wait, scoped
+// as GpuWaitOther) inside a commit is booked as in-commit gpuwait.other (the
+// nested_side column) and is taken out of the commit's own time; a commit
+// without the wait keeps all of it.
 void TestGapLedgerSideWaitInCommit() {
-	using CpGaps::Cat;
-	CpGaps::Ledger ledger;
-	ledger.Enter(Cat::Commit, 0);
-	ledger.Enter(Cat::GpuWaitOther, 10); // the record read: 12 ms of a 20 ms commit
-	ledger.Exit(22);
-	ledger.Exit(30); // the commit ends at 30
-	Check(ledger.Ticks(Cat::GpuWaitOther) == 12 && ledger.InCommit(Cat::GpuWaitOther) == 12,
-	      "gap side wait: booked as in-commit gpuwait.other");
-	Check(ledger.Ticks(Cat::Commit) == 30 - 12 && ledger.InCommit(Cat::Commit) == 0,
-	      "gap side wait: not booked as commit time");
-	// The per-pass nested split reads index 2 of kPassNestedCats: gpuwait.other.
-	Check(CpGaps::kPassNestedCats[2] == Cat::GpuWaitOther && ledger.InCommit(CpGaps::kPassNestedCats[2]) == 12,
-	      "gap side wait: nested_side column");
-	// Outside a commit the same wait is plain gpuwait.other.
-	ledger.Enter(Cat::GpuWaitOther, 40);
-	ledger.Exit(45);
-	Check(ledger.Ticks(Cat::GpuWaitOther) == 17 && ledger.InCommit(Cat::GpuWaitOther) == 12,
-	      "gap side wait: outside a commit not in-commit");
-	// A wait that returns early never enters a scope (a no-op ledger): commit keeps its time.
-	CpGaps::Ledger quiet;
-	quiet.Enter(Cat::Commit, 0);
-	quiet.Exit(9);
-	Check(quiet.Ticks(Cat::Commit) == 9 && quiet.InCommit(Cat::GpuWaitOther) == 0,
-	      "gap side wait: no wait, no change");
+  using CpGaps::Cat;
+  CpGaps::Ledger ledger;
+  ledger.Enter(Cat::Commit, 0);
+  ledger.Enter(Cat::GpuWaitOther,
+               10); // the record read: 12 ms of a 20 ms commit
+  ledger.Exit(22);
+  ledger.Exit(30); // the commit ends at 30
+  Check(ledger.Ticks(Cat::GpuWaitOther) == 12 &&
+            ledger.InCommit(Cat::GpuWaitOther) == 12,
+        "gap side wait: booked as in-commit gpuwait.other");
+  Check(ledger.Ticks(Cat::Commit) == 30 - 12 &&
+            ledger.InCommit(Cat::Commit) == 0,
+        "gap side wait: not booked as commit time");
+  // The per-pass nested split reads index 2 of kPassNestedCats: gpuwait.other.
+  Check(CpGaps::kPassNestedCats[2] == Cat::GpuWaitOther &&
+            ledger.InCommit(CpGaps::kPassNestedCats[2]) == 12,
+        "gap side wait: nested_side column");
+  // Outside a commit the same wait is plain gpuwait.other.
+  ledger.Enter(Cat::GpuWaitOther, 40);
+  ledger.Exit(45);
+  Check(ledger.Ticks(Cat::GpuWaitOther) == 17 &&
+            ledger.InCommit(Cat::GpuWaitOther) == 12,
+        "gap side wait: outside a commit not in-commit");
+  // A wait that returns early never enters a scope (a no-op ledger): commit
+  // keeps its time.
+  CpGaps::Ledger quiet;
+  quiet.Enter(Cat::Commit, 0);
+  quiet.Exit(9);
+  Check(quiet.Ticks(Cat::Commit) == 9 && quiet.InCommit(Cat::GpuWaitOther) == 0,
+        "gap side wait: no wait, no change");
 }
 
 void TestGapLedgerPhasesAndNested() {
@@ -2725,8 +2732,8 @@ int main(int argc, char** argv) {
 	TestGapLedgerExclusive();
 	TestGapLedgerPhasesAndNested();
 	TestGapLedgerWaitSplit();
-	TestGapLedgerSideWaitInCommit();
-	TestGapLedgerFlushAndOverflow();
+        TestGapLedgerSideWaitInCommit();
+        TestGapLedgerFlushAndOverflow();
 	if (g_failures != 0) {
 		std::fprintf(stderr, "DrawPrepTests: %d failure(s)\n", g_failures);
 		return 1;

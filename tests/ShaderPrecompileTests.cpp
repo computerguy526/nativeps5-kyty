@@ -533,171 +533,239 @@ void TestPipelineJournalSealed() {
 	}
 }
 
-// ---- refused programs (refusedPrograms.h): a program a fatal error ended an earlier start on is skipped, counted and logged ----
+// ---- refused programs (refusedPrograms.h): a program a fatal error ended an
+// earlier start on is skipped, counted and logged ----
 
-std::string ReadText(const std::filesystem::path& path) {
-	std::ifstream in(path);
-	return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+std::string ReadText(const std::filesystem::path &path) {
+  std::ifstream in(path);
+  return std::string((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
 }
 
 void TestRefusedProgramsFile() {
-	const auto path = TestPath("refused");
-	Remove(path);
-	RefusedPrograms none;
-	Expect(none.Open(path) == 0 && none.Count() == 0 && !none.Contains(1), "a missing file is an empty list");
-	{
-		std::ofstream out(path);
-		out << "# comment\n0x00000000000000AB\tSpirV Fail: writable FLAT addresses\n0xabcdef0123456789\n0x123\nnot a hash\n"
-		       "0x00000000000000cdXjunk\n0xZZ0000000000000000\n 0x0000000000000001\n0x0000000000000002 spaced reason\n";
-	}
-	RefusedPrograms r;
-	Expect(r.Open(path) == 3, "three valid lines (either case, with or without a reason, space or tab after the hash)");
-	Expect(r.Contains(0xab) && r.Contains(0xabcdef0123456789ull) && r.Contains(2), "the programs");
-	Expect(!r.Contains(0xcd) && !r.Contains(1) && !r.Contains(0x123), "junk after the digits, a leading space and short hashes are not programs");
-	Expect(r.Reason(0xab) == "SpirV Fail: writable FLAT addresses" && r.Reason(0xabcdef0123456789ull).empty() && r.Reason(77).empty(), "reasons");
-	Remove(path);
+  const auto path = TestPath("refused");
+  Remove(path);
+  RefusedPrograms none;
+  Expect(none.Open(path) == 0 && none.Count() == 0 && !none.Contains(1),
+         "a missing file is an empty list");
+  {
+    std::ofstream out(path);
+    out << "# comment\n0x00000000000000AB\tSpirV Fail: writable FLAT "
+           "addresses\n0xabcdef0123456789\n0x123\nnot a hash\n"
+           "0x00000000000000cdXjunk\n0xZZ0000000000000000\n "
+           "0x0000000000000001\n0x0000000000000002 spaced reason\n";
+  }
+  RefusedPrograms r;
+  Expect(r.Open(path) == 3, "three valid lines (either case, with or without a "
+                            "reason, space or tab after the hash)");
+  Expect(r.Contains(0xab) && r.Contains(0xabcdef0123456789ull) && r.Contains(2),
+         "the programs");
+  Expect(!r.Contains(0xcd) && !r.Contains(1) && !r.Contains(0x123),
+         "junk after the digits, a leading space and short hashes are not "
+         "programs");
+  Expect(r.Reason(0xab) == "SpirV Fail: writable FLAT addresses" &&
+             r.Reason(0xabcdef0123456789ull).empty() && r.Reason(77).empty(),
+         "reasons");
+  Remove(path);
 }
 
 void TestRefusedProgramsRecording() {
-	const auto path = TestPath("refused-rec");
-	Remove(path);
-	RefusedPrograms r;
-	r.Open(path);
-	Expect(!r.RecordFatal("nothing in flight"), "no program in flight: nothing recorded");
-	Expect(!std::filesystem::exists(path), "and no file is made");
-	RefusedPrograms::Begin(0xfeed);
-	Expect(RefusedPrograms::InFlight() == 0xfeed, "the thread names its program");
-	std::thread other([&] {
-		Expect(RefusedPrograms::InFlight() == 0, "another thread's in-flight program is its own");
-		Expect(!r.RecordFatal("fatal on a thread with no program"), "a fatal error elsewhere records nothing");
-	});
-	other.join();
-	Expect(std::filesystem::exists(path) == false, "still no file");
-	Expect(r.RecordFatal("Error: condition (indirect_root >= images.size()) is true\nsecond line\twith a tab"), "recorded");
-	Expect(RefusedPrograms::InFlight() == 0, "recording ends the in-flight mark");
-	RefusedPrograms::Begin(0xbeef);
-	std::string long_text(500, 'x');
-	Expect(r.RecordFatal(long_text), "a second program is appended");
-	const auto text = ReadText(path);
-	Expect(text.rfind("0x000000000000feed\tError: condition (indirect_root >= images.size()) is true\n", 0) == 0, "first line: hash, tab, first line of the text");
-	Expect(text.find("second line") == std::string::npos, "only the first line of the text");
-	Expect(text.find("0x000000000000beef\t" + std::string(RefusedPrograms::MaxReasonChars, 'x') + "\n") != std::string::npos, "reason cut to 120 characters");
-	RefusedPrograms again;
-	Expect(again.Open(path) == 2 && again.Contains(0xfeed) && again.Contains(0xbeef), "the next start reads both");
-	// a path that cannot be written is not an error, the process just ends as before
-	RefusedPrograms bad;
-	bad.Open(std::filesystem::path("/nonexistent-dir-for-test/refused"));
-	RefusedPrograms::Begin(5);
-	Expect(!bad.RecordFatal("x"), "an unwritable path reports false");
-	RefusedPrograms::End();
-	Remove(path);
+  const auto path = TestPath("refused-rec");
+  Remove(path);
+  RefusedPrograms r;
+  r.Open(path);
+  Expect(!r.RecordFatal("nothing in flight"),
+         "no program in flight: nothing recorded");
+  Expect(!std::filesystem::exists(path), "and no file is made");
+  RefusedPrograms::Begin(0xfeed);
+  Expect(RefusedPrograms::InFlight() == 0xfeed, "the thread names its program");
+  std::thread other([&] {
+    Expect(RefusedPrograms::InFlight() == 0,
+           "another thread's in-flight program is its own");
+    Expect(!r.RecordFatal("fatal on a thread with no program"),
+           "a fatal error elsewhere records nothing");
+  });
+  other.join();
+  Expect(std::filesystem::exists(path) == false, "still no file");
+  Expect(r.RecordFatal("Error: condition (indirect_root >= images.size()) is "
+                       "true\nsecond line\twith a tab"),
+         "recorded");
+  Expect(RefusedPrograms::InFlight() == 0, "recording ends the in-flight mark");
+  RefusedPrograms::Begin(0xbeef);
+  std::string long_text(500, 'x');
+  Expect(r.RecordFatal(long_text), "a second program is appended");
+  const auto text = ReadText(path);
+  Expect(text.rfind("0x000000000000feed\tError: condition (indirect_root >= "
+                    "images.size()) is true\n",
+                    0) == 0,
+         "first line: hash, tab, first line of the text");
+  Expect(text.find("second line") == std::string::npos,
+         "only the first line of the text");
+  Expect(text.find("0x000000000000beef\t" +
+                   std::string(RefusedPrograms::MaxReasonChars, 'x') + "\n") !=
+             std::string::npos,
+         "reason cut to 120 characters");
+  RefusedPrograms again;
+  Expect(again.Open(path) == 2 && again.Contains(0xfeed) &&
+             again.Contains(0xbeef),
+         "the next start reads both");
+  // a path that cannot be written is not an error, the process just ends as
+  // before
+  RefusedPrograms bad;
+  bad.Open(std::filesystem::path("/nonexistent-dir-for-test/refused"));
+  RefusedPrograms::Begin(5);
+  Expect(!bad.RecordFatal("x"), "an unwritable path reports false");
+  RefusedPrograms::End();
+  Remove(path);
 }
 
 void TestRefusedProgramsPathChoice() {
-	using R = RefusedPrograms;
-	Expect(R::ChoosePath(nullptr, nullptr).empty() && R::ChoosePath(nullptr, "").empty(), "no program cache, no file: the feature is off");
-	Expect(R::ChoosePath(nullptr, "/c/T.programs.bin") == std::filesystem::path("/c/T.programs.bin.refused"), "default: next to the program cache");
-	Expect(R::ChoosePath("/x/r.txt", "/c/T.programs.bin") == std::filesystem::path("/x/r.txt"), "an explicit path wins");
-	Expect(R::ChoosePath("0", "/c/T.programs.bin").empty() && R::ChoosePath("", "/c/T.programs.bin").empty(), "0 or empty turns it off");
+  using R = RefusedPrograms;
+  Expect(R::ChoosePath(nullptr, nullptr).empty() &&
+             R::ChoosePath(nullptr, "").empty(),
+         "no program cache, no file: the feature is off");
+  Expect(R::ChoosePath(nullptr, "/c/T.programs.bin") ==
+             std::filesystem::path("/c/T.programs.bin.refused"),
+         "default: next to the program cache");
+  Expect(R::ChoosePath("/x/r.txt", "/c/T.programs.bin") ==
+             std::filesystem::path("/x/r.txt"),
+         "an explicit path wins");
+  Expect(R::ChoosePath("0", "/c/T.programs.bin").empty() &&
+             R::ChoosePath("", "/c/T.programs.bin").empty(),
+         "0 or empty turns it off");
 }
 
 void TestRefusedProgramsThroughTheFatalHook() {
-	const auto path = TestPath("refused-hook");
-	Remove(path);
-	RefusedPrograms r;
-	r.Open(path);
-	r.Install();
-	RefusedPrograms::Begin(0x77);
-	Common::RunFatalHook("Error: SpirV validation failed");      // what Common::DbgReport calls before it ends the process
-	r.Uninstall();
-	Common::SetFatalHook(nullptr);
-	RefusedPrograms::Begin(0x78);
-	Common::RunFatalHook("after the hook was removed");
-	RefusedPrograms::End();
-	RefusedPrograms next;
-	Expect(next.Open(path) == 1 && next.Contains(0x77) && !next.Contains(0x78), "only the program of the fatal error is recorded");
-	Remove(path);
+  const auto path = TestPath("refused-hook");
+  Remove(path);
+  RefusedPrograms r;
+  r.Open(path);
+  r.Install();
+  RefusedPrograms::Begin(0x77);
+  Common::RunFatalHook(
+      "Error: SpirV validation failed"); // what Common::DbgReport calls before
+                                         // it ends the process
+  r.Uninstall();
+  Common::SetFatalHook(nullptr);
+  RefusedPrograms::Begin(0x78);
+  Common::RunFatalHook("after the hook was removed");
+  RefusedPrograms::End();
+  RefusedPrograms next;
+  Expect(next.Open(path) == 1 && next.Contains(0x77) && !next.Contains(0x78),
+         "only the program of the fatal error is recorded");
+  Remove(path);
 }
 
 void TestPrecompileSkipsRefusedPrograms() {
-	const auto path    = TestPath("refused-replay");
-	const auto journal_path = TestPath("refused-replay-journal");
-	Remove(path);
-	auto journal = MakeJournalWith(journal_path, 70);        // seven sources 0x1000..0x1006, ten entries each
-	// First start: the translation of program 0x1003 ends in a fatal error (stood in for by the hook call).
-	{
-		RefusedPrograms r;
-		r.Open(path);
-		r.Install();
-		ShaderPrecompiler::Settings settings;
-		settings.threads = 1;
-		settings.refused = &r;
-		int in_flight_ok = 0, compiled = 0;
-		ShaderPrecompiler precompiler(journal, settings, [&](const auto& source, const auto&) {
-			if (RefusedPrograms::InFlight() == source.hash) in_flight_ok++;
-			compiled++;
-			if (source.hash == 0x1003) {
-				Common::RunFatalHook("Error: the recompiler refuses this program");
-			}
-			return ShaderPrecompiler::Outcome::Compiled;
-		});
-		precompiler.Wait();
-		r.Uninstall();
-		Common::SetFatalHook(nullptr);
-		Expect(in_flight_ok == 70 && compiled == 70, "each entry names its program while it is translated");
-		Expect(RefusedPrograms::InFlight() == 0, "and none stays named afterwards");
-		Expect(precompiler.GetProgress().refused == 0, "nothing was skipped in the first start");
-	}
-	// Second start: the program is skipped, counted, named once per line (at most 8 lines), the others run.
-	{
-		RefusedPrograms r;
-		Expect(r.Open(path) == 1 && r.Contains(0x1003), "the record was written by the failing thread");
-		std::vector<std::string> lines;
-		std::atomic<int>         seen_refused {0}, compiled {0};
-		ShaderPrecompiler::Settings settings;
-		settings.threads = 3;
-		settings.refused = &r;
-		settings.log     = [&](const std::string& line) { lines.push_back(line); };
-		ShaderPrecompiler precompiler(journal, settings, [&](const auto& source, const auto&) {
-			if (source.hash == 0x1003) seen_refused++;
-			compiled++;
-			return ShaderPrecompiler::Outcome::Compiled;
-		});
-		precompiler.Wait();
-		const auto p = precompiler.GetProgress();
-		Expect(seen_refused == 0 && compiled == 60, "no entry of the refused program is translated");
-		Expect(p.done == 70 && p.total == 70 && p.skipped == 10 && p.refused == 10 && p.compiled == 60 && p.failed == 0, "counted as skipped and refused");
-		int named = 0;
-		for (const auto& l: lines) named += l.find("program 0x0000000000001003 skipped (refused earlier: Error: the recompiler refuses this program)") != std::string::npos ? 1 : 0;
-		Expect(named == 8, "the hash is logged for the first 8 entries only");
-		Expect(!lines.empty() && lines.back().find("10 of refused programs") != std::string::npos, "the final line counts them");
-	}
-	// Without the record object nothing changes: every entry is translated and nothing is named.
-	{
-		std::atomic<int> compiled {0}, named {0};
-		ShaderPrecompiler::Settings settings;
-		settings.threads = 2;
-		ShaderPrecompiler precompiler(journal, settings, [&](const auto&, const auto&) {
-			compiled++;
-			if (RefusedPrograms::InFlight() != 0) named++;
-			return ShaderPrecompiler::Outcome::Compiled;
-		});
-		precompiler.Wait();
-		Expect(compiled == 70 && named == 0 && precompiler.GetProgress().refused == 0, "refused == nullptr leaves the replay as it was");
-	}
-	// A compile that throws still ends the in-flight mark.
-	{
-		RefusedPrograms r;
-		ShaderPrecompiler::Settings settings;
-		settings.threads = 1;
-		settings.refused = &r;
-		settings.max_entries = 3;
-		ShaderPrecompiler precompiler(journal, settings, [&](const auto&, const auto&) -> ShaderPrecompiler::Outcome { throw std::runtime_error("x"); });
-		precompiler.Wait();
-		Expect(precompiler.GetProgress().failed == 3 && RefusedPrograms::InFlight() == 0, "a throwing compile does not leave a program named");
-	}
-	Remove(path);
-	Remove(journal_path);
+  const auto path = TestPath("refused-replay");
+  const auto journal_path = TestPath("refused-replay-journal");
+  Remove(path);
+  auto journal = MakeJournalWith(
+      journal_path, 70); // seven sources 0x1000..0x1006, ten entries each
+  // First start: the translation of program 0x1003 ends in a fatal error (stood
+  // in for by the hook call).
+  {
+    RefusedPrograms r;
+    r.Open(path);
+    r.Install();
+    ShaderPrecompiler::Settings settings;
+    settings.threads = 1;
+    settings.refused = &r;
+    int in_flight_ok = 0, compiled = 0;
+    ShaderPrecompiler precompiler(
+        journal, settings, [&](const auto &source, const auto &) {
+          if (RefusedPrograms::InFlight() == source.hash)
+            in_flight_ok++;
+          compiled++;
+          if (source.hash == 0x1003) {
+            Common::RunFatalHook("Error: the recompiler refuses this program");
+          }
+          return ShaderPrecompiler::Outcome::Compiled;
+        });
+    precompiler.Wait();
+    r.Uninstall();
+    Common::SetFatalHook(nullptr);
+    Expect(in_flight_ok == 70 && compiled == 70,
+           "each entry names its program while it is translated");
+    Expect(RefusedPrograms::InFlight() == 0, "and none stays named afterwards");
+    Expect(precompiler.GetProgress().refused == 0,
+           "nothing was skipped in the first start");
+  }
+  // Second start: the program is skipped, counted, named once per line (at most
+  // 8 lines), the others run.
+  {
+    RefusedPrograms r;
+    Expect(r.Open(path) == 1 && r.Contains(0x1003),
+           "the record was written by the failing thread");
+    std::vector<std::string> lines;
+    std::atomic<int> seen_refused{0}, compiled{0};
+    ShaderPrecompiler::Settings settings;
+    settings.threads = 3;
+    settings.refused = &r;
+    settings.log = [&](const std::string &line) { lines.push_back(line); };
+    ShaderPrecompiler precompiler(journal, settings,
+                                  [&](const auto &source, const auto &) {
+                                    if (source.hash == 0x1003)
+                                      seen_refused++;
+                                    compiled++;
+                                    return ShaderPrecompiler::Outcome::Compiled;
+                                  });
+    precompiler.Wait();
+    const auto p = precompiler.GetProgress();
+    Expect(seen_refused == 0 && compiled == 60,
+           "no entry of the refused program is translated");
+    Expect(p.done == 70 && p.total == 70 && p.skipped == 10 &&
+               p.refused == 10 && p.compiled == 60 && p.failed == 0,
+           "counted as skipped and refused");
+    int named = 0;
+    for (const auto &l : lines)
+      named +=
+          l.find("program 0x0000000000001003 skipped (refused earlier: Error: "
+                 "the recompiler refuses this program)") != std::string::npos
+              ? 1
+              : 0;
+    Expect(named == 8, "the hash is logged for the first 8 entries only");
+    Expect(!lines.empty() &&
+               lines.back().find("10 of refused programs") != std::string::npos,
+           "the final line counts them");
+  }
+  // Without the record object nothing changes: every entry is translated and
+  // nothing is named.
+  {
+    std::atomic<int> compiled{0}, named{0};
+    ShaderPrecompiler::Settings settings;
+    settings.threads = 2;
+    ShaderPrecompiler precompiler(journal, settings,
+                                  [&](const auto &, const auto &) {
+                                    compiled++;
+                                    if (RefusedPrograms::InFlight() != 0)
+                                      named++;
+                                    return ShaderPrecompiler::Outcome::Compiled;
+                                  });
+    precompiler.Wait();
+    Expect(compiled == 70 && named == 0 &&
+               precompiler.GetProgress().refused == 0,
+           "refused == nullptr leaves the replay as it was");
+  }
+  // A compile that throws still ends the in-flight mark.
+  {
+    RefusedPrograms r;
+    ShaderPrecompiler::Settings settings;
+    settings.threads = 1;
+    settings.refused = &r;
+    settings.max_entries = 3;
+    ShaderPrecompiler precompiler(
+        journal, settings,
+        [&](const auto &, const auto &) -> ShaderPrecompiler::Outcome {
+          throw std::runtime_error("x");
+        });
+    precompiler.Wait();
+    Expect(precompiler.GetProgress().failed == 3 &&
+               RefusedPrograms::InFlight() == 0,
+           "a throwing compile does not leave a program named");
+  }
+  Remove(path);
+  Remove(journal_path);
 }
 
 } // namespace
@@ -711,12 +779,12 @@ int main() {
 	TestReplayDriver();
 	TestPipelineJournal();
 	TestPipelineJournalSealed();
-	TestRefusedProgramsFile();
-	TestRefusedProgramsRecording();
-	TestRefusedProgramsPathChoice();
-	TestRefusedProgramsThroughTheFatalHook();
-	TestPrecompileSkipsRefusedPrograms();
-	if (g_failures != 0) {
+        TestRefusedProgramsFile();
+        TestRefusedProgramsRecording();
+        TestRefusedProgramsPathChoice();
+        TestRefusedProgramsThroughTheFatalHook();
+        TestPrecompileSkipsRefusedPrograms();
+        if (g_failures != 0) {
 		std::printf("ShaderPrecompileTests: %d checks failed\n", g_failures);
 		return 1;
 	}

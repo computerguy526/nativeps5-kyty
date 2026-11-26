@@ -11251,19 +11251,22 @@ void PipelineCache::InitializeShaderPrecompile() {
 	m_program_cache->rt_prewarm = [this](const ShaderComputeInputInfo& info, const ShaderProgram& program) {
 		PrewarmComputePipeline(info, program);
 	};
-	// KYTY_REFUSED_PROGRAMS (refusedPrograms.h): a program the recompiler refused with a fatal error in an earlier start is skipped,
-	// counted and logged by hash; a fatal error in this start records the program being translated. Off with =0; the default file
-	// is `<KYTY_PROGRAM_CACHE_PATH>.refused` (none without a program cache path).
+	// KYTY_REFUSED_PROGRAMS (refusedPrograms.h): a program the recompiler refused with a fatal
+	// error in an earlier start is skipped, counted and logged by hash; a fatal error in this start
+	// records the program being translated. Off with =0; the default file is
+	// `<KYTY_PROGRAM_CACHE_PATH>.refused` (none without a program cache path).
 	{
 		static RefusedPrograms refused;
-		const auto path = RefusedPrograms::ChoosePath(std::getenv("KYTY_REFUSED_PROGRAMS"), std::getenv("KYTY_PROGRAM_CACHE_PATH"));
+		const auto path = RefusedPrograms::ChoosePath(std::getenv("KYTY_REFUSED_PROGRAMS"),
+		                                              std::getenv("KYTY_PROGRAM_CACHE_PATH"));
 		if (!path.empty()) {
 			const auto known = refused.Open(path);
 			refused.Install();
 			replay.refused = &refused;
 			if (known != 0) {
-				PipelineCacheLog("Shader precompile: {} refused program(s) recorded in {}: their entries are skipped", known,
-				                 path.string());
+				PipelineCacheLog("Shader precompile: {} refused program(s) recorded in {}: their "
+				                 "entries are skipped",
+				                 known, path.string());
 			}
 		}
 	}

@@ -1,16 +1,21 @@
 #ifndef EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_REFUSEDPROGRAMS_H_
 #define EMULATOR_SRC_GRAPHICS_HOST_GPU_RENDERER_PIPELINE_REFUSEDPROGRAMS_H_
 
-// Programs the recompiler refuses (KYTY_REFUSED_PROGRAMS). A program that ends the process with a fatal error while the launch
-// phase / prepare translates it (SpirV validation failure, an assert in the materialization, ...) made every later start die at the
-// same program again, whenever a player's own journals held it. The precompile worker now notes the program it is translating
-// (thread-local); when a fatal error ends the process (common/fatalHook.h) the failing thread appends that program's hash to a small
-// text file next to the program cache. The next start skips it, counts it and logs the hash instead of translating it.
-//   - Only a fatal error records a program: a kill, a crash of another kind or a normal exit leave the file alone, so closing the
+// Programs the recompiler refuses (KYTY_REFUSED_PROGRAMS). A program that ends the process with a
+// fatal error while the launch phase / prepare translates it (SpirV validation failure, an assert
+// in the materialization, ...) made every later start die at the same program again, whenever a
+// player's own journals held it. The precompile worker now notes the program it is translating
+// (thread-local); when a fatal error ends the process (common/fatalHook.h) the failing thread
+// appends that program's hash to a small text file next to the program cache. The next start skips
+// it, counts it and logs the hash instead of translating it.
+//   - Only a fatal error records a program: a kill, a crash of another kind or a normal exit leave
+//   the file alone, so closing the
 //     game during a prepare never blacklists a good program.
-//   - The file is text: one `0x<16 hex digits>` per line, then a tab and the first line of the fatal text (cut to 120 characters).
+//   - The file is text: one `0x<16 hex digits>` per line, then a tab and the first line of the
+//   fatal text (cut to 120 characters).
 //     Lines that do not start with a hash are ignored. A program is removed by deleting its line.
-//   - Nothing is skipped without a file (KYTY_REFUSED_PROGRAMS=0 turns the whole thing off), and a clean list has no file at all.
+//   - Nothing is skipped without a file (KYTY_REFUSED_PROGRAMS=0 turns the whole thing off), and a
+//   clean list has no file at all.
 // Header only: tests/RefusedProgramsTests.cpp needs no emulator.
 
 #include "common/fatalHook.h"
@@ -68,13 +73,14 @@ public:
 	}
 	[[nodiscard]] const std::filesystem::path& Path() const { return m_path; }
 
-	// The thread starts translating `hash` / is done with it. A fatal error on this thread in between records it.
-	static void Begin(uint64_t hash) { Current() = hash; }
-	static void End() { Current() = 0; }
+	// The thread starts translating `hash` / is done with it. A fatal error on this thread in
+	// between records it.
+	static void                   Begin(uint64_t hash) { Current() = hash; }
+	static void                   End() { Current() = 0; }
 	[[nodiscard]] static uint64_t InFlight() { return Current(); }
 
-	// The failing thread's program (if any) goes to the file. Safe to call from the fatal hook: no allocation beyond the line.
-	// Returns true when a line was written.
+	// The failing thread's program (if any) goes to the file. Safe to call from the fatal hook: no
+	// allocation beyond the line. Returns true when a line was written.
 	bool RecordFatal(std::string_view text) {
 		const auto hash = Current();
 		if (hash == 0 || m_path.empty()) return false;
@@ -102,7 +108,8 @@ public:
 		return ok;
 	}
 
-	// The process-wide instance the fatal hook writes to (set by the pipeline cache; nullptr: none).
+	// The process-wide instance the fatal hook writes to (set by the pipeline cache; nullptr:
+	// none).
 	static std::atomic<RefusedPrograms*>& Active() {
 		static std::atomic<RefusedPrograms*> active {nullptr};
 		return active;
@@ -126,7 +133,10 @@ public:
 		uint64_t value = 0;
 		for (size_t i = 0; i < 16; i++) {
 			const char c = line[2 + i];
-			const int  d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+			const int  d = c >= '0' && c <= '9'   ? c - '0'
+			               : c >= 'a' && c <= 'f' ? c - 'a' + 10
+			               : c >= 'A' && c <= 'F' ? c - 'A' + 10
+			                                      : -1;
 			if (d < 0) return false;
 			value = (value << 4) | static_cast<uint64_t>(d);
 		}
@@ -135,14 +145,17 @@ public:
 		return true;
 	}
 
-	// Where the file lives: KYTY_REFUSED_PROGRAMS (a path; "0" or empty = off), else `<program cache path>.refused`, else none.
-	[[nodiscard]] static std::filesystem::path ChoosePath(const char* env_value, const char* program_cache_path) {
+	// Where the file lives: KYTY_REFUSED_PROGRAMS (a path; "0" or empty = off), else `<program
+	// cache path>.refused`, else none.
+	[[nodiscard]] static std::filesystem::path ChoosePath(const char* env_value,
+	                                                      const char* program_cache_path) {
 		if (env_value != nullptr) {
 			const std::string v = env_value;
 			if (v.empty() || v == "0") return {};
 			return v;
 		}
-		if (program_cache_path != nullptr && *program_cache_path != '\0') return std::string(program_cache_path) + ".refused";
+		if (program_cache_path != nullptr && *program_cache_path != '\0')
+			return std::string(program_cache_path) + ".refused";
 		return {};
 	}
 
@@ -152,8 +165,8 @@ private:
 		return hash;
 	}
 
-	mutable std::mutex                     m_mutex;
-	std::filesystem::path                  m_path;
+	mutable std::mutex                        m_mutex;
+	std::filesystem::path                     m_path;
 	std::unordered_map<uint64_t, std::string> m_map;
 };
 

@@ -1,62 +1,93 @@
-// kyty_pipeline_list: makes and checks KYPLST1 pipeline lists (pipelineList.h, KYTY_PIPELINE_LIST).
+// kyty_pipeline_list: makes and checks KYPLST1 pipeline lists (pipelineList.h,
+// KYTY_PIPELINE_LIST).
 //
-//   export --out <list> --game <app0 dir or .zar> (--shaders <shader journal> --pipelines <pipeline journal>)...
-//          [--exe <executable>] [--producer <text>] [--data <file relative to app0>]... [--scan]
-//       Merges recorded journals (_PipelineCache/<title>.shaders.journal and .pipelines.journal of one
-//       or more recording runs) into a list. Shaders are located in the game executable, else in the
-//       --data files (Insomniac titles: d/material, d/materialgraph); the list keeps their file,
-//       offsets and hashes, never their code.
-//       --scan: the codes still not found are looked for in every other file of the game folder by
-//       their footer (adapted from Erlou93/KytyPS5-Yotei's shader hints): PS5 shader binaries end in a
-//       48-byte block that starts with "barefoot"; every such block in a file is a candidate end of a
-//       code, which is kept when the bytes before it have the code's size and hashes. The files that
-//       hold codes join the list's data files, so no --data names are needed (codes without the footer
-//       still need --exe/--data).
-//       --base <list>: the list the recording sessions ran with (the one the emulator loaded for the
-//       game). The emulator journals only what it compiled itself, so the journals of a session with
-//       a list lack the list's shaders, and a recorded pipeline with a stage from the list could not
-//       be kept. The base list is resolved against the game and its usable part joins the export; a
-//       list of the int21 release is upgraded as the emulator upgrades it and gives its shaders and
-//       permutations only. With --scan its data files and their folders are read first.
-//       --programs <programs.bin> (repeatable): the persistent program cache as one more source (programsSource.h): sources and permutations
-//       that reached it without a journal record (compute prewarm / precompile) join the list; pass `--shaders none --pipelines none` for a
-//       programs-only export.
-//       --runtime-code (UE5 titles): a journaled code found nowhere in --exe/--data/--scan is kept as a `<runtime>` shader, named by
-//       its size and hashes alone (its code comes from the player's own game at run time, pipelineCodeStore.h); prints
-//       "N kept as runtime code". Without it such a code is dropped, as before. --base keeps the base list's runtime
-//       shaders (--code-store <KYCODE1 file> resolves them, so the recorded pipelines using them can be listed too).
-//       A merged stage with one half in the game files and one runtime half is dropped and counted.
-//   merge --out <list> <list>...        Union of lists of the same title, version and input layout.
-//   info <list>                         Header, counts, levels, section sizes.
-//   check <list> --game <app0 dir or .zar> [--exe <executable>] [--code-store <KYCODE1 file>] [--require-runtime <percent>]
-//       Resolves the list against a game copy, as the emulator does at start-up. A list with `<runtime>` shaders also prints
-//       "runtime: X resolved, Y pending": they resolve from --code-store (read only; none: all pending). Pending is not an
-//       error; --require-runtime makes exit 1 when fewer than that percentage of the runtime shaders resolved (the harvest gate).
+//   export --out <list> --game <app0 dir or .zar> (--shaders <shader journal>
+//   --pipelines <pipeline journal>)...
+//          [--exe <executable>] [--producer <text>] [--data <file relative to
+//          app0>]... [--scan]
+//       Merges recorded journals (_PipelineCache/<title>.shaders.journal and
+//       .pipelines.journal of one or more recording runs) into a list. Shaders
+//       are located in the game executable, else in the
+//       --data files (Insomniac titles: d/material, d/materialgraph); the list
+//       keeps their file, offsets and hashes, never their code.
+//       --scan: the codes still not found are looked for in every other file of
+//       the game folder by their footer (adapted from Erlou93/KytyPS5-Yotei's
+//       shader hints): PS5 shader binaries end in a 48-byte block that starts
+//       with "barefoot"; every such block in a file is a candidate end of a
+//       code, which is kept when the bytes before it have the code's size and
+//       hashes. The files that hold codes join the list's data files, so no
+//       --data names are needed (codes without the footer still need
+//       --exe/--data).
+//       --base <list>: the list the recording sessions ran with (the one the
+//       emulator loaded for the game). The emulator journals only what it
+//       compiled itself, so the journals of a session with a list lack the
+//       list's shaders, and a recorded pipeline with a stage from the list
+//       could not be kept. The base list is resolved against the game and its
+//       usable part joins the export; a list of the int21 release is upgraded
+//       as the emulator upgrades it and gives its shaders and permutations
+//       only. With --scan its data files and their folders are read first.
+//       --programs <programs.bin> (repeatable): the persistent program cache as
+//       one more source (programsSource.h): sources and permutations that
+//       reached it without a journal record (compute prewarm / precompile) join
+//       the list; pass `--shaders none --pipelines none` for a programs-only
+//       export.
+//       --runtime-code (UE5 titles): a journaled code found nowhere in
+//       --exe/--data/--scan is kept as a `<runtime>` shader, named by its size
+//       and hashes alone (its code comes from the player's own game at run
+//       time, pipelineCodeStore.h); prints "N kept as runtime code". Without it
+//       such a code is dropped, as before. --base keeps the base list's runtime
+//       shaders (--code-store <KYCODE1 file> resolves them, so the recorded
+//       pipelines using them can be listed too). A merged stage with one half
+//       in the game files and one runtime half is dropped and counted.
+//   merge --out <list> <list>...        Union of lists of the same title,
+//   version and input layout. info <list>                         Header,
+//   counts, levels, section sizes. check <list> --game <app0 dir or .zar>
+//   [--exe <executable>] [--code-store <KYCODE1 file>] [--require-runtime
+//   <percent>]
+//       Resolves the list against a game copy, as the emulator does at
+//       start-up. A list with `<runtime>` shaders also prints "runtime: X
+//       resolved, Y pending": they resolve from --code-store (read only; none:
+//       all pending). Pending is not an error; --require-runtime makes exit 1
+//       when fewer than that percentage of the runtime shaders resolved (the
+//       harvest gate).
 //   drop --list <list> --hashes <file> --out <list> [--dropped <tsv>]
-//       Removes the programs named in --hashes (every 0x + 16 hex digits of the file: a probe log with "SPIR-V validation failed:
-//       hash=0x..." / "KYTY_RT_STUB: ... shader 0x...", or a dropped.tsv) from a list, with their permutations and the pipelines using them.
-//       --dropped writes one tsv row per dropped program (hash, kind, runtime|executable, reason). Prints the counts. The harvest
-//       compile probe: a program the recompiler refuses ends the launch-phase compile of the whole list.
-//   hashes <list>                       One line per shader: 0x<hash>, kind (vertex|pixel|compute); the compile probe's input (kyty_spv_dump --probe).
-//   scenedb build|merge|info|query|tiers|check ...   the shader level database (sceneDbCommands.h)
-//   retarget --list <list> --exe <executable> --title <id> --app-ver <version> --out <list>
-//       Re-stamps a list for another copy of the game (another version or SKU): each shader is looked up in
-//       the other executable (at its recorded offset, then by hash), shaders not found are dropped with
-//       their pipelines, the title and version are replaced. Prints the match counts.
+//       Removes the programs named in --hashes (every 0x + 16 hex digits of the
+//       file: a probe log with "SPIR-V validation failed: hash=0x..." /
+//       "KYTY_RT_STUB: ... shader 0x...", or a dropped.tsv) from a list, with
+//       their permutations and the pipelines using them.
+//       --dropped writes one tsv row per dropped program (hash, kind,
+//       runtime|executable, reason). Prints the counts. The harvest compile
+//       probe: a program the recompiler refuses ends the launch-phase compile
+//       of the whole list.
+//   hashes <list>                       One line per shader: 0x<hash>, kind
+//   (vertex|pixel|compute); the compile probe's input (kyty_spv_dump --probe).
+//   scenedb build|merge|info|query|tiers|check ...   the shader level database
+//   (sceneDbCommands.h) retarget --list <list> --exe <executable> --title <id>
+//   --app-ver <version> --out <list>
+//       Re-stamps a list for another copy of the game (another version or SKU):
+//       each shader is looked up in the other executable (at its recorded
+//       offset, then by hash), shaders not found are dropped with their
+//       pipelines, the title and version are replaced. Prints the match counts.
 //   upgrade <list> --out <list>
-//       Rewrites the vertex stage input infos of a list recorded before the mesh pass and
-//       tessellation clamp fields (stored size 16 bytes smaller) into this build's layout, with those
-//       fields at their defaults; other input infos must already match. A list of the int21 release
-//       (its layout is older still) is refused with a note: the emulator upgrades it when it loads it.
-//   verify <list> --game <app0 dir or .zar> [--exe <executable>] [--shaders <shader journal>]...
-//       The no-code proof: no 64-byte window of the listed shaders' code (read from the executable)
-//       or of any journaled shader's code occurs in the file or in any decompressed section.
-//       Exit code 1 when one does. A list with `<runtime>` shaders also needs every one of them covered by a --shaders journal
-//       (the proof then saw their code): "N runtime shaders not covered" and exit 1 otherwise.
-// --game is the game folder (the one with eboot.bin and sce_sys) or a .zar archive of it (the
-// launcher's "Compress game"); every command reads the same files from either, and an export of a
-// folder and of its archive writes the same list. SOURCE_DATE_EPOCH (seconds), when set, is the
-// creation time written into lists instead of the current time.
+//       Rewrites the vertex stage input infos of a list recorded before the
+//       mesh pass and tessellation clamp fields (stored size 16 bytes smaller)
+//       into this build's layout, with those fields at their defaults; other
+//       input infos must already match. A list of the int21 release (its layout
+//       is older still) is refused with a note: the emulator upgrades it when
+//       it loads it.
+//   verify <list> --game <app0 dir or .zar> [--exe <executable>] [--shaders
+//   <shader journal>]...
+//       The no-code proof: no 64-byte window of the listed shaders' code (read
+//       from the executable) or of any journaled shader's code occurs in the
+//       file or in any decompressed section. Exit code 1 when one does. A list
+//       with `<runtime>` shaders also needs every one of them covered by a
+//       --shaders journal (the proof then saw their code): "N runtime shaders
+//       not covered" and exit 1 otherwise.
+// --game is the game folder (the one with eboot.bin and sce_sys) or a .zar
+// archive of it (the launcher's "Compress game"); every command reads the same
+// files from either, and an export of a folder and of its archive writes the
+// same list. SOURCE_DATE_EPOCH (seconds), when set, is the creation time
+// written into lists instead of the current time.
 #include "common/stringUtils.h"
 #include "exportBase.h"
 #include "gameFiles.h"
@@ -974,16 +1005,19 @@ int Check(const Arguments& args) {
 	return stats.resolved + stats.runtime_pending == stats.shaders ? 0 : 1;
 }
 
-int Hashes(const Arguments& args) {
-	if (args.inputs.size() != 1) return 2;
-	PipelineList::File file;
-	if (!Load(args.inputs[0], file)) return 2;
-	static const char* const Kinds[3] = {"vertex", "pixel", "compute"};
-	for (const auto& shader: file.shaders) {
-		const auto kind = static_cast<size_t>(shader.kind);
-		std::printf("0x%016llx\t%s\n", static_cast<unsigned long long>(shader.hash), kind < 3 ? Kinds[kind] : "?");
-	}
-	return 0;
+int Hashes(const Arguments &args) {
+  if (args.inputs.size() != 1)
+    return 2;
+  PipelineList::File file;
+  if (!Load(args.inputs[0], file))
+    return 2;
+  static const char *const Kinds[3] = {"vertex", "pixel", "compute"};
+  for (const auto &shader : file.shaders) {
+    const auto kind = static_cast<size_t>(shader.kind);
+    std::printf("0x%016llx\t%s\n", static_cast<unsigned long long>(shader.hash),
+                kind < 3 ? Kinds[kind] : "?");
+  }
+  return 0;
 }
 
 int Drop(const Arguments& args) {
@@ -1224,8 +1258,9 @@ int main(int argc, char** argv) {
 	if (args.command == "check") return Check(args);
 	if (args.command == "retarget") return Retarget(args);
 	if (args.command == "drop") return Drop(args);
-	if (args.command == "hashes") return Hashes(args);
-	if (args.command == "verify") return Verify(args);
+        if (args.command == "hashes")
+          return Hashes(args);
+        if (args.command == "verify") return Verify(args);
 	if (args.command == "upgrade") return Upgrade(args);
 	std::fprintf(stderr, "unknown command %s\n", args.command.c_str());
 	return 2;

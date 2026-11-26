@@ -945,12 +945,15 @@ void ShaderPrecompiler::Worker(uint32_t index) {
 		const auto  cpu_begin = m_settings.measure_cpu ? CurrentThreadCpuNs() : 0;
 		const auto  hash      = sources[entry.source].hash;
 		if (m_settings.refused != nullptr && m_settings.refused->Contains(hash)) {
-			// A program an earlier start died on: counted, the first ones named by hash, never translated again.
+			// A program an earlier start died on: counted, the first ones named by hash, never
+			// translated again.
 			m_refused.fetch_add(1, std::memory_order_relaxed);
 			if (m_settings.log && m_refused_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
 				char text[200];
-				std::snprintf(text, sizeof(text), "Shader precompile: program 0x%016llx skipped (refused earlier: %s)",
-				              static_cast<unsigned long long>(hash), m_settings.refused->Reason(hash).c_str());
+				std::snprintf(text, sizeof(text),
+				              "Shader precompile: program 0x%016llx skipped (refused earlier: %s)",
+				              static_cast<unsigned long long>(hash),
+				              m_settings.refused->Reason(hash).c_str());
 				m_settings.log(text);
 			}
 			NoteDone(Outcome::Skipped);
