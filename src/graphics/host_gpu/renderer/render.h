@@ -1263,6 +1263,12 @@ public:
 	~RenderExecutor();
 	KYTY_CLASS_NO_COPY(RenderExecutor);
 
+	// KYTY_NATIVE_INDIRECT_MESH=1|on|verify|exit: creates the conversion's helper compute pipeline
+	// at start (behind the loading card, and in a cache prepare) instead of at the first
+	// converted draw, which compiled it live (KosmicKrisp, about 60 ms, once per cache).
+	// No-op with the mode off.
+	void PrepareMeshIndirect();
+
 	// Experimental Pro mode (renderPssr.cpp, upstream 651ef73a0): libPsml's PSSR request as a
 	// bilinear upscale of the input T#'s active rectangle into the output T# (graphics queue).
 	void ProcessPssr(CommandBuffer& buffer, const Pssr::Request& request);
@@ -1832,7 +1838,7 @@ private:
 	bool                   m_binding_plan_active = false;
 	// KYTY_DRAW_PREP_BINDINGS_VERIFY (P4b-2): the views a predicted view run claims (RebindImages).
 	std::vector<vk::ImageView> m_claimed_run_views;
-	// KYTY_NATIVE_INDIRECT_MESH (meshIndirect.h): created by the first native indirect mesh draw.
+	// KYTY_NATIVE_INDIRECT_MESH (meshIndirect.h): created at start (PrepareMeshIndirect) or by the first native indirect mesh draw.
 	std::unique_ptr<MeshIndirect::Converter> m_mesh_indirect;
 	std::unique_ptr<DispatchGuard>           m_dispatch_guard;
 

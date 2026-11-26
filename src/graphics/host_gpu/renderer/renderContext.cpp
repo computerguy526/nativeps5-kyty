@@ -213,6 +213,7 @@ void RenderContext::InitializeGpu(VideoOut::VideoOutDriver* video_out) {
 	EXIT_IF(m_gpu != nullptr);
 	m_video_out = video_out;
 	m_gpu       = std::make_unique<GuestGpu>(*this);
+	m_render_executor.PrepareMeshIndirect();
 	std::unique_lock lock(m_gpu_notify_mutex);
 	m_gpu_notify = m_gpu.get();
 }

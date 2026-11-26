@@ -1004,6 +1004,14 @@ struct DrawRenderState {
 RenderExecutor::RenderExecutor(RenderContext& context)
     : m_context(context), m_draw_state(std::make_unique<DrawRenderState>()) {}
 
+void RenderExecutor::PrepareMeshIndirect() {
+	if (!MeshIndirect::ConversionEnabled() || m_mesh_indirect != nullptr) {
+		return;
+	}
+	m_mesh_indirect = std::make_unique<MeshIndirect::Converter>(m_context);
+	m_mesh_indirect->Prepare();
+}
+
 struct DrawCallInfo {
 	CommandBufferDebugOp debug_op       = CommandBufferDebugOp::DrawIndex;
 	uint32_t             index_count    = 0;

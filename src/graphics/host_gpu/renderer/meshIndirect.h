@@ -151,6 +151,9 @@ public:
 		}
 	};
 
+	// Creates the helper pipeline and the slot ring now (Reserve and Record do it on first use).
+	void Prepare() { Initialize(); }
+
 	// Preparation phase: may submit the recording (ring wrap), like any stream allocation.
 	[[nodiscard]] Slot Reserve();
 	// Ends the active rendering instance and records the conversion of the record at
