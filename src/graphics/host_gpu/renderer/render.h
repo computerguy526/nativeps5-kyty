@@ -1838,7 +1838,8 @@ private:
 	bool                   m_binding_plan_active = false;
 	// KYTY_DRAW_PREP_BINDINGS_VERIFY (P4b-2): the views a predicted view run claims (RebindImages).
 	std::vector<vk::ImageView> m_claimed_run_views;
-	// KYTY_NATIVE_INDIRECT_MESH (meshIndirect.h): created at start (PrepareMeshIndirect) or by the first native indirect mesh draw.
+	// KYTY_NATIVE_INDIRECT_MESH (meshIndirect.h): created at start (PrepareMeshIndirect) or by the
+	// first native indirect mesh draw.
 	std::unique_ptr<MeshIndirect::Converter> m_mesh_indirect;
 	std::unique_ptr<DispatchGuard>           m_dispatch_guard;
 
