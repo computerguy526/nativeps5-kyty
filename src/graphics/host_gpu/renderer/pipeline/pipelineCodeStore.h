@@ -52,13 +52,13 @@ public:
 	static constexpr uint32_t MarkMagic        = 0x4B52414Du; // "MARK"
 	static constexpr uint32_t MaxMarkRanges    = 4096;
 	static constexpr uint64_t MarkReserveBytes = 64u << 10u; // kept free of codes for the mark
-	static constexpr char     FileMagic[8]  = {'K', 'Y', 'C', 'O', 'D', 'E', '1', '\0'};
-	static constexpr uint32_t FormatVersion = 1;
-	static constexpr uint32_t HeaderBytes   = 64;
-	static constexpr uint32_t RecordMagic   = 0x45444F43u; // "CODE"
-	static constexpr uint32_t RecordHead    = 32; // magic, code_bytes, hash low/high, prefix hash
-	static constexpr uint64_t CapBytes      = 64ull << 20u; // the file never grows past this
-	static constexpr uint32_t MaxCodeBytes  = 16u << 20u;
+	static constexpr char     FileMagic[8]     = {'K', 'Y', 'C', 'O', 'D', 'E', '1', '\0'};
+	static constexpr uint32_t FormatVersion    = 1;
+	static constexpr uint32_t HeaderBytes      = 64;
+	static constexpr uint32_t RecordMagic      = 0x45444F43u; // "CODE"
+	static constexpr uint32_t RecordHead   = 32; // magic, code_bytes, hash low/high, prefix hash
+	static constexpr uint64_t CapBytes     = 64ull << 20u; // the file never grows past this
+	static constexpr uint32_t MaxCodeBytes = 16u << 20u;
 
 	PipelineCodeStore() = default;
 	~PipelineCodeStore();
@@ -129,16 +129,16 @@ private:
 	std::FILE*            m_file = nullptr;
 	std::filesystem::path m_path;
 	std::string           m_title, m_app_ver;
-	uint64_t              m_fp         = 0;
-	bool                  m_read_only  = false;
-	bool                  m_stale      = false;
-	bool                  m_dirty      = false;
+	uint64_t              m_fp              = 0;
+	bool                  m_read_only       = false;
+	bool                  m_stale           = false;
+	bool                  m_dirty           = false;
 	bool                  m_locked_by_other = false;
 	int                   m_lock_fd         = -1;
 	SearchMark            m_mark; // the mark in force
-	uint64_t m_mark_at = 0;       // file offset of the mark record when it is the last one, else 0
-	uint64_t              m_size       = 0; // file bytes (the append position)
-	uint64_t              m_code_bytes = 0, m_duplicates = 0, m_truncated = 0;
+	uint64_t m_mark_at    = 0;    // file offset of the mark record when it is the last one, else 0
+	uint64_t m_size       = 0;    // file bytes (the append position)
+	uint64_t m_code_bytes = 0, m_duplicates = 0, m_truncated = 0;
 	std::unordered_map<PipelineList::Hash128, Entry, HashOf> m_index;
 };
 

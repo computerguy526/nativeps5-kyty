@@ -505,8 +505,8 @@ private:
 	bool                    m_resume_started = false;
 	uint64_t                m_resume_skipped = 0;
 	std::atomic<bool>       m_stop {false}, m_abandoned {false};
-	Ue5Group::Stats m_split;
-	uint32_t        m_total = 0, m_done = 0;
+	Ue5Group::Stats         m_split;
+	uint32_t                m_total = 0, m_done = 0;
 };
 
 // ---- the guest_ready flow ----
