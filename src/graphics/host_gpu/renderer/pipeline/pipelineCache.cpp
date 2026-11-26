@@ -10203,7 +10203,14 @@ void PipelineCache::FinishUe5Warm(bool never_ready) {
 		};
 		ops.run_prepare = [&] { RunListPrepareNow(); };
 		ops.release     = [&] { m_ue5.reset(); };
-		ops.wait_entry  = [&] {
+		ops.park        = [] {
+			// The window was closed: the host ends the process (request_exit). The guest must not
+			// start meanwhile; bounded, so a host that never ends it is not hung for good.
+			PipelineCacheLog("UE5 code: the process is ending: the guest is not started");
+			for (int i = 0; i < 600; i++)
+				std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		};
+		ops.wait_entry = [&] {
 			// One deadline for the whole launch: when it passes, the hold is released too, so the
 			// first draw does not wait again.
 			const uint64_t limit_s = EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900);

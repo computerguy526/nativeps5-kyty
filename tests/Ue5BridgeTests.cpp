@@ -41,6 +41,8 @@ struct FakeGroups {
 	int                                code             = 0;
 	uint64_t                           decoder          = 0x1000;
 	std::atomic<int>                   calls {0};
+	uint32_t                           skip_count_seen = 0; // the query's skip list as the host read it
+	std::vector<KytyGpuUe5Range>       skip_seen;
 } g_fake;
 
 extern "C" int FakeExtract(void* user, const KytyGpuUe5Query* q, KytyGpuUe5Result* out) {
@@ -48,7 +50,13 @@ extern "C" int FakeExtract(void* user, const KytyGpuUe5Query* q, KytyGpuUe5Resul
 	g_fake.calls++;
 	if (q->struct_size != sizeof(KytyGpuUe5Query) || q->abi != 1 || q->decoder != g_fake.decoder) return -1;
 	uint32_t done = 0;
+	g_fake.skip_count_seen = q->skip_count;
+	g_fake.skip_seen.assign(q->skip, q->skip + (q->skip != nullptr ? q->skip_count : 0));
 	for (size_t i = 0; i < g_fake.bytes.size(); i++) {
+		bool skipped = false;
+		for (const auto& r: g_fake.skip_seen)
+			if (r.library == 0 && i >= r.first && i <= r.last) skipped = true;
+		if (skipped) continue; // the host leaves it alone
 		KytyGpuUe5Group g {};
 		g.library      = 0;
 		g.group        = static_cast<uint32_t>(i);
@@ -198,21 +206,32 @@ int main() {
 		    CHECK(v.shader_count == 1 && v.frequencies.size() == 1 && !v.bytes.empty());
 		    return false;
 	    },
-	    [&](uint32_t, uint32_t total) { progress_total = total; });
+	    [&](uint32_t, uint32_t total) { progress_total = total; }, {});
 	CHECK(res.code == 0 && seen == 2 && res.groups_total == 2 && res.decoded == 2 && res.raw_bytes == 12345 && res.ms == 7);
 	CHECK(progress_total == 2);
+	CHECK(g_fake.skip_count_seen == 0 && g_fake.skip_seen.empty());
+	// the skip list travels to the host as the query's skip fields (ABI 1.8, struct_size covers them)
+	{
+		int delivered = 0;
+		res           = Warm::GetSeam().extract(
+            0x1000, 1, [&](const Warm::GroupView& v) { delivered += v.group == 1 ? 1 : 100; return false; },
+            [](uint32_t, uint32_t) {}, {{0, 0, 0}, {5, 2, 9}});
+		CHECK(res.code == 0 && delivered == 1); // group 0 was skipped by the host
+		CHECK(g_fake.skip_seen.size() == 2 && g_fake.skip_seen[1].library == 5 && g_fake.skip_seen[1].first == 2 &&
+		      g_fake.skip_seen[1].last == 9);
+	}
 	// stop propagates as the host's -3
-	res = Warm::GetSeam().extract(0x1000, 1, [&](const Warm::GroupView&) { return true; }, [](uint32_t, uint32_t) {});
+	res = Warm::GetSeam().extract(0x1000, 1, [&](const Warm::GroupView&) { return true; }, [](uint32_t, uint32_t) {}, {});
 	CHECK(res.code == -3 && res.decoded == 1);
 	// a host that hands null bytes with a size, and a null group: nothing crashes, the split sees nothing
 	g_fake.null_bytes_group = true;
 	int empty_groups = 0;
 	res = Warm::GetSeam().extract(
-	    0x1000, 1, [&](const Warm::GroupView& v) { empty_groups += v.bytes.empty() ? 1 : 0; return false; }, [](uint32_t, uint32_t) {});
+	    0x1000, 1, [&](const Warm::GroupView& v) { empty_groups += v.bytes.empty() ? 1 : 0; return false; }, [](uint32_t, uint32_t) {}, {});
 	CHECK(res.code == 0 && empty_groups == 1);
 	g_fake.null_bytes_group = false;
 	// wrong query values are the host's -1 (decoder and abi travel through the trampoline unchanged)
-	CHECK(Warm::GetSeam().extract(0x2000, 1, [](const Warm::GroupView&) { return false; }, [](uint32_t, uint32_t) {}).code == -1);
+	CHECK(Warm::GetSeam().extract(0x2000, 1, [](const Warm::GroupView&) { return false; }, [](uint32_t, uint32_t) {}, {}).code == -1);
 
 	// ---- the main-thread hop -----------------------------------------------------------------------------------
 	{

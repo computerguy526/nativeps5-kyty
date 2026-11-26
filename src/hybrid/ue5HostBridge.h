@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <vector>
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -38,8 +39,9 @@ struct Env {
 // extract_ue5_shader_groups: the query's C callbacks forward to the std::function seam. Built
 // without exceptions: nothing here throws.
 [[nodiscard]] inline Ue5::HostResult Extract(const Env& env, uint64_t decoder, uint32_t abi,
-                                             const Ue5::GroupFn&    group,
-                                             const Ue5::ProgressFn& progress) {
+                                             const Ue5::GroupFn&                 group,
+                                             const Ue5::ProgressFn&              progress,
+                                             const std::vector<Ue5::GroupRange>& skip) {
 	struct Context {
 		const Ue5::GroupFn*    group;
 		const Ue5::ProgressFn* progress;
@@ -65,6 +67,18 @@ struct Env {
 		(*static_cast<Context*>(arg)->progress)(done, total);
 	};
 	query.arg = &context;
+	// The groups an earlier pass saw: the host does not read or decode them. (GroupRange and
+	// KytyGpuUe5Range are both {library, first, last}.)
+	static_assert(sizeof(Ue5::GroupRange) == sizeof(KytyGpuUe5Range) &&
+	              offsetof(Ue5::GroupRange, library) == offsetof(KytyGpuUe5Range, library) &&
+	              offsetof(Ue5::GroupRange, first) == offsetof(KytyGpuUe5Range, first) &&
+	              offsetof(Ue5::GroupRange, last) == offsetof(KytyGpuUe5Range, last));
+	std::vector<KytyGpuUe5Range> ranges;
+	ranges.reserve(skip.size());
+	for (const auto& r: skip)
+		ranges.push_back({r.library, r.first, r.last});
+	query.skip       = ranges.empty() ? nullptr : ranges.data();
+	query.skip_count = static_cast<uint32_t>(ranges.size());
 	KytyGpuUe5Result result {};
 	Ue5::HostResult  out;
 	out.code             = env.host->extract_ue5_shader_groups(env.host->user, &query, &result);
@@ -165,8 +179,9 @@ inline void RunOnMain(const Env& env, std::function<void()> fn) {
 // the process (the bridge's globals).
 inline void Install(const Env* env) {
 	Ue5::SetHostExtract([env](uint64_t decoder, uint32_t abi, const Ue5::GroupFn& group,
-	                          const Ue5::ProgressFn& progress) {
-		return Extract(*env, decoder, abi, group, progress);
+	                          const Ue5::ProgressFn&              progress,
+	                          const std::vector<Ue5::GroupRange>& skip) {
+		return Extract(*env, decoder, abi, group, progress, skip);
 	});
 	Ue5::SetRunOnMain([env](std::function<void()> fn) { RunOnMain(*env, std::move(fn)); });
 	Ue5::SetGuestReader([env](uint64_t address, std::span<uint8_t> out) {

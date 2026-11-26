@@ -186,19 +186,41 @@ struct FakeHost {
 	int               fail_after = -1; // report `code` after that many groups (no more groups)
 	std::atomic<int>  calls {0};
 	std::atomic<int>  groups_given {0};
+	bool              honor_skip = true;          // the ABI 1.8 skip list: skipped groups are not visited at all
+	std::set<int>     bad_groups;                 // groups the "decoder" rejects: counted failed, never delivered
+	std::function<void()> on_group;               // called after each delivered group (a fake clock ticks here)
+	std::mutex        mutex;
+	std::vector<Warm::GroupRange> last_skip;      // the skip list of the latest call
+	std::vector<int>  delivered;                  // every group delivered, over all calls
 	void Install() {
-		Warm::SetHostExtract([this](uint64_t, uint32_t abi, const Warm::GroupFn& group, const Warm::ProgressFn& progress) {
+		Warm::SetHostExtract([this](uint64_t, uint32_t abi, const Warm::GroupFn& group, const Warm::ProgressFn& progress,
+		                            const std::vector<Warm::GroupRange>& skip) {
 			calls++;
 			Warm::HostResult r;
 			(void)abi;
-			const int total = static_cast<int>(sc->groups.size());
+			{
+				std::scoped_lock lock(mutex);
+				last_skip = skip;
+			}
+			std::vector<int> visit;
+			int failed = 0;
+			for (int i = 0; i < static_cast<int>(sc->groups.size()); i++) {
+				if (honor_skip && Warm::RangesCover(skip, 0, static_cast<uint32_t>(i))) continue;
+				if (bad_groups.count(i) != 0) {
+					failed++;
+					continue;
+				}
+				visit.push_back(i);
+			}
+			const int total = static_cast<int>(visit.size());
 			std::atomic<int> next {0};
 			std::atomic<bool> stop {false};
 			std::atomic<int> done {0};
 			const auto worker = [&] {
 				for (;;) {
-					const int i = next++;
-					if (i >= total || stop.load() || (fail_after >= 0 && i >= fail_after)) return;
+					const int vi = next++;
+					if (vi >= total || stop.load() || (fail_after >= 0 && vi >= fail_after)) return;
+					const int i = visit[static_cast<size_t>(vi)];
 					const auto& g = sc->groups[static_cast<size_t>(i)];
 					Warm::GroupView view;
 					view.library = 0;
@@ -206,15 +228,21 @@ struct FakeHost {
 					view.shader_count = static_cast<uint32_t>(g.frequencies.size());
 					view.frequencies = g.frequencies;
 					view.bytes = g.bytes;
+					{
+						std::scoped_lock lock(mutex);
+						delivered.push_back(i);
+					}
 					if (group(view)) stop = true;
 					groups_given++;
+					if (on_group) on_group();
 					progress(static_cast<uint32_t>(++done), static_cast<uint32_t>(total));
 				}
 			};
 			std::vector<std::thread> pool;
 			for (int t = 0; t < threads; t++) pool.emplace_back(worker);
 			for (auto& t: pool) t.join();
-			r.groups_total = static_cast<uint32_t>(total);
+			r.groups_total = static_cast<uint32_t>(sc->groups.size());
+			r.failed       = static_cast<uint32_t>(failed);
 			r.decoded      = static_cast<uint32_t>(done.load());
 			r.raw_bytes    = 1 << 20;
 			r.ms           = 5;
@@ -256,7 +284,7 @@ struct Start {
 	std::vector<std::string>    lines;
 	std::string                 calls;  // [main] [prepare] [wait] in order
 	PipelineList::ResolveStats  second; // the second Resolve, as the renderer gets it
-	int                         builds = 0, drops = 0, releases = 0;
+	int                         builds = 0, drops = 0, releases = 0, parks = 0;
 	bool                        keep_file_second = true;
 	PipelineList::File          file;
 	uint64_t                    listed() const { return ctor.warm ? ctor.warm->listed : 0; }
@@ -328,6 +356,7 @@ Warm::Outcome Ready(Start& s, const Scenario&, const Warm::Config& cfg, bool nev
 	ops.run_prepare     = [&] { s.calls += "[prepare]"; };
 	ops.wait_entry      = [&] { s.calls += "[wait]"; };
 	ops.release         = [&] { s.releases++; };
+	ops.park            = [&] { s.parks++; };
 	auto c = cfg;
 	c.wait_before_entry = wait;
 	return Warm::RunLaunch(s.ctor.warm.get(), c, never_ready, prepare, ops, std::move(sink), std::move(clock), hard_ms, grace_ms);
@@ -1054,10 +1083,12 @@ void M7_Watchdog() {
 	std::condition_variable cv;
 	bool                    release = false;
 	std::atomic<int>        late_groups {0};
-	Warm::SetHostExtract([&](uint64_t, uint32_t, const Warm::GroupFn& group, const Warm::ProgressFn&) {
+	Warm::SetHostExtract([&](uint64_t, uint32_t, const Warm::GroupFn& group, const Warm::ProgressFn& progress,
+	                         const std::vector<Warm::GroupRange>&) {
 		std::unique_lock lock(m);
 		cv.wait(lock, [&] { return release; });
 		lock.unlock();
+		progress(1, 4); // late progress of an abandoned call: must not open the card unit again
 		Warm::GroupView v; // a late group after the watchdog gave up: must be refused
 		v.shader_count = 1;
 		v.frequencies = sc.groups[0].frequencies;
@@ -1075,12 +1106,15 @@ void M7_Watchdog() {
 	CHECK(Warm::SteadyMs() - begin < 5000 && s.builds + s.drops == 1 && s.releases == 1 && !Warm::DeferredPending());
 	CHECK(HasLine(s, "UE5 code: the host did not finish reading the shader library within"));
 	CHECK(s.Count() == 0);
+	CHECK(CompileProgress::Get().unit_total == 0 && !LoadCard::LaunchPhasePending()); // nothing arrived before the abandon
 	{
 		std::scoped_lock lock(m);
 		release = true;
 	}
 	cv.notify_all();
 	CHECK(Warm::WaitIdle(5000) && late_groups == 1 && s.Count() == 0); // the late group was refused, store untouched
+	// n-k3: the late progress call changed nothing: the unit is not reopened (it would never be completed)
+	CHECK(CompileProgress::Get().unit_total == 0 && CompileProgress::Get().unit_done == 0 && !LoadCard::LaunchPhasePending());
 	s.Close();
 	Cleanup(path);
 }
@@ -1102,7 +1136,18 @@ void M12_CancelDuringExtraction() {
 	CHECK(Ready(s, sc, cfg, false, true, true) == Warm::Outcome::Extracted && host.groups_given == 1);
 	CHECK(s.builds == 0 && s.drops == 0 && s.releases == 1 && s.calls.empty() && !Warm::DeferredPending());
 	CHECK(Warm::WaitIdle(1000));
+	CHECK(s.parks == 1); // n-k4: the guest is not started while the process ends
+	{
+		// also when nothing was deferred (the wait-only path)
+		Start none;
+		Warm::RequestCancel();
+		CHECK(Ready(none, sc, cfg, false) == Warm::Outcome::NotDeferred && none.parks == 1);
+	}
 	Warm::ResetCancel();
+	{
+		Start none; // not ending: the guest starts at once
+		CHECK(Ready(none, sc, cfg, false) == Warm::Outcome::NotDeferred && none.parks == 0);
+	}
 	s.Close();
 	PipelineCodeStore view;
 	CHECK(view.OpenReadOnly(path) && view.Mark().state == PipelineCodeStore::SearchMark::Partial);
@@ -1315,6 +1360,169 @@ void M8_StoreLock() {
 	Cleanup(path);
 }
 
+
+// n-k1: a pass that covered every group is Complete even when a group failed (or a listed code is not in the library):
+// the second start skips and the host is not called again.
+void NK1_CompleteDespiteFailedGroup() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(10, 1); // 5 groups, one listed code is not in any of them
+	const auto path = TempPath("nk1");
+	Cleanup(path);
+	FakeHost host;
+	host.sc = &sc;
+	host.bad_groups = {2}; // the decoder rejects group 2
+	host.Install();
+	const auto cfg = MakeConfig(GoodFp());
+	{
+		Start s; Begin(s, sc, path, cfg, true);
+		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && host.calls == 1);
+		CHECK(HasLineWith(s, "1 groups failed to decode and 0 were over the size limit: not tried again"));
+		s.Close();
+		PipelineCodeStore view;
+		CHECK(view.OpenReadOnly(path) && view.Mark().state == PipelineCodeStore::SearchMark::Complete);
+	}
+	Start s2; Begin(s2, sc, path, cfg, true);
+	CHECK(s2.plan == Warm::CtorPlan::Skip && !Warm::DeferredPending());
+	CHECK(Ready(s2, sc, cfg, false) == Warm::Outcome::NotDeferred && host.calls == 1); // the library is not decoded again
+	Cleanup(path);
+}
+
+// n-k2: a library that needs several time budgets: every start continues where the last one stopped; the host is told to
+// skip the groups already seen, so no start decodes a group twice, and the last one completes the list.
+void NK2_ResumeVisitsOnlyNewGroups() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(20); // 10 groups, 1 s each on the fake clock
+	const auto path = TempPath("nk2");
+	Cleanup(path);
+	std::atomic<uint64_t> now {0};
+	FakeHost              host;
+	host.sc       = &sc;
+	host.on_group = [&] { now += 1000; };
+	host.Install();
+	auto cfg  = MakeConfig(GoodFp());
+	cfg.max_s = 3;
+	const auto clock = [&]() -> uint64_t { return now.load(); };
+	int        passes = 0;
+	size_t     last_skip_groups = 0;
+	for (; passes < 8; passes++) {
+		ResetUnit();
+		Start s; Begin(s, sc, path, cfg, true);
+		if (s.plan != Warm::CtorPlan::Defer) {
+			CHECK(s.plan == Warm::CtorPlan::Skip && s.stats.runtime_pending == 0);
+			break;
+		}
+		CHECK(Ready(s, sc, cfg, false, false, false, {}, clock) == Warm::Outcome::Extracted);
+		size_t skipped_groups = 0;
+		for (const auto& r: host.last_skip) skipped_groups += r.last - r.first + 1u;
+		CHECK(skipped_groups == last_skip_groups); // the host got exactly what the earlier passes saw
+		last_skip_groups = 0;
+		s.Close();
+		PipelineCodeStore view;
+		CHECK(view.OpenReadOnly(path));
+		for (const auto& r: view.Mark().done) last_skip_groups += r.last - r.first + 1u;
+		if (HasLineWith(s, "stopped after")) CHECK(last_skip_groups > skipped_groups); // a stopped pass always moved on
+	}
+	CHECK(passes == 3);                                   // 4 + 4 + 2 groups
+	CHECK(host.calls == 3 && host.delivered.size() == 10); // no group was delivered twice
+	std::set<int> unique(host.delivered.begin(), host.delivered.end());
+	CHECK(unique.size() == 10);
+	Cleanup(path);
+}
+
+// n-k5: a full store whose mark is of another list: the new list is searched once (its mark is written in the reserve), the
+// next start skips. A full store with no mark of another list still skips at once (M1b).
+void NK5_FullStoreNewList() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(4);
+	const auto path = TempPath("nk5");
+	Cleanup(path);
+	const auto cfg = MakeConfig(GoodFp());
+	{
+		PipelineCodeStore fill;
+		CHECK(fill.Open(path, "PPSA00000", "01.000.000", cfg.fp));
+		std::mt19937 random(9);
+		uint32_t     seed = 0;
+		const auto   add  = [&](size_t bytes) {
+            std::vector<uint8_t> code(bytes);
+            for (auto& b: code) b = static_cast<uint8_t>(random());
+            return fill.Add({++seed, 77}, seed, code);
+		};
+		for (int i = 0; i < 3; i++) CHECK(add(16u << 20u));
+		const uint64_t room = PipelineCodeStore::CapBytes - PipelineCodeStore::MarkReserveBytes - fill.FileBytes() - 40;
+		CHECK(add(static_cast<size_t>(room)));
+		CHECK(fill.Full());
+		PipelineCodeStore::SearchMark old;
+		old.state = PipelineCodeStore::SearchMark::Complete;
+		old.key   = 0x1234; // the mark of the previous list
+		CHECK(fill.WriteMark(old) && fill.Flush());
+	}
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	{
+		Start s; Begin(s, sc, path, cfg, true);
+		CHECK(s.plan == Warm::CtorPlan::Defer && !HasLineWith(s, "extraction skipped"));
+		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && host.calls == 1);
+		CHECK(s.Count() == 4); // nothing fitted
+		s.Close();
+		PipelineCodeStore view;
+		CHECK(view.OpenReadOnly(path) && view.Mark().state == PipelineCodeStore::SearchMark::Complete &&
+		      view.Mark().key != 0x1234 && std::filesystem::file_size(path) <= PipelineCodeStore::CapBytes);
+	}
+	Start s2; Begin(s2, sc, path, cfg, true);
+	CHECK(s2.plan == Warm::CtorPlan::Skip && host.calls == 1); // searched once for this list
+	Cleanup(path);
+}
+
+// n-k6: a group whose code could not be written (I/O) was not searched: it stays out of the seen ranges and blocks nothing
+// else; a code that does not fit (store at its cap) is no such failure.
+void NK6_FailedStoreIsNotSearched() {
+	const auto sc = MakeScenario(6); // 3 groups
+	Warm::WantedMap wanted;
+	for (size_t i = 0; i < 6; i++) {
+		const auto words = Words(sc.codes[i]);
+		const auto h     = PipelineList::CodeHash({reinterpret_cast<const uint8_t*>(words.data()), words.size() * 4});
+		wanted[h]        = static_cast<uint32_t>(sc.codes[i].size());
+	}
+	int  result = 1;
+	Warm::Collector c(wanted, [&](const Hash128&, uint64_t, std::span<const uint8_t>) { return result; }, {}, 0, nullptr);
+	auto view = [&](size_t i) {
+		Warm::GroupView v;
+		v.library = 0; v.group = static_cast<uint32_t>(i); v.shader_count = static_cast<uint32_t>(sc.groups[i].frequencies.size());
+		v.frequencies = sc.groups[i].frequencies; v.bytes = sc.groups[i].bytes;
+		return v;
+	};
+	(void)c.OnGroup(view(0));
+	result = -1; // the disk failed
+	(void)c.OnGroup(view(1));
+	result = -2; // the cap
+	(void)c.OnGroup(view(2));
+	const auto seen = c.Seen();
+	CHECK(c.IoFailedGroups() == 1 && c.AddFailed() >= 2);
+	CHECK(seen.size() == 2 && seen[0].first == 0 && seen[0].last == 0 && seen[1].first == 2 && seen[1].last == 2);
+}
+
+// n-k3 helper check: Finish blocks later progress, without any abandon.
+void NK3_FinishBlocksProgress() {
+	uint64_t total = 0, done = 0;
+	Warm::UnitSink sink;
+	sink.add_total = [&](uint64_t n) { total += n; };
+	sink.add_done  = [&](uint64_t n) { done += n; };
+	Warm::Collector c({}, [](const Hash128&, uint64_t, std::span<const uint8_t>) { return 1; }, sink, 0, nullptr);
+	c.Finish();
+	c.OnProgress(1, 4);
+	CHECK(total == 0 && done == 0);
+	Warm::Collector d({}, [](const Hash128&, uint64_t, std::span<const uint8_t>) { return 1; }, sink, 0, nullptr);
+	d.OnProgress(1, 4);
+	d.Abandon();
+	d.OnProgress(3, 4);
+	d.Finish();
+	CHECK(total == 4 && done == 4); // Finish completed what had started; the late call added nothing
+}
+
 } // namespace
 
 int main() {
@@ -1352,6 +1560,11 @@ int main() {
 	M3_SplitBounds();
 	M5_RequirePercent();
 	M8_StoreLock();
+	NK1_CompleteDespiteFailedGroup();
+	NK2_ResumeVisitsOnlyNewGroups();
+	NK3_FinishBlocksProgress();
+	NK5_FullStoreNewList();
+	NK6_FailedStoreIsNotSearched();
 	if (g_failed != 0) {
 		std::printf("Ue5CodeWarmTests: %d check(s) failed\n", g_failed);
 		return 1;

@@ -218,10 +218,14 @@ struct HostResult {
 	uint32_t groups_total = 0, decoded = 0, failed = 0, skipped = 0;
 	uint64_t compressed_bytes = 0, raw_bytes = 0, ms = 0;
 };
-using GroupFn     = std::function<bool(const GroupView&)>; // true = stop
-using ProgressFn  = std::function<void(uint32_t done, uint32_t total)>;
-using ExtractFn   = std::function<HostResult(uint64_t decoder, uint32_t abi, const GroupFn& group,
-                                             const ProgressFn& progress)>;
+using GroupRange = PipelineCodeStore::GroupRange;
+using GroupFn    = std::function<bool(const GroupView&)>; // true = stop
+using ProgressFn = std::function<void(uint32_t done, uint32_t total)>;
+// `skip`: groups the host leaves alone (ABI 1.8 KytyGpuUe5Query.skip): not read, not decoded, not
+// delivered, not counted in progress.
+using ExtractFn =
+    std::function<HostResult(uint64_t decoder, uint32_t abi, const GroupFn& group,
+                             const ProgressFn& progress, const std::vector<GroupRange>& skip)>;
 using RunOnMainFn = std::function<void(std::function<void()>)>;
 using ReadGuestFn = std::function<bool(uint64_t guest_address, std::span<uint8_t> out)>;
 
@@ -295,7 +299,6 @@ inline bool WaitIdle(uint64_t max_ms) {
 	return true;
 }
 
-using GroupRange = PipelineCodeStore::GroupRange;
 // `ranges` (sorted by library, first) with groups added/merged: adjacent or overlapping ranges of
 // a library become one.
 inline void MergeRanges(std::vector<GroupRange>& ranges) {
@@ -329,14 +332,15 @@ inline void MergeRanges(std::vector<GroupRange>& ranges) {
 // host threads at once.
 class Collector {
 public:
-	// 1 added, 0 already stored, -1 could not be stored (cap, I/O)
+	// 1 added, 0 already stored, -1 could not be stored (I/O: worth another try), -2 does not fit
+	// (the store is at its cap: no pass will ever store it)
 	using AddFn   = std::function<int(const Hash128&, uint64_t prefix, std::span<const uint8_t>)>;
 	using ClockFn = std::function<uint64_t()>;
 
 	// `wanted`: code hash -> expected bytes, for the listed runtime codes not in the store yet.
-	// `resume`: the groups an earlier, stopped pass already saw (a store mark): they are not split
-	// again, and the time budget starts at the first group after them (the host still decodes the
-	// skipped ones, which only the watchdog bounds).
+	// `resume`: the groups an earlier, stopped pass already saw (a store mark): the host is asked
+	// to skip them (the query's skip list); should it deliver one anyway, it is not split again and
+	// the time budget starts at the first group after them.
 	Collector(WantedMap wanted, AddFn add, UnitSink sink, uint64_t max_s,
 	          const Ue5Group::Layout* layout = nullptr, ClockFn clock = SteadyMs,
 	          std::vector<GroupRange> resume = {})
@@ -364,12 +368,12 @@ public:
 			m_resume_started = true;
 			m_start          = m_clock(); // the budget counts new groups only
 		}
-		m_new_groups.push_back({g.library, g.group, g.group});
 		m_groups++;
 		m_split.markers += stats.markers;
 		m_split.out_of_bounds += stats.out_of_bounds;
 		m_split.bad_size += stats.bad_size;
 		m_split.size_mismatch += stats.size_mismatch;
+		bool io_failed = false;
 		for (const auto& shader: shaders) {
 			const auto it = m_wanted.find(shader.hash);
 			if (it == m_wanted.end()) continue;
@@ -380,6 +384,7 @@ public:
 			const int added = m_add(shader.hash, shader.prefix, shader.code);
 			if (added < 0) {
 				m_add_failed++;
+				if (added == -1) io_failed = true;
 				continue;
 			}
 			if (added > 0) {
@@ -388,6 +393,12 @@ public:
 			}
 			m_wanted.erase(it);
 		}
+		// A group whose code could not be written (not: did not fit) was not searched: the next
+		// pass reads it again.
+		if (io_failed)
+			m_io_failed_groups++;
+		else
+			m_new_groups.push_back({g.library, g.group, g.group});
 		if (m_wanted.empty()) return true;
 		if (m_max_ms != 0 && m_clock() - m_start >= m_max_ms) {
 			m_timed_out = true;
@@ -417,9 +428,30 @@ public:
 		std::scoped_lock lock(m_mutex);
 		return m_resume_skipped;
 	}
+	// The ranges the host is asked to skip (sorted, merged).
+	[[nodiscard]] std::vector<GroupRange> ResumeRanges() const {
+		std::scoped_lock lock(m_mutex);
+		return m_resume;
+	}
+	// Groups of the resume ranges (what the earlier passes covered).
+	[[nodiscard]] uint64_t ResumeGroups() const {
+		std::scoped_lock lock(m_mutex);
+		uint64_t         n = 0;
+		for (const auto& r: m_resume)
+			n += static_cast<uint64_t>(r.last) - r.first + 1u;
+		return n;
+	}
+	// Groups with a code the store could not write (I/O): they are not in Seen().
+	[[nodiscard]] uint64_t IoFailedGroups() const {
+		std::scoped_lock lock(m_mutex);
+		return m_io_failed_groups;
+	}
 
 	void OnProgress(uint32_t done, uint32_t total) {
 		std::scoped_lock lock(m_progress_mutex);
+		// Progress of a call the watchdog gave up on (or after Finish) must not open the card unit
+		// again: nobody would ever complete it.
+		if (m_finished || m_abandoned.load(std::memory_order_acquire)) return;
 		if (total == 0) return;
 		if (m_total == 0) {
 			m_total = total;
@@ -435,6 +467,7 @@ public:
 	// Completes the card unit whatever happened (idempotent).
 	void Finish() {
 		std::scoped_lock lock(m_progress_mutex);
+		m_finished = true;
 		if (m_total != 0 && m_done < m_total) {
 			m_sink.add_done(m_total - m_done);
 			m_done = m_total;
@@ -485,8 +518,8 @@ public:
 		    static_cast<unsigned long long>(Added()),
 		    static_cast<double>(AddedBytes()) / 1048576.0);
 		std::string line = text;
-		if (ResumeSkipped() != 0)
-			line += "; resumed past " + std::to_string(ResumeSkipped()) + " groups";
+		if (const auto resumed = std::max(ResumeSkipped(), ResumeGroups()); resumed != 0)
+			line += "; resumed past " + std::to_string(resumed) + " groups";
 		if (TimedOut()) line += "; stopped after " + std::to_string(ElapsedS()) + " s";
 		return line;
 	}
@@ -503,7 +536,8 @@ private:
 	bool     m_timed_out = false;
 	std::vector<GroupRange> m_resume, m_new_groups;
 	bool                    m_resume_started = false;
-	uint64_t                m_resume_skipped = 0;
+	uint64_t                m_resume_skipped = 0, m_io_failed_groups = 0;
+	bool                    m_finished = false; // under m_progress_mutex
 	std::atomic<bool>       m_stop {false}, m_abandoned {false};
 	Ue5Group::Stats         m_split;
 	uint32_t                m_total = 0, m_done = 0;
@@ -605,10 +639,11 @@ inline void CollectWanted(const PipelineList::File& file, const PipelineList::Re
 
 // What the store already knows about this wanted set (see PipelineCodeStore's marks).
 struct SearchInfo {
-	bool     searched   = false; // a complete pass for this wanted set ran
-	bool     store_full = false;
-	bool     locked     = false; // another process owns the store
-	uint64_t missing    = 0;     // listed codes the store lacks
+	bool     searched     = false; // a complete pass for this wanted set ran
+	bool     store_full   = false;
+	bool     locked       = false; // another process owns the store
+	bool     list_changed = false; // a mark of another wanted set is in the store (a new list)
+	uint64_t missing      = 0;     // listed codes the store lacks
 };
 [[nodiscard]] inline SearchInfo SearchInfoOf(const PipelineCodeStore& store, uint64_t key,
                                              uint64_t missing) {
@@ -618,7 +653,9 @@ struct SearchInfo {
 	    key != 0 && mark.state == PipelineCodeStore::SearchMark::Complete && mark.key == key;
 	info.store_full = store.Full();
 	info.locked     = store.LockedByOther();
-	info.missing    = missing;
+	info.list_changed =
+	    key != 0 && mark.state != PipelineCodeStore::SearchMark::None && mark.key != key;
+	info.missing = missing;
 	return info;
 }
 
@@ -646,7 +683,9 @@ enum class CtorPlan { Skip, Off, Defer };
 		line = SearchedLine(search.missing);
 		return CtorPlan::Skip;
 	}
-	if (search.store_full) {
+	// A full store has no room for the codes of a new list either, but the extraction runs once for
+	// it: it writes the new list's mark (the mark has its own reserve), so the next start skips.
+	if (search.store_full && !search.list_changed) {
 		line = StoreFullLine(search.missing);
 		return CtorPlan::Skip;
 	}
@@ -722,26 +761,34 @@ private:
 			if (mark.state == PipelineCodeStore::SearchMark::Partial && mark.key == m_key)
 				resume = mark.done;
 		}
-		const bool resumed = !resume.empty();
-		m_collector        = std::make_shared<Collector>(
+		m_collector = std::make_shared<Collector>(
 		    m_wanted,
 		    [this](const Hash128& hash, uint64_t prefix, std::span<const uint8_t> code) {
 			    if (m_store->Add(hash, prefix, code)) return 1;
-			    return m_store->Size(hash) != 0 ? 0 : -1;
+			    if (m_store->Size(hash) != 0) return 0;
+			    // At the cap (or too big for the store): no later pass will store it either.
+			    if (code.empty() || code.size() > PipelineCodeStore::MaxCodeBytes ||
+			        m_store->Full() ||
+			        m_store->FileBytes() + code.size() + 64 + PipelineCodeStore::MarkReserveBytes >
+			            PipelineCodeStore::CapBytes)
+				    return -2;
+			    return -1;
 		    },
 		    m_sink, m_config.max_s, Ue5Group::FindLayout(m_config.layout.c_str()), m_clock,
 		    std::move(resume));
 		const auto collector = m_collector;
+		const auto skip      = m_collector->ResumeRanges();
 		const auto shared    = std::make_shared<Shared>();
 		const auto decoder   = m_config.decoder;
 		const auto abi       = AbiId(m_config.abi);
 		g_active.fetch_add(1, std::memory_order_acq_rel);
 		// On a thread of its own so the watchdog can give up on a host call that never returns.
-		std::thread([extract, collector, shared, decoder, abi] {
+		std::thread([extract, collector, shared, decoder, abi, skip] {
 			auto result = extract(
 			    decoder, abi,
 			    [collector](const GroupView& view) { return collector->OnGroup(view); },
-			    [collector](uint32_t done, uint32_t total) { collector->OnProgress(done, total); });
+			    [collector](uint32_t done, uint32_t total) { collector->OnProgress(done, total); },
+			    skip);
 			{
 				std::scoped_lock lock(shared->mutex);
 				shared->result = result;
@@ -753,7 +800,8 @@ private:
 
 		const uint64_t max_ms = m_config.max_s * 1000u;
 		uint64_t       hard   = m_hard_ms;
-		if (hard == 0 && max_ms != 0) hard = (resumed ? 2 * max_ms : max_ms) + 5000u;
+		// The host skips what an earlier pass saw, so a resumed pass is no longer than a first one.
+		if (hard == 0 && max_ms != 0) hard = max_ms + 5000u;
 		const auto begin     = SteadyMs();
 		uint64_t   stop_at   = 0; // when the stop was asked for
 		bool       abandoned = false;
@@ -788,8 +836,11 @@ private:
 		PipelineCodeStore::SearchMark mark;
 		mark.key       = m_key;
 		const int code = m_result.code;
-		if (code == 0 && !m_collector->TimedOut() && m_result.failed == 0 &&
-		    m_result.skipped == 0) {
+		// Complete: the pass visited every group it was asked for. A group the decoder rejects, or
+		// one over the size limit, fails again on the next start: it is counted (Summary) and not
+		// retried until the list, the game or the decoder changes (the mark's key, the store's
+		// decoder fingerprint and app version). A group whose code could not be written is not.
+		if (code == 0 && !m_collector->TimedOut() && m_collector->IoFailedGroups() == 0) {
 			mark.state = PipelineCodeStore::SearchMark::Complete;
 		} else if (code == 0 || code == -3 || code == WatchdogCode) {
 			mark.state = PipelineCodeStore::SearchMark::Partial;
@@ -816,6 +867,13 @@ private:
 			      " with a bad size, " + std::to_string(split.size_mismatch) +
 			      " size mismatches, " + std::to_string(m_collector->SizeConflicts()) +
 			      " size conflicts, " + std::to_string(m_collector->AddFailed()) + " not stored");
+		}
+		if (m_result.failed + m_result.skipped != 0 &&
+		    m_store->Mark().state == PipelineCodeStore::SearchMark::Complete) {
+			m_log("UE5 code: " + std::to_string(m_result.failed) + " groups failed to decode and " +
+			      std::to_string(m_result.skipped) +
+			      " were over the size limit: not tried again until the list, the game or the "
+			      "decoder changes");
 		}
 		const uint64_t found = m_listed - std::min<uint64_t>(m_listed, m_collector->Remaining());
 		if (m_collector->TimedOut() && m_collector->Remaining() != 0)
@@ -991,6 +1049,9 @@ struct LaunchOps {
 	std::function<void()> run_prepare;
 	std::function<void()> wait_entry;
 	std::function<void()> release; // after the main-thread part: drop the warm state
+	// The process is ending (a window close): called instead of returning to the guest, which must
+	// not start its threads while the renderer saves and shuts down. May be null (returns at once).
+	std::function<void()> park;
 	LogLineFn             log;
 };
 
@@ -1005,7 +1066,12 @@ inline Outcome RunLaunch(ListWarm* warm, const Config& config, bool never_ready,
 	flow.never_ready       = never_ready;
 	flow.prepare           = flow.deferred && prepare;
 	flow.wait_before_entry = !never_ready && config.wait_before_entry;
-	if (!flow.deferred && !flow.wait_before_entry) return Outcome::NotDeferred;
+	// The guest starts when this returns: not while the process is ending.
+	const auto parked = [&](Outcome out) {
+		if (Cancelled() && ops.park) ops.park();
+		return out;
+	};
+	if (!flow.deferred && !flow.wait_before_entry) return parked(Outcome::NotDeferred);
 	Session session(config, warm != nullptr ? &warm->store : nullptr,
 	                warm != nullptr ? warm->wanted : WantedMap {},
 	                warm != nullptr ? warm->listed : 0, ops.log, std::move(sink), std::move(clock),
@@ -1031,7 +1097,7 @@ inline Outcome RunLaunch(ListWarm* warm, const Config& config, bool never_ready,
 		    ops.release();
 	    },
 	    ops.run_prepare, ops.wait_entry);
-	return RunGuestReady(flow, hooks);
+	return parked(RunGuestReady(flow, hooks));
 }
 
 // The pre-entry wait of KYTY_LAUNCH_WAIT_BEFORE_ENTRY, bounded by ONE deadline: when it gives up

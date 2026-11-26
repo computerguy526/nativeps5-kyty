@@ -711,7 +711,7 @@ void TestStoreSearchMarks() {
 		CHECK(store.Open(path, "T", "V", 5) && store.Count() == 2 && store.Mark().state == Mark::None && store.TruncatedBytes() != 0);
 	}
 	{
-		// the mark fits in a store at the cap, and read-only stores take none
+		// read-only stores take no mark
 		PipelineCodeStore store;
 		CHECK(store.Open(path, "T", "V", 5));
 		Mark complete;
@@ -720,6 +720,36 @@ void TestStoreSearchMarks() {
 		CHECK(store.WriteMark(complete) && store.Flush());
 		PipelineCodeStore reader;
 		CHECK(reader.OpenReadOnly(path) && reader.Mark().key == 7 && !reader.WriteMark(complete));
+	}
+	{
+		// the largest mark fits in a store that is filled up to its reserve (the cap case, really filled)
+		const auto       full_path = dir.path / "full.codestore";
+		PipelineCodeStore store;
+		CHECK(store.Open(full_path, "T", "V", 5));
+		std::mt19937 random(11);
+		uint32_t     seed = 0;
+		const auto   add  = [&](size_t bytes) {
+            std::vector<uint8_t> code(bytes);
+            for (auto& b: code) b = static_cast<uint8_t>(random());
+            return store.Add({++seed, 5}, seed, code);
+		};
+		for (int i = 0; i < 3; i++) CHECK(add(16u << 20u));
+		const uint64_t room = PipelineCodeStore::CapBytes - PipelineCodeStore::MarkReserveBytes - store.FileBytes() - 40;
+		CHECK(add(static_cast<size_t>(room)) && store.Full());
+		CHECK(!add(64)); // the store really is at its cap: another code does not fit
+		Mark partial;
+		partial.state = Mark::Partial;
+		partial.key   = 99;
+		for (uint32_t i = 0; i < PipelineCodeStore::MaxMarkRanges; i++) partial.done.push_back({i, 2 * i, 2 * i + 1});
+		CHECK(store.WriteMark(partial) && store.Flush());
+		CHECK(store.FileBytes() <= PipelineCodeStore::CapBytes);
+		partial.done.push_back({9999, 0, 1}); // one range too many is refused, the earlier mark stays
+		CHECK(!store.WriteMark(partial) && store.Mark().done.size() == PipelineCodeStore::MaxMarkRanges);
+		PipelineCodeStore reader;
+		CHECK(reader.OpenReadOnly(full_path) && reader.Mark().state == Mark::Partial &&
+		      reader.Mark().done.size() == PipelineCodeStore::MaxMarkRanges && reader.Mark().done[4095].library == 4095 &&
+		      reader.Count() == 4);
+		CHECK(std::filesystem::file_size(full_path) <= PipelineCodeStore::CapBytes);
 	}
 }
 
