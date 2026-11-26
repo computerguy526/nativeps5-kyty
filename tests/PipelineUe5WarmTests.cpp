@@ -461,7 +461,7 @@ void TestStoreBasics() {
 	const auto  a = Code(100, 300), b = Code(101, 17), c = Code(102, 4096);
 	{
 		PipelineCodeStore store;
-		CHECK(store.Open(path, "PPSA00000", "01.005.002", 0x1122334455667788ull));
+		CHECK(store.Open(path, "PPSA00000", "02.003.004", 0x1122334455667788ull));
 		CHECK(store.Count() == 0 && !store.DiscardedStale() && store.FileBytes() == PipelineCodeStore::HeaderBytes);
 		CHECK(AddCode(store, a) && AddCode(store, b) && AddCode(store, c));
 		CHECK(store.Count() == 3 && store.Size(HashOf(a)) == a.size() * 4 && store.Size(Hash128 {1, 2}) == 0);
@@ -495,7 +495,7 @@ void TestStoreBasics() {
 		std::memcpy(&fp, file.data() + 48, 8);
 		CHECK(version == 1 && header == 64 && fp == 0x1122334455667788ull);
 		CHECK(std::string(reinterpret_cast<const char*>(file.data() + 16)) == "PPSA00000" &&
-		      std::string(reinterpret_cast<const char*>(file.data() + 32)) == "01.005.002");
+		      std::string(reinterpret_cast<const char*>(file.data() + 32)) == "02.003.004");
 		uint32_t record_magic = 0, record_bytes = 0;
 		std::memcpy(&record_magic, file.data() + 64, 4);
 		std::memcpy(&record_bytes, file.data() + 68, 4);
@@ -504,7 +504,7 @@ void TestStoreBasics() {
 	// Reopen with the same stamps: everything is still there; appends continue.
 	{
 		PipelineCodeStore store;
-		CHECK(store.Open(path, "PPSA00000", "01.005.002", 0x1122334455667788ull));
+		CHECK(store.Open(path, "PPSA00000", "02.003.004", 0x1122334455667788ull));
 		CHECK(store.Count() == 3 && !store.DiscardedStale() && store.TruncatedBytes() == 0);
 		CHECK(FindIs(store, a) && FindIs(store, b) && FindIs(store, c));
 		const auto d = Code(103, 50);
@@ -512,7 +512,7 @@ void TestStoreBasics() {
 	}
 	{
 		PipelineCodeStore store;
-		CHECK(store.Open(path, "PPSA00000", "01.005.002", 0x1122334455667788ull));
+		CHECK(store.Open(path, "PPSA00000", "02.003.004", 0x1122334455667788ull));
 		CHECK(store.Count() == 4 && FindIs(store, Code(103, 50)));
 	}
 }
@@ -617,10 +617,10 @@ void TestStoreStaleHeader() {
 		const std::string title = "a-very-long-title-id-0123456789";
 		{
 			PipelineCodeStore store;
-			CHECK(store.Open(path, title, "01.005.002", 1) && AddCode(store, a));
+			CHECK(store.Open(path, title, "02.003.004", 1) && AddCode(store, a));
 		}
 		PipelineCodeStore store;
-		CHECK(store.Open(path, title, "01.005.002", 1) && !store.DiscardedStale() && store.Count() == 1);
+		CHECK(store.Open(path, title, "02.003.004", 1) && !store.DiscardedStale() && store.Count() == 1);
 	}
 }
 

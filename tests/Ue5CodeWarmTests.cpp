@@ -43,7 +43,7 @@ static int g_failed = 0;
 namespace {
 
 constexpr std::array<uint32_t, 3> InputSizes = {96, 64, 48};
-constexpr uint64_t                DecoderFp  = 0x1f82e44a65371db3ull;
+constexpr uint64_t                DecoderFp  = 0x0123456789abcdefull;
 
 std::vector<uint8_t> RandomCode(uint32_t seed, size_t bytes) {
 	std::mt19937         random(seed);
@@ -238,7 +238,7 @@ uint64_t GoodFp() { return Warm::Fnv1a64({g_fp_bytes, 64}); }
 Warm::Config MakeConfig(uint64_t fp) {
 	Warm::Config c;
 	c.store_path = "x";
-	c.decoder    = 0x924e80;
+	c.decoder    = 0x5a1000;
 	c.fp         = fp;
 	c.abi        = "oodlelz14";
 	c.words_ok   = true;
@@ -727,9 +727,9 @@ void T13_ParseEnv() {
 			return it == env.end() ? nullptr : it->second.c_str();
 		});
 	};
-	const std::map<std::string, std::string> good = {{"KYTY_PIPELINE_LIST_CODE_STORE", "/p/store"}, {"KYTY_UE5_DECODER", "0x924e80"}, {"KYTY_UE5_DECODER_FP", "1f82e44a65371db3"}, {"KYTY_UE5_DECODER_ABI", "oodlelz14"}};
+	const std::map<std::string, std::string> good = {{"KYTY_PIPELINE_LIST_CODE_STORE", "/p/store"}, {"KYTY_UE5_DECODER", "0x5a1000"}, {"KYTY_UE5_DECODER_FP", "0123456789abcdef"}, {"KYTY_UE5_DECODER_ABI", "oodlelz14"}};
 	auto c = parse(good);
-	CHECK(c.words_ok && c.decoder == 0x924e80 && c.fp == DecoderFp && c.store_path == "/p/store" && c.enabled && c.max_s == 120 && !c.wait_before_entry);
+	CHECK(c.words_ok && c.decoder == 0x5a1000 && c.fp == DecoderFp && c.store_path == "/p/store" && c.enabled && c.max_s == 120 && !c.wait_before_entry);
 	CHECK(Warm::OffReason(c, true).empty());
 	CHECK(Warm::OffReason(c, false) == "the host has no shader library reader");
 	auto m = good;
