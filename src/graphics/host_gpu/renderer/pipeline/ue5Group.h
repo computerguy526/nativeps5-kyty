@@ -30,9 +30,10 @@ namespace Libs::Graphics::Ue5Group {
 
 inline constexpr uint8_t Marker[8] = {'1', '2', '3', '4', 0x18, 0, 0, 0};
 inline constexpr size_t  CodeOffsetBack =
-    0x14; // the u32 code offset sits this far before the marker
+    0x14;                                // the u32 code offset sits this far before the marker
 inline constexpr size_t SizeBack = 0x0c; // the u32 code size sits this far before the marker
-inline constexpr size_t ShaderSizeAt = 0x44; // the header's shader_size, from the marker (cross-check)
+inline constexpr size_t ShaderSizeAt =
+    0x44; // the header's shader_size, from the marker (cross-check)
 inline constexpr uint32_t UnknownStage = 0xFFFFFFFFu;
 
 struct Shader {

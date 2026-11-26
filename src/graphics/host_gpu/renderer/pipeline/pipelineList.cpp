@@ -1202,8 +1202,8 @@ File Retarget(const File& file, const Resolved& resolved, RetargetStats& stats) 
 	std::vector<uint32_t> shader_map(file.shaders.size(), UINT32_MAX);
 	for (size_t i = 0; i < file.shaders.size(); i++) {
 		stats.shaders++;
-		// A `<runtime>` shader still pending (no store) is named by hashes alone, which do not depend on the game
-		// version: it is carried over unchanged.
+		// A `<runtime>` shader still pending (no store) is named by hashes alone, which do not
+		// depend on the game version: it is carried over unchanged.
 		const bool pending = i < resolved.pending.size() && resolved.pending[i];
 		if (!resolved.usable[i] && !pending) {
 			stats.missing++;
