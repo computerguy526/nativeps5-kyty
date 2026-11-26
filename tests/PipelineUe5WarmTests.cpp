@@ -282,8 +282,24 @@ void TestResolveRuntime() {
 		int                        reads = 0;
 		PipelineList::ResolveStats stats;
 		(void)PipelineList::Resolve(list.file, {96, 72, 48}, FailingRead(reads), {}, stats, none.Fn());
-		CHECK(stats.other_input_layout == 1 && stats.runtime_pending == 2 && stats.runtime_shaders == 3);
+		// m4: runtime_shaders counts the matching layouts only, so it equals resolved + pending.
+		CHECK(stats.other_input_layout == 1 && stats.runtime_pending == 2 && stats.runtime_shaders == 2);
+		CHECK(stats.runtime_shaders == stats.runtime_resolved + stats.runtime_pending);
 	}
+}
+
+// m4: a runtime shader with another input layout does not make `--require-runtime 100` fail when every
+// shader with the matching layout resolved.
+void TestRuntimeShadersCountMatchingLayoutOnly() {
+	const auto list = MakeRuntimeList();
+	MemoryStore full;
+	Fill(full, list);
+	int                        reads = 0;
+	PipelineList::ResolveStats stats;
+	(void)PipelineList::Resolve(list.file, {96, 72, 48}, FailingRead(reads), {}, stats, full.Fn());
+	CHECK(stats.other_input_layout == 1 && stats.runtime_pending == 0 && stats.runtime_resolved == 2);
+	CHECK(stats.runtime_shaders == 2);
+	CHECK(PipelineListTool::MeetsRuntimeRequirement(stats, 100));
 }
 
 // The 50 % rule counts non-pending shaders only; a list without `<runtime>` behaves as it always did.
@@ -653,6 +669,60 @@ void TestStoreCapAndReadOnly() {
 	}
 }
 
+// Search marks: persisted as the last record; a later Add overwrites it (Flush writes it again); a damaged mark is cut.
+void TestStoreSearchMarks() {
+	TempDir    dir;
+	const auto path = dir.path / "m.codestore";
+	using Mark      = PipelineCodeStore::SearchMark;
+	{
+		PipelineCodeStore store;
+		CHECK(store.Open(path, "T", "V", 5) && store.Mark().state == Mark::None);
+		CHECK(AddCode(store, Code(1, 64)));
+		Mark partial;
+		partial.state = Mark::Partial;
+		partial.key   = 0xabcdef;
+		partial.done  = {{0, 0, 9}, {2, 4, 5}};
+		CHECK(store.WriteMark(partial));
+		CHECK(store.Mark().done.size() == 2);
+		Mark complete;
+		complete.state = Mark::Complete;
+		complete.key   = 0xabcdef;
+		CHECK(store.WriteMark(complete)); // replaces the partial one in place
+	}
+	{
+		PipelineCodeStore store;
+		CHECK(store.Open(path, "T", "V", 5) && store.Count() == 1 && store.TruncatedBytes() == 0);
+		const auto mark = store.Mark();
+		CHECK(mark.state == Mark::Complete && mark.key == 0xabcdef && mark.done.empty());
+		// a code after the mark overwrites it; the mark in memory survives and Flush writes it back
+		CHECK(AddCode(store, Code(2, 64)) && store.Mark().state == Mark::Complete);
+		CHECK(store.Flush());
+	}
+	{
+		PipelineCodeStore store;
+		CHECK(store.Open(path, "T", "V", 5) && store.Count() == 2 && store.Mark().state == Mark::Complete && store.TruncatedBytes() == 0);
+	}
+	{
+		// a torn mark: the codes stay, the mark is gone
+		auto bytes = ReadAll(path);
+		bytes.resize(bytes.size() - 5);
+		WriteAll(path, bytes);
+		PipelineCodeStore store;
+		CHECK(store.Open(path, "T", "V", 5) && store.Count() == 2 && store.Mark().state == Mark::None && store.TruncatedBytes() != 0);
+	}
+	{
+		// the mark fits in a store at the cap, and read-only stores take none
+		PipelineCodeStore store;
+		CHECK(store.Open(path, "T", "V", 5));
+		Mark complete;
+		complete.state = Mark::Complete;
+		complete.key   = 7;
+		CHECK(store.WriteMark(complete) && store.Flush());
+		PipelineCodeStore reader;
+		CHECK(reader.OpenReadOnly(path) && reader.Mark().key == 7 && !reader.WriteMark(complete));
+	}
+}
+
 void TestStoreThreads() {
 	TempDir    dir;
 	const auto path = dir.path / "s.codestore";
@@ -1001,6 +1071,8 @@ int main() {
 	TestStoreStaleHeader();
 	TestStoreCapAndReadOnly();
 	TestStoreThreads();
+	TestStoreSearchMarks();
+	TestRuntimeShadersCountMatchingLayoutOnly();
 	TestStoreWithResolve();
 	TestRetargetRuntime();
 	TestMixedMergedCount();

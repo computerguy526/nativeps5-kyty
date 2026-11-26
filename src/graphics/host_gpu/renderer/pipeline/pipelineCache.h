@@ -660,7 +660,6 @@ private:
 	void InitializeKnownPipelines();
 	void InitializePipelineList();
 	std::unique_ptr<ListState> BuildListState(ListBuild& build);
-	void                       ResolveUe5List();
 	void InitializePipelineJournal();
 	// KYTY_PIPELINE_LIST_PREPARE: builds the list's shaders and pipelines, saves and ends the process.
 	[[noreturn]] void RunListPrepare();

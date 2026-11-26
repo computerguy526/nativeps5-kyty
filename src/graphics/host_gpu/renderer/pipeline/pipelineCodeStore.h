@@ -27,8 +27,30 @@ namespace Libs::Graphics {
 // A header whose title, app_ver or fingerprint differs from the run's is discarded: the file is
 // renamed
 // `<path>.stale` (replacing an older one) and a fresh store is started.
+//
+// Search marks (nps5 UE5 warm list): a record 'MARK' (u32 magic 0x4B52414D, u32 payload bytes, u64 key,
+// u64 state, u64 reserved, payload, padding to 8, checksum) says that a pass over the game's shader
+// library ran for the wanted set `key` (a hash of the listed codes): state 2 = complete (the listed
+// codes that are not stored are not in the library, or did not fit), state 1 = stopped early, the
+// payload being the {library, first, last} u32 triples of the groups it did see. The mark is always
+// the last record of the file: a later Add or mark overwrites it, and Flush writes it again.
+//
+// One writer per file: Open takes an exclusive flock on `<path>.lock`; when another process holds
+// it the store opens read-only (LockedByOther()).
 class PipelineCodeStore {
 public:
+	struct GroupRange {
+		uint32_t library = 0, first = 0, last = 0; // groups first..last of the library, inclusive
+	};
+	struct SearchMark {
+		static constexpr uint32_t None = 0, Partial = 1, Complete = 2;
+		uint32_t                state = None;
+		uint64_t                key   = 0;
+		std::vector<GroupRange> done; // Partial: the groups already seen
+	};
+	static constexpr uint32_t MarkMagic        = 0x4B52414Du; // "MARK"
+	static constexpr uint32_t MaxMarkRanges    = 4096;
+	static constexpr uint64_t MarkReserveBytes = 64u << 10u; // kept free of codes for the mark
 	static constexpr char     FileMagic[8]  = {'K', 'Y', 'C', 'O', 'D', 'E', '1', '\0'};
 	static constexpr uint32_t FormatVersion = 1;
 	static constexpr uint32_t HeaderBytes   = 64;
@@ -46,6 +68,8 @@ public:
 	// or read.
 	[[nodiscard]] bool Open(const std::filesystem::path& path, const std::string& title,
 	                        const std::string& app_ver, uint64_t decoder_fp);
+	// Closes the file and drops the lock (what the destructor does).
+	void Release();
 	// Reads an existing store without any change to the file: any header is accepted, a damaged
 	// tail is ignored (the tools: check --code-store). Add fails on such a store.
 	[[nodiscard]] bool OpenReadOnly(const std::filesystem::path& path);
@@ -68,6 +92,12 @@ public:
 	[[nodiscard]] uint64_t FileBytes() const;
 	[[nodiscard]] uint64_t CodeBytes() const; // payload bytes of the stored codes
 	[[nodiscard]] uint64_t DuplicatesIgnored() const;
+	// The mark of the last pass (state None: none). WriteMark replaces it (false: read-only store, no
+	// file, or more ranges than MaxMarkRanges: then a Partial mark is dropped and a Complete one kept).
+	[[nodiscard]] SearchMark Mark() const;
+	bool                     WriteMark(const SearchMark& mark);
+	// True when another process holds the store's lock: this one is read-only.
+	[[nodiscard]] bool LockedByOther() const { return m_locked_by_other; }
 	// 1 when the file was renamed .stale at Open (another title, version or decoder), 0 otherwise.
 	[[nodiscard]] bool DiscardedStale() const { return m_stale; }
 	// Bytes of a damaged tail cut off at Open.
@@ -90,6 +120,8 @@ private:
 
 	bool Scan(bool allow_any_header);
 	void Close();
+	bool TakeLock();
+	bool AppendMarkLocked(); // writes m_mark at the end of the intact records
 
 	mutable std::mutex    m_mutex;
 	std::FILE*            m_file = nullptr;
@@ -99,6 +131,10 @@ private:
 	bool                  m_read_only  = false;
 	bool                  m_stale      = false;
 	bool                  m_dirty      = false;
+	bool                  m_locked_by_other = false;
+	int                   m_lock_fd         = -1;
+	SearchMark            m_mark;       // the mark in force
+	uint64_t              m_mark_at = 0; // file offset of the mark record when it is the last one, else 0
 	uint64_t              m_size       = 0; // file bytes (the append position)
 	uint64_t              m_code_bytes = 0, m_duplicates = 0, m_truncated = 0;
 	std::unordered_map<PipelineList::Hash128, Entry, HashOf> m_index;

@@ -9456,14 +9456,6 @@ private:
 	std::map<uint32_t, std::unique_ptr<PipelineListGameFile>> m_data;
 };
 
-void LogListIgnored(const PipelineList::ResolveStats& stats, const std::string& producer) {
-	PipelineCacheLog(
-	    "Pipeline list: only {} of {} shaders match this game's files ({} differ, {} with "
-	    "another input layout, made by {}): ignored",
-	    stats.resolved, stats.shaders - stats.runtime_pending, stats.mismatched,
-	    stats.other_input_layout, producer);
-}
-
 } // namespace
 
 // The part of InitializePipelineList after Resolve: this device's inputs, the permutations'
@@ -9479,14 +9471,8 @@ struct PipelineCache::ListBuild {
 };
 
 struct PipelineCache::Ue5Warm {
-	Ue5CodeWarm::Config                 cfg;
-	PipelineCodeStore                   store;
-	std::unique_ptr<PipelineList::File> file_holder;
-	std::unique_ptr<ListSource>         source;
-	std::array<uint32_t, 3>             sizes {};
-	Ue5CodeWarm::WantedMap              wanted;     // listed codes the store lacks: hash -> bytes
-	uint64_t                            listed = 0; // distinct listed runtime codes
-	ListBuild                           build;      // for the second BuildListState
+	std::unique_ptr<Ue5CodeWarm::ListWarm> warm;  // store, file, wanted set (ue5CodeWarm.h)
+	ListBuild                              build; // for the second BuildListState
 };
 
 std::unique_ptr<PipelineCache::ListState> PipelineCache::BuildListState(ListBuild& build) {
@@ -9535,13 +9521,7 @@ std::unique_ptr<PipelineCache::ListState> PipelineCache::BuildListState(ListBuil
 		                 : 0;
 	}
 	state->sources = std::move(resolved.sources);
-	if (build.keep_file) {
-		state->levels    = file.levels;
-		state->pipelines = file.pipelines;
-	} else {
-		state->levels    = std::move(file.levels);
-		state->pipelines = std::move(file.pipelines);
-	}
+	Ue5CodeWarm::TakeListTables(file, build.keep_file, state->levels, state->pipelines);
 	state->prepare = build.prepare;
 	if (build.cross) {
 		PipelineCacheLog(
@@ -9685,45 +9665,23 @@ void PipelineCache::InitializePipelineList() {
 		                 "out), {} specializations upgraded",
 		                 upgrade_stats.upgraded, upgrade_stats.skipped, specializations);
 	}
-	PipelineList::ResolveStats stats;
-	// UE5 warm list: the `<runtime>` shaders' code comes from the per-player store (ue5CodeWarm.h).
-	std::unique_ptr<Ue5Warm> ue5;
-	if (PipelineList::RuntimeFileOf(file) != PipelineList::CodeFile::Executable) {
-		auto config = Ue5CodeWarm::ParseEnv([](const char* name) { return std::getenv(name); });
-		if (!config.store_path.empty()) {
-			ue5      = std::make_unique<Ue5Warm>();
-			ue5->cfg = std::move(config);
-			if (!ue5->store.Open(Common::PathFromUtf8(ue5->cfg.store_path), title_id, version,
-			                     ue5->cfg.fp)) {
-				PipelineCacheLog("UE5 code: the code store {} cannot be opened: the list's runtime "
-				                 "shaders stay pending",
-				                 ue5->cfg.store_path);
-				ue5.reset();
-			}
-		}
-	}
-	auto resolved =
-	    PipelineList::Resolve(file, sizes, source->ReadFn(), source->ImageFn(), stats,
-	                          ue5 != nullptr ? ue5->store.ReadFn() : PipelineList::ReadHashFn {});
-	const auto real_stats = stats;
-	bool       defer      = false;
-	if (ue5 != nullptr) {
-		Ue5CodeWarm::CollectWanted(file, resolved, sizes, ue5->store, ue5->wanted, ue5->listed);
-		std::string line;
-		const auto  plan = Ue5CodeWarm::PlanAtCtor(ue5->cfg, stats, Ue5CodeWarm::HostHasReader(),
-		                                           ue5->listed, line);
-		if (!line.empty()) PipelineCacheLog("{}", line);
-		if (plan == Ue5CodeWarm::CtorPlan::Defer)
-			defer = true;
-		else
-			ue5.reset();
-	}
-	// Pending code that nobody will extract is not found: it counts against the 50 % rule.
-	if (!defer) stats.runtime_pending = 0;
-	if (!PipelineList::MostlyMatches(stats)) {
-		LogListIgnored(real_stats, file.info.producer);
-		return;
-	}
+	// UE5 warm list (ue5CodeWarm.h): the `<runtime>` shaders' code comes from the per-player store;
+	// the first Resolve, the store, the plan and the 50 % rule are the shared, GPU-free flow.
+	Ue5CodeWarm::CtorInput ctor_in;
+	ctor_in.file            = &file;
+	ctor_in.sizes           = sizes;
+	ctor_in.read            = source->ReadFn();
+	ctor_in.read_image      = source->ImageFn();
+	ctor_in.title_id        = title_id;
+	ctor_in.version         = version;
+	ctor_in.host_has_reader = Ue5CodeWarm::HostHasReader();
+	ctor_in.getenv          = [](const char* name) { return std::getenv(name); };
+	ctor_in.log             = [](const std::string& line) { PipelineCacheLog("{}", line); };
+	ctor_in.to_path         = [](const std::string& text) { return Common::PathFromUtf8(text); };
+	auto ctor               = Ue5CodeWarm::ResolveAtCtor(ctor_in);
+	if (ctor.ignored) return;
+	const bool defer       = ctor.defer;
+	const auto real_stats  = ctor.real;
 	if (file.info.state_format == 0 && !file.pipelines.empty()) {
 		PipelineCacheLog("Pipeline list: {} has no pipeline state stamp (made by {}): its {} "
 		                 "pipelines replay as state "
@@ -9742,28 +9700,27 @@ void PipelineCache::InitializePipelineList() {
 	}
 	ListBuild build;
 	build.file      = &file;
-	build.resolved  = std::move(resolved);
+	build.resolved  = std::move(ctor.resolved);
 	build.stats     = real_stats;
 	build.path      = path;
 	build.prepare   = prepare;
 	build.cross     = cross;
-	build.keep_file = defer;
+	build.keep_file = ctor.keep_file;
 	build.title_id  = title_id;
 	build.version   = version;
 	build.begin     = begin;
 	m_list          = BuildListState(build);
 	if (defer) {
-		PipelineCacheLog("UE5 code: {} of {} listed runtime shaders are not in the store yet: the "
-		                 "game's shader library is read when it is ready",
-		                 ue5->wanted.size(), ue5->listed);
-		ue5->file_holder    = std::move(file_holder);
-		ue5->source         = std::move(source);
-		ue5->sizes          = sizes;
-		ue5->build          = std::move(build);
-		ue5->build.file     = ue5->file_holder.get();
-		ue5->build.resolved = {};
-		m_ue5               = std::move(ue5);
-		Ue5CodeWarm::g_deferred.store(true, std::memory_order_release);
+		auto ue5                  = std::make_unique<Ue5Warm>();
+		ue5->warm                 = std::move(ctor.warm);
+		ue5->warm->file_holder    = std::move(file_holder);
+		ue5->warm->source         = std::shared_ptr<void>(std::move(source));
+		ue5->build                = std::move(build);
+		ue5->build.file           = ue5->warm->file_holder.get();
+		ue5->build.resolved       = {};
+		Ue5CodeWarm::ArmDeferred(*ue5->warm,
+		                         [](const std::string& line) { PipelineCacheLog("{}", line); });
+		m_ue5 = std::move(ue5);
 	}
 }
 
@@ -10218,68 +10175,48 @@ void PipelineCache::RunListPrepareNow() {
 	RunListPrepare();
 }
 
-// UE5 warm list (ue5CodeWarm.h): the second Resolve with the code the store holds now.
-void PipelineCache::ResolveUe5List() {
-	auto&                      u = *m_ue5;
-	PipelineList::ResolveStats stats;
-	auto       resolved   = PipelineList::Resolve(*u.file_holder, u.sizes, u.source->ReadFn(),
-	                                              u.source->ImageFn(), stats, u.store.ReadFn());
-	const auto real       = stats;
-	stats.runtime_pending = 0; // what the store still lacks is not found
-	if (!PipelineList::MostlyMatches(stats)) {
-		LogListIgnored(real, u.file_holder->info.producer);
-		m_list.reset();
-		return;
-	}
-	u.build.resolved  = std::move(resolved);
-	u.build.stats     = real;
-	u.build.keep_file = false;
-	u.build.begin     = CompileClockNs();
-	m_list            = BuildListState(u.build);
-}
-
 // Called by the host (guest_ready, on its launch thread, before the guest entry) or, as a safety
-// net, by the first AgcCreateShader when the host never did. See ue5CodeWarm.h RunGuestReady.
+// net, by the first AgcCreateShader when the host never did. The flow is
+// Ue5CodeWarm::RunLaunch (GPU-free, tested); this only wires it to the renderer.
 void PipelineCache::FinishUe5Warm(bool never_ready) {
 	std::call_once(m_ue5_once, [&] {
-		const auto config =
-		    m_ue5 != nullptr
-		        ? m_ue5->cfg
-		        : Ue5CodeWarm::ParseEnv([](const char* name) { return std::getenv(name); });
-		Ue5CodeWarm::Flow flow;
-		flow.deferred          = m_ue5 != nullptr;
-		flow.never_ready       = never_ready;
-		flow.prepare           = flow.deferred && EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0;
-		flow.wait_before_entry = !never_ready && config.wait_before_entry;
-		if (!flow.deferred && !flow.wait_before_entry) return;
-
-		Ue5CodeWarm::Session session(config, m_ue5 != nullptr ? &m_ue5->store : nullptr,
-		                             m_ue5 != nullptr ? m_ue5->wanted : Ue5CodeWarm::WantedMap {},
-		                             m_ue5 != nullptr ? m_ue5->listed : 0,
-		                             [](const std::string& line) { PipelineCacheLog("{}", line); });
-		auto                 hooks = session.MakeHooks(
-		    [&] {
-			    Ue5CodeWarm::RunOnMain([&] {
-				    ResolveUe5List();
-				    InitializeShaderPrecompile();
-				    InitializePipelineJournal();
-				    Ue5CodeWarm::g_deferred.store(false, std::memory_order_release);
-			    });
-			    m_ue5.reset();
-		    },
-		    [&] { RunListPrepareNow(); },
-		    [&] {
-			    const auto begin = CompileClockNs();
-			    const auto limit =
-			        std::chrono::seconds(EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900));
-			    const auto until = std::chrono::steady_clock::now() + limit;
-			    while (!LaunchHoldDone() && std::chrono::steady_clock::now() < until)
-				    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			    PipelineCacheLog("Launch phase: the game starts after it ({:.0f} ms{})",
-			                     static_cast<double>(CompileClockNs() - begin) / 1e6,
-			                     LaunchHoldDone() ? "" : ", given up");
-		    });
-		Ue5CodeWarm::RunGuestReady(flow, hooks);
+		auto*      warm   = m_ue5 != nullptr ? m_ue5->warm.get() : nullptr;
+		const auto config = warm != nullptr ? warm->cfg
+		                                    : Ue5CodeWarm::ParseEnv([](const char* name) {
+			                                      return std::getenv(name);
+		                                      });
+		const auto log = [](const std::string& line) { PipelineCacheLog("{}", line); };
+		Ue5CodeWarm::LaunchOps ops;
+		ops.log        = log;
+		ops.build_list = [&](PipelineList::Resolved&& resolved,
+		                     const PipelineList::ResolveStats& real) {
+			m_ue5->build.resolved  = std::move(resolved);
+			m_ue5->build.stats     = real;
+			m_ue5->build.keep_file = false;
+			m_ue5->build.begin     = CompileClockNs();
+			m_list                 = BuildListState(m_ue5->build);
+		};
+		ops.drop_list       = [&](const PipelineList::ResolveStats&) { m_list.reset(); };
+		ops.start_consumers = [&] {
+			InitializeShaderPrecompile();
+			InitializePipelineJournal();
+		};
+		ops.run_prepare = [&] { RunListPrepareNow(); };
+		ops.release     = [&] { m_ue5.reset(); };
+		ops.wait_entry  = [&] {
+			// One deadline for the whole launch: when it passes, the hold is released too, so the
+			// first draw does not wait again.
+			const uint64_t limit_s = EnvU64("KYTY_PIPELINE_REPLAY_ALL_HOLD_MAX_S", 900);
+			const auto     waited  = Ue5CodeWarm::WaitForLaunchHold(
+                [] { return LaunchHoldDone(); }, limit_s,
+                [] { return Ue5CodeWarm::SteadyMs(); },
+                [](uint64_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); },
+                [] { LaunchHoldRelease(); });
+			PipelineCacheLog("Launch phase: the game starts after it ({} ms{})", waited.waited_ms,
+			                 waited.gave_up ? ", given up: the hold is released" : "");
+		};
+		Ue5CodeWarm::RunLaunch(warm, config, never_ready,
+		                       warm != nullptr && EnvU64("KYTY_PIPELINE_LIST_PREPARE", 0) != 0, ops);
 	});
 }
 

@@ -17,7 +17,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <random>
 #include <set>
 #include <string>
@@ -169,6 +171,7 @@ PipelineList::ResolveStats ResolveWith(const Scenario& sc, PipelineCodeStore* st
 }
 
 void ResetUnit() {
+	Warm::g_deferred.store(false);
 	auto& c = CompileProgress::Get();
 	c.unit_total.store(0);
 	c.unit_done.store(0);
@@ -242,64 +245,102 @@ Warm::Config MakeConfig(uint64_t fp) {
 	return c;
 }
 
-// The start as PipelineCache runs it: the constructor part (resolve, plan), then guest_ready.
+// The start as PipelineCache runs it: the real ResolveAtCtor (constructor part) and RunLaunch (guest_ready), with a fake
+// renderer behind LaunchOps. The store of a deferred start lives in `ctor.warm`; for any other plan it is read back from the
+// file.
 struct Start {
-	PipelineCodeStore           store;
-	PipelineList::ResolveStats  stats;
-	Warm::WantedMap             wanted;
-	uint64_t                    listed = 0;
-	Warm::CtorPlan              plan   = Warm::CtorPlan::Skip;
+	std::string                 path;
+	Warm::CtorResult            ctor;
+	PipelineList::ResolveStats  stats;  // the first Resolve
+	Warm::CtorPlan              plan = Warm::CtorPlan::Skip;
 	std::vector<std::string>    lines;
-	std::string                 calls; // the call log of RunGuestReady
-	PipelineList::ResolveStats  second;
+	std::string                 calls;  // [main] [prepare] [wait] in order
+	PipelineList::ResolveStats  second; // the second Resolve, as the renderer gets it
+	int                         builds = 0, drops = 0, releases = 0;
+	bool                        keep_file_second = true;
+	PipelineList::File          file;
+	uint64_t                    listed() const { return ctor.warm ? ctor.warm->listed : 0; }
+	size_t                      wanted() const { return ctor.warm ? ctor.warm->wanted.size() : 0; }
+	// Codes in the store file / the open store.
+	void Close() {
+		if (ctor.warm) ctor.warm->store.Release();
+	}
+	size_t Count() {
+		if (ctor.warm) return ctor.warm->store.Count();
+		PipelineCodeStore view;
+		return view.OpenReadOnly(path) ? view.Count() : 0;
+	}
 };
 
+std::map<std::string, std::string> EnvOf(const std::string& path, const Warm::Config& cfg) {
+	char fp[32], dec[32];
+	std::snprintf(fp, sizeof(fp), "%016llx", static_cast<unsigned long long>(cfg.fp));
+	std::snprintf(dec, sizeof(dec), "0x%llx", static_cast<unsigned long long>(cfg.decoder));
+	std::map<std::string, std::string> env = {{"KYTY_PIPELINE_LIST_CODE_STORE", path}, {"KYTY_UE5_DECODER", dec},
+	                                          {"KYTY_UE5_DECODER_FP", fp},          {"KYTY_UE5_DECODER_ABI", cfg.abi},
+	                                          {"KYTY_UE5_CODE_MAX_S", std::to_string(cfg.max_s)}};
+	if (!cfg.enabled) env["KYTY_UE5_CODE"] = "0";
+	if (cfg.wait_before_entry) env["KYTY_LAUNCH_WAIT_BEFORE_ENTRY"] = "1";
+	return env;
+}
+
 void Begin(Start& s, const Scenario& sc, const std::string& path, const Warm::Config& cfg, bool host_reader) {
-	CHECK(s.store.Open(path, "PPSA00000", "01.000.000", cfg.fp));
-	PipelineList::Resolved resolved;
-	s.stats = ResolveWith(sc, &s.store, &resolved);
-	Warm::CollectWanted(sc.file, resolved, sc.sizes, s.store, s.wanted, s.listed);
-	std::string line;
-	s.plan = Warm::PlanAtCtor(cfg, s.stats, host_reader, s.listed, line);
-	if (!line.empty()) s.lines.push_back(line);
-}
-
-// guest_ready with recording hooks around the real Session hooks.
-Warm::Outcome Ready(Start& s, const Scenario& sc, const Warm::Config& cfg, bool never_ready, bool prepare = false, bool wait = false,
-                    Warm::UnitSink sink = {}, Warm::Collector::ClockFn clock = Warm::SteadyMs) {
-	Warm::Session session(cfg, &s.store, s.wanted, s.listed, [&](const std::string& l) { s.lines.push_back(l); },
-	                      std::move(sink), std::move(clock));
-	auto hooks = session.MakeHooks([&] { s.calls += "[main]"; }, [&] { s.calls += "[prepare]"; },
-	                               [&] { s.calls += "[wait]"; });
-	// record the call order around the real hooks
-	auto wrap = [&](std::function<void()>& fn, const char* name) {
-		auto inner = fn;
-		fn         = [&s, inner, name] {
-            s.calls += name;
-            if (inner) inner();
-		};
+	s.path = path;
+	s.file = sc.file;
+	const auto env = EnvOf(path, cfg);
+	Warm::CtorInput in;
+	in.file            = &s.file;
+	in.sizes           = sc.sizes;
+	in.read            = [](PipelineList::CodeFile, uint64_t, std::span<uint8_t>) { return false; };
+	in.read_image      = [](PipelineList::CodeFile) { return std::vector<uint8_t>(); };
+	in.title_id        = "PPSA00000";
+	in.version         = "01.000.000";
+	in.host_has_reader = host_reader;
+	in.getenv          = [env](const char* name) -> const char* {
+		const auto it = env.find(name);
+		return it == env.end() ? nullptr : it->second.c_str();
 	};
-	auto fp0 = hooks.fingerprint_ok;
-	hooks.fingerprint_ok = [&s, fp0] { s.calls += "[fp]"; return fp0(); };
-	auto ex0 = hooks.extract;
-	hooks.extract = [&s, ex0] { s.calls += "[extract]"; return ex0(); };
-	wrap(hooks.flush_store, "[flush]");
-	wrap(hooks.finish_unit, "[finish]");
-	Warm::Flow flow;
-	flow.deferred          = s.plan == Warm::CtorPlan::Defer;
-	flow.never_ready       = never_ready;
-	flow.prepare           = prepare;
-	flow.wait_before_entry = wait;
-	const auto out         = Warm::RunGuestReady(flow, hooks);
-	// the second resolve, as ResolveUe5List does
-	if (flow.deferred) s.second = ResolveWith(sc, &s.store);
-	return out;
+	in.log = [&s](const std::string& l) { s.lines.push_back(l); };
+	s.ctor  = Warm::ResolveAtCtor(in);
+	s.stats = s.ctor.real;
+	s.plan  = s.ctor.plan;
+	if (s.ctor.warm) {
+		s.ctor.warm->file_holder = std::make_unique<PipelineList::File>(s.file);
+		Warm::ArmDeferred(*s.ctor.warm, in.log);
+	}
 }
 
+// guest_ready through the real RunLaunch.
+Warm::Outcome Ready(Start& s, const Scenario&, const Warm::Config& cfg, bool never_ready, bool prepare = false, bool wait = false,
+                    Warm::UnitSink sink = {}, Warm::Collector::ClockFn clock = Warm::SteadyMs, uint64_t hard_ms = 0,
+                    uint64_t grace_ms = 10000) {
+	Warm::LaunchOps ops;
+	ops.log        = [&](const std::string& l) { s.lines.push_back(l); };
+	ops.build_list = [&](PipelineList::Resolved&&, const PipelineList::ResolveStats& real) {
+		s.builds++;
+		s.second = real;
+	};
+	ops.drop_list = [&](const PipelineList::ResolveStats& real) {
+		s.drops++;
+		s.second = real;
+	};
+	ops.start_consumers = [&] { s.calls += "[main]"; };
+	ops.run_prepare     = [&] { s.calls += "[prepare]"; };
+	ops.wait_entry      = [&] { s.calls += "[wait]"; };
+	ops.release         = [&] { s.releases++; };
+	auto c = cfg;
+	c.wait_before_entry = wait;
+	return Warm::RunLaunch(s.ctor.warm.get(), c, never_ready, prepare, ops, std::move(sink), std::move(clock), hard_ms, grace_ms);
+}
 
 bool HasLine(const Start& s, const std::string& prefix) {
 	for (const auto& l: s.lines)
 		if (l.rfind(prefix, 0) == 0) return true;
+	return false;
+}
+bool HasLineWith(const Start& s, const std::string& part) {
+	for (const auto& l: s.lines)
+		if (l.find(part) != std::string::npos) return true;
 	return false;
 }
 void Cleanup(const std::string& path) {
@@ -323,14 +364,14 @@ void T1_Extract() {
 	host.Install();
 	const auto cfg = MakeConfig(GoodFp());
 	Start s; Begin(s, sc, path, cfg, true);
-	CHECK(s.plan == Warm::CtorPlan::Defer && s.stats.runtime_shaders == 5 && s.stats.runtime_pending == 5 && s.listed == 5);
-	CHECK(s.wanted.size() == 5);
+	CHECK(s.plan == Warm::CtorPlan::Defer && s.stats.runtime_shaders == 5 && s.stats.runtime_pending == 5 && s.listed() == 5);
+	CHECK(s.wanted() == 5);
 	const auto out = Ready(s, sc, cfg, false);
 	CHECK(out == Warm::Outcome::Extracted && host.calls == 1);
 	auto& c = CompileProgress::Get();
 	CHECK(c.unit_total == 3 && c.unit_done == 3 && !LoadCard::LaunchPhasePending());
-	CHECK(s.store.Count() == 5); // the decoys are not stored
-	CHECK(s.calls == "[fp][extract][flush][finish][main]");
+	CHECK(s.Count() == 5); // the decoys are not stored
+	CHECK(s.calls == "[main]" && s.builds == 1 && s.releases == 1 && !Warm::DeferredPending() && s.ctor.keep_file);
 	bool matched = false;
 	for (const auto& l: s.lines) {
 		unsigned groups = 0, failed = 0, skipped = 0;
@@ -361,11 +402,15 @@ void T2_Skip() {
 	}
 	const int before = host.calls;
 	Start s; Begin(s, sc, path, cfg, true); // "session 2"
-	CHECK(s.stats.runtime_pending == 0 && s.plan == Warm::CtorPlan::Skip && s.wanted.empty());
+	CHECK(s.stats.runtime_pending == 0 && s.plan == Warm::CtorPlan::Skip && s.wanted() == 0);
 	CHECK(HasLine(s, "UE5 code: the store holds all 5 listed runtime shaders: extraction skipped"));
 	CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::NotDeferred && s.calls.empty() && host.calls == before);
 	PipelineList::Resolved r;
-	ResolveWith(sc, &s.store, &r);
+	{
+		PipelineCodeStore view;
+		CHECK(view.OpenReadOnly(path));
+		ResolveWith(sc, &view, &r);
+	}
 	for (size_t i = 0; i < r.usable.size(); i++) CHECK(r.usable[i] && !r.sources[i].code.empty());
 	Cleanup(path);
 }
@@ -399,7 +444,7 @@ void T4_FingerprintMismatch() {
 		const auto cfg = MakeConfig(readable ? GoodFp() ^ 1u : GoodFp());
 		Start s; Begin(s, sc, path, cfg, true);
 		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::FpMismatch);
-		CHECK(host.calls == 0 && s.calls == "[fp][finish][main]" && s.store.Count() == 0);
+		CHECK(host.calls == 0 && s.calls == "[main]" && s.builds == 0 && s.drops == 1 && s.Count() == 0);
 		CHECK(HasLine(s, "UE5 code: decoder fingerprint mismatch (game version?): the list's runtime shaders stay pending"));
 		auto& u = CompileProgress::Get();
 		CHECK(u.unit_total == 0 && !LoadCard::LaunchPhasePending());
@@ -537,17 +582,18 @@ void T8_Deadline() {
 	const auto out   = Ready(s, sc, cfg, false, false, false, {}, clock);
 	(void)now;
 	CHECK(out == Warm::Outcome::Extracted && host.groups_given == 2);
-	CHECK(s.store.Count() == 4 && HasLine(s, "UE5 code: 2 groups")); // two groups' worth stored
+	CHECK(s.Count() == 4 && HasLine(s, "UE5 code: 2 groups")); // two groups' worth stored
 	bool stopped = false;
 	for (const auto& l : s.lines) stopped |= l.find("; stopped after") != std::string::npos;
 	CHECK(stopped && CompileProgress::Get().unit_done == CompileProgress::Get().unit_total);
 	// the next start: the store has 4 of 6, extraction runs again (the host delivers all groups), dedupe leaves 2 new
 	ResetUnit();
+	s.Close();
 	Start s2; Begin(s2, sc, path, MakeConfig(GoodFp()), true);
-	CHECK(s2.plan == Warm::CtorPlan::Defer && s2.wanted.size() == 2);
+	CHECK(s2.plan == Warm::CtorPlan::Defer && s2.wanted() == 2);
 	host.groups_given = 0;
 	CHECK(Ready(s2, sc, MakeConfig(GoodFp()), false) == Warm::Outcome::Extracted);
-	CHECK(s2.store.Count() == 6 && s2.second.runtime_pending == 0);
+	CHECK(s2.Count() == 6 && s2.second.runtime_pending == 0);
 	Cleanup(path);
 }
 
@@ -566,7 +612,7 @@ void T9_Coverage() {
 		Start s; Begin(s, sc, path, cfg, true);
 		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted);
 		const size_t found = 10 - missing;
-		CHECK(s.store.Count() == found);
+		CHECK(s.Count() == found);
 		CHECK(HasLine(s, "UE5 code: WARNING only " + std::to_string(found) + " of 10 listed runtime shaders are in the game's shader library"));
 		auto rule = s.second;
 		rule.runtime_pending = 0;
@@ -599,7 +645,7 @@ void T10_BadGroups() {
 	const auto cfg = MakeConfig(GoodFp());
 	Start s; Begin(s, sc, path, cfg, true);
 	CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted);
-	CHECK(s.store.Count() == 0 && HasLine(s, "UE5 code: split: 1 codes outside their group"));
+	CHECK(s.Count() == 0 && HasLine(s, "UE5 code: split: 1 codes outside their group"));
 	CHECK(!LoadCard::LaunchPhasePending() && CompileProgress::Get().unit_total == 3);
 	Cleanup(path);
 }
@@ -732,7 +778,7 @@ void T14_StoreDamage() {
 	{
 		ResetUnit();
 		Start s; Begin(s, sc, path, cfg, true);
-		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && s.store.Count() == 6);
+		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && s.Count() == 6);
 	}
 	// truncate the tail: some records survive
 	const auto size = std::filesystem::file_size(path);
@@ -740,7 +786,7 @@ void T14_StoreDamage() {
 	ResetUnit();
 	{
 		Start s; Begin(s, sc, path, cfg, true);
-		CHECK(s.store.Count() == 5 && s.stats.runtime_pending == 1 && s.plan == Warm::CtorPlan::Defer);
+		CHECK(s.Count() == 5 && s.stats.runtime_pending == 1 && s.plan == Warm::CtorPlan::Defer);
 		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && s.second.runtime_pending == 0);
 		CHECK(!LoadCard::LaunchPhasePending());
 	}
@@ -752,7 +798,7 @@ void T14_StoreDamage() {
 	ResetUnit();
 	{
 		Start s; Begin(s, sc, path, cfg, true);
-		CHECK(s.store.Count() == 0 && s.plan == Warm::CtorPlan::Defer);
+		CHECK(s.Count() == 0 && s.plan == Warm::CtorPlan::Defer);
 		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && s.second.runtime_pending == 0);
 	}
 	// another decoder fingerprint = another game build: the store is discarded (.stale), the list is pending again
@@ -760,7 +806,7 @@ void T14_StoreDamage() {
 	{
 		auto other = MakeConfig(GoodFp() ^ 0xff);
 		Start s; Begin(s, sc, path, other, true);
-		CHECK(s.store.DiscardedStale() && s.store.Count() == 0 && s.stats.runtime_pending == 6);
+		CHECK(s.ctor.warm && s.ctor.warm->store.DiscardedStale() && s.Count() == 0 && s.stats.runtime_pending == 6);
 	}
 	Cleanup(path);
 }
@@ -779,13 +825,13 @@ void T15_OffAndNeverReady() {
 	off.enabled  = false;
 	Start s; Begin(s, sc, path, off, true);
 	CHECK(s.plan == Warm::CtorPlan::Off && HasLine(s, "UE5 code: off (KYTY_UE5_CODE=0): the list's runtime shaders stay pending"));
-	CHECK(Ready(s, sc, off, false) == Warm::Outcome::NotDeferred && host.calls == 0 && s.store.Count() == 0);
+	CHECK(Ready(s, sc, off, false) == Warm::Outcome::NotDeferred && host.calls == 0 && s.Count() == 0);
 	// never ready: the first AgcCreateShader finishes the deferral without the extraction
 	const auto cfg = MakeConfig(GoodFp());
 	Start n; Begin(n, sc, path, cfg, true);
 	CHECK(n.plan == Warm::CtorPlan::Defer);
 	CHECK(Ready(n, sc, cfg, true) == Warm::Outcome::NeverReady && host.calls == 0);
-	CHECK(n.calls == "[finish][main]" && HasLine(n, "UE5 code: ERROR the host never reported the guest ready; no extraction this start"));
+	CHECK(n.calls == "[main]" && HasLine(n, "UE5 code: ERROR the host never reported the guest ready; no extraction this start"));
 	CHECK(!LoadCard::LaunchPhasePending());
 	Cleanup(path);
 }
@@ -804,7 +850,7 @@ void T16_ShortGroup() {
 	const auto cfg = MakeConfig(GoodFp());
 	Start s; Begin(s, sc, path, cfg, true);
 	CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted);
-	CHECK(s.store.Count() < 4 && !LoadCard::LaunchPhasePending());
+	CHECK(s.Count() < 4 && !LoadCard::LaunchPhasePending());
 	Cleanup(path);
 }
 
@@ -862,6 +908,413 @@ void T19_EndToEnd() {
 	ResetUnit();
 }
 
+
+
+// M1 (a): a listed code that is not in the library (T9: 1 of 10 missing) is searched once; the second start skips.
+void M1a_SearchedMarkSkips() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(10, 1);
+	const auto path = TempPath("m1a");
+	Cleanup(path);
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	const auto cfg = MakeConfig(GoodFp());
+	{
+		Start s; Begin(s, sc, path, cfg, true);
+		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted && host.calls == 1 && s.Count() == 9);
+		s.Close();
+		PipelineCodeStore view;
+		CHECK(view.OpenReadOnly(path) && view.Mark().state == PipelineCodeStore::SearchMark::Complete);
+	}
+	const int before = host.calls;
+	Start s2; Begin(s2, sc, path, cfg, true);
+	CHECK(s2.plan == Warm::CtorPlan::Skip && !Warm::DeferredPending() && !s2.ctor.defer);
+	CHECK(HasLine(s2, "UE5 code: 1 listed runtime shaders are not in the game's shader library (searched): extraction skipped"));
+	CHECK(Ready(s2, sc, cfg, false) == Warm::Outcome::NotDeferred && host.calls == before);
+	// another wanted set (a new list) is not covered by the old mark
+	const auto sc2 = MakeScenario(12, 1);
+	Start s3; Begin(s3, sc2, path, cfg, true);
+	CHECK(s3.plan == Warm::CtorPlan::Defer);
+	s3.Close();
+	Cleanup(path);
+}
+
+// M1 (b): a store at the cap with wanted codes left: skipped, with the Full line.
+void M1b_FullStore() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(4);
+	const auto path = TempPath("m1b");
+	Cleanup(path);
+	const auto cfg = MakeConfig(GoodFp());
+	{
+		PipelineCodeStore fill;
+		CHECK(fill.Open(path, "PPSA00000", "01.000.000", cfg.fp));
+		std::mt19937 random(9);
+		uint32_t     seed = 0;
+		const auto   add  = [&](size_t bytes) {
+            std::vector<uint8_t> code(bytes);
+            for (auto& b: code) b = static_cast<uint8_t>(random());
+            return fill.Add({++seed, 77}, seed, code);
+		};
+		for (int i = 0; i < 3; i++) CHECK(add(16u << 20u));
+		const uint64_t room = PipelineCodeStore::CapBytes - PipelineCodeStore::MarkReserveBytes - fill.FileBytes() - 40;
+		CHECK(add(static_cast<size_t>(room)));
+		CHECK(fill.Full());
+	}
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	Start s; Begin(s, sc, path, cfg, true);
+	CHECK(s.plan == Warm::CtorPlan::Skip && host.calls == 0 && !Warm::DeferredPending());
+	CHECK(HasLine(s, "UE5 code: the code store is full (64 MB): 4 listed runtime shaders cannot be stored: extraction skipped"));
+	CHECK(HasLine(s, "UE5 code: store 4 codes") && s.lines[0].find(", full") != std::string::npos);
+	Cleanup(path);
+}
+
+// M1 (c): a pass stopped by the time budget saves how far it got; the next start continues after it.
+void M1c_TimedOutResumes() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(8); // 4 groups
+	const auto path = TempPath("m1c");
+	Cleanup(path);
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	auto cfg  = MakeConfig(GoodFp());
+	cfg.max_s = 10;
+	{
+		Start s; Begin(s, sc, path, cfg, true);
+		std::atomic<int> reads {0};
+		const auto       clock = [&]() -> uint64_t { return reads++ < 2 ? 0 : 11'000; };
+		CHECK(Ready(s, sc, cfg, false, false, false, {}, clock) == Warm::Outcome::Extracted && host.groups_given == 2);
+		CHECK(s.Count() == 4 && HasLineWith(s, "UE5 code: WARNING stopped after"));
+		s.Close();
+		PipelineCodeStore view;
+		CHECK(view.OpenReadOnly(path));
+		const auto mark = view.Mark();
+		CHECK(mark.state == PipelineCodeStore::SearchMark::Partial && mark.done.size() == 1 && mark.done[0].first == 0 &&
+		      mark.done[0].last == 1);
+	}
+	ResetUnit();
+	host.groups_given = 0;
+	Start s2; Begin(s2, sc, path, cfg, true);
+	CHECK(s2.plan == Warm::CtorPlan::Defer && s2.wanted() == 4); // a partial mark is no reason to skip
+	CHECK(Ready(s2, sc, cfg, false) == Warm::Outcome::Extracted);
+	CHECK(s2.Count() == 8 && s2.second.runtime_pending == 0 && HasLineWith(s2, "; resumed past 2 groups"));
+	s2.Close();
+	Cleanup(path);
+}
+
+// M1 (d): Collector resume skips the covered groups and starts its budget at the first new one.
+void M1d_CollectorResume() {
+	const auto sc = MakeScenario(6);
+	Warm::WantedMap wanted;
+	for (size_t i = 0; i < 6; i++) {
+		const auto words = Words(sc.codes[i]);
+		const auto h = PipelineList::CodeHash({reinterpret_cast<const uint8_t*>(words.data()), words.size() * 4});
+		wanted[h] = static_cast<uint32_t>(sc.codes[i].size());
+	}
+	uint64_t now = 0;
+	std::atomic<int> adds {0};
+	Warm::Collector c(wanted, [&](const Hash128&, uint64_t, std::span<const uint8_t>) { adds++; return 1; }, {}, 10,
+	                  nullptr, [&] { return now; }, {{0, 0, 1}});
+	auto view = [&](size_t i) {
+		Warm::GroupView v;
+		v.library = 0; v.group = static_cast<uint32_t>(i); v.shader_count = static_cast<uint32_t>(sc.groups[i].frequencies.size());
+		v.frequencies = sc.groups[i].frequencies; v.bytes = sc.groups[i].bytes;
+		return v;
+	};
+	now = 50'000; // far past the budget, but the covered groups do not count
+	CHECK(!c.OnGroup(view(0)) && !c.OnGroup(view(1)) && adds == 0 && c.ResumeSkipped() == 2);
+	CHECK(!c.OnGroup(view(2)) && adds == 2); // the budget starts here
+	now = 50'000 + 11'000;
+	CHECK(c.OnGroup(view(2)) && c.TimedOut());
+	const auto seen = c.Seen();
+	CHECK(seen.size() == 1 && seen[0].first == 0 && seen[0].last == 2);
+	// ranges merge and cover
+	std::vector<Warm::GroupRange> r = {{1, 5, 6}, {0, 0, 1}, {0, 2, 3}, {1, 8, 9}};
+	Warm::MergeRanges(r);
+	CHECK(r.size() == 3 && r[0].last == 3 && r[1].first == 5 && Warm::RangesCover(r, 0, 3) && !Warm::RangesCover(r, 0, 4) &&
+	      Warm::RangesCover(r, 1, 9) && !Warm::RangesCover(r, 2, 0));
+}
+
+// m7: a host that never delivers a group nor returns: the watchdog stops waiting, the card completes, the list goes on.
+void M7_Watchdog() {
+	ResetUnit();
+	Warm::ResetCancel();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(4);
+	const auto path = TempPath("m7");
+	Cleanup(path);
+	std::mutex              m;
+	std::condition_variable cv;
+	bool                    release = false;
+	std::atomic<int>        late_groups {0};
+	Warm::SetHostExtract([&](uint64_t, uint32_t, const Warm::GroupFn& group, const Warm::ProgressFn&) {
+		std::unique_lock lock(m);
+		cv.wait(lock, [&] { return release; });
+		lock.unlock();
+		Warm::GroupView v; // a late group after the watchdog gave up: must be refused
+		v.shader_count = 1;
+		v.frequencies = sc.groups[0].frequencies;
+		v.bytes = sc.groups[0].bytes;
+		if (group(v)) late_groups++;
+		Warm::HostResult r;
+		r.code = 0;
+		return r;
+	});
+	auto cfg  = MakeConfig(GoodFp());
+	cfg.max_s = 1;
+	Start s; Begin(s, sc, path, cfg, true);
+	const auto begin = Warm::SteadyMs();
+	CHECK(Ready(s, sc, cfg, false, false, false, {}, Warm::SteadyMs, 50, 50) == Warm::Outcome::HostFailed);
+	CHECK(Warm::SteadyMs() - begin < 5000 && s.builds + s.drops == 1 && s.releases == 1 && !Warm::DeferredPending());
+	CHECK(HasLine(s, "UE5 code: the host did not finish reading the shader library within"));
+	CHECK(s.Count() == 0);
+	{
+		std::scoped_lock lock(m);
+		release = true;
+	}
+	cv.notify_all();
+	CHECK(Warm::WaitIdle(5000) && late_groups == 1 && s.Count() == 0); // the late group was refused, store untouched
+	s.Close();
+	Cleanup(path);
+}
+
+// m12: a window close during the extraction: the group callback stops, nothing is started, the deferral is cleared.
+void M12_CancelDuringExtraction() {
+	ResetUnit();
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(8);
+	const auto path = TempPath("m12");
+	Cleanup(path);
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	const auto cfg = MakeConfig(GoodFp());
+	Start s; Begin(s, sc, path, cfg, true);
+	CHECK(Warm::DeferredPending());
+	Warm::RequestCancel();
+	CHECK(Ready(s, sc, cfg, false, true, true) == Warm::Outcome::Extracted && host.groups_given == 1);
+	CHECK(s.builds == 0 && s.drops == 0 && s.releases == 1 && s.calls.empty() && !Warm::DeferredPending());
+	CHECK(Warm::WaitIdle(1000));
+	Warm::ResetCancel();
+	s.Close();
+	PipelineCodeStore view;
+	CHECK(view.OpenReadOnly(path) && view.Mark().state == PipelineCodeStore::SearchMark::Partial);
+	Cleanup(path);
+}
+
+// m11: one deadline for the pre-entry wait; giving up releases the hold so the first draw does not wait again.
+void M11_SharedDeadline() {
+	Warm::ResetCancel();
+	uint64_t now = 0;
+	int      releases = 0;
+	const auto sleep = [&](uint64_t ms) { now += ms; };
+	auto       r = Warm::WaitForLaunchHold([] { return false; }, 5, [&] { return now; }, sleep, [&] { releases++; });
+	CHECK(r.gave_up && releases == 1 && r.waited_ms >= 5000 && r.waited_ms < 5100);
+	now = 0;
+	r   = Warm::WaitForLaunchHold([&] { return now >= 2000; }, 5, [&] { return now; }, sleep, [&] { releases++; });
+	CHECK(!r.gave_up && releases == 1 && r.waited_ms >= 2000 && r.waited_ms < 2100);
+}
+
+// m1: the "ignored" line names the right denominator and the pending runtime code.
+void M1_IgnoredWording() {
+	ResetUnit();
+	const auto sc   = MakeScenario(5);
+	const auto path = TempPath("m1w");
+	Cleanup(path);
+	auto off    = MakeConfig(GoodFp());
+	off.enabled = false;
+	Start s; Begin(s, sc, path, off, true);
+	CHECK(s.ctor.ignored);
+	CHECK(HasLine(s, "Pipeline list: only 0 of 5 shaders match this game's files (0 differ, 0 with another input layout, 5 runtime code not in the store, made by Ue5CodeWarmTests): ignored"));
+	// without runtime shaders the text is the old one
+	PipelineList::ResolveStats st;
+	st.shaders = 10;
+	st.resolved = 2;
+	st.mismatched = 3;
+	st.other_input_layout = 1;
+	CHECK(Warm::IgnoredLine(st, false, "P") == "Pipeline list: only 2 of 10 shaders match this game's files (3 differ, 1 with another input layout, made by P): ignored");
+	st.runtime_shaders = 4;
+	st.runtime_pending = 4;
+	CHECK(Warm::IgnoredLine(st, true, "P").find("only 2 of 6 shaders") != std::string::npos);
+	Cleanup(path);
+}
+
+// m2: the store's health is logged: a damaged tail and an older store set aside.
+void M2_StoreHealthLines() {
+	InstallGuestReader(true);
+	const auto sc   = MakeScenario(4);
+	const auto path = TempPath("m2");
+	Cleanup(path);
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	const auto cfg = MakeConfig(GoodFp());
+	{
+		Start s; Begin(s, sc, path, cfg, true);
+		CHECK(HasLine(s, "UE5 code: store 0 codes (0.0 MB)"));
+		CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted);
+		s.Close();
+	}
+	std::filesystem::resize_file(path, std::filesystem::file_size(path) - 40);
+	{
+		Start s; Begin(s, sc, path, cfg, true);
+		bool damaged = false;
+		for (const auto& l: s.lines) damaged |= l.rfind("UE5 code: store ", 0) == 0 && l.find(", damaged tail of") != std::string::npos;
+		CHECK(damaged);
+		s.Close();
+	}
+	{
+		Start s; Begin(s, sc, path, MakeConfig(GoodFp() ^ 0xff), true);
+		bool stale = false;
+		for (const auto& l: s.lines) stale |= l.rfind("UE5 code: store 0 codes", 0) == 0 && l.find("an older store set aside (.stale)") != std::string::npos;
+		CHECK(stale);
+		s.Close();
+	}
+	Cleanup(path);
+}
+
+// M2: the launch flow BuildListState hands over: the first build keeps the tables (copy), the last takes them (move).
+void M2_TakeListTables() {
+	PipelineList::File f;
+	f.levels = {"a", "b"};
+	f.pipelines.resize(3);
+	std::vector<std::string>           levels;
+	std::vector<PipelineList::Pipeline> pipelines;
+	Warm::TakeListTables(f, true, levels, pipelines);
+	CHECK(levels.size() == 2 && pipelines.size() == 3 && f.levels.size() == 2 && f.pipelines.size() == 3);
+	std::vector<std::string>           levels2;
+	std::vector<PipelineList::Pipeline> pipelines2;
+	Warm::TakeListTables(f, false, levels2, pipelines2);
+	CHECK(levels2.size() == 2 && pipelines2.size() == 3 && f.levels.empty() && f.pipelines.empty());
+}
+
+// M2: the real launch flow on a deferred start: the first build kept the file, the deferred flag is cleared inside the main-thread
+// block, the second Resolve sees the extracted code, and an ignored second resolve drops the list.
+void M2_LaunchFlow() {
+	ResetUnit();
+	InstallGuestReader(true);
+	Warm::ResetCancel();
+	const auto sc   = MakeScenario(6);
+	const auto path = TempPath("m2f");
+	Cleanup(path);
+	FakeHost host;
+	host.sc = &sc;
+	host.Install();
+	std::vector<std::string> trace;
+	Warm::SetRunOnMain([&](std::function<void()> fn) { trace.push_back("main{"); fn(); trace.push_back("}"); });
+	const auto cfg = MakeConfig(GoodFp());
+	Start s; Begin(s, sc, path, cfg, true);
+	CHECK(s.ctor.defer && s.ctor.keep_file && Warm::DeferredPending() && s.ctor.warm->file_holder != nullptr);
+	CHECK(Ready(s, sc, cfg, false) == Warm::Outcome::Extracted);
+	CHECK(s.builds == 1 && s.drops == 0 && s.releases == 1 && !Warm::DeferredPending());
+	CHECK(s.second.runtime_resolved == 6 && s.second.runtime_pending == 0);
+	CHECK(trace.size() == 2 && trace[0] == "main{" && trace[1] == "}");
+	s.Close();
+	Cleanup(path);
+	// a start where only 1 of 6 is in the library: the second resolve drops the list (pending counts as not found)
+	const auto sc2 = MakeScenario(6, 5);
+	FakeHost   host2;
+	host2.sc = &sc2;
+	host2.Install();
+	Start d; Begin(d, sc2, path, cfg, true);
+	CHECK(Ready(d, sc2, cfg, false) == Warm::Outcome::Extracted);
+	CHECK(d.builds == 0 && d.drops == 1 && d.releases == 1 && !Warm::DeferredPending());
+	CHECK(HasLine(d, "Pipeline list: only 1 of 6 shaders match"));
+	d.Close();
+	Cleanup(path);
+	Warm::SetRunOnMain({});
+}
+
+// m9: the Kyty ABI header and recomp's copy have the same tokens (comments, whitespace and line continuations aside).
+std::vector<std::string> HeaderTokens(const std::string& path) {
+	std::ifstream in(path, std::ios::binary);
+	std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	std::vector<std::string> out;
+	for (size_t i = 0; i < text.size();) {
+		const char c = text[i];
+		if (c == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+			const auto end = text.find("*/", i + 2);
+			i = end == std::string::npos ? text.size() : end + 2;
+		} else if (c == '/' && i + 1 < text.size() && text[i + 1] == '/') {
+			while (i < text.size() && text[i] != '\n') i++;
+		} else if (std::isalnum(static_cast<unsigned char>(c)) || c == '_') {
+			size_t j = i;
+			while (j < text.size() && (std::isalnum(static_cast<unsigned char>(text[j])) || text[j] == '_')) j++;
+			out.push_back(text.substr(i, j - i));
+			i = j;
+		} else {
+			if (!std::isspace(static_cast<unsigned char>(c)) && c != '\\') out.push_back(std::string(1, c));
+			i++;
+		}
+	}
+	return out;
+}
+void M9_AbiHeaderMatchesRecomp() {
+#if defined(KYTY_SOURCE_ROOT)
+	const std::string root = KYTY_SOURCE_ROOT;
+	const auto        a    = HeaderTokens(root + "/tests/fixtures/recomp_kytyGpuApi.h");
+	const auto        b    = HeaderTokens(root + "/src/hybrid/kytyGpuApi.h");
+	CHECK(a.size() > 500);
+	CHECK(a == b); // refresh the fixture with scripts/refresh_recomp_api_fixture.sh when recomp changes the header
+	size_t asserts = 0;
+	for (const auto& t: b) asserts += t == "static_assert" ? 1 : 0;
+	CHECK(asserts >= 10);
+#endif
+}
+
+// m3: a layout row whose size sits further back than the code offset never reads before the group.
+void M3_SplitBounds() {
+	static constexpr Ue5Group::Layout wide = {"wide", {'1', '2', '3', '4', 0x18, 0, 0, 0}, 0x14, 0x20, 0x44};
+	std::vector<uint8_t> group(0x200, 0xAA);
+	const uint8_t marker[8] = {'1', '2', '3', '4', 0x18, 0, 0, 0};
+	std::memcpy(group.data() + 0x18, marker, 8); // 0x18 >= 0x14 but < 0x20
+	Ue5Group::Stats st;
+	const auto      found = Ue5Group::Split(group, {}, &st, &wide);
+	CHECK(found.empty() && st.out_of_bounds == 1 && st.markers == 1);
+	std::memcpy(group.data() + 0x40, marker, 8); // far enough: read in bounds (random size: counted, not crashing)
+	st = {};
+	(void)Ue5Group::Split(group, {}, &st, &wide);
+	CHECK(st.markers == 2 && st.out_of_bounds >= 1);
+}
+
+// m5: the --require-runtime value is a strict 0..100.
+void M5_RequirePercent() {
+	int v = -1;
+	CHECK(PipelineListTool::ParseRequirePercent("100", v) && v == 100 && PipelineListTool::ParseRequirePercent("0", v) && v == 0);
+	for (const char* bad: {"", "x", "abc", "-5", "101", "1e2", " 5", "5 ", "1000", "+5"}) {
+		int out = -7;
+		CHECK(!PipelineListTool::ParseRequirePercent(bad, out) && out == -7);
+	}
+}
+
+// m8: two stores on one path: the second is read-only and never interleaves.
+void M8_StoreLock() {
+	const auto path = TempPath("m8");
+	Cleanup(path);
+	PipelineCodeStore a, b;
+	CHECK(a.Open(path, "T", "V", 1) && !a.LockedByOther());
+	CHECK(b.Open(path, "T", "V", 1) && b.LockedByOther());
+	const auto code = RandomCode(1, 64);
+	const Hash128 h1 {1, 1}, h2 {2, 2};
+	CHECK(a.Add(h1, 5, code));
+	CHECK(!b.Add(h2, 5, code));
+	CHECK(a.Flush());
+	b.Release();
+	a.Release();
+	PipelineCodeStore c;
+	CHECK(c.Open(path, "T", "V", 1) && !c.LockedByOther() && c.Count() == 1 && c.Add(h2, 6, code) && c.Count() == 2);
+	std::error_code ec;
+	std::filesystem::remove(path + ".lock", ec);
+	Cleanup(path);
+}
+
 } // namespace
 
 int main() {
@@ -884,6 +1337,21 @@ int main() {
 	T17_Layouts();
 	T18_SizeRule();
 	T19_EndToEnd();
+	M1a_SearchedMarkSkips();
+	M1b_FullStore();
+	M1c_TimedOutResumes();
+	M1d_CollectorResume();
+	M7_Watchdog();
+	M12_CancelDuringExtraction();
+	M11_SharedDeadline();
+	M1_IgnoredWording();
+	M2_StoreHealthLines();
+	M2_TakeListTables();
+	M2_LaunchFlow();
+	M9_AbiHeaderMatchesRecomp();
+	M3_SplitBounds();
+	M5_RequirePercent();
+	M8_StoreLock();
 	if (g_failed != 0) {
 		std::printf("Ue5CodeWarmTests: %d check(s) failed\n", g_failed);
 		return 1;

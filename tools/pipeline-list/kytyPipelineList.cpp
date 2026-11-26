@@ -1151,7 +1151,11 @@ int main(int argc, char** argv) {
 		} else if (arg == "--code-store") {
 			args.code_store = value();
 		} else if (arg == "--require-runtime") {
-			args.require_runtime = std::atoi(value().c_str());
+			const auto text = value();
+			if (!PipelineListTool::ParseRequirePercent(text, args.require_runtime)) {
+				std::fprintf(stderr, "--require-runtime wants a whole number 0..100, got '%s'\n", text.c_str());
+				return 2;
+			}
 		} else {
 			args.inputs.push_back(arg);
 		}

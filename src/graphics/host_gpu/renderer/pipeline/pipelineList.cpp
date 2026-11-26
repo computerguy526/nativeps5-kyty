@@ -1030,11 +1030,12 @@ Resolved Resolve(const File& file, const std::array<uint32_t, 3>& input_info_siz
 	for (size_t i = 0; i < file.shaders.size(); i++) {
 		const auto& s = file.shaders[i];
 		const bool  runtime = runtime_file != CodeFile::Executable && s.file == runtime_file;
-		if (runtime) stats.runtime_shaders++;
 		if (s.input_info.size() != input_info_sizes[static_cast<size_t>(s.kind)]) {
 			stats.other_input_layout++;
 			continue;
 		}
+		// Counted with the matching layouts only: runtime_shaders == runtime_resolved + runtime_pending (+ unusable).
+		if (runtime) stats.runtime_shaders++;
 		for (const bool back: {false, true}) {
 			if (back && s.back_code_size == 0) continue;
 			Piece piece;

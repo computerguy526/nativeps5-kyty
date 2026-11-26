@@ -5,6 +5,11 @@
 #include <cstring>
 #include <system_error>
 #include <xxhash.h>
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace Libs::Graphics {
 
@@ -64,6 +69,16 @@ bool ReadExact(std::FILE* file, void* out, size_t bytes) {
 	return std::fread(out, 1, bytes, file) == bytes;
 }
 
+// Cuts the open file to `bytes` (after flushing what is buffered).
+bool TruncateFile(std::FILE* file, uint64_t bytes) {
+	if (std::fflush(file) != 0) return false;
+#if defined(_WIN32)
+	return _chsize_s(_fileno(file), static_cast<long long>(bytes)) == 0;
+#else
+	return ftruncate(fileno(file), static_cast<off_t>(bytes)) == 0;
+#endif
+}
+
 } // namespace
 
 PipelineCodeStore::~PipelineCodeStore() {
@@ -76,6 +91,36 @@ void PipelineCodeStore::Close() {
 		std::fclose(m_file);
 		m_file = nullptr;
 	}
+#if !defined(_WIN32)
+	if (m_lock_fd >= 0) {
+		close(m_lock_fd); // drops the flock
+		m_lock_fd = -1;
+	}
+#endif
+}
+
+void PipelineCodeStore::Release() {
+	std::lock_guard lock(m_mutex);
+	Close();
+}
+
+// One writer per store file: an exclusive, non-blocking flock on a sidecar file. False when another
+// process holds it (this one then opens the store read-only). Always true where there is no flock.
+bool PipelineCodeStore::TakeLock() {
+#if defined(_WIN32)
+	return true;
+#else
+	auto lock_path = m_path;
+	lock_path += ".lock";
+	const int fd = open(lock_path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (fd < 0) return true; // cannot make the lock file: no protection, but no refusal either
+	if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+		close(fd);
+		return false;
+	}
+	m_lock_fd = fd;
+	return true;
+#endif
 }
 
 // Reads the header and records of the file at m_path into the index. `allow_any_header`: the tool's
@@ -106,6 +151,8 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 		return false;
 	}
 	m_index.clear();
+	m_mark                  = {};
+	m_mark_at               = 0;
 	m_code_bytes            = 0;
 	uint64_t             at = HeaderBytes;
 	std::vector<uint8_t> record;
@@ -114,8 +161,13 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 		uint8_t head[RecordHead];
 		if (!ReadExact(in, head, sizeof(head))) break;
 		const auto code_bytes = GetAt<uint32_t>(head + 4);
-		if (GetAt<uint32_t>(head) != RecordMagic || code_bytes == 0 || code_bytes > MaxCodeBytes)
+		const bool is_mark    = GetAt<uint32_t>(head) == MarkMagic;
+		if (is_mark) {
+			if (code_bytes % 12u != 0 || code_bytes > MaxMarkRanges * 12u) break;
+		} else if (GetAt<uint32_t>(head) != RecordMagic || code_bytes == 0 ||
+		           code_bytes > MaxCodeBytes) {
 			break;
+		}
 		const uint64_t body = RecordHead + Align8(code_bytes);
 		if (at + body + 8 > total) break;
 		record.resize(static_cast<size_t>(body + 8));
@@ -125,6 +177,23 @@ bool PipelineCodeStore::Scan(bool allow_any_header) {
 		if (XXH3_64bits(record.data(), static_cast<size_t>(body)) !=
 		    GetAt<uint64_t>(record.data() + body))
 			break;
+		if (is_mark) {
+			const auto state = GetAt<uint64_t>(head + 16);
+			if (state != SearchMark::Partial && state != SearchMark::Complete) break;
+			m_mark.state = static_cast<uint32_t>(state);
+			m_mark.key   = GetAt<uint64_t>(head + 8);
+			m_mark.done.clear();
+			for (uint32_t i = 0; i < code_bytes / 12u; i++) {
+				const uint8_t* r = record.data() + RecordHead + i * 12u;
+				m_mark.done.push_back(
+				    {GetAt<uint32_t>(r), GetAt<uint32_t>(r + 4), GetAt<uint32_t>(r + 8)});
+			}
+			m_mark_at = at; // the last record, unless another follows
+			at += body + 8;
+			continue;
+		}
+		if (m_mark_at != 0 || m_mark.state != SearchMark::None) m_mark = {}; // stale: a code came after it
+		m_mark_at = 0;
 		const Hash128 hash {GetAt<uint64_t>(head + 8), GetAt<uint64_t>(head + 16)};
 		if (m_index.try_emplace(hash, Entry {at + RecordHead, code_bytes}).second)
 			m_code_bytes += code_bytes;
@@ -152,8 +221,23 @@ bool PipelineCodeStore::Open(const std::filesystem::path& path, const std::strin
 	m_duplicates = 0;
 	m_code_bytes = 0;
 	m_size       = 0;
+	m_locked_by_other = false;
+	m_mark            = {};
+	m_mark_at         = 0;
 	std::error_code error;
 	if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), error);
+	if (!TakeLock()) {
+		// Another process writes this store: read what is intact, change nothing.
+		m_locked_by_other = true;
+		m_read_only       = true;
+		if (std::filesystem::exists(path, error) && Scan(false)) {
+			m_file = OpenFile(path, "rb");
+			return m_file != nullptr;
+		}
+		m_index.clear();
+		m_code_bytes = 0;
+		return true;
+	}
 	const auto existing =
 	    std::filesystem::exists(path, error) ? std::filesystem::file_size(path, error) : 0;
 	bool fresh = true;
@@ -196,6 +280,7 @@ bool PipelineCodeStore::Open(const std::filesystem::path& path, const std::strin
 bool PipelineCodeStore::OpenReadOnly(const std::filesystem::path& path) {
 	std::lock_guard lock(m_mutex);
 	Close();
+	m_locked_by_other = false;
 	m_index.clear();
 	m_path       = path;
 	m_read_only  = true;
@@ -235,7 +320,14 @@ bool PipelineCodeStore::Add(const Hash128& hash, uint64_t prefix_hash,
 		return false;
 	}
 	const uint64_t body = RecordHead + Align8(code.size());
-	if (m_size + body + 8 > CapBytes) return false;
+	// A mark at the end is overwritten by this record (Flush writes it again); room for it stays free.
+	const uint64_t at = m_mark_at != 0 ? m_mark_at : m_size;
+	if (at + body + 8 + MarkReserveBytes > CapBytes) return false;
+	if (m_mark_at != 0) {
+		if (!TruncateFile(m_file, m_mark_at)) return false;
+		m_size    = m_mark_at;
+		m_mark_at = 0;
+	}
 	std::vector<uint8_t> record(static_cast<size_t>(body + 8), 0);
 	PutAt<uint32_t>(record, 0, RecordMagic);
 	PutAt<uint32_t>(record, 4, static_cast<uint32_t>(code.size()));
@@ -261,9 +353,57 @@ size_t PipelineCodeStore::Count() const {
 	return m_index.size();
 }
 
+bool PipelineCodeStore::AppendMarkLocked() {
+	const uint64_t payload = m_mark.done.size() * 12ull;
+	const uint64_t body    = RecordHead + Align8(payload);
+	if (m_size + body + 8 > CapBytes) return false;
+	std::vector<uint8_t> record(static_cast<size_t>(body + 8), 0);
+	PutAt<uint32_t>(record, 0, MarkMagic);
+	PutAt<uint32_t>(record, 4, static_cast<uint32_t>(payload));
+	PutAt<uint64_t>(record, 8, m_mark.key);
+	PutAt<uint64_t>(record, 16, m_mark.state);
+	for (size_t i = 0; i < m_mark.done.size(); i++) {
+		PutAt<uint32_t>(record, RecordHead + i * 12, m_mark.done[i].library);
+		PutAt<uint32_t>(record, RecordHead + i * 12 + 4, m_mark.done[i].first);
+		PutAt<uint32_t>(record, RecordHead + i * 12 + 8, m_mark.done[i].last);
+	}
+	PutAt<uint64_t>(record, static_cast<size_t>(body),
+	                XXH3_64bits(record.data(), static_cast<size_t>(body)));
+	if (std::fseek(m_file, static_cast<long>(m_size), SEEK_SET) != 0 ||
+	    std::fwrite(record.data(), 1, record.size(), m_file) != record.size()) {
+		return false;
+	}
+	m_mark_at = m_size;
+	m_size += record.size();
+	m_dirty = true;
+	return true;
+}
+
+PipelineCodeStore::SearchMark PipelineCodeStore::Mark() const {
+	std::lock_guard lock(m_mutex);
+	return m_mark;
+}
+
+bool PipelineCodeStore::WriteMark(const SearchMark& mark) {
+	std::lock_guard lock(m_mutex);
+	if (m_file == nullptr || m_read_only) return false;
+	SearchMark next = mark;
+	if (next.state == SearchMark::Partial && next.done.size() > MaxMarkRanges) return false;
+	if (next.state != SearchMark::Complete) next.state = next.done.empty() ? SearchMark::None : next.state;
+	if (m_mark_at != 0) {
+		if (!TruncateFile(m_file, m_mark_at)) return false;
+		m_size    = m_mark_at;
+		m_mark_at = 0;
+	}
+	m_mark = next;
+	if (m_mark.state == SearchMark::None) return true;
+	return AppendMarkLocked();
+}
+
 bool PipelineCodeStore::Flush() {
 	std::lock_guard lock(m_mutex);
 	if (m_file == nullptr) return false;
+	if (!m_read_only && m_mark.state != SearchMark::None && m_mark_at == 0) AppendMarkLocked();
 	m_dirty = false;
 	return std::fflush(m_file) == 0;
 }
@@ -276,7 +416,7 @@ bool PipelineCodeStore::ContainsAll(const std::vector<Hash128>& hashes) const {
 
 bool PipelineCodeStore::Full() const {
 	std::lock_guard lock(m_mutex);
-	return m_size + RecordHead + 16 > CapBytes;
+	return (m_mark_at != 0 ? m_mark_at : m_size) + RecordHead + 16 + MarkReserveBytes > CapBytes;
 }
 
 uint64_t PipelineCodeStore::FileBytes() const {

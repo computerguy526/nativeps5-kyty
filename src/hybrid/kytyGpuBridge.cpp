@@ -28,6 +28,7 @@
 #include "graphics/host_gpu/renderer/dlss.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/ue5CodeWarm.h"
+#include "hybrid/ue5HostBridge.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/padFocus.h"
@@ -118,6 +119,8 @@ constexpr uint32_t g_row_count = static_cast<uint32_t>(sizeof(g_rows) / sizeof(g
 KytyGpuNidInfo        g_info[g_row_count];
 KytyGpuHostCallbacks  g_host {};
 KytyGpuHostInfo       g_host_info {}; // ABI 1.6 (nativeps5): zero on an older host
+// The window loop runs one step per main-queue block (KYTY_WINDOW_STEPPED, default): the main queue drains between steps.
+bool g_stepped_loop = false;
 bool                  g_hosted_memory = false;
 std::atomic<uint64_t> g_self_loads_served {
     0}; // KYTY_HOSTED_SELF_LOADS: GPU-thread loads completed from the alias
@@ -825,73 +828,13 @@ int ApiInit(const KytyGpuHostCallbacks* host) {
 	// ABI 1.8: the host reads the game's UE5 shader library for the pipeline list's `<runtime>`
 	// shaders (ue5CodeWarm.h). A host without it leaves the field null.
 	if (g_host.extract_ue5_shader_groups != nullptr) {
-		namespace Ue5 = Libs::Graphics::Ue5CodeWarm;
-		Ue5::SetHostExtract([](uint64_t decoder, uint32_t abi, const Ue5::GroupFn& group,
-		                       const Ue5::ProgressFn& progress) {
-			struct Context {
-				const Ue5::GroupFn*    group;
-				const Ue5::ProgressFn* progress;
-			} context {&group, &progress};
-			KytyGpuUe5Query query {};
-			query.struct_size   = sizeof(query);
-			query.abi           = abi;
-			query.decoder       = decoder;
-			query.max_raw_bytes = 64u << 20u;
-			query.threads       = 0;
-			// Built without exceptions: nothing here throws.
-			query.group = [](void* arg, const KytyGpuUe5Group* g) -> int {
-				Ue5::GroupView view;
-				view.library      = g->library;
-				view.group        = g->group;
-				view.shader_count = g->shader_count;
-				if (g->frequencies != nullptr) view.frequencies = {g->frequencies, g->shader_count};
-				view.bytes = {g->bytes, g->raw_bytes};
-				return (*static_cast<Context*>(arg)->group)(view) ? 1 : 0;
-			};
-			query.progress = [](void* arg, uint32_t done, uint32_t total) {
-				(*static_cast<Context*>(arg)->progress)(done, total);
-			};
-			query.arg = &context;
-			KytyGpuUe5Result result {};
-			Ue5::HostResult  out;
-			out.code             = g_host.extract_ue5_shader_groups(g_host.user, &query, &result);
-			out.groups_total     = result.groups_total;
-			out.decoded          = result.groups_decoded;
-			out.failed           = result.groups_failed;
-			out.skipped          = result.groups_skipped;
-			out.compressed_bytes = result.compressed_bytes;
-			out.raw_bytes        = result.raw_bytes;
-			out.ms               = result.ms;
-			return out;
-		});
-		Ue5::SetRunOnMain([](std::function<void()> fn) {
-			if (g_host.run_on_main_thread == nullptr ||
-			    (g_host_info.flags & KYTY_GPU_HOST_MAIN_QUEUE) == 0 ||
-			    Common::Thread::IsMainThread() ||
-			    g_host.run_on_main_thread(
-			        g_host.user, [](void* arg) { (*static_cast<std::function<void()>*>(arg))(); },
-			        &fn, 1) != 0) {
-				fn();
-			}
-		});
-		// Never a raw read of an address taken from a profile: inside the guest window, and through
-		// the kernel's checked read.
-		Ue5::SetGuestReader([](uint64_t address, std::span<uint8_t> out) {
-			const uint64_t end = address + out.size();
-			if (g_host_info.guest_hi <= g_host_info.guest_lo || address < g_host_info.guest_lo ||
-			    end < address || end > g_host_info.guest_hi) {
-				return false;
-			}
-#if defined(__APPLE__)
-			mach_vm_size_t got = 0;
-			return mach_vm_read_overwrite(
-			           mach_task_self(), address + g_host_info.guest_bias, out.size(),
-			           reinterpret_cast<mach_vm_address_t>(out.data()), &got) == KERN_SUCCESS &&
-			       got == out.size();
-#else
-			return false;
-#endif
-		});
+		static Hybrid::Ue5Bridge::Env env;
+		env.host              = &g_host;
+		env.info              = &g_host_info;
+		env.on_main_thread    = [] { return Common::Thread::IsMainThread(); };
+		env.main_queue_drains = [] { return g_stepped_loop; };
+		env.log               = [](int level, const std::string& text) { Log(level, "%s", text.c_str()); };
+		Hybrid::Ue5Bridge::Install(&env);
 	}
 
 	Loader::SymbolDatabase symbols;
@@ -1035,7 +978,6 @@ std::atomic<bool>     g_memory_ready {false};
 // exits without a clean end of the window loop, the renderer's threads are still running and a
 // teardown from exit()'s destructor pass would race them.
 Common::Subsystems* g_subsystems   = nullptr;
-bool                g_stepped_loop = false;
 // The window loop runs on the host's main queue (no g_renderer_thread to join): shutdown waits
 // here.
 bool                 g_main_queue_loop = false;
@@ -1106,6 +1048,12 @@ void RendererBegin() {
 
 void RendererEnd() {
 	{
+		// A UE5 shader library extraction in the host stops at its next group; the process does not
+		// end (or tear the renderer down) under a host thread still calling into this library.
+		Libs::Graphics::Ue5CodeWarm::RequestCancel();
+		if (!Libs::Graphics::Ue5CodeWarm::WaitIdle(5000)) {
+			Log(1, "renderer: a UE5 shader library extraction is still inside the host after 5 s");
+		}
 		if (!g_shutdown_requested.load(std::memory_order_acquire)) {
 			if (g_host.request_exit != nullptr) {
 				// The host ends the process at once: save what this session compiled first.
@@ -1469,6 +1417,9 @@ void ClosePadAudioStreams() {
 void ApiShutdown() {
 	std::lock_guard lock(g_lifecycle);
 	g_shutdown_requested.store(true, std::memory_order_release);
+	// A UE5 shader library extraction still inside the host stops at its next group (bounded wait).
+	Libs::Graphics::Ue5CodeWarm::RequestCancel();
+	(void)Libs::Graphics::Ue5CodeWarm::WaitIdle(3000);
 	if (g_host_serves_loads) {
 		Log(0,
 		    "shutdown: GPU-thread read faults: %llu loads completed from the alias, %llu took the "

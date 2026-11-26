@@ -105,7 +105,7 @@ inline T Get(std::span<const uint8_t> bytes, size_t at) {
 		at = static_cast<size_t>(hit - group.data());
 		if (at >= skip_until && std::memcmp(hit, marker_, sizeof(marker_)) == 0) {
 			markers.push_back(at);
-			if (at >= CodeOffsetBack_ && at + sizeof(marker_) <= group.size()) {
+			if (at >= std::max(CodeOffsetBack_, SizeBack_) && at + sizeof(marker_) <= group.size()) {
 				const uint64_t start = at + Detail::Get<uint32_t>(group, at - CodeOffsetBack_);
 				const uint32_t size  = Detail::Get<uint32_t>(group, at - SizeBack_);
 				if (at + ShaderSizeAt_ + 4 <= group.size() &&

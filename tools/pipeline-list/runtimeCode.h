@@ -47,6 +47,20 @@ KeepRuntimeCode(Libs::Graphics::PipelineList::Builder::LocateFn inner, Libs::Gra
 	return stats.runtime_resolved * 100u >= static_cast<uint64_t>(percent) * stats.runtime_shaders;
 }
 
+// --require-runtime value: decimal digits only, 0..100. False for anything else (the tool then exits 2: a harvest gate
+// must never pass because of a typo).
+[[nodiscard]] inline bool ParseRequirePercent(const std::string& text, int& out) {
+	if (text.empty() || text.size() > 3) return false;
+	int value = 0;
+	for (const char c: text) {
+		if (c < '0' || c > '9') return false;
+		value = value * 10 + (c - '0');
+	}
+	if (value > 100) return false;
+	out = value;
+	return true;
+}
+
 // The runtime shaders of `file` (a code of a merged stage counts with both halves) a --shaders journal does not hold
 // the code of; `journaled`: the XXH3-128 of every journaled code (and back half).
 [[nodiscard]] inline uint64_t RuntimeShadersNotCovered(const Libs::Graphics::PipelineList::File& file,
