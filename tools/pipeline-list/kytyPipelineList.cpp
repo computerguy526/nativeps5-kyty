@@ -21,10 +21,15 @@
 //       --programs <programs.bin> (repeatable): the persistent program cache as one more source (programsSource.h): sources and permutations
 //       that reached it without a journal record (compute prewarm / precompile) join the list; pass `--shaders none --pipelines none` for a
 //       programs-only export.
+//       --runtime-code (UE5 titles): a journaled code found nowhere in --exe/--data/--scan is kept as a `<runtime>` shader, named by
+//       its size and hashes alone (its code comes from the player's own game at run time, pipelineCodeStore.h); prints
+//       "N kept as runtime code". Without it such a code is dropped, as before.
 //   merge --out <list> <list>...        Union of lists of the same title, version and input layout.
 //   info <list>                         Header, counts, levels, section sizes.
-//   check <list> --game <app0 dir or .zar> [--exe <executable>]
-//       Resolves the list against a game copy, as the emulator does at start-up.
+//   check <list> --game <app0 dir or .zar> [--exe <executable>] [--code-store <KYCODE1 file>] [--require-runtime <percent>]
+//       Resolves the list against a game copy, as the emulator does at start-up. A list with `<runtime>` shaders also prints
+//       "runtime: X resolved, Y pending": they resolve from --code-store (read only; none: all pending). Pending is not an
+//       error; --require-runtime makes exit 1 when fewer than that percentage of the runtime shaders resolved (the harvest gate).
 //   scenedb build|merge|info|query|tiers|check ...   the shader level database (sceneDbCommands.h)
 //   retarget --list <list> --exe <executable> --title <id> --app-ver <version> --out <list>
 //       Re-stamps a list for another copy of the game (another version or SKU): each shader is looked up in
@@ -38,7 +43,8 @@
 //   verify <list> --game <app0 dir or .zar> [--exe <executable>] [--shaders <shader journal>]...
 //       The no-code proof: no 64-byte window of the listed shaders' code (read from the executable)
 //       or of any journaled shader's code occurs in the file or in any decompressed section.
-//       Exit code 1 when one does.
+//       Exit code 1 when one does. A list with `<runtime>` shaders also needs every one of them covered by a --shaders journal
+//       (the proof then saw their code): "N runtime shaders not covered" and exit 1 otherwise.
 // --game is the game folder (the one with eboot.bin and sce_sys) or a .zar archive of it (the
 // launcher's "Compress game"); every command reads the same files from either, and an export of a
 // folder and of its archive writes the same list. SOURCE_DATE_EPOCH (seconds), when set, is the
@@ -47,6 +53,8 @@
 #include "exportBase.h"
 #include "gameFiles.h"
 #include "programsSource.h"
+#include "runtimeCode.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineCodeStore.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineList.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineListInt21.h"
 #include "graphics/shader/shader.h"
@@ -60,6 +68,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
@@ -86,6 +95,9 @@ struct Arguments {
 	std::string                                      out, game, exe, list, title, app_ver, producer = "kyty_pipeline_list";
 	std::vector<std::string>                         shaders, pipelines, inputs, data, programs;
 	bool                                             scan = false;
+	bool                                             runtime_code = false; // export: keep codes found nowhere as `<runtime>` shaders
+	std::string                                      code_store;           // check: a KYCODE1 file for the `<runtime>` shaders
+	int                                              require_runtime = -1; // check: percent of runtime shaders that must resolve (-1: none)
 	bool                                             allow_partial = false; // merge/upgrade: keep going when a specialization reads as no known layout
 	std::string                                      base;
 };
@@ -231,7 +243,8 @@ int Write(const PipelineList::File& file, const std::string& out) {
 
 bool                   Load(const std::string& path, PipelineList::File& file);
 PipelineList::Resolved ResolveWith(GameFiles& game, const PipelineList::File& file, const std::vector<uint8_t>& image,
-                                   const std::array<uint32_t, 3>& sizes, PipelineList::ResolveStats& stats);
+                                   const std::array<uint32_t, 3>& sizes, PipelineList::ResolveStats& stats,
+                                   const PipelineList::ReadHashFn& read_hash = {});
 
 // export --base: the list the recording sessions ran with (the launcher passes the one the emulator
 // loads for the game). The emulator journals what it compiles itself: a permutation it took from an
@@ -593,6 +606,8 @@ int Export(const Arguments& args) {
 		if (it == query_of.end() || !have[it->second]) return std::nullopt;
 		return where[it->second];
 	};
+	std::set<PipelineListTool::HashKey> runtime_kept;
+	const auto locate_all = args.runtime_code ? PipelineListTool::KeepRuntimeCode(locate, builder, runtime_kept) : locate;
 	PipelineList::ExportStats base_stats, stats;
 	PipelineList::File        with_base;
 	if (base.used) {
@@ -601,7 +616,7 @@ int Export(const Arguments& args) {
 	}
 	for (const auto& run: runs) {
 		if (!base.used) {
-			builder.AddJournals(run.shaders->Sources(), run.shaders->Entries(), run.pipelines->Loaded(), locate, stats);
+			builder.AddJournals(run.shaders->Sources(), run.shaders->Entries(), run.pipelines->Loaded(), locate_all, stats);
 			continue;
 		}
 		// The base list's shaders and permutations go in once more as journal content, in the call that
@@ -613,7 +628,7 @@ int Export(const Arguments& args) {
 		for (const auto& entry: run.shaders->Entries()) {
 			entries.push_back({entry.source + first, entry.push_data_cursor, entry.specialization});
 		}
-		builder.AddJournals(sources, entries, run.pipelines->Loaded(), locate, stats);
+		builder.AddJournals(sources, entries, run.pipelines->Loaded(), locate_all, stats);
 		// They are the list's (known already), not the journals': out of the journals' counts.
 		stats.sources -= std::min<uint64_t>(stats.sources, base.sources.size());
 		stats.sources_duplicate -= std::min<uint64_t>(stats.sources_duplicate, base.sources.size());
@@ -622,20 +637,21 @@ int Export(const Arguments& args) {
 	if (!program_sources.empty()) {
 		const std::vector<PipelineJournal::Record> no_pipelines;
 		if (!base.used) {
-			builder.AddJournals(program_sources, program_entries, no_pipelines, locate, stats);
+			builder.AddJournals(program_sources, program_entries, no_pipelines, locate_all, stats);
 		} else {
 			auto       sources = base.sources;
 			auto       entries = base.entries;
 			const auto first   = static_cast<uint32_t>(sources.size());
 			sources.insert(sources.end(), program_sources.begin(), program_sources.end());
 			for (const auto& entry: program_entries) entries.push_back({entry.source + first, entry.push_data_cursor, entry.specialization});
-			builder.AddJournals(sources, entries, no_pipelines, locate, stats);
+			builder.AddJournals(sources, entries, no_pipelines, locate_all, stats);
 			stats.sources -= std::min<uint64_t>(stats.sources, base.sources.size());
 			stats.sources_duplicate -= std::min<uint64_t>(stats.sources_duplicate, base.sources.size());
 			stats.entries -= std::min<uint64_t>(stats.entries, base.entries.size());
 		}
 	}
 	PrintExport(stats);
+	if (args.runtime_code) std::printf("%zu kept as runtime code\n", runtime_kept.size());
 	// A module without a permutation identity (an expanded call program, which is not journaled) cannot be
 	// named in a list: its pipelines are among those not kept.
 	size_t unidentified = 0;
@@ -857,6 +873,11 @@ int Info(const Arguments& args) {
 	}
 	std::printf("  shaders %zu (vertex %zu, pixel %zu, compute %zu; %zu merged stages; %zu code bytes referenced)\n",
 	            file.shaders.size(), kinds[0], kinds[1], kinds[2], merged, code_bytes);
+	if (const auto runtime = PipelineList::RuntimeFileOf(file); runtime != PipelineList::CodeFile::Executable) {
+		size_t count = 0;
+		for (const auto& shader: file.shaders) count += shader.file == runtime ? 1 : 0;
+		std::printf("  %zu runtime shaders (code from the game's own shader library at run time)\n", count);
+	}
 	std::printf("  permutations %zu, pipelines %zu (%zu mesh, %zu without a pixel stage)\n", file.permutations.size(),
 	            file.pipelines.size(), mesh, stages[1]);
 	for (size_t i = 0; i < file.levels.size(); i++) std::printf("  level %s: %zu pipelines\n", file.levels[i].c_str(), per_level[i]);
@@ -866,7 +887,8 @@ int Info(const Arguments& args) {
 // A list resolved against a game copy as the emulator does at start-up: the executable from `image`, data
 // files read where the list names code (never a whole file: a data file can be many gigabytes).
 PipelineList::Resolved ResolveWith(GameFiles& game, const PipelineList::File& file, const std::vector<uint8_t>& image,
-                                   const std::array<uint32_t, 3>& sizes, PipelineList::ResolveStats& stats) {
+                                   const std::array<uint32_t, 3>& sizes, PipelineList::ResolveStats& stats,
+                                   const PipelineList::ReadHashFn& read_hash) {
 	const PipelineList::ReadCodeFn read = [&](PipelineList::CodeFile code_file, uint64_t offset, std::span<uint8_t> out) {
 		const auto index = static_cast<uint32_t>(code_file);
 		if (index != 0) return index <= file.files.size() && game.ReadAt(U8(file.files[index - 1]), offset, out);
@@ -874,16 +896,17 @@ PipelineList::Resolved ResolveWith(GameFiles& game, const PipelineList::File& fi
 		std::memcpy(out.data(), image.data() + offset, out.size());
 		return true;
 	};
-	return PipelineList::Resolve(file, sizes, read, [&](PipelineList::CodeFile) { return image; }, stats);
+	return PipelineList::Resolve(file, sizes, read, [&](PipelineList::CodeFile) { return image; }, stats, read_hash);
 }
 
 PipelineList::Resolved ResolveAgainst(const Arguments& args, GameFiles& game, const PipelineList::File& file,
-                                      std::vector<uint8_t>& image, PipelineList::ResolveStats& stats) {
+                                      std::vector<uint8_t>& image, PipelineList::ResolveStats& stats,
+                                      const PipelineList::ReadHashFn& read_hash = {}) {
 	if (!ReadExecutable(args, game, image)) {
 		std::fprintf(stderr, "cannot read %s\n", ExecutableName(args).c_str());
 		image.clear();
 	}
-	return ResolveWith(game, file, image, file.info.input_info_sizes, stats);
+	return ResolveWith(game, file, image, file.info.input_info_sizes, stats, read_hash);
 }
 
 int Check(const Arguments& args) {
@@ -899,9 +922,15 @@ int Check(const Arguments& args) {
 	if (title != file.info.title_id || version != file.info.app_version) {
 		return 2; // as the emulator: another title or game version is not resolved (no game file is read)
 	}
+	PipelineCodeStore store;
+	if (!args.code_store.empty() && !store.OpenReadOnly(U8(args.code_store))) {
+		std::fprintf(stderr, "cannot read the code store %s\n", args.code_store.c_str());
+		return 2;
+	}
 	std::vector<uint8_t>       image;
 	PipelineList::ResolveStats stats;
-	const auto                 resolved = ResolveAgainst(args, *game, file, image, stats);
+	const auto                 resolved =
+	    ResolveAgainst(args, *game, file, image, stats, args.code_store.empty() ? PipelineList::ReadHashFn {} : store.ReadFn());
 	(void)resolved;
 	std::printf("shaders %llu: %llu match (%llu at another offset), %llu differ, %llu unreadable; permutations %llu of %llu; "
 	            "pipelines %llu of %llu usable\n",
@@ -910,7 +939,13 @@ int Check(const Arguments& args) {
 	            static_cast<unsigned long long>(stats.unreadable), static_cast<unsigned long long>(stats.permutations_kept),
 	            static_cast<unsigned long long>(stats.permutations), static_cast<unsigned long long>(stats.pipelines_kept),
 	            static_cast<unsigned long long>(stats.pipelines));
-	return stats.resolved == stats.shaders ? 0 : 1;
+	if (const auto line = PipelineListTool::RuntimeLine(stats); !line.empty()) std::printf("%s\n", line.c_str());
+	if (args.require_runtime >= 0 && !PipelineListTool::MeetsRuntimeRequirement(stats, static_cast<uint32_t>(args.require_runtime))) {
+		std::printf("check: FAILED, fewer than %d%% of the runtime shaders resolved\n", args.require_runtime);
+		return 1;
+	}
+	// Runtime shaders that are still pending are not an error.
+	return stats.resolved + stats.runtime_pending == stats.shaders ? 0 : 1;
 }
 
 int Retarget(const Arguments& args) {
@@ -987,6 +1022,7 @@ int Verify(const Arguments& args) {
 			code_bytes += code->size() * 4;
 		}
 	}
+	std::set<PipelineListTool::HashKey> journaled; // the codes of the --shaders journals
 	for (const auto& path: args.shaders) {
 		std::vector<uint8_t> identity;
 		if (!ShaderJournal::ReadIdentity(path, identity)) {
@@ -1002,6 +1038,10 @@ int Verify(const Arguments& args) {
 			for (const auto* code: {&source.code, &source.back_code}) {
 				windows.Add({reinterpret_cast<const uint8_t*>(code->data()), code->size() * 4});
 				code_bytes += code->size() * 4;
+				if (!code->empty()) {
+					const auto hash = PipelineList::CodeHash({reinterpret_cast<const uint8_t*>(code->data()), code->size() * 4});
+					journaled.insert({hash.low, hash.high});
+				}
 			}
 		}
 	}
@@ -1025,7 +1065,14 @@ int Verify(const Arguments& args) {
 		scan(name.c_str(), raw);
 	}
 	std::printf("%s\n", hits == 0 ? "verify: no shader code in the list" : "verify: FAILED, the list contains shader code");
-	return hits == 0 && stats.resolved != 0 ? 0 : 1;
+	// `<runtime>` shaders have no code to read from the game: the proof knows their code only from the journals.
+	uint64_t       runtime_total = 0;
+	const uint64_t uncovered     = PipelineListTool::RuntimeShadersNotCovered(file, journaled, &runtime_total);
+	if (runtime_total != 0) {
+		std::printf("verify: %llu runtime shaders not covered by a --shaders journal (of %llu)\n",
+		            static_cast<unsigned long long>(uncovered), static_cast<unsigned long long>(runtime_total));
+	}
+	return hits == 0 && uncovered == 0 && (stats.resolved != 0 || runtime_total != 0) ? 0 : 1;
 }
 
 } // namespace
@@ -1079,6 +1126,12 @@ int main(int argc, char** argv) {
 			args.scan = true;
 		} else if (arg == "--allow-partial") {
 			args.allow_partial = true;
+		} else if (arg == "--runtime-code") {
+			args.runtime_code = true;
+		} else if (arg == "--code-store") {
+			args.code_store = value();
+		} else if (arg == "--require-runtime") {
+			args.require_runtime = std::atoi(value().c_str());
 		} else {
 			args.inputs.push_back(arg);
 		}
