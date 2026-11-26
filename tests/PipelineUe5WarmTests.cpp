@@ -1122,6 +1122,118 @@ void TestDropShaders() {
 
 } // namespace
 
+
+// ---- edges of the extraction gates (the harvest's --require-runtime, verify's coverage rule, drop's hash file) ----------------
+
+void TestExtractionGateEdges() {
+	using PipelineListTool::MeetsRuntimeRequirement;
+	using PipelineListTool::ParseRequirePercent;
+	// --require-runtime value: digits only, 0..100; a failed parse never touches the output (a typo must not pass a gate).
+	{
+		int out = -7;
+		for (const char* bad: {"", " 5", "5 ", "-1", "+5", "5%", "1e2", "101", "1000", "0x10", "five", "\xd9\xa3"}) CHECK(!ParseRequirePercent(bad, out) && out == -7);
+		for (const auto& [text, want]: std::vector<std::pair<const char*, int>> {{"0", 0}, {"7", 7}, {"007", 7}, {"99", 99}, {"100", 100}, {"000", 0}}) {
+			out = -1;
+			CHECK(ParseRequirePercent(text, out) && out == want);
+		}
+	}
+	// The gate: shares round against the percentage exactly (no float), a list without runtime shaders passes, nothing resolved fails any > 0.
+	{
+		PipelineList::ResolveStats st;
+		st.runtime_shaders = 0;
+		for (uint32_t pct: {0u, 1u, 100u}) CHECK(MeetsRuntimeRequirement(st, pct));
+		st.runtime_shaders = 3; st.runtime_resolved = 0; st.runtime_pending = 3;
+		CHECK(MeetsRuntimeRequirement(st, 0) && !MeetsRuntimeRequirement(st, 1));
+		st.runtime_resolved = 2; st.runtime_pending = 1;
+		CHECK(MeetsRuntimeRequirement(st, 66) && !MeetsRuntimeRequirement(st, 67) && !MeetsRuntimeRequirement(st, 100));
+		st.runtime_resolved = 3; st.runtime_pending = 0;
+		CHECK(MeetsRuntimeRequirement(st, 100));
+		st.runtime_shaders = 100000; st.runtime_resolved = 99999; // large lists: no overflow, 99.999 % is not 100 %
+		CHECK(MeetsRuntimeRequirement(st, 99) && !MeetsRuntimeRequirement(st, 100));
+		st.runtime_shaders = 1000000; st.runtime_resolved = 1000000;
+		CHECK(MeetsRuntimeRequirement(st, 100));
+		CHECK(PipelineListTool::RuntimeLine(st) == "runtime: 1000000 resolved, 0 pending");
+	}
+	// drop's hash file: any 0x + 16 hex digits, either case; shorter / non-hex runs are not hashes; the first line naming a hash is its reason.
+	{
+		const std::string text = "x 0xABCDEF0123456789 first\n0xabcdef0123456789 again\n0x123456789abcde short\n0xZZZZZZZZZZZZZZZZ nothex\n"
+		                         "two 0x0000000000000001,0x0000000000000002\ntab\there 0x00000000000000ff\rcr\n0x";
+		const auto got = PipelineListTool::ParseDropHashes(text);
+		CHECK(got.size() == 4 && got.contains(0xABCDEF0123456789ull) && got.contains(1) && got.contains(2) && got.contains(0xff));
+		CHECK(got.at(0xABCDEF0123456789ull).find("first") != std::string::npos);
+		CHECK(got.at(0xff).find('\t') == std::string::npos && got.at(0xff).find('\r') == std::string::npos);
+		CHECK(PipelineListTool::ParseDropHashes("").empty() && PipelineListTool::ParseDropHashes("no hashes here\n").empty());
+		const std::string longline = "0x00000000000000aa " + std::string(400, 'z');
+		CHECK(PipelineListTool::ParseDropHashes(longline).at(0xaa).size() == 160);
+	}
+	// drop: nothing named, an unknown hash, everything named.
+	{
+		auto list = MakeRuntimeList();
+		PipelineList::Pipeline a;
+		a.stages = {{0, false, 1}, {1, false, 1}};
+		list.file.pipelines = {a};
+		PipelineListTool::DropStats stats;
+		auto none = PipelineListTool::DropShaders(list.file, {}, stats);
+		CHECK(none.shaders.size() == list.file.shaders.size() && stats.shaders == 0 && stats.pipelines_dropped == 0);
+		std::map<uint64_t, std::string> unknown = {{0x1234, "x"}};
+		PipelineListTool::DropStats     s2;
+		auto                            same = PipelineListTool::DropShaders(list.file, unknown, s2);
+		CHECK(same.shaders.size() == list.file.shaders.size() && s2.asked == 1 && s2.shaders == 0);
+		std::map<uint64_t, std::string> all;
+		for (const auto& shader: list.file.shaders) all[shader.hash] = "all";
+		PipelineListTool::DropStats s3;
+		std::string                 tsv;
+		auto                        empty = PipelineListTool::DropShaders(list.file, all, s3, &tsv);
+		CHECK(empty.shaders.empty() && empty.pipelines.empty() && s3.shaders == list.file.shaders.size() && s3.pipelines_dropped == 1);
+		CHECK(std::count(tsv.begin(), tsv.end(), '\n') == static_cast<long>(list.file.shaders.size()) && tsv.find("\truntime\t") != std::string::npos);
+	}
+	// KeepRuntimeCode: a code found by the locator is never runtime; an empty code is not kept; the same code twice is one entry and one file name.
+	{
+		PipelineList::Builder               builder(TestInfo());
+		std::set<PipelineListTool::HashKey> kept;
+		const auto                          fn = PipelineListTool::KeepRuntimeCode([](std::span<const uint32_t>) { return std::nullopt; }, builder, kept);
+		CHECK(!fn({}).has_value() && kept.empty());
+		const auto code = Code(900, 40);
+		const auto a = fn(code), b = fn(code);
+		CHECK(a.has_value() && b.has_value() && kept.size() == 1 && a->offset == 0 && a->file == b->file);
+		CHECK(fn(Code(901, 40)).has_value() && kept.size() == 2 && builder.Finish().files.size() == 1);
+	}
+	// Coverage: executable-file shaders never count as runtime shaders, whatever the journals hold.
+	{
+		PipelineList::File plain;
+		plain.shaders.resize(2);
+		uint64_t total = 99;
+		CHECK(PipelineListTool::RuntimeShadersNotCovered(plain, {}, &total) == 0 && total == 0);
+	}
+}
+
+// The code store as the extractor meets it: a directory or a missing parent where the file should be, an over-long code, a second writer.
+void TestExtractionStoreEdges() {
+	TempDir    dir;
+	const auto good = Code(950, 32);
+	{
+		PipelineCodeStore store;
+		CHECK(store.Open(dir.path / "no" / "such" / "dir" / "s.codestore", "T", "V", 1)); // missing parents are created
+		CHECK(std::filesystem::is_directory(dir.path / "no" / "such" / "dir"));
+	}
+	const auto path = dir.path / "s.codestore";
+	{
+		PipelineCodeStore store;
+		CHECK(store.Open(path, "T", "V", 1));
+		CHECK(!store.Add(Hash128 {1, 1}, 0, std::span<const uint8_t>()));                    // empty
+		const std::vector<uint8_t> huge(PipelineCodeStore::MaxCodeBytes + 4, 1);
+		CHECK(!store.Add(Hash128 {2, 2}, 0, huge) && store.Count() == 0);                    // over the per-code limit: refused, nothing written
+		CHECK(store.FileBytes() == PipelineCodeStore::HeaderBytes);
+		CHECK(AddCode(store, good) && store.Count() == 1);
+		// a store of another decoder fingerprint is set aside and read-only open never renames it
+	}
+	{
+		PipelineCodeStore ro;
+		CHECK(ro.OpenReadOnly(path) && ro.Count() == 1 && !ro.DiscardedStale() && ro.DecoderFingerprint() == 1);
+		CHECK(!std::filesystem::exists(path.string() + ".stale"));
+	}
+}
+
 int main() {
 	TestRuntimeListFormat();
 	TestResolveRuntime();
@@ -1141,6 +1253,8 @@ int main() {
 	TestGroupSplit();
 	TestToolRuntimeExport();
 	TestDropShaders();
+	TestExtractionGateEdges();
+	TestExtractionStoreEdges();
 	if (g_failed != 0) {
 		std::printf("PipelineUe5WarmTests: %d check(s) failed\n", g_failed);
 		return 1;
