@@ -4,6 +4,7 @@
 #include "graphics/host_gpu/renderer/sceneSkip.h"
 
 #include <cstdio>
+#include <string>
 
 using namespace Libs::Graphics::SceneSkip;
 
@@ -25,7 +26,9 @@ static const char* kTable =
     "skip\tlevel_a\tflowers\t00000000000000a1\t00000000000000b1\n"
     "skip\tlevel_a\tflowers\t00000000000000a2\t-\n"
     "skip\tlevel_a\tgrass+moss\t00000000000000a3\t00000000000000b3\n"
-    "skip\tlevel_b\tgrass\t00000000000000a4\t00000000000000b4\n";
+    "skip\tlevel_b\tgrass\t00000000000000a4\t00000000000000b4\n"
+    "level\tlevel_a\tflowers=both,grass=entry,moss=both\n"
+    "level\tlevel_c\tother=entry\n";
 
 static Mask M(int f, int g, int m, int o) {
 	return {static_cast<uint8_t>(f), static_cast<uint8_t>(g), static_cast<uint8_t>(m), static_cast<uint8_t>(o)};
@@ -185,7 +188,7 @@ static void TestKeyMap() {
 	Controller c;
 	c.Init(ParseTable(kTable));
 	// keys off: nothing is consumed, nothing changes, for every key, down and up
-	for (const auto k: {Key::F3, Key::F4, Key::F5, Key::F10, Key::F12, Key::None}) {
+	for (const auto k: {Key::F1, Key::F3, Key::F4, Key::F5, Key::F10, Key::F12, Key::None}) {
 		for (const bool pressed: {true, false}) {
 			const auto r = c.OnKey(false, k, false, pressed);
 			CHECK(!r.consumed && !r.changed);
@@ -237,6 +240,91 @@ static void TestToast() {
 	CHECK(!c.DiffersFromLoaded());
 }
 
+static std::string Join(const std::vector<PanelLine>& v) {
+	std::string s;
+	for (const auto& l: v) s += l.text + "\n";
+	return s;
+}
+
+static void TestPanel() {
+	const auto t = ParseTable(kTable);
+	CHECK(t.bad_lines == 0 && t.levels.size() == 2);
+	// how: level lines plus instant from skip rows (level_b has no level line, only a skip row)
+	auto h = HowFor(t, "level_a");
+	CHECK(h.how[Flowers] == (kHowInstant | kHowEntry) && h.how[Grass] == (kHowEntry | kHowInstant) && h.how[Moss] == (kHowInstant | kHowEntry) && h.how[Other] == 0);
+	CHECK(h.pairs[Flowers] == 2 && h.pairs[Grass] == 1 && h.pairs[Moss] == 1 && h.pairs[Other] == 0);
+	h = HowFor(t, "level_b");
+	CHECK(h.how[Grass] == kHowInstant && h.how[Flowers] == 0 && h.pairs[Grass] == 1);
+	h = HowFor(t, "level_c");
+	CHECK(h.how[Other] == kHowEntry && h.how[Grass] == 0);
+	h = HowFor(t, "");
+	CHECK((h.how == std::array<uint8_t, kCatCount> {}));
+	// bad level lines are counted
+	for (const char* b: {"level\ts\tgrass=sometimes", "level\ts\ttrees=entry", "level\ts", "level\t../x\tgrass=entry", "level\ts\tgrass"}) CHECK(ParseTable(b).bad_lines == 1);
+	CHECK(ParseTable("level\ts\tgrass=entry\nlevel\ts\tgrass=instant").levels.size() == 1);
+	CHECK(ParseTable("level\ts\tgrass=entry\nlevel\ts\tgrass=instant").levels[0].how[Grass] == (kHowEntry | kHowInstant));
+
+	Controller c;
+	c.Init(t);
+	const auto p = c.MakePanel(t, "level_b");
+	CHECK(p.size() >= 7 && p[0].kind == PanelKind::Title);
+	const auto txt = Join(p);
+	CHECK(txt.find("Level: level_b") != std::string::npos);
+	CHECK(txt.find("Preset: full   F3 cycles full > balanced > performance > full") != std::string::npos);
+	CHECK(txt.find("F4  flowers   n/a   not in this level") != std::string::npos);
+	CHECK(txt.find("F5  grass     ON    instant  (1 shader pair)") != std::string::npos);
+	CHECK(txt.find("F10  moss") == std::string::npos || txt.find("n/a") != std::string::npos);
+	CHECK(txt.find("re-enter") == std::string::npos); // instant only: nothing to re-enter
+	// a level with both
+	c.OnKey(true, Key::F4, false, true);
+	c.OnKey(true, Key::F5, false, true);
+	const auto a = Join(c.MakePanel(t, "level_a"));
+	CHECK(a.find("F4  flowers   OFF   instant + fully on re-entry  (2 shader pairs)") != std::string::npos);
+	CHECK(a.find("F5  grass     OFF   instant + fully on re-entry  (1 shader pair)") != std::string::npos);
+	CHECK(a.find("F12  other") == std::string::npos || a.find("n/a   not in this level") != std::string::npos);
+	CHECK(a.find("Re-enter the level to apply the on re-entry changes.") != std::string::npos);
+	CHECK(a.find("Changed since this level loaded.") != std::string::npos);
+	c.MarkLoaded();
+	CHECK(Join(c.MakePanel(t, "level_a")).find("Changed since") == std::string::npos);
+	// entry only, thinned
+	c.OnKey(true, Key::F3, false, true); // custom -> full
+	c.OnKey(true, Key::F3, false, true); // balanced
+	const auto cc = Join(c.MakePanel(t, "level_c"));
+	CHECK(cc.find("F12  other    ON    on re-entry") != std::string::npos);
+	CHECK(cc.find("Preset: balanced") != std::string::npos);
+	// a level with no rows and no level yet
+	const auto n = Join(c.MakePanel(t, "level_z"));
+	CHECK(n.find("Nothing to switch here.") != std::string::npos && n.find("Level: level_z") != std::string::npos);
+	CHECK(Join(c.MakePanel(t, "")).find("not in a level yet") != std::string::npos);
+	// no names beyond what the table carries; every line is short enough for the overlay buffer
+	for (const auto& l: c.MakePanel(t, "level_a")) CHECK(l.text.size() < 118);
+	CHECK(c.MakePanel(t, "level_a").size() <= 16);
+
+	// F1 key: consumed (down, up), toggles the panel, never changes the mask; ignored when the keys are off
+	Controller k;
+	k.Init(t);
+	auto r = k.OnKey(true, Key::F1, false, true);
+	CHECK(r.consumed && r.panel && !r.changed && k.Seq() == 0 && k.Current() == kAllOn);
+	r = k.OnKey(true, Key::F1, false, false);
+	CHECK(r.consumed && !r.panel);
+	r = k.OnKey(false, Key::F1, false, true);
+	CHECK(!r.consumed && !r.panel);
+	r = k.OnKey(true, Key::F4, false, true);
+	CHECK(r.consumed && !r.panel && r.changed);
+
+	// the auto-hide clock
+	PanelClock pc;
+	CHECK(!pc.Open(0) && pc.Alpha(10) == 0.0f);
+	CHECK(pc.Toggle(1000) && pc.Open(1000) && pc.Open(1000 + kPanelMs - 1) && !pc.Open(1000 + kPanelMs));
+	CHECK(pc.Alpha(1000) == 1.0f && pc.Alpha(1000 + kPanelMs - kPanelFadeMs / 2) > 0.0f && pc.Alpha(1000 + kPanelMs - kPanelFadeMs / 2) < 1.0f);
+	pc.Extend(5000);
+	CHECK(pc.Open(5000 + kPanelMs - 1) && !pc.Open(5000 + kPanelMs));
+	CHECK(!pc.Toggle(6000) && !pc.Open(6000)); // F1 again closes
+	pc.Extend(7000);
+	CHECK(!pc.Open(7000)); // a key press while closed does not open it
+	CHECK(pc.Toggle(8000) && pc.Open(8000));
+}
+
 int main() {
 	TestParse();
 	TestLimits();
@@ -247,6 +335,7 @@ int main() {
 	TestKeyMap();
 	TestTexts();
 	TestToast();
+	TestPanel();
 	std::printf("SceneSkipTests: %d checks, %d failed\n", g_checks, g_failed);
 	return g_failed == 0 ? 0 : 1;
 }

@@ -2,7 +2,7 @@
 # The run_one_tests.sh scan fails on a read site without a default-off idiom or with a default-on one.
 # ASTRO perf stack (beststack.env sets these; unset = release behaviour)
 KYTY_CP_LEAD_MAX_MS          # ASTRO cpusurvey
-KYTY_SCENE_KEYS              # ASTRO perfmode: scenery hotkeys F3/F4/F5/F10/F12 (=1; default off, keys reach the game)
+KYTY_SCENE_KEYS              # ASTRO perfmode: scenery hotkeys F1 (help panel)/F3/F4/F5/F10/F12 (=1; default off, keys reach the game)
 KYTY_SCENE_SKIP_FILE         # ASTRO perfmode: scene-gated instant draw skip table (path; default off)
 KYTY_ALIAS_REBUILD_PARTIAL   # ASTRO tilerfix
 KYTY_METALFX                 # ASTRO MetalFX

@@ -30,6 +30,7 @@ struct Runtime {
 	Toast                 toast;
 	std::atomic<uint64_t> toast_until_ms {0};
 	std::atomic<uint32_t> toast_revision {0};
+	std::atomic<uint64_t> panel_until_ms {0}; // F1 panel deadline (PanelClock, atomic so the overlay thread reads it without the lock)
 };
 
 uint64_t NowMs() {
@@ -114,6 +115,15 @@ bool HandleKey(Key key, bool shift, bool pressed) {
 	std::lock_guard<std::mutex> lock(r.mu);
 	const auto                  res = r.ctl.OnKey(true, key, shift, pressed);
 	if (!res.consumed || !pressed) return res.consumed;
+	{
+		PanelClock pc {r.panel_until_ms.load(std::memory_order_acquire)};
+		const auto now = NowMs();
+		if (res.panel) pc.Toggle(now);
+		else pc.Extend(now);
+		r.panel_until_ms.store(pc.until_ms, std::memory_order_release);
+		r.toast_revision.fetch_add(1, std::memory_order_relaxed);
+	}
+	if (res.panel) return true;
 	uint32_t pairs = 0;
 	if (res.changed) {
 		pairs = Republish(r);
@@ -138,6 +148,7 @@ void OnCpFlip() {
 	std::lock_guard<std::mutex> lock(r.mu);
 	if (scene != r.scene) {
 		r.scene = std::move(scene);
+		r.toast_revision.fetch_add(1, std::memory_order_relaxed); // an open F1 panel names the level
 		r.ctl.MarkLoaded(); // a level was entered: its data is the one the launcher staged
 		const auto pairs = Republish(r);
 		std::fprintf(stderr, "[scenery] scene %s: %u shader pairs active (%s)\n", r.scene.empty() ? "-" : r.scene.c_str(), pairs,
@@ -166,6 +177,33 @@ bool ToastView(char* line1, size_t cap1, char* line2, size_t cap2, float& alpha)
 	std::snprintf(line1, cap1, "%s", r.toast.line1.c_str());
 	std::snprintf(line2, cap2, "%s", r.toast.line2.c_str());
 	return true;
+}
+
+bool PanelWanted() noexcept {
+	if (!KeysEnabled()) return false;
+	return NowMs() < R().panel_until_ms.load(std::memory_order_acquire);
+}
+
+size_t PanelView(PanelText* out, size_t cap, float& alpha) {
+	if (!KeysEnabled()) return 0;
+	auto&      r   = R();
+	const auto now = NowMs();
+	const PanelClock pc {r.panel_until_ms.load(std::memory_order_acquire)};
+	if (!pc.Open(now)) return 0;
+	alpha = pc.Alpha(now);
+	std::vector<PanelLine> lines;
+	{
+		std::lock_guard<std::mutex> lock(r.mu);
+		lines = r.ctl.MakePanel(r.table, r.scene);
+	}
+	size_t n = 0;
+	for (const auto& l: lines) {
+		if (n >= cap) break;
+		std::snprintf(out[n].text, sizeof(out[n].text), "%s", l.text.c_str());
+		out[n].kind = static_cast<uint8_t>(l.kind);
+		n++;
+	}
+	return n;
 }
 
 std::string OverlayRow() {

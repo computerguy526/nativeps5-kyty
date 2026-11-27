@@ -575,7 +575,8 @@ void WindowContext::ProcessEvent(double time_s) {
 		// nps5 perfmode (KYTY_SCENE_KEYS=1, default off: the keys then reach the game as before): scenery keys.
 		if (SceneSkip::KeysEnabled()) {
 			using SceneSkip::Key;
-			const Key sk = event->key.key == SDLK_F3    ? Key::F3
+			const Key sk = event->key.key == SDLK_F1    ? Key::F1
+			               : event->key.key == SDLK_F3  ? Key::F3
 			               : event->key.key == SDLK_F4  ? Key::F4
 			               : event->key.key == SDLK_F5  ? Key::F5
 			               : event->key.key == SDLK_F10 ? Key::F10

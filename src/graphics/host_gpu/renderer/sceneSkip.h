@@ -9,11 +9,15 @@
 //   KYTY_SCENE_KEYS=1              F3 cycles the preset (full -> the table's presets -> full), F4 flowers, F5 grass, F10 small moss, F12 other
 //                                  decoration; Shift+F3 shows the state again. Each press writes KYTY_SCENE_STATE_FILE (atomically) for the launcher,
 //                                  which stages the level-data part (the overlay links the runtime reads at the next level load), and shows a toast.
+//                                  F1 toggles the help panel (what each key does in the current level; auto-hides). F1 is ours only with this switch.
 //
 // Table (KYTY_SCENE_SKIP_FILE; written by `nps5 run`, tab separated, # comments):
 //   preset <name> <cat=keep,...>        a preset of the F3 cycle (keep = percent of the category's objects that stay; 100 = untouched)
 //   start  <cat=keep,...>               the mask the launch starts with
 //   skip   <scene> <cat+cat> <vs hex> <ps hex or ->   one program pair that draws only objects of those categories in that scene
+//   level  <scene> <cat=how,...>        (F1 help panel) how each category applies in that level: instant | entry | both (entry = the level
+//                                       data of the next level load); a category not named is not in that level. A `skip` row also makes its
+//                                       categories instant for its scene.
 //
 // This header is pure (no emulator, no GPU, no SDL) so tests/SceneSkipTests.cpp is a plain executable. The runtime half (environment, files,
 // scene polling, toast) is sceneSkip.cpp.
@@ -38,6 +42,11 @@ inline constexpr size_t      kMaxPairs         = 64; // per scene (the shape of 
 inline constexpr size_t      kMaxPresets       = 8;
 inline constexpr uint64_t    kToastMs          = 4000;
 inline constexpr uint64_t    kToastFadeMs      = 500;
+inline constexpr uint64_t    kPanelMs          = 15000; // the F1 panel hides itself after this long
+inline constexpr uint64_t    kPanelFadeMs      = 500;
+inline constexpr size_t      kMaxLevels        = 64;
+inline constexpr uint8_t     kHowInstant       = 1;
+inline constexpr uint8_t     kHowEntry         = 2;
 
 // Percent of each category's objects that stay: 100 = untouched, 0 = all removed, in between = thinned.
 using Mask = std::array<uint8_t, kCatCount>;
@@ -66,8 +75,15 @@ struct SkipRow {
 	bool        has_ps = false;
 };
 
+// How each category applies in one level (bits kHowInstant | kHowEntry per category; 0 = not in that level).
+struct LevelInfo {
+	std::string                 scene;
+	std::array<uint8_t, kCatCount> how {};
+};
+
 struct Table {
 	std::vector<Preset>  presets;
+	std::vector<LevelInfo> levels;
 	Mask                 start = kAllOn;
 	std::vector<SkipRow> skips;
 	uint32_t             bad_lines = 0; // lines that did not parse (ignored)
@@ -195,11 +211,62 @@ inline Table ParseTable(std::string_view text) {
 				continue;
 			}
 			t.skips.push_back(std::move(r));
+		} else if (f[0] == "level" && f.size() == 3) {
+			LevelInfo li;
+			bool      ok = Detail::PlainName(f[1]) && t.levels.size() < kMaxLevels;
+			li.scene     = std::string(f[1]);
+			for (const auto item: Detail::Split(f[2], ',')) {
+				const auto eq = item.find('=');
+				Cat        c;
+				if (eq == std::string_view::npos || !CatFromName(item.substr(0, eq), c)) {
+					ok = false;
+					continue;
+				}
+				const auto h = item.substr(eq + 1);
+				if (h == "instant") li.how[c] = kHowInstant;
+				else if (h == "entry") li.how[c] = kHowEntry;
+				else if (h == "both") li.how[c] = kHowInstant | kHowEntry;
+				else ok = false;
+			}
+			if (!ok) {
+				t.bad_lines++;
+				continue;
+			}
+			bool merged = false;
+			for (auto& l: t.levels) {
+				if (l.scene != li.scene) continue;
+				for (size_t i = 0; i < kCatCount; i++) l.how[i] |= li.how[i];
+				merged = true;
+			}
+			if (!merged) t.levels.push_back(std::move(li));
 		} else {
 			t.bad_lines++;
 		}
 	}
 	return t;
+}
+
+// How each category applies in `scene`: the `level` lines, plus instant for every category a `skip` row of the scene names.
+struct SceneHow {
+	std::array<uint8_t, kCatCount>  how {};
+	std::array<uint32_t, kCatCount> pairs {}; // `skip` rows of the scene that name the category
+};
+inline SceneHow HowFor(const Table& table, std::string_view scene) {
+	SceneHow out;
+	if (scene.empty()) return out;
+	for (const auto& l: table.levels) {
+		if (l.scene == scene) out.how = l.how;
+	}
+	for (const auto& r: table.skips) {
+		if (r.scene != scene) continue;
+		for (size_t c = 0; c < kCatCount; c++) {
+			if ((r.cats & (1u << c)) != 0) {
+				out.how[c] |= kHowInstant;
+				out.pairs[c]++;
+			}
+		}
+	}
+	return out;
 }
 
 // The rows of `scene` whose categories are ALL off (keep 0) under `mask`: a pair that draws grass and another category stays while any of
@@ -251,11 +318,37 @@ struct ActiveSet {
 	}
 };
 
-enum class Key : uint8_t { None, F3, F4, F5, F10, F12 };
+enum class Key : uint8_t { None, F1, F3, F4, F5, F10, F12 };
 
 struct Toast {
 	std::string line1;
 	std::string line2;
+};
+
+// The F1 panel: lines of text with a kind (the overlay picks the colour).
+enum class PanelKind : uint8_t { Title, Heading, On, Off, Dim, Note };
+struct PanelLine {
+	std::string text;
+	PanelKind   kind = PanelKind::Dim;
+};
+
+// The F1 panel's open/close state with its auto-hide deadline (pure: the caller supplies the clock).
+struct PanelClock {
+	uint64_t until_ms = 0;
+	[[nodiscard]] bool Open(uint64_t now) const { return now < until_ms; }
+	// F1 pressed: closes an open panel, opens a closed one for kPanelMs. -> open now.
+	bool Toggle(uint64_t now) {
+		until_ms = Open(now) ? 0 : now + kPanelMs;
+		return until_ms != 0;
+	}
+	// Any other key press while open keeps it up for as long as the player is using the keys.
+	void Extend(uint64_t now) {
+		if (Open(now)) until_ms = now + kPanelMs;
+	}
+	[[nodiscard]] float Alpha(uint64_t now) const {
+		if (!Open(now)) return 0.0f;
+		return until_ms - now >= kPanelFadeMs ? 1.0f : static_cast<float>(until_ms - now) / static_cast<float>(kPanelFadeMs);
+	}
 };
 
 // The scenery state machine: pure; the runtime feeds it key presses. Not thread safe (the runtime holds a mutex).
@@ -304,6 +397,7 @@ public:
 		bool        consumed = false; // the key is ours (down, up and repeat of it never reach the game)
 		bool        changed  = false; // the mask changed (stage, publish, toast)
 		bool        show     = false; // show the state without a change (Shift+F3)
+		bool        panel    = false; // F1: toggle the help panel
 		int         cat      = -1;    // the one category a toggle changed
 		std::string headline;         // toast line 1
 	};
@@ -314,6 +408,10 @@ public:
 		if (!enabled || key == Key::None) return r;
 		r.consumed = true;
 		if (!pressed) return r;
+		if (key == Key::F1) {
+			r.panel = true;
+			return r;
+		}
 		if (key == Key::F3) {
 			if (shift) {
 				r.show     = true;
@@ -368,6 +466,46 @@ public:
 		return s;
 	}
 
+	// The F1 panel for `scene` under the current mask: what each key does in this level and how it applies. `scene` empty = no level yet.
+	[[nodiscard]] std::vector<PanelLine> MakePanel(const Table& table, std::string_view scene) const {
+		std::vector<PanelLine> out;
+		out.push_back({"Scenery options  (F1 closes)", PanelKind::Title});
+		out.push_back({"Level: " + (scene.empty() ? std::string("not in a level yet") : std::string(scene)), PanelKind::Heading});
+		out.push_back({"Preset: " + PresetName() + "   F3 cycles " + CycleText() + "   Shift+F3 shows state", PanelKind::Heading});
+		const auto  h    = HowFor(table, scene);
+		const char* keys[] = {"F4", "F5", "F10", "F12"};
+		bool        any_entry = false, any_instant = false;
+		for (size_t i = 0; i < kCatCount; i++) {
+			std::string line = std::string(keys[i]) + "  " + kCatNames[i];
+			while (line.size() < 14) line += ' ';
+			if (h.how[i] == 0) {
+				line += "n/a   not in this level";
+				out.push_back({line, PanelKind::Dim});
+				continue;
+			}
+			const uint8_t v = m_mask[i];
+			line += v == 100 ? "ON    " : v == 0 ? "OFF   " : (std::to_string(v) + "%   ");
+			if ((h.how[i] & kHowInstant) != 0 && (h.how[i] & kHowEntry) != 0) line += "instant + fully on re-entry";
+			else if ((h.how[i] & kHowInstant) != 0) line += "instant";
+			else line += "on re-entry";
+			if (h.pairs[i] != 0) line += "  (" + std::to_string(h.pairs[i]) + " shader pair" + (h.pairs[i] == 1 ? "" : "s") + ")";
+			any_entry   = any_entry || (h.how[i] & kHowEntry) != 0;
+			any_instant = any_instant || (h.how[i] & kHowInstant) != 0;
+			out.push_back({line, v == 100 ? PanelKind::On : PanelKind::Off});
+		}
+		if (!any_entry && !any_instant) out.push_back({"Nothing to switch here.", PanelKind::Note});
+		else if (any_entry) out.push_back({"Re-enter the level to apply the on re-entry changes.", PanelKind::Note});
+		if (DiffersFromLoaded()) out.push_back({"Changed since this level loaded.", PanelKind::Note});
+		return out;
+	}
+
+	// "full > balanced > performance > full"
+	[[nodiscard]] std::string CycleText() const {
+		std::string s = "full";
+		for (const auto& p: m_presets) s += " > " + p.name;
+		return s + " > full";
+	}
+
 	// The toast: line 1 the headline, line 2 what applies when. `pairs` = the draw skip pairs active in the current scene.
 	[[nodiscard]] Toast MakeToast(const std::string& headline, uint32_t pairs, bool show_only) const {
 		Toast t {headline, {}};
@@ -416,5 +554,13 @@ void OnCpFlip();
 bool                   ToastView(char* line1, size_t cap1, char* line2, size_t cap2, float& alpha);
 // The F2 overlay row text ("F- G+ M+ O+ (balanced)"); empty when the keys are off.
 [[nodiscard]] std::string OverlayRow();
+// The F1 panel (systemOverlay): open until it hides itself (kPanelMs) or F1 again. Lines are copied into the caller's fixed buffer.
+struct PanelText {
+	char    text[120];
+	uint8_t kind; // PanelKind
+};
+inline constexpr size_t kPanelMaxLines = 16;
+[[nodiscard]] bool PanelWanted() noexcept;
+size_t             PanelView(PanelText* out, size_t cap, float& alpha); // lines written; 0 = closed
 
 } // namespace Libs::Graphics::SceneSkip
