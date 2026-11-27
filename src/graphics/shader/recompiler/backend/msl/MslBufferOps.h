@@ -109,6 +109,15 @@ void GroupLoadWords(MemOut& o, const BufferBinding& b, const std::string& lo, co
                     const std::string& pre, uint32_t ndw, const std::string& W,
                     const std::string& F, bool mutant);
 
+// vs_load_region (MslXform.h): pieces of one merged guarded vector load. Checked = the access has a
+// descriptor-size guard at all; Limit = the uniform per-buffer limit `size >= B ? size - (B-1) : 0u`
+// (addr < Limit  <=>  ulong(addr) + B <= ulong(size)); FastLoad = the plain vector load (mutant:
+// +4 bytes, validation only).
+bool        RegionChecked(const BufferBinding& b);
+std::string RegionLimit(const BufferBinding& b, uint32_t bytes);
+std::string RegionFastLoad(const BufferBinding& b, const std::string& addr, uint32_t comps,
+                           bool mutant);
+
 // MSL helper functions (ufloat convert etc.). Emit once at file scope before any LoadFormatted use.
 std::string BufferHelpersPrelude();
 

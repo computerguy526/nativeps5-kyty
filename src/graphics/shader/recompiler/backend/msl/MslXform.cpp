@@ -45,6 +45,8 @@ constexpr Info Registry[Count] = {
      "buffer bounds check as one compare against a uniform per-buffer limit"},
     {"guard_exit", 1, ShaderType::Unknown, "preconditioned",
      "gpuguard loop budget checked inside the loop's own exit test (one exit edge)"},
+    {"vs_load_region", 1, ShaderType::Vertex, "semantic-exact",
+     "vertex: all guarded vector loads under one exec value in one block, one all-in-bounds test"},
 };
 
 constexpr uint32_t AllMask = (1u << Count) - 1u;
@@ -52,7 +54,7 @@ constexpr uint32_t AllMask = (1u << Count) - 1u;
 // per-key choices (mode tokens vgroup / cload, or their xf= bits) and never part of `all`.
 constexpr uint32_t ListAllMask =
     AllMask & ~((1u << VsLoadGroup) | (1u << VsConstLoad) | (1u << LoopCont) | (1u << BoundsLim) |
-                (1u << GuardExit));
+                (1u << GuardExit) | (1u << VsLoadRegion));
 
 thread_local uint32_t   g_active = 0;
 thread_local ShaderType g_stage  = ShaderType::Unknown;
@@ -163,6 +165,8 @@ void Begin(ShaderType stage, uint64_t shader_hash) {
 		g_active |= 1u << BoundsLim;
 	if (EnvOn("KYTY_MSL_XF_GEXIT")) // mode token `gexit`; read per call
 		g_active |= 1u << GuardExit;
+	if (EnvOn("KYTY_MSL_VS_LOAD_REGION")) // mode token `vregion`; read per call
+		g_active |= 1u << VsLoadRegion;
 	const auto& t = Table();
 	if (const auto it = t.find({StageChar(stage), shader_hash}); it != t.end())
 		g_active = it->second;
@@ -232,7 +236,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
 	      "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT",
 	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_VS_MODES", "KYTY_MSL_XF_TABLE",
-	      "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT", "KYTY_MSL_KK_VS_ADCE"}) {
+	      "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT", "KYTY_MSL_KK_VS_ADCE",
+	      "KYTY_MSL_VS_LOAD_REGION", "KYTY_MSL_VS_LOAD_REGION_MIN"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
 			        " is set in the environment; --mode does not mix with hand-set switches";
@@ -284,6 +289,8 @@ bool ApplyMode(std::string_view mode, std::string& error) {
 			ok = SetOnce("KYTY_MSL_XF_BLIM", "1", error);
 		} else if (key == "gexit" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_XF_GEXIT", "1", error);
+		} else if (key == "vregion" && val.empty()) {
+			ok = SetOnce("KYTY_MSL_VS_LOAD_REGION", "1", error);
 		} else if (key == "vsmodes" && val.empty()) {
 			ok = SetOnce("KYTY_MSL_VS_MODES", "1", error);
 		} else if (key == "vsadce" && val.empty()) {
@@ -335,6 +342,8 @@ std::string ModeCatalogue() {
 	    "transform bounds_lim)\n"
 	    "gexit\tgpuguard loop budget checked inside the loop's own exit test (KYTY_MSL_XF_GEXIT=1 "
 	    "= transform guard_exit)\n"
+	    "vregion\tvertex: guarded vector loads under one exec value merged into one block with one "
+	    "all-in-bounds test (KYTY_MSL_VS_LOAD_REGION=1 = transform vs_load_region)\n"
 	    "vsmodes\tvertex: KK's per-op float modes (position slice safe, rest relaxed, MAD as two "
 	    "statements; KYTY_MSL_VS_MODES=1)\n"
 	    "vsadce\tvertex: attribute slots from mark-and-sweep liveness, as NIR numbers them "

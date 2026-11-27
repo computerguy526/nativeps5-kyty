@@ -66,6 +66,8 @@ struct MslCtx {
 	// one. Opaque here: the types are local to those files.
 	mutable std::shared_ptr<void> lg_info;
 	mutable std::shared_ptr<void> movrel_chains;
+	// vregion: the vs_load_region merged-load regions of THIS emission (mslEmitterMem.cpp VrOf).
+	mutable std::shared_ptr<void> vr_info;
 	// fmsel6 KYTY_GPU_ACCURACY=normal (pixel/compute): float results of instructions outside
 	// `precise` (IR::CollectPreciseSet) are assigned inside `{ #pragma METAL fp math_mode(fast) }`
 	// blocks; the rest of the program (and every prelude helper) keeps the library's math mode
