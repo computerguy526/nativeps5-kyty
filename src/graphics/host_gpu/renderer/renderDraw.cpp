@@ -48,6 +48,7 @@
 #include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/nanProbe.h"
 #include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/pixelRateVariant.h"
@@ -7712,6 +7713,22 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			record.valid = false;
 		}
 		return;
+	}
+	// nps5 perfmode (KYTY_SCENE_SKIP_FILE, default off): the vertex/pixel program pair is one the player switched off with the scenery
+	// keys in the current scene (sceneSkip.h). One relaxed load per draw when nothing is active.
+	if (SceneSkip::Active()) [[unlikely]] {
+		const auto* vs_program = state.vertex_info[0].stage.program;
+		const auto* ps_program = state.ps_active ? state.ps_input_info.stage.program : nullptr;
+		if (vs_program != nullptr &&
+		    SceneSkip::Skips(vs_program->shader_hash, ps_program != nullptr ? ps_program->shader_hash : 0, ps_program != nullptr)) {
+			m_run.valid        = false;
+			m_run_active       = false;
+			m_run_targets_kept = false;
+			for (auto& record: m_run_kept) {
+				record.valid = false;
+			}
+			return;
+		}
 	}
 	// CommitStats: image transitions recorded while this draw is committed.
 	const auto stats_transitions = CommitStats::Enabled() ? Image::RecordedTransitions() : uint64_t {0};

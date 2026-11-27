@@ -747,6 +747,10 @@ target_include_directories(compile_progress_tests PRIVATE "${KYTY_SOURCE_DIR}")
 add_executable(cp_lead_bound_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/CpLeadBoundTests.cpp")
 target_include_directories(cp_lead_bound_tests PRIVATE "${KYTY_SOURCE_DIR}")
 
+# perfmode: scenery keys + scene-gated draw skip (renderer/sceneSkip.h, header only core), no GPU.
+add_executable(scene_skip_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/SceneSkipTests.cpp")
+target_include_directories(scene_skip_tests PRIVATE "${KYTY_SOURCE_DIR}")
+
 # indirectfix: SET_BASE persistence + skip-not-exit verdicts (command_processor/indirectBase.h, header only), no GPU.
 add_executable(indirect_base_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/IndirectBaseTests.cpp")
 target_include_directories(indirect_base_tests PRIVATE "${KYTY_SOURCE_DIR}")

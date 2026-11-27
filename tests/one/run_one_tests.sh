@@ -15,7 +15,7 @@ while [ $# -gt 0 ]; do case $1 in --require) REQUIRE=$2; shift;; --msl-ref) MSLR
 fail=0; note() { echo "[one] $*"; }; bad() { echo "[one] FAIL: $*"; fail=$((fail+1)); }
 
 TESTS="kyty_one_tests hybrid_seam_tests hosted_guard_tests hosted_ranges_tests cp_lead_bound_tests load_card_tests launch_phase_tests
- read_fault_frame_burst_tests occlusion_draw_skip_tests compile_progress_tests progress_overlay_tests live_switch_tests
+ read_fault_frame_burst_tests occlusion_draw_skip_tests compile_progress_tests progress_overlay_tests live_switch_tests scene_skip_tests
  kk_lowering_tests gpu_safety_tests"
 # Not in the list: scalar_provenance_tests, resource_tracking_tests, resource_materialization_tests fail to link at the base
 # (159eba04: undefined Libs::LibKernel::Memory::GuestReadPtr), a pre-existing CMake gap, not a merge regression.

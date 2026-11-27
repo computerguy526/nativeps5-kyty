@@ -15,6 +15,7 @@
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/autoCap.h"
 #include "graphics/presentation/performanceOverlay.h"
@@ -571,6 +572,19 @@ void WindowContext::ProcessEvent(double time_s) {
 	auto* event = &game.event;
 	if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
 		const bool pressed = event->type == SDL_EVENT_KEY_DOWN && event->key.repeat == 0;
+		// nps5 perfmode (KYTY_SCENE_KEYS=1, default off: the keys then reach the game as before): scenery keys.
+		if (SceneSkip::KeysEnabled()) {
+			using SceneSkip::Key;
+			const Key sk = event->key.key == SDLK_F3    ? Key::F3
+			               : event->key.key == SDLK_F4  ? Key::F4
+			               : event->key.key == SDLK_F5  ? Key::F5
+			               : event->key.key == SDLK_F10 ? Key::F10
+			               : event->key.key == SDLK_F12 ? Key::F12
+			                                            : Key::None;
+			if (SceneSkip::HandleKey(sk, (event->key.mod & SDL_KMOD_SHIFT) != 0, pressed)) {
+				return;
+			}
+		}
 		switch (event->key.key) {
 #if defined(__APPLE__)
 			// winresize: F11 and Cmd+Ctrl+F (the macOS shortcut) toggle desktop fullscreen;
