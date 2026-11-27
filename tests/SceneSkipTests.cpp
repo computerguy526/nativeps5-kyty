@@ -1,0 +1,252 @@
+// nps5 perfmode: unit tests of the scenery keys and the scene-gated draw skip (renderer/sceneSkip.h, header only core). Standalone:
+//   clang++ -std=c++20 -O2 -Isrc tests/SceneSkipTests.cpp -o /tmp/scene_skip_tests && /tmp/scene_skip_tests
+// CMake target: scene_skip_tests. SYNTHETIC data only: invented scene names and program hashes.
+#include "graphics/host_gpu/renderer/sceneSkip.h"
+
+#include <cstdio>
+
+using namespace Libs::Graphics::SceneSkip;
+
+static int g_checks = 0, g_failed = 0;
+#define CHECK(c)                                                                                   \
+	do {                                                                                           \
+		g_checks++;                                                                                \
+		if (!(c)) {                                                                                \
+			g_failed++;                                                                            \
+			std::printf("FAILED %s:%d %s\n", __FILE__, __LINE__, #c);                              \
+		}                                                                                          \
+	} while (0)
+
+static const char* kTable =
+    "# test table\n"
+    "preset\tbalanced\tflowers=50,grass=50\n"
+    "preset\tperformance\tflowers=0,grass=0,moss=0,other=0\n"
+    "start\tflowers=100,grass=100,moss=100,other=100\n"
+    "skip\tlevel_a\tflowers\t00000000000000a1\t00000000000000b1\n"
+    "skip\tlevel_a\tflowers\t00000000000000a2\t-\n"
+    "skip\tlevel_a\tgrass+moss\t00000000000000a3\t00000000000000b3\n"
+    "skip\tlevel_b\tgrass\t00000000000000a4\t00000000000000b4\n";
+
+static Mask M(int f, int g, int m, int o) {
+	return {static_cast<uint8_t>(f), static_cast<uint8_t>(g), static_cast<uint8_t>(m), static_cast<uint8_t>(o)};
+}
+
+static void TestParse() {
+	const auto t = ParseTable(kTable);
+	CHECK(t.bad_lines == 0 && t.dropped == 0);
+	CHECK(t.presets.size() == 2 && t.presets[0].name == "balanced" && t.presets[1].name == "performance");
+	CHECK(t.presets[0].mask == M(50, 50, 100, 100));
+	CHECK(t.presets[1].mask == M(0, 0, 0, 0));
+	CHECK(t.start == kAllOn);
+	CHECK(t.skips.size() == 4);
+	CHECK(t.skips[0].scene == "level_a" && t.skips[0].cats == 1 && t.skips[0].vs == 0xa1 && t.skips[0].ps == 0xb1 && t.skips[0].has_ps);
+	CHECK(!t.skips[1].has_ps);
+	CHECK(t.skips[2].cats == ((1u << Grass) | (1u << Moss)));
+	// CRLF and missing trailing newline
+	const auto c = ParseTable("start\tflowers=0\r\nskip\ts\tgrass\tff\t-");
+	CHECK(c.bad_lines == 0 && c.start == M(0, 100, 100, 100) && c.skips.size() == 1 && c.skips[0].vs == 0xff);
+	// bad forms are counted and ignored, the good lines around them still count
+	const char* bad[] = {"preset\tfull\tflowers=0",       "preset\tcustom\tflowers=0",     "preset\tx\tflowers=101",       "preset\tx\ttrees=0",
+	                     "preset\tx\tflowers",            "preset\tx",                     "start\tgrass=1x",              "start\t",
+	                     "skip\ts\tgrass\t0\t-",          "skip\ts\ttrees\tab\t-",         "skip\ts\tgrass\tzz\t-",        "skip\ts\tgrass\tab\tzz",
+	                     "skip\ts\tgrass\tab",            "skip\t../x\tgrass\tab\t-",      "skip\ts\tgrass+\tab\t-",       "wat\t1",
+	                     "skip\ts\tgrass\t11111111111111111\t-"};
+	for (const auto* b: bad) {
+		const auto t2 = ParseTable(std::string(b) + "\nstart\tflowers=0\n");
+		CHECK(t2.bad_lines == 1);
+		CHECK(t2.start == M(0, 100, 100, 100));
+		CHECK(t2.skips.empty() && t2.presets.empty());
+	}
+	CHECK(ParseTable("").skips.empty());
+	CHECK(ParseTable("\n\n# only comments\n").bad_lines == 0);
+}
+
+static void TestLimits() {
+	std::string text;
+	for (int i = 0; i < 70; i++) {
+		char line[96];
+		std::snprintf(line, sizeof(line), "skip\tbig\tgrass\t%x\t-\n", 0x100 + i);
+		text += line;
+	}
+	text += "skip\tother_scene\tgrass\t5\t-\n";
+	const auto t = ParseTable(text);
+	CHECK(t.skips.size() == kMaxPairs + 1); // 64 of "big" and the one of the other scene
+	CHECK(t.dropped == 6);
+	CHECK(SelectActive(t, "big", M(100, 0, 100, 100)).size() == kMaxPairs);
+	// presets over the limit
+	std::string p;
+	for (int i = 0; i < 12; i++) p += "preset\tp" + std::to_string(i) + "\tflowers=0\n";
+	const auto tp = ParseTable(p);
+	CHECK(tp.presets.size() == kMaxPresets && tp.bad_lines == 4);
+}
+
+static void TestSelect() {
+	const auto t = ParseTable(kTable);
+	// everything on: nothing is skipped
+	CHECK(SelectActive(t, "level_a", kAllOn).empty());
+	// flowers off: the two flower pairs of level_a only
+	auto a = SelectActive(t, "level_a", M(0, 100, 100, 100));
+	CHECK(a.size() == 2 && a[0].vs == 0xa1 && a[1].vs == 0xa2);
+	// a pair that draws grass AND moss is skipped only while both are off
+	CHECK(SelectActive(t, "level_a", M(100, 0, 100, 100)).empty());
+	CHECK(SelectActive(t, "level_a", M(100, 100, 0, 100)).empty());
+	a = SelectActive(t, "level_a", M(100, 0, 0, 100));
+	CHECK(a.size() == 1 && a[0].vs == 0xa3);
+	// a thinned category is not off
+	CHECK(SelectActive(t, "level_a", M(50, 100, 100, 100)).empty());
+	CHECK(SelectActive(t, "level_a", M(50, 50, 50, 50)).empty());
+	// another scene = no skip of level_a's pairs; unknown or empty scene = none
+	CHECK(SelectActive(t, "level_b", M(0, 100, 100, 100)).empty());
+	a = SelectActive(t, "level_b", M(100, 0, 100, 100));
+	CHECK(a.size() == 1 && a[0].vs == 0xa4);
+	CHECK(SelectActive(t, "", M(0, 0, 0, 0)).empty());
+	CHECK(SelectActive(t, "nowhere", M(0, 0, 0, 0)).empty());
+}
+
+static void TestActiveSet() {
+	ActiveSet s;
+	CHECK(s.Count() == 0);
+	CHECK(!s.Contains(0xa1, 0xb1, true));
+	const auto t = ParseTable(kTable);
+	s.Publish(SelectActive(t, "level_a", M(0, 100, 100, 100)));
+	CHECK(s.Count() == 2);
+	CHECK(s.Contains(0xa1, 0xb1, true));   // the pair
+	CHECK(!s.Contains(0xa1, 0xb9, true));  // same vertex program, other pixel program: a different object, not skipped
+	CHECK(!s.Contains(0xa1, 0, false));    // no pixel program: a row with one never matches
+	CHECK(s.Contains(0xa2, 0x1234, true)); // ps=- : the vertex program alone
+	CHECK(s.Contains(0xa2, 0, false));
+	CHECK(!s.Contains(0xb1, 0xa1, true));  // vs and ps are not interchangeable
+	s.Publish({});                         // another scene / everything on again
+	CHECK(s.Count() == 0 && !s.Contains(0xa1, 0xb1, true));
+	// the limit
+	std::vector<SkipRow> many;
+	for (uint64_t i = 1; i <= 100; i++) many.push_back({"x", 1, i, 0, false});
+	s.Publish(many);
+	CHECK(s.Count() == kMaxPairs && s.Contains(64, 0, false) && !s.Contains(65, 0, false));
+	// the global one starts empty (nothing is active unless the runtime publishes)
+	CHECK(!Active() && !Skips(1, 1, true));
+}
+
+static void TestCycle() {
+	const auto  t = ParseTable(kTable);
+	Controller  c;
+	c.Init(t);
+	CHECK(c.PresetName() == "full" && c.Seq() == 0);
+	// F3: full -> balanced -> performance -> full
+	auto r = c.OnKey(true, Key::F3, false, true);
+	CHECK(r.consumed && r.changed && c.PresetName() == "balanced" && c.Current() == M(50, 50, 100, 100) && c.Seq() == 1);
+	CHECK(r.headline == "Scenery: balanced");
+	r = c.OnKey(true, Key::F3, false, true);
+	CHECK(c.PresetName() == "performance" && c.Current() == M(0, 0, 0, 0) && c.Seq() == 2);
+	r = c.OnKey(true, Key::F3, false, true);
+	CHECK(c.PresetName() == "full" && c.Current() == kAllOn && c.Seq() == 3 && r.headline == "Scenery: full");
+	// from a custom mask F3 goes to full
+	c.OnKey(true, Key::F4, false, true);
+	CHECK(c.PresetName() == "custom");
+	c.OnKey(true, Key::F3, false, true);
+	CHECK(c.PresetName() == "full");
+	// a table without presets: F3 stays at full (no change, no seq)
+	Controller e;
+	e.Init(ParseTable("start\tflowers=100\n"));
+	const auto before = e.Seq();
+	r = e.OnKey(true, Key::F3, false, true);
+	CHECK(r.consumed && !r.changed && e.Seq() == before);
+}
+
+static void TestToggles() {
+	Controller c;
+	c.Init(ParseTable(kTable));
+	auto r = c.OnKey(true, Key::F4, false, true);
+	CHECK(r.changed && r.cat == Flowers && c.Current() == M(0, 100, 100, 100) && r.headline == "Scenery: flowers OFF");
+	r = c.OnKey(true, Key::F4, false, true);
+	CHECK(c.Current() == kAllOn && r.headline == "Scenery: flowers ON");
+	c.OnKey(true, Key::F5, false, true);
+	CHECK(c.Current() == M(100, 0, 100, 100));
+	c.OnKey(true, Key::F10, false, true);
+	CHECK(c.Current() == M(100, 0, 0, 100));
+	c.OnKey(true, Key::F12, false, true);
+	CHECK(c.Current() == M(100, 0, 0, 0));
+	CHECK(c.Seq() == 5);
+	// a thinned category (balanced) goes OFF on its key
+	Controller b;
+	b.Init(ParseTable(kTable));
+	b.OnKey(true, Key::F3, false, true);
+	CHECK(b.Current()[Flowers] == 50);
+	b.OnKey(true, Key::F4, false, true);
+	CHECK(b.Current()[Flowers] == 0 && b.Current()[Grass] == 50);
+	// Shift+F3 shows the state: no change, no seq
+	const auto seq = b.Seq();
+	r = b.OnKey(true, Key::F3, true, true);
+	CHECK(r.consumed && !r.changed && r.show && b.Seq() == seq && r.headline == "Scenery: custom");
+	CHECK(b.MakeToast(r.headline, 0, true).line2 == "F- G~ M+ O+");
+}
+
+static void TestKeyMap() {
+	Controller c;
+	c.Init(ParseTable(kTable));
+	// keys off: nothing is consumed, nothing changes, for every key, down and up
+	for (const auto k: {Key::F3, Key::F4, Key::F5, Key::F10, Key::F12, Key::None}) {
+		for (const bool pressed: {true, false}) {
+			const auto r = c.OnKey(false, k, false, pressed);
+			CHECK(!r.consumed && !r.changed);
+		}
+	}
+	CHECK(c.Current() == kAllOn && c.Seq() == 0);
+	// keys on: a key that is not ours is not consumed
+	CHECK(!c.OnKey(true, Key::None, false, true).consumed);
+	// release (and repeat, which the window passes as pressed=false) is consumed without effect
+	const auto r = c.OnKey(true, Key::F4, false, false);
+	CHECK(r.consumed && !r.changed && c.Current() == kAllOn && c.Seq() == 0);
+}
+
+static void TestTexts() {
+	Controller c;
+	c.Init(ParseTable(kTable));
+	CHECK(c.StateText() == "seq=0\npreset=full\nflowers=100\ngrass=100\nmoss=100\nother=100\n");
+	c.OnKey(true, Key::F3, false, true);
+	CHECK(c.StateText() == "seq=1\npreset=balanced\nflowers=50\ngrass=50\nmoss=100\nother=100\n");
+	c.OnKey(true, Key::F3, false, true);
+	CHECK(c.StateText() == "seq=2\npreset=performance\nflowers=0\ngrass=0\nmoss=0\nother=0\n");
+	CHECK(c.RowText() == "F- G- M- O- (performance)");
+	c.OnKey(true, Key::F3, false, true);
+	c.OnKey(true, Key::F4, false, true);
+	CHECK(c.RowText() == "F- G+ M+ O+ (custom)");
+	CHECK(c.LogLine(0, 2, "level_a") == "[scenery] seq 4: flowers OFF (instant: 2 shader pairs in level_a), grass on, moss on, other on");
+	CHECK(c.LogLine(0, 1, "") == "[scenery] seq 4: flowers OFF (instant: 1 shader pair in no scene), grass on, moss on, other on");
+	CHECK(MaskText(M(0, 50, 100, 7)) == "flowers=0,grass=50,moss=100,other=7");
+	Mask m;
+	CHECK(ParseMask(MaskText(M(0, 50, 100, 7)), m) && m == M(0, 50, 100, 7));
+	CHECK(!ParseMask("", m) && !ParseMask("flowers=", m) && !ParseMask("flowers=-1", m) && !ParseMask("tree=1", m) && !ParseMask("flowers=1000", m));
+}
+
+static void TestToast() {
+	Controller c;
+	c.Init(ParseTable(kTable));
+	auto r = c.OnKey(true, Key::F4, false, true);
+	// level data differs from what is loaded: re-entry text; with instant pairs it says hidden now
+	CHECK(c.MakeToast(r.headline, 0, false).line2 == "applies when you re-enter the level");
+	CHECK(c.MakeToast(r.headline, 2, false).line2 == "hidden now; re-enter the level to apply fully");
+	// a level entered after the press: the loaded mask follows
+	c.MarkLoaded();
+	CHECK(!c.DiffersFromLoaded());
+	CHECK(c.MakeToast(r.headline, 2, false).line2 == "same as the level in memory");
+	// pressing back to the loaded mask
+	c.OnKey(true, Key::F4, false, true);
+	CHECK(c.DiffersFromLoaded());
+	c.OnKey(true, Key::F4, false, true);
+	CHECK(!c.DiffersFromLoaded());
+}
+
+int main() {
+	TestParse();
+	TestLimits();
+	TestSelect();
+	TestActiveSet();
+	TestCycle();
+	TestToggles();
+	TestKeyMap();
+	TestTexts();
+	TestToast();
+	std::printf("SceneSkipTests: %d checks, %d failed\n", g_checks, g_failed);
+	return g_failed == 0 ? 0 : 1;
+}

@@ -5,6 +5,7 @@
 #include "common/hostInputTrace.h"
 #include "common/logging/log.h"
 #include "common/skipInvalid.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/presentation/window/hostInputPulse.h"
 #include "libs/controller.h"
 
@@ -276,7 +277,10 @@ public:
 
 			const bool reserved = binding.key == SDLK_ESCAPE || binding.key == SDLK_F1 ||
 			                      binding.key == SDLK_F2 || binding.key == SDLK_F7 ||
-			                      binding.key == SDLK_F8 || binding.key == SDLK_F11;
+			                      binding.key == SDLK_F8 || binding.key == SDLK_F11 ||
+			                      (SceneSkip::KeysEnabled() &&
+			                       (binding.key == SDLK_F3 || binding.key == SDLK_F4 || binding.key == SDLK_F5 ||
+			                        binding.key == SDLK_F10 || binding.key == SDLK_F12));
 			if (binding.control == INVALID_CONTROL || reserved ||
 			    (binding.key == SDLK_UNKNOWN && binding.mouse_button == 0)) {
 				// The launcher keeps the mapping in settings every KytyPS5 build on the PC shares,

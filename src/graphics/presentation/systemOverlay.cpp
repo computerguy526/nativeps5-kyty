@@ -8,6 +8,7 @@
 #include "common/stringUtils.h"
 #include "gpu_blit_shaders/gpu_imgui_hdr_spv.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/loadCard.h"
 #include "graphics/presentation/ddsImage.h"
 #include "graphics/presentation/performanceOverlay.h"
@@ -735,10 +736,11 @@ SystemOverlayVisualState GetSystemOverlayVisualState() noexcept {
 	const bool splash        = g_splash_active.load(std::memory_order_acquire);
 	const auto cursor        = GetHostInputTouchPadVisualState();
 	return {core.active || dialog.active || system.active || trophy_active || splash ||
-	            cursor.enabled || ProgressWanted(),
+	            cursor.enabled || ProgressWanted() || SceneSkip::ToastWanted(),
 	        core.revision + dialog.revision + system.revision + (trophy_active ? 1u : 0u) +
 	            (splash ? 2u : 0u) + static_cast<decltype(core.revision)>(cursor.revision) +
-	            PerformanceOverlayRevision() + g_progress_revision.load(std::memory_order_relaxed)};
+	            PerformanceOverlayRevision() + g_progress_revision.load(std::memory_order_relaxed) +
+	            SceneSkip::ToastRevision()};
 }
 
 void SystemOverlaySuppressProgress(bool suppress) noexcept {
@@ -1856,6 +1858,34 @@ struct SystemOverlay::Impl {
 		draw->PopClipRect();
 	}
 
+	// nps5 perfmode: the scenery key toast (top centre, 4 s, fades). Stack buffers and draw-list primitives only.
+	void DrawSceneToast(vk::Extent2D frame_extent) {
+		char  l1[96], l2[96];
+		float alpha = 0.0f;
+		if (!SceneSkip::ToastView(l1, sizeof(l1), l2, sizeof(l2), alpha)) {
+			return;
+		}
+		auto*        draw = ImGui::GetForegroundDrawList();
+		auto*        font = progress_font != nullptr ? progress_font : ImGui::GetFont();
+		const ImVec2 screen {static_cast<float>(frame_extent.width), static_cast<float>(frame_extent.height)};
+		const float  f    = std::max(0.5f, screen.y / 720.0f);
+		const float  big  = 22.0f * f, small = 15.0f * f, pad = 12.0f * f;
+		const auto   col  = [alpha](int r, int g, int b, int a = 255) {
+            return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(a) * alpha));
+		};
+		const auto width = [font](float size, const char* text) {
+			return font->CalcTextSizeA(size, std::numeric_limits<float>::max(), 0.0f, text).x;
+		};
+		const float w  = std::max(width(big, l1), width(small, l2)) + pad * 2.0f;
+		const float h  = pad * 2.0f + big + (l2[0] != '\0' ? small + pad * 0.4f : 0.0f);
+		const float x0 = (screen.x - w) * 0.5f, y0 = 16.0f * f;
+		draw->AddRectFilled({x0, y0}, {x0 + w, y0 + h}, col(15, 18, 23, 230), 8.0f * f);
+		draw->AddText(font, big, {(screen.x - width(big, l1)) * 0.5f, y0 + pad}, col(255, 255, 255), l1);
+		if (l2[0] != '\0') {
+			draw->AddText(font, small, {(screen.x - width(small, l2)) * 0.5f, y0 + pad + big + pad * 0.4f}, col(255, 199, 51), l2);
+		}
+	}
+
 	// nps5: compile progress card (before the first game frame) and corner badge (during play).
 	// Allocation free: stack text buffers and ImGui draw-list primitives only.
 	void DrawProgress(vk::Extent2D frame_extent) {
@@ -2050,7 +2080,7 @@ struct SystemOverlay::Impl {
 		if (!has_overlay && !g_trophy_notification_active.load(std::memory_order_acquire) &&
 		    !g_splash_active.load(std::memory_order_acquire) &&
 		    !GetHostInputTouchPadVisualState().enabled && !PerformanceOverlayEnabled() &&
-		    !ProgressWanted()) {
+		    !ProgressWanted() && !SceneSkip::ToastWanted()) {
 			return false;
 		}
 		const auto prepared_session = snapshot.session;
@@ -2093,6 +2123,7 @@ struct SystemOverlay::Impl {
 		DrawTrophyNotification(frame_extent, now, performance_bottom);
 		DrawTouchPadCursor(GetHostInputTouchPadVisualState());
 		DrawProgress(frame_extent);
+		DrawSceneToast(frame_extent);
 		ImGui::Render();
 		extent = frame_extent;
 		return true;

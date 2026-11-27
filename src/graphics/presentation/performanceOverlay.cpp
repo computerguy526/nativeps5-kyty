@@ -4,6 +4,7 @@
 #include "common/emulatorConfig.h"
 #include "common/hostStats.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/host_gpu/renderer/frameGen.h"
 #include "graphics/presentation/videoOut.h"
 #include "imgui.h"
@@ -520,6 +521,9 @@ void DrawCompact(const Snapshot& shown) {
 	               ? Fmt("%.0f%%  of %u threads", *host.process_cpu_percent, host.logical_cores)
 	               : std::string("n/a"));
 	Row("GPU", Percent(host.gpu_percent));
+	if (const auto scenery = SceneSkip::OverlayRow(); !scenery.empty()) {
+		Row("Scenery", scenery);
+	}
 	GpuActivityRows(shown);
 	CompilationRows(shown);
 	if (shown.device_memory) {

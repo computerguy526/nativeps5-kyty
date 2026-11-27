@@ -85,6 +85,7 @@
 #include <unordered_set>
 #include <vector>
 #include <xxhash.h>
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -93,6 +94,13 @@
 #endif
 
 namespace Libs::Graphics {
+
+// The guest flip's frame-boundary hooks of the command processor: live switches, then nps5 perfmode's scene poll (sceneSkip.h; one static
+// bool when KYTY_SCENE_KEYS / KYTY_SCENE_SKIP_FILE are unset).
+static inline void CpFlipHooks() {
+	Live::OnCpFlip();
+	SceneSkip::OnCpFlip();
+}
 
 static thread_local CommandProcessor* g_current_processor = nullptr;
 static thread_local Pm4Execution*     g_current_execution = nullptr;
@@ -5980,7 +5988,7 @@ void CommandProcessor::ExecFlip(const CpSeq::FlipOp& op) {
 			Sync::WriteAtEndOfPipeOnlyFlip(m_submit_id, command, flip.handle, flip.index,
 			                               flip.flip_mode, flip.flip_arg, request);
 			GetScheduler().Flush();
-			Live::OnCpFlip();
+			CpFlipHooks();
 			CpDecide::Report();
 			Libs::Graphics::PageManager::NoteCpFlip();
 			m_renderer.GetPipelineCache()
@@ -6012,7 +6020,7 @@ void CommandProcessor::ExecFlip(const CpSeq::FlipOp& op) {
 			                                 flip.handle, flip.index, flip.flip_mode,
 			                                 flip.flip_arg, request);
 			GetScheduler().Flush();
-			Live::OnCpFlip();
+			CpFlipHooks();
 			CpDecide::Report();
 			Libs::Graphics::PageManager::NoteCpFlip();
 			m_renderer.GetPipelineCache().WaitRtKernelsAtFlip();
@@ -6048,7 +6056,7 @@ void CommandProcessor::ExecFlip(const CpSeq::FlipOp& op) {
 				                                 flip.handle, flip.index, flip.flip_mode,
 				                                 flip.flip_arg, request);
 				GetScheduler().Flush();
-				Live::OnCpFlip();
+				CpFlipHooks();
 				CpDecide::Report();
 				Libs::Graphics::PageManager::NoteCpFlip();
 				m_renderer.GetPipelineCache().WaitRtKernelsAtFlip();
@@ -6063,7 +6071,7 @@ void CommandProcessor::ExecFlip(const CpSeq::FlipOp& op) {
 			    m_submit_id, command, static_cast<uint32_t*>(dst_gpu_addr), value, flip.handle,
 			    flip.index, flip.flip_mode, flip.flip_arg, request, m_interrupt_event_id);
 			GetScheduler().Flush();
-			Live::OnCpFlip();
+			CpFlipHooks();
 			CpDecide::Report();
 			Libs::Graphics::PageManager::NoteCpFlip();
 			m_renderer.GetPipelineCache().WaitRtKernelsAtFlip();
@@ -6089,7 +6097,7 @@ void CommandProcessor::PrepareCpuFlip(uint64_t request_id) {
 	GetScheduler().DeferPriorityOperation(
 	    [this, request_id] { m_renderer.GetVideoOut().CompleteFlip(request_id); });
 	GetScheduler().Flush();
-	Live::OnCpFlip();
+	CpFlipHooks();
 	CpDecide::Report();
 	Libs::Graphics::PageManager::NoteCpFlip();
 	m_renderer.GetPipelineCache()
