@@ -12,11 +12,14 @@
 #include "graphics/shader/recompiler/backend/msl/mslEmitterInternal.h"
 #include "graphics/shader/recompiler/ir/ProgramCodec.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
+#include "graphics/shader/recompiler/ir/passes/PrecisionAnalysis.h"
+#include "PrecisionCorpus.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 #include <string_view>
 #include <vector>
 
@@ -1859,6 +1862,50 @@ void TestVsLoadRegion() {
   unsetenv("KYTY_MSL_VS_LOAD_REGION");
 }
 
+// precise (2026-11-27): the position slice both back ends use (IR::CollectPositionSlice) follows a position through LDS.
+// A mesh program stores its vertices to LDS and exports what it loads back: without the hop the MAD that computes the
+// position is not in the slice (the v1.4.0-v1.4.3 emission: mesh positions relaxed / fused). Synthetic programs only.
+void TestPositionSliceThroughLds() {
+  namespace PC = PrecisionCorpus;
+  const auto mads = [](const PC::Code &code, ShaderType stage, bool lds, bool hop) {
+    ShaderVertexInputInfo vinfo;
+    SR::CompileOptions options;
+    options.stage = stage;
+    options.dump_ir = false;
+    std::vector<uint32_t> ud(16, 0);
+    options.user_data = ud;
+    if (lds) vinfo.lds_size_dwords = 64;
+    if (stage == ShaderType::Mesh) {
+      auto &m = vinfo.mesh;
+      m.threads_num[0] = 32; m.threads_num[1] = 1; m.threads_num[2] = 1;
+      m.wave_size = 32; m.host_subgroup_size = 32; m.lds_size_dwords = 64;
+      m.input_primitive = 4; m.primitives_per_group = 8; m.vertices_per_group = 24;
+      m.max_vertices = 24; m.max_primitives = 8; m.passes = 1;
+      vinfo.logical_stage = ShaderType::Mesh;
+      vinfo.wave_size = 32;
+      options.wave_size = 32;
+    }
+    options.input_info.vertex = &vinfo;
+    auto translated = SR::TranslateProgram(code, options);
+    std::unordered_set<const SR::IR::Inst *> slice;
+    SR::IR::CollectPositionSlice(translated.program, hop, slice);
+    int n = 0, seeds = 0;
+    for (const auto *inst : slice) {
+      n += inst->GetOpcode() == ValueOpcode::FPMad32 ? 1 : 0;
+      seeds += inst->GetOpcode() == ValueOpcode::SetAttribute ? 1 : 0;
+    }
+    return seeds == 0 ? n : -1; // the exports themselves are never members
+  };
+  Check(mads(PC::DirectMad(), ShaderType::Vertex, false, true) == 1 && mads(PC::DirectMad(), ShaderType::Vertex, false, false) == 1,
+        "position slice: a vertex program's position MAD, and only it, with or without the LDS hop");
+  Check(mads(PC::LdsMad(), ShaderType::Mesh, true, true) == 1, "position slice: mesh position stored to LDS and loaded back is in the slice");
+  Check(mads(PC::LdsMad(), ShaderType::Mesh, true, false) == 0, "position slice: without the hop the mesh position MAD is missed (the regression)");
+  Check(mads(PC::LdsMad(), ShaderType::Vertex, true, true) == 1 && mads(PC::LdsMad(), ShaderType::Vertex, true, false) == 0,
+        "position slice: the same through a vertex program's LDS");
+  Check(mads(PC::DirectMad(), ShaderType::Mesh, false, true) == 1, "position slice: a mesh position computed in the exporting lane");
+  Check(SR::GetCodegenOptions().position_slice_lds, "position slice: the LDS hop is the default");
+}
+
 int main() {
   if (std::getenv("MSL_TESTS_ONLY_VREGION") != nullptr) { // run just the vregion checks (fast iteration)
     TestVsLoadRegion();
@@ -1895,6 +1942,7 @@ int main() {
   TestOrderedCompareReadsOperandsFirst();
   TestDppAlwaysUpdatePin();
   TestVsLoadRegion();
+  TestPositionSliceThroughLds();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

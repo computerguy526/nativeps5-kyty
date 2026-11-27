@@ -546,31 +546,12 @@ uint32_t EmitUMedTri32(EmitterState& state, uint32_t arg0, uint32_t arg1, uint32
 
 namespace {
 
+// One definition for both back ends (ir/passes/PrecisionAnalysis.h): the slice also follows a
+// position through LDS (mesh programs), which the operand walk that used to live here did not.
 void CollectPositionSlice(EmitterState& state) {
 	state.position_slice_ready = true;
-	std::vector<const IR::Inst*> pending;
-	for (const auto* block: state.program.blocks) {
-		for (const auto& inst: *block) {
-			if (inst.GetOpcode() != IR::ValueOpcode::SetAttribute) {
-				continue;
-			}
-			const auto index = inst.Flags<IR::ExportFlags>().index;
-			if (index < state.program.export_info.size() &&
-			    state.program.export_info[index].kind == IR::ExportTargetKind::Position) {
-				pending.push_back(&inst);
-			}
-		}
-	}
-	while (!pending.empty()) {
-		const auto* inst = pending.back();
-		pending.pop_back();
-		for (size_t index = 0; index < inst->NumArgs(); index++) {
-			const auto* producer = inst->Arg(index).Resolve().TryInstruction();
-			if (producer != nullptr && state.position_slice.insert(producer).second) {
-				pending.push_back(producer);
-			}
-		}
-	}
+	IR::CollectPositionSlice(state.program, GetCodegenOptions().position_slice_lds,
+	                         state.position_slice);
 }
 
 uint32_t EmitFloatBinary(ValueEmitContext& ctx, const IR::Inst& inst, spv::Op opcode) {

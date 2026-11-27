@@ -15,7 +15,9 @@ enum class MadMode : uint8_t {
 	Exact,
 	// Exact on the data flow that feeds position exports (plus Invariant on the position built-in),
 	// fused FMA elsewhere: positions computed by different shaders (depth pre-pass and main pass)
-	// match bit for bit, while pixel-shader math keeps the cheaper FMA.
+	// match bit for bit, while pixel-shader math keeps the cheaper FMA. The data flow includes
+	// what a program stores to LDS and loads back for the export (mesh programs,
+	// position_slice_lds). Pinned by tests/PrecisionSpirvTests.cpp and its census golden.
 	Position,
 	// Every MAD is a fused FMA and the host may contract freely (the behaviour before MadMode).
 	Fused,
@@ -745,6 +747,12 @@ struct CodegenOptions {
 	// MAD has no denormal support). Equivalent when the module declares DenormFlushToZero 32
 	// (FLOAT_MODE 0xC0).
 	bool mad_flush = false;
+	// KYTY_POSITION_SLICE_LDS=0 (default 1): MadMode::Position's slice follows a position through
+	// shared memory (IR::CollectPositionSlice): a mesh program stores its vertices to LDS and
+	// exports what it loads back, so without this hop none of its position arithmetic is in the
+	// slice (the v1.4.0-v1.4.3 emission: no NoContraction in such a program, every MAD an FMA).
+	// 0 restores that emission for A/B runs; it joins the fingerprint only then.
+	bool position_slice_lds = true;
 	// KYTY_F16_EXACT_ROUND=1 (default 0): f32 -> f16 results (V_CVT_F16_F32, f16 VOP1/VOP2/VOP3,
 	// MAD_MIX, V_FMA_F16, f32-path packed f16) use an integer round-to-nearest-even conversion that
 	// a host compiler cannot fold away against a later UnpackHalf2x16; MAD_MIXLO/HI round once (f64

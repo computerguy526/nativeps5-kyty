@@ -1,0 +1,28 @@
+# precision census of the synthetic corpus (tests/PrecisionCorpus.h), written by precision_spirv_tests --update.
+# A change here is a change of what the host compiler may contract. Update on purpose only, and say why.
+vs_mad exact stage=vs nocontraction=4 invariant=1 fadd=2 fsub=0 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=0
+vs_mad position stage=vs nocontraction=2 invariant=1 fadd=1 fsub=0 fmul=1 fdiv=0 fma=1 fmix=0 relaxed=1
+vs_mad fused stage=vs nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=2 fmix=0 relaxed=2
+vs_lerp exact stage=vs nocontraction=6 invariant=1 fadd=2 fsub=2 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=0
+vs_lerp position stage=vs nocontraction=3 invariant=1 fadd=2 fsub=2 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=3
+vs_lerp fused stage=vs nocontraction=0 invariant=0 fadd=2 fsub=2 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=6
+vs_lds_mad exact stage=vs nocontraction=4 invariant=1 fadd=2 fsub=0 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=0
+vs_lds_mad position stage=vs nocontraction=2 invariant=1 fadd=1 fsub=0 fmul=1 fdiv=0 fma=1 fmix=0 relaxed=1
+vs_lds_mad fused stage=vs nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=2 fmix=0 relaxed=2
+vs_lds_mad position lds_hop_off stage=vs nocontraction=0 invariant=1 fadd=0 fsub=0 fmul=0 fdiv=0 fma=2 fmix=0 relaxed=2
+mesh_lds_mad exact stage=mesh nocontraction=4 invariant=0 fadd=2 fsub=0 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=0
+mesh_lds_mad position stage=mesh nocontraction=2 invariant=0 fadd=1 fsub=0 fmul=1 fdiv=0 fma=1 fmix=0 relaxed=1
+mesh_lds_mad fused stage=mesh nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=2 fmix=0 relaxed=2
+mesh_lds_mad position lds_hop_off stage=mesh nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=2 fmix=0 relaxed=2
+mesh_mad exact stage=mesh nocontraction=4 invariant=0 fadd=2 fsub=0 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=0
+mesh_mad position stage=mesh nocontraction=2 invariant=0 fadd=1 fsub=0 fmul=1 fdiv=0 fma=1 fmix=0 relaxed=1
+mesh_mad fused stage=mesh nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=2 fmix=0 relaxed=2
+mesh_lerp exact stage=mesh nocontraction=6 invariant=0 fadd=2 fsub=2 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=0
+mesh_lerp position stage=mesh nocontraction=3 invariant=0 fadd=2 fsub=2 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=3
+mesh_lerp fused stage=mesh nocontraction=0 invariant=0 fadd=2 fsub=2 fmul=2 fdiv=0 fma=0 fmix=0 relaxed=6
+fs_mad exact stage=fs nocontraction=2 invariant=0 fadd=1 fsub=0 fmul=1 fdiv=0 fma=0 fmix=0 relaxed=0
+fs_mad position stage=fs nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=1 fmix=0 relaxed=1
+fs_mad fused stage=fs nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=1 fmix=0 relaxed=1
+cs_lds_mad exact stage=cs nocontraction=2 invariant=0 fadd=1 fsub=0 fmul=1 fdiv=0 fma=0 fmix=0 relaxed=0
+cs_lds_mad position stage=cs nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=1 fmix=0 relaxed=1
+cs_lds_mad fused stage=cs nocontraction=0 invariant=0 fadd=0 fsub=0 fmul=0 fdiv=0 fma=1 fmix=0 relaxed=1

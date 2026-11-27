@@ -201,4 +201,54 @@ void CollectPreciseSet(const Program& program, uint8_t extra,
 	}
 }
 
+void CollectPositionSlice(const Program& program, bool through_shared,
+                          std::unordered_set<const Inst*>& slice) {
+	std::vector<const Inst*> pending;
+	std::vector<const Inst*> shared_writes;
+	for (const auto* block: program.blocks) {
+		for (const auto& inst: *block) {
+			if (inst.GetOpcode() == ValueOpcode::SetAttribute) {
+				const auto index = inst.Flags<ExportFlags>().index;
+				if (index < program.export_info.size() &&
+				    program.export_info[index].kind == ExportTargetKind::Position) {
+					pending.push_back(&inst);
+				}
+				continue;
+			}
+			if (!through_shared) {
+				continue;
+			}
+			const auto access = SharedAccessOf(inst.GetOpcode());
+			if (access == SharedAccess::Write || access == SharedAccess::Atomic ||
+			    access == SharedAccess::Append) {
+				shared_writes.push_back(&inst);
+			}
+		}
+	}
+	bool shared_joined = !through_shared;
+	while (!pending.empty()) {
+		const auto* inst = pending.back();
+		pending.pop_back();
+		if (!shared_joined) {
+			const auto access = SharedAccessOf(inst->GetOpcode());
+			if (access == SharedAccess::Read || access == SharedAccess::Atomic ||
+			    access == SharedAccess::Consume) {
+				// What the position reads back from shared memory is what the program stored there.
+				shared_joined = true;
+				for (const auto* write: shared_writes) {
+					if (slice.insert(write).second) {
+						pending.push_back(write);
+					}
+				}
+			}
+		}
+		for (size_t index = 0; index < inst->NumArgs(); index++) {
+			const auto* producer = inst->Arg(index).Resolve().TryInstruction();
+			if (producer != nullptr && slice.insert(producer).second) {
+				pending.push_back(producer);
+			}
+		}
+	}
+}
+
 } // namespace Libs::Graphics::ShaderRecompiler::IR

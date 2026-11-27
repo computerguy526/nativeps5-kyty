@@ -351,6 +351,9 @@ std::vector<uint8_t> CodegenFingerprint() {
 	if (options.mad_flush) {
 		b.Text("mad_flush");
 	}
+	if (!options.position_slice_lds) {
+		b.Text("position_slice_lds_off");
+	}
 	if (options.f16_exact_round) {
 		b.Text("f16_exact_round");
 	}
