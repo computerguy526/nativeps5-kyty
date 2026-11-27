@@ -27,6 +27,21 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 void CollectPreciseSet(const Program& program, uint8_t extra,
                        std::unordered_set<const Inst*>& precise_set);
 
+// MadMode::Position's slice (CodegenOptions.h): every instruction whose value can reach a position
+// export, the set both back ends keep uncontracted (SPIR-V NoContraction, MSL math_mode(safe)).
+// Backward from the operands of each SetAttribute whose export is a Position, through the
+// operands of every producer.
+// through_shared (CodegenOptions::position_slice_lds): a position can also travel through shared
+// memory. An NGG / merged-GS mesh program computes its vertices in one set of lanes, stores them
+// to LDS and exports what other lanes load back, so the export's operand is a LoadShared and the
+// arithmetic is behind a WriteShared that no operand chain reaches. Once the slice holds a shared
+// read (LoadShared*, a value-returning atomic, a consume), every shared write, atomic and append
+// of the program joins it with all its operands. Addresses are not matched: LDS belongs to the
+// program, so all its stores are candidates (conservative, never too small).
+// The seeds (the SetAttribute instructions) are not members.
+void CollectPositionSlice(const Program& program, bool through_shared,
+                          std::unordered_set<const Inst*>& slice);
+
 } // namespace Libs::Graphics::ShaderRecompiler::IR
 
 #endif

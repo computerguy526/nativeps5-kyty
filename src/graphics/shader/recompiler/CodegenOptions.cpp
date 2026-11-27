@@ -302,6 +302,7 @@ CodegenOptions FromEnvironment() {
 	options.split_dpp_lane    = EnvFlag("KYTY_SPLIT_DPP_LANE", options.split_dpp_lane);
 	options.mov_int_mods      = EnvFlag("KYTY_MOV_INT_MODS", options.mov_int_mods);
 	options.mad_flush         = EnvFlag("KYTY_MAD_FLUSH", options.mad_flush);
+	options.position_slice_lds = EnvFlag("KYTY_POSITION_SLICE_LDS", options.position_slice_lds);
 	options.f16_exact_round   = EnvFlag("KYTY_F16_EXACT_ROUND", options.f16_exact_round);
 	options.movrel_full_m0    = EnvFlag("KYTY_MOVREL_FULL_M0", options.movrel_full_m0);
 	options.omod_zero         = EnvFlag("KYTY_OMOD_ZERO", options.omod_zero);

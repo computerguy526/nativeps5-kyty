@@ -1346,7 +1346,7 @@ add_executable(msl_core_tests EXCLUDE_FROM_ALL
 )
 target_compile_definitions(msl_core_tests PRIVATE KYTY_MSL_STANDALONE=1)
 target_link_libraries(msl_core_tests common fmt::fmt Zydis::Zydis xbyak::xbyak Vulkan::Headers xxhash)
-target_include_directories(msl_core_tests PRIVATE ${inc_headers})
+target_include_directories(msl_core_tests PRIVATE ${inc_headers} "${KYTY_TESTS_DIR}")
 if (APPLE)
 	target_link_libraries(msl_core_tests "-framework CoreFoundation" "-framework IOKit")
 endif()
@@ -3672,6 +3672,13 @@ if(APPLE)
 	target_compile_definitions(ovguard_spirv_tests PRIVATE KYTY_GPU_DYLIB=1)
 	target_link_libraries(ovguard_spirv_tests PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
 	target_include_directories(ovguard_spirv_tests PRIVATE ${inc_headers})
+	# precise: MadMode::Position's contract on the SPIR-V of synthetic guest programs (vertex, vertex through LDS, mesh, pixel, compute)
+	# and the precision census golden (tests/data/precision_census.golden; `precision_spirv_tests --update` rewrites it on purpose).
+	# Links the dylib's own objects plus a main (no second compile of the sources): what it pins is what kyty_gpu.dylib emits.
+	add_executable(precision_spirv_tests EXCLUDE_FROM_ALL "${KYTY_TESTS_DIR}/PrecisionSpirvTests.cpp" $<TARGET_OBJECTS:kyty_gpu>)
+	target_compile_definitions(precision_spirv_tests PRIVATE KYTY_GPU_DYLIB=1 PRECISION_GOLDEN="${KYTY_TESTS_DIR}/data/precision_census.golden")
+	target_link_libraries(precision_spirv_tests PRIVATE ${kyty_gpu_link_libraries} ${CMAKE_DL_LIBS})
+	target_include_directories(precision_spirv_tests PRIVATE ${inc_headers} "${KYTY_TESTS_DIR}")
 	# keyfit: kyty_spv_dump = the SPIR-V of one permutation of a program cache under the process env (tools/spirv-dump/kytySpvDump.cpp).
 	# Same sources as the dylib plus a main, like the arm64 unit-test executables, so KYTY_* codegen words act exactly as in the title.
 	add_executable(kyty_spv_dump EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/tools/spirv-dump/kytySpvDump.cpp" "${KYTY_SOURCE_DIR}/hybrid/kytyGpuBridge.cpp" ${kyty_gpu_src})

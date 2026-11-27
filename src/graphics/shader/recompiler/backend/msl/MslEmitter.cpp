@@ -1555,23 +1555,7 @@ MslResult EmitProgram(const IR::Program& program, ShaderStageInputInfo input_inf
 		// Kyty's SPIR-V position slice (spirvEmitterAlu.cpp CollectPositionSlice): IR producers of
 		// the Position exports, transitively.
 		ctx.mesh_modes = true;
-		std::vector<const IR::Inst*> pending;
-		for (const auto* blk: program.blocks)
-			for (const auto& in: *blk)
-				if (in.GetOpcode() == ValueOpcode::SetAttribute) {
-					const auto ix = in.Flags<IR::ExportFlags>().index;
-					if (ix < program.export_info.size() &&
-					    program.export_info[ix].kind == IR::ExportTargetKind::Position)
-						pending.push_back(&in);
-				}
-		while (!pending.empty()) {
-			const auto* in = pending.back();
-			pending.pop_back();
-			for (size_t a = 0; a < in->NumArgs(); a++) {
-				const auto* p = in->Arg(a).Resolve().TryInstruction();
-				if (p != nullptr && ctx.precise.insert(p).second) pending.push_back(p);
-			}
-		}
+		IR::CollectPositionSlice(program, GetCodegenOptions().position_slice_lds, ctx.precise);
 	}
 	if (mesh_stage && !ctx.kk_bda) ctx.unsupported["mesh: needs the kk-bda convention"]++;
 	if (program.stage != ShaderType::Compute && !gfx_stage && !mesh_stage) {

@@ -48,6 +48,7 @@ struct Src {
 	uint32_t stage = 0, wave = 64, user_data_count = 0, user_data_base = 0;
 	uint64_t hash = 0;
 	std::vector<uint32_t> statics, code;
+	std::vector<uint32_t> back_code; // mesh: merged GS back half (key tail)
 	std::string digest;
 };
 struct Perm {
@@ -123,6 +124,16 @@ std::vector<Src> LoadPrograms(const char* path, std::vector<Perm>* perms = nullp
                   if (ok) {
                     s.code.resize(nc);
                     std::memcpy(s.code.data(), key + k, 4ull * nc);
+                    k += 4ull * nc;
+                    // precise: the back-code tail of a mesh source (plain layout), as tools/msl-dump/kprcLoader.h reads it.
+                    uint32_t nb = 0;
+                    if (k + 4 <= klen) {
+                      std::memcpy(&nb, key + k, 4);
+                      if (k + 4 + 4ull * nb == klen) {
+                        s.back_code.resize(nb);
+                        if (nb != 0) std::memcpy(s.back_code.data(), key + k + 4, 4ull * nb);
+                      }
+                    }
                     out.push_back(std::move(s));
                   }
                 }
@@ -168,7 +179,8 @@ void ComputeInfoFromKey(const std::vector<uint32_t>& k, ShaderComputeInputInfo& 
 }
 
 // Inverse of BuildStageStaticKey(ShaderVertexInputInfo) / (ShaderPixelInputInfo). Mesh/tessellation vertex shaders are not decoded.
-bool VertexInfoFromKey(const std::vector<uint32_t>& k, ShaderVertexInputInfo& v) {
+// precise: mesh_ok decodes the mesh part too (ShaderType::Mesh sources), with the recorded host subgroup size and passes.
+bool VertexInfoFromKey(const std::vector<uint32_t>& k, ShaderVertexInputInfo& v, bool mesh_ok = false) {
 	if (k.size() < 10) return false;
 	size_t i = 0;
 	v.fetch_embedded = k[i++] != 0; v.fetch_attrib_reg = static_cast<int>(k[i++]); v.fetch_buffer_reg = static_cast<int>(k[i++]);
@@ -187,7 +199,18 @@ bool VertexInfoFromKey(const std::vector<uint32_t>& k, ShaderVertexInputInfo& v)
 		for (int j = 0; j < 2; j++) v.clip_space.half_extent[j] = std::bit_cast<float>(k[i++]);
 	}
 	v.mesh.threads_num[0] = k[i++];
-	if (v.mesh.threads_num[0] != 0) return false;
+	if (v.mesh.threads_num[0] != 0) {
+		if (!mesh_ok || k.size() < i + 15) return false;
+		auto& m = v.mesh;
+		m.threads_num[1] = k[i++]; m.threads_num[2] = k[i++];
+		m.wave_size = k[i++]; m.host_subgroup_size = k[i++]; m.lds_size_dwords = k[i++]; m.scratch_size_dwords = k[i++];
+		m.input_primitive = k[i++]; m.primitives_per_group = k[i++]; m.vertices_per_group = k[i++];
+		m.max_vertices = k[i++]; m.max_primitives = k[i++]; m.provoking_vertex = k[i++]; m.split_groups = k[i++];
+		m.fast_launch = k[i++] != 0; m.passes = k[i++];
+		v.logical_stage = ShaderType::Mesh;
+	} else if (mesh_ok) {
+		return false; // a mesh source with a plain vertex key
+	}
 	v.tess.input_control_points = k[i++];
 	if (v.tess.input_control_points != 0) return false;
 	if (v.resources_num < 0 || v.resources_num > ShaderVertexInputInfo::RES_MAX || k.size() < i + 3ull * v.resources_num) return false;
@@ -239,6 +262,8 @@ int Translate(const Src& s, const char* out_path, bool comments, uint32_t lanes,
 			if (!PixelInfoFromKey(link_ps->statics, link_pinfo)) { std::fprintf(stderr, "cannot decode linked pixel key\n"); return 5; }
 			ShaderLinkVertexPixelParameters(vinfo, link_pinfo);
 		}
+	} else if (s.stage == static_cast<uint32_t>(ShaderType::Mesh)) {
+		if (!VertexInfoFromKey(s.statics, vinfo, true)) { std::fprintf(stderr, "cannot decode mesh static key\n"); return 5; }
 	} else if (s.stage == static_cast<uint32_t>(ShaderType::Pixel)) {
 		if (!PixelInfoFromKey(s.statics, pinfo)) { std::fprintf(stderr, "cannot decode pixel static key\n"); return 5; }
 	}
@@ -253,7 +278,8 @@ int Translate(const Src& s, const char* out_path, bool comments, uint32_t lanes,
 	options.msl_loop_cap   = g_loop_cap;
 	std::vector<uint32_t> user_data(std::max(s.user_data_count, 16u), 0u);
 	options.user_data   = user_data;
-	if (s.stage == static_cast<uint32_t>(ShaderType::Vertex)) options.input_info.vertex = &vinfo;
+	options.back_code = s.back_code;
+	if (s.stage == static_cast<uint32_t>(ShaderType::Vertex) || s.stage == static_cast<uint32_t>(ShaderType::Mesh)) options.input_info.vertex = &vinfo;
 	else if (s.stage == static_cast<uint32_t>(ShaderType::Pixel)) options.input_info.pixel = &pinfo;
 	else options.input_info.compute = &info;
 	auto translated = SR::TranslateProgram(s.code, options);
