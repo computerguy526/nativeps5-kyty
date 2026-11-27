@@ -279,8 +279,10 @@ public:
 			                      binding.key == SDLK_F2 || binding.key == SDLK_F7 ||
 			                      binding.key == SDLK_F8 || binding.key == SDLK_F11 ||
 			                      (SceneSkip::KeysEnabled() &&
-			                       (binding.key == SDLK_F3 || binding.key == SDLK_F4 || binding.key == SDLK_F5 ||
-			                        binding.key == SDLK_F10 || binding.key == SDLK_F12));
+			                       (binding.key == SDLK_4 || binding.key == SDLK_5 || binding.key == SDLK_6 ||
+			                        binding.key == SDLK_7 || binding.key == SDLK_8 || binding.key == SDLK_9 ||
+			                        binding.key == SDLK_KP_4 || binding.key == SDLK_KP_5 || binding.key == SDLK_KP_6 ||
+			                        binding.key == SDLK_KP_7 || binding.key == SDLK_KP_8 || binding.key == SDLK_KP_9));
 			if (binding.control == INVALID_CONTROL || reserved ||
 			    (binding.key == SDLK_UNKNOWN && binding.mouse_button == 0)) {
 				// The launcher keeps the mapping in settings every KytyPS5 build on the PC shares,

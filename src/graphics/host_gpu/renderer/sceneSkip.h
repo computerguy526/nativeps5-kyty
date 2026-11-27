@@ -6,16 +6,16 @@
 //   KYTY_SCENE_SKIP_FILE=<table>   the instant draw skip: vertex/pixel program pairs of the CURRENT scene (the level the runtime's VFS names,
 //                                  nps5_vfs_current_scene) whose scenery categories are all switched off are not recorded. Pairs, not single
 //                                  programs: a program alone is shared with other objects. One relaxed atomic load per draw when nothing is active.
-//   KYTY_SCENE_KEYS=1              F3 cycles the preset (full -> the table's presets -> full), F4 flowers, F5 grass, F10 small moss, F12 other
-//                                  decoration; Shift+F3 shows the state again. Each press writes KYTY_SCENE_STATE_FILE (atomically) for the launcher,
+//   KYTY_SCENE_KEYS=1              number row 4-9 (physical keys, numpad digits too): 5 cycles the preset (full -> the table's presets -> full),
+//                                  6 flowers, 7 grass, 8 small moss, 9 other decoration; Shift+5 shows the state again. Each press writes KYTY_SCENE_STATE_FILE (atomically) for the launcher,
 //                                  which stages the level-data part (the overlay links the runtime reads at the next level load), and shows a toast.
-//                                  F1 toggles the help panel (what each key does in the current level; auto-hides). F1 is ours only with this switch.
+//                                  4 toggles the help panel (what each key does in the current level; auto-hides). The digits are ours only with this switch.
 //
 // Table (KYTY_SCENE_SKIP_FILE; written by `nps5 run`, tab separated, # comments):
-//   preset <name> <cat=keep,...>        a preset of the F3 cycle (keep = percent of the category's objects that stay; 100 = untouched)
+//   preset <name> <cat=keep,...>        a preset of the 5 cycle (keep = percent of the category's objects that stay; 100 = untouched)
 //   start  <cat=keep,...>               the mask the launch starts with
 //   skip   <scene> <cat+cat> <vs hex> <ps hex or ->   one program pair that draws only objects of those categories in that scene
-//   level  <scene> <cat=how,...>        (F1 help panel) how each category applies in that level: instant | entry | both (entry = the level
+//   level  <scene> <cat=how,...>        (4 help panel) how each category applies in that level: instant | entry | both (entry = the level
 //                                       data of the next level load); a category not named is not in that level. A `skip` row also makes its
 //                                       categories instant for its scene.
 //
@@ -42,7 +42,7 @@ inline constexpr size_t      kMaxPairs         = 64; // per scene (the shape of 
 inline constexpr size_t      kMaxPresets       = 8;
 inline constexpr uint64_t    kToastMs          = 4000;
 inline constexpr uint64_t    kToastFadeMs      = 500;
-inline constexpr uint64_t    kPanelMs          = 15000; // the F1 panel hides itself after this long
+inline constexpr uint64_t    kPanelMs          = 15000; // the 4 panel hides itself after this long
 inline constexpr uint64_t    kPanelFadeMs      = 500;
 inline constexpr size_t      kMaxLevels        = 64;
 inline constexpr uint8_t     kHowInstant       = 1;
@@ -318,25 +318,38 @@ struct ActiveSet {
 	}
 };
 
-enum class Key : uint8_t { None, F1, F3, F4, F5, F10, F12 };
+// The scenery keys are the number row (4-9) on purpose: macOS intercepts the F keys, and 1-3 are the keyboard-pad's setting cycles.
+enum class Key : uint8_t { None, Help, Preset, Flowers, Grass, Moss, Other };
+// Physical number-row / numpad digit -> key (layout independent: the caller passes the SDL scancode digit 4..9, or -1).
+inline constexpr Key KeyFromDigit(int digit) noexcept {
+	switch (digit) {
+		case 4: return Key::Help;
+		case 5: return Key::Preset;
+		case 6: return Key::Flowers;
+		case 7: return Key::Grass;
+		case 8: return Key::Moss;
+		case 9: return Key::Other;
+		default: return Key::None;
+	}
+}
 
 struct Toast {
 	std::string line1;
 	std::string line2;
 };
 
-// The F1 panel: lines of text with a kind (the overlay picks the colour).
+// The 4 panel: lines of text with a kind (the overlay picks the colour).
 enum class PanelKind : uint8_t { Title, Heading, On, Off, Dim, Note };
 struct PanelLine {
 	std::string text;
 	PanelKind   kind = PanelKind::Dim;
 };
 
-// The F1 panel's open/close state with its auto-hide deadline (pure: the caller supplies the clock).
+// The 4 panel's open/close state with its auto-hide deadline (pure: the caller supplies the clock).
 struct PanelClock {
 	uint64_t until_ms = 0;
 	[[nodiscard]] bool Open(uint64_t now) const { return now < until_ms; }
-	// F1 pressed: closes an open panel, opens a closed one for kPanelMs. -> open now.
+	// 4 pressed: closes an open panel, opens a closed one for kPanelMs. -> open now.
 	bool Toggle(uint64_t now) {
 		until_ms = Open(now) ? 0 : now + kPanelMs;
 		return until_ms != 0;
@@ -396,8 +409,8 @@ public:
 	struct Result {
 		bool        consumed = false; // the key is ours (down, up and repeat of it never reach the game)
 		bool        changed  = false; // the mask changed (stage, publish, toast)
-		bool        show     = false; // show the state without a change (Shift+F3)
-		bool        panel    = false; // F1: toggle the help panel
+		bool        show     = false; // show the state without a change (Shift+5)
+		bool        panel    = false; // 4: toggle the help panel
 		int         cat      = -1;    // the one category a toggle changed
 		std::string headline;         // toast line 1
 	};
@@ -408,11 +421,11 @@ public:
 		if (!enabled || key == Key::None) return r;
 		r.consumed = true;
 		if (!pressed) return r;
-		if (key == Key::F1) {
+		if (key == Key::Help) {
 			r.panel = true;
 			return r;
 		}
-		if (key == Key::F3) {
+		if (key == Key::Preset) {
 			if (shift) {
 				r.show     = true;
 				r.headline = "Scenery: " + PresetName();
@@ -424,7 +437,7 @@ public:
 			m_mask            = target;
 			r.headline        = "Scenery: " + next;
 		} else {
-			const Cat c = key == Key::F4 ? Flowers : key == Key::F5 ? Grass : key == Key::F10 ? Moss : Other;
+			const Cat c = key == Key::Flowers ? Flowers : key == Key::Grass ? Grass : key == Key::Moss ? Moss : Other;
 			m_mask[c]   = m_mask[c] == 0 ? 100 : 0; // off <-> on; a thinned category goes off
 			r.changed   = true;
 			r.cat       = c;
@@ -466,14 +479,14 @@ public:
 		return s;
 	}
 
-	// The F1 panel for `scene` under the current mask: what each key does in this level and how it applies. `scene` empty = no level yet.
+	// The 4 panel for `scene` under the current mask: what each key does in this level and how it applies. `scene` empty = no level yet.
 	[[nodiscard]] std::vector<PanelLine> MakePanel(const Table& table, std::string_view scene) const {
 		std::vector<PanelLine> out;
-		out.push_back({"Scenery options  (F1 closes)", PanelKind::Title});
+		out.push_back({"Scenery options  (4 closes)", PanelKind::Title});
 		out.push_back({"Level: " + (scene.empty() ? std::string("not in a level yet") : std::string(scene)), PanelKind::Heading});
-		out.push_back({"Preset: " + PresetName() + "   F3 cycles " + CycleText() + "   Shift+F3 shows state", PanelKind::Heading});
+		out.push_back({"Preset: " + PresetName() + "   5 cycles " + CycleText() + "   Shift+5 shows state", PanelKind::Heading});
 		const auto  h    = HowFor(table, scene);
-		const char* keys[] = {"F4", "F5", "F10", "F12"};
+		const char* keys[] = {"6", "7", "8", "9"};
 		bool        any_entry = false, any_instant = false;
 		for (size_t i = 0; i < kCatCount; i++) {
 			std::string line = std::string(keys[i]) + "  " + kCatNames[i];
@@ -554,7 +567,7 @@ void OnCpFlip();
 bool                   ToastView(char* line1, size_t cap1, char* line2, size_t cap2, float& alpha);
 // The F2 overlay row text ("F- G+ M+ O+ (balanced)"); empty when the keys are off.
 [[nodiscard]] std::string OverlayRow();
-// The F1 panel (systemOverlay): open until it hides itself (kPanelMs) or F1 again. Lines are copied into the caller's fixed buffer.
+// The 4 panel (systemOverlay): open until it hides itself (kPanelMs) or 4 again. Lines are copied into the caller's fixed buffer.
 struct PanelText {
 	char    text[120];
 	uint8_t kind; // PanelKind

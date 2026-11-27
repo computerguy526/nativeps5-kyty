@@ -30,7 +30,7 @@ struct Runtime {
 	Toast                 toast;
 	std::atomic<uint64_t> toast_until_ms {0};
 	std::atomic<uint32_t> toast_revision {0};
-	std::atomic<uint64_t> panel_until_ms {0}; // F1 panel deadline (PanelClock, atomic so the overlay thread reads it without the lock)
+	std::atomic<uint64_t> panel_until_ms {0}; // 4 panel deadline (PanelClock, atomic so the overlay thread reads it without the lock)
 };
 
 uint64_t NowMs() {
@@ -148,7 +148,7 @@ void OnCpFlip() {
 	std::lock_guard<std::mutex> lock(r.mu);
 	if (scene != r.scene) {
 		r.scene = std::move(scene);
-		r.toast_revision.fetch_add(1, std::memory_order_relaxed); // an open F1 panel names the level
+		r.toast_revision.fetch_add(1, std::memory_order_relaxed); // an open 4 panel names the level
 		r.ctl.MarkLoaded(); // a level was entered: its data is the one the launcher staged
 		const auto pairs = Republish(r);
 		std::fprintf(stderr, "[scenery] scene %s: %u shader pairs active (%s)\n", r.scene.empty() ? "-" : r.scene.c_str(), pairs,

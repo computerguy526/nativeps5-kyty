@@ -135,51 +135,51 @@ static void TestCycle() {
 	Controller  c;
 	c.Init(t);
 	CHECK(c.PresetName() == "full" && c.Seq() == 0);
-	// F3: full -> balanced -> performance -> full
-	auto r = c.OnKey(true, Key::F3, false, true);
+	// 5: full -> balanced -> performance -> full
+	auto r = c.OnKey(true, Key::Preset, false, true);
 	CHECK(r.consumed && r.changed && c.PresetName() == "balanced" && c.Current() == M(50, 50, 100, 100) && c.Seq() == 1);
 	CHECK(r.headline == "Scenery: balanced");
-	r = c.OnKey(true, Key::F3, false, true);
+	r = c.OnKey(true, Key::Preset, false, true);
 	CHECK(c.PresetName() == "performance" && c.Current() == M(0, 0, 0, 0) && c.Seq() == 2);
-	r = c.OnKey(true, Key::F3, false, true);
+	r = c.OnKey(true, Key::Preset, false, true);
 	CHECK(c.PresetName() == "full" && c.Current() == kAllOn && c.Seq() == 3 && r.headline == "Scenery: full");
-	// from a custom mask F3 goes to full
-	c.OnKey(true, Key::F4, false, true);
+	// from a custom mask 5 goes to full
+	c.OnKey(true, Key::Flowers, false, true);
 	CHECK(c.PresetName() == "custom");
-	c.OnKey(true, Key::F3, false, true);
+	c.OnKey(true, Key::Preset, false, true);
 	CHECK(c.PresetName() == "full");
-	// a table without presets: F3 stays at full (no change, no seq)
+	// a table without presets: 5 stays at full (no change, no seq)
 	Controller e;
 	e.Init(ParseTable("start\tflowers=100\n"));
 	const auto before = e.Seq();
-	r = e.OnKey(true, Key::F3, false, true);
+	r = e.OnKey(true, Key::Preset, false, true);
 	CHECK(r.consumed && !r.changed && e.Seq() == before);
 }
 
 static void TestToggles() {
 	Controller c;
 	c.Init(ParseTable(kTable));
-	auto r = c.OnKey(true, Key::F4, false, true);
+	auto r = c.OnKey(true, Key::Flowers, false, true);
 	CHECK(r.changed && r.cat == Flowers && c.Current() == M(0, 100, 100, 100) && r.headline == "Scenery: flowers OFF");
-	r = c.OnKey(true, Key::F4, false, true);
+	r = c.OnKey(true, Key::Flowers, false, true);
 	CHECK(c.Current() == kAllOn && r.headline == "Scenery: flowers ON");
-	c.OnKey(true, Key::F5, false, true);
+	c.OnKey(true, Key::Grass, false, true);
 	CHECK(c.Current() == M(100, 0, 100, 100));
-	c.OnKey(true, Key::F10, false, true);
+	c.OnKey(true, Key::Moss, false, true);
 	CHECK(c.Current() == M(100, 0, 0, 100));
-	c.OnKey(true, Key::F12, false, true);
+	c.OnKey(true, Key::Other, false, true);
 	CHECK(c.Current() == M(100, 0, 0, 0));
 	CHECK(c.Seq() == 5);
 	// a thinned category (balanced) goes OFF on its key
 	Controller b;
 	b.Init(ParseTable(kTable));
-	b.OnKey(true, Key::F3, false, true);
+	b.OnKey(true, Key::Preset, false, true);
 	CHECK(b.Current()[Flowers] == 50);
-	b.OnKey(true, Key::F4, false, true);
+	b.OnKey(true, Key::Flowers, false, true);
 	CHECK(b.Current()[Flowers] == 0 && b.Current()[Grass] == 50);
-	// Shift+F3 shows the state: no change, no seq
+	// Shift+5 shows the state: no change, no seq
 	const auto seq = b.Seq();
-	r = b.OnKey(true, Key::F3, true, true);
+	r = b.OnKey(true, Key::Preset, true, true);
 	CHECK(r.consumed && !r.changed && r.show && b.Seq() == seq && r.headline == "Scenery: custom");
 	CHECK(b.MakeToast(r.headline, 0, true).line2 == "F- G~ M+ O+");
 }
@@ -188,7 +188,7 @@ static void TestKeyMap() {
 	Controller c;
 	c.Init(ParseTable(kTable));
 	// keys off: nothing is consumed, nothing changes, for every key, down and up
-	for (const auto k: {Key::F1, Key::F3, Key::F4, Key::F5, Key::F10, Key::F12, Key::None}) {
+	for (const auto k: {Key::Help, Key::Preset, Key::Flowers, Key::Grass, Key::Moss, Key::Other, Key::None}) {
 		for (const bool pressed: {true, false}) {
 			const auto r = c.OnKey(false, k, false, pressed);
 			CHECK(!r.consumed && !r.changed);
@@ -198,21 +198,36 @@ static void TestKeyMap() {
 	// keys on: a key that is not ours is not consumed
 	CHECK(!c.OnKey(true, Key::None, false, true).consumed);
 	// release (and repeat, which the window passes as pressed=false) is consumed without effect
-	const auto r = c.OnKey(true, Key::F4, false, false);
+	const auto r = c.OnKey(true, Key::Flowers, false, false);
 	CHECK(r.consumed && !r.changed && c.Current() == kAllOn && c.Seq() == 0);
+}
+
+static void TestDigitKeys() {
+	// physical digits 4..9 map to the keys; 1-3 (keyboard-pad setting cycles), 0 and anything else are not ours
+	CHECK(KeyFromDigit(4) == Key::Help && KeyFromDigit(5) == Key::Preset && KeyFromDigit(6) == Key::Flowers);
+	CHECK(KeyFromDigit(7) == Key::Grass && KeyFromDigit(8) == Key::Moss && KeyFromDigit(9) == Key::Other);
+	for (const int d: {-1, 0, 1, 2, 3, 10}) CHECK(KeyFromDigit(d) == Key::None);
+	// passthrough: with the keys off no digit is consumed or changes anything; with them on 1-3 still reach the game
+	Controller c;
+	c.Init(ParseTable(kTable));
+	for (int d = 0; d <= 9; d++) {
+		CHECK(!c.OnKey(false, KeyFromDigit(d), false, true).consumed);
+		if (d <= 3) CHECK(!c.OnKey(true, KeyFromDigit(d), false, true).consumed);
+	}
+	CHECK(c.Current() == kAllOn && c.Seq() == 0);
 }
 
 static void TestTexts() {
 	Controller c;
 	c.Init(ParseTable(kTable));
 	CHECK(c.StateText() == "seq=0\npreset=full\nflowers=100\ngrass=100\nmoss=100\nother=100\n");
-	c.OnKey(true, Key::F3, false, true);
+	c.OnKey(true, Key::Preset, false, true);
 	CHECK(c.StateText() == "seq=1\npreset=balanced\nflowers=50\ngrass=50\nmoss=100\nother=100\n");
-	c.OnKey(true, Key::F3, false, true);
+	c.OnKey(true, Key::Preset, false, true);
 	CHECK(c.StateText() == "seq=2\npreset=performance\nflowers=0\ngrass=0\nmoss=0\nother=0\n");
 	CHECK(c.RowText() == "F- G- M- O- (performance)");
-	c.OnKey(true, Key::F3, false, true);
-	c.OnKey(true, Key::F4, false, true);
+	c.OnKey(true, Key::Preset, false, true);
+	c.OnKey(true, Key::Flowers, false, true);
 	CHECK(c.RowText() == "F- G+ M+ O+ (custom)");
 	CHECK(c.LogLine(0, 2, "level_a") == "[scenery] seq 4: flowers OFF (instant: 2 shader pairs in level_a), grass on, moss on, other on");
 	CHECK(c.LogLine(0, 1, "") == "[scenery] seq 4: flowers OFF (instant: 1 shader pair in no scene), grass on, moss on, other on");
@@ -225,7 +240,7 @@ static void TestTexts() {
 static void TestToast() {
 	Controller c;
 	c.Init(ParseTable(kTable));
-	auto r = c.OnKey(true, Key::F4, false, true);
+	auto r = c.OnKey(true, Key::Flowers, false, true);
 	// level data differs from what is loaded: re-entry text; with instant pairs it says hidden now
 	CHECK(c.MakeToast(r.headline, 0, false).line2 == "applies when you re-enter the level");
 	CHECK(c.MakeToast(r.headline, 2, false).line2 == "hidden now; re-enter the level to apply fully");
@@ -234,9 +249,9 @@ static void TestToast() {
 	CHECK(!c.DiffersFromLoaded());
 	CHECK(c.MakeToast(r.headline, 2, false).line2 == "same as the level in memory");
 	// pressing back to the loaded mask
-	c.OnKey(true, Key::F4, false, true);
+	c.OnKey(true, Key::Flowers, false, true);
 	CHECK(c.DiffersFromLoaded());
-	c.OnKey(true, Key::F4, false, true);
+	c.OnKey(true, Key::Flowers, false, true);
 	CHECK(!c.DiffersFromLoaded());
 }
 
@@ -270,27 +285,27 @@ static void TestPanel() {
 	CHECK(p.size() >= 7 && p[0].kind == PanelKind::Title);
 	const auto txt = Join(p);
 	CHECK(txt.find("Level: level_b") != std::string::npos);
-	CHECK(txt.find("Preset: full   F3 cycles full > balanced > performance > full") != std::string::npos);
-	CHECK(txt.find("F4  flowers   n/a   not in this level") != std::string::npos);
-	CHECK(txt.find("F5  grass     ON    instant  (1 shader pair)") != std::string::npos);
-	CHECK(txt.find("F10  moss") == std::string::npos || txt.find("n/a") != std::string::npos);
+	CHECK(txt.find("Preset: full   5 cycles full > balanced > performance > full") != std::string::npos);
+	CHECK(txt.find("6  flowers    n/a   not in this level") != std::string::npos);
+	CHECK(txt.find("7  grass      ON    instant  (1 shader pair)") != std::string::npos);
+	CHECK(txt.find("8  moss") == std::string::npos || txt.find("n/a") != std::string::npos);
 	CHECK(txt.find("re-enter") == std::string::npos); // instant only: nothing to re-enter
 	// a level with both
-	c.OnKey(true, Key::F4, false, true);
-	c.OnKey(true, Key::F5, false, true);
+	c.OnKey(true, Key::Flowers, false, true);
+	c.OnKey(true, Key::Grass, false, true);
 	const auto a = Join(c.MakePanel(t, "level_a"));
-	CHECK(a.find("F4  flowers   OFF   instant + fully on re-entry  (2 shader pairs)") != std::string::npos);
-	CHECK(a.find("F5  grass     OFF   instant + fully on re-entry  (1 shader pair)") != std::string::npos);
-	CHECK(a.find("F12  other") == std::string::npos || a.find("n/a   not in this level") != std::string::npos);
+	CHECK(a.find("6  flowers    OFF   instant + fully on re-entry  (2 shader pairs)") != std::string::npos);
+	CHECK(a.find("7  grass      OFF   instant + fully on re-entry  (1 shader pair)") != std::string::npos);
+	CHECK(a.find("9  other") == std::string::npos || a.find("n/a   not in this level") != std::string::npos);
 	CHECK(a.find("Re-enter the level to apply the on re-entry changes.") != std::string::npos);
 	CHECK(a.find("Changed since this level loaded.") != std::string::npos);
 	c.MarkLoaded();
 	CHECK(Join(c.MakePanel(t, "level_a")).find("Changed since") == std::string::npos);
 	// entry only, thinned
-	c.OnKey(true, Key::F3, false, true); // custom -> full
-	c.OnKey(true, Key::F3, false, true); // balanced
+	c.OnKey(true, Key::Preset, false, true); // custom -> full
+	c.OnKey(true, Key::Preset, false, true); // balanced
 	const auto cc = Join(c.MakePanel(t, "level_c"));
-	CHECK(cc.find("F12  other    ON    on re-entry") != std::string::npos);
+	CHECK(cc.find("9  other      ON    on re-entry") != std::string::npos);
 	CHECK(cc.find("Preset: balanced") != std::string::npos);
 	// a level with no rows and no level yet
 	const auto n = Join(c.MakePanel(t, "level_z"));
@@ -300,16 +315,16 @@ static void TestPanel() {
 	for (const auto& l: c.MakePanel(t, "level_a")) CHECK(l.text.size() < 118);
 	CHECK(c.MakePanel(t, "level_a").size() <= 16);
 
-	// F1 key: consumed (down, up), toggles the panel, never changes the mask; ignored when the keys are off
+	// 4 key: consumed (down, up), toggles the panel, never changes the mask; ignored when the keys are off
 	Controller k;
 	k.Init(t);
-	auto r = k.OnKey(true, Key::F1, false, true);
+	auto r = k.OnKey(true, Key::Help, false, true);
 	CHECK(r.consumed && r.panel && !r.changed && k.Seq() == 0 && k.Current() == kAllOn);
-	r = k.OnKey(true, Key::F1, false, false);
+	r = k.OnKey(true, Key::Help, false, false);
 	CHECK(r.consumed && !r.panel);
-	r = k.OnKey(false, Key::F1, false, true);
+	r = k.OnKey(false, Key::Help, false, true);
 	CHECK(!r.consumed && !r.panel);
-	r = k.OnKey(true, Key::F4, false, true);
+	r = k.OnKey(true, Key::Flowers, false, true);
 	CHECK(r.consumed && !r.panel && r.changed);
 
 	// the auto-hide clock
@@ -319,7 +334,7 @@ static void TestPanel() {
 	CHECK(pc.Alpha(1000) == 1.0f && pc.Alpha(1000 + kPanelMs - kPanelFadeMs / 2) > 0.0f && pc.Alpha(1000 + kPanelMs - kPanelFadeMs / 2) < 1.0f);
 	pc.Extend(5000);
 	CHECK(pc.Open(5000 + kPanelMs - 1) && !pc.Open(5000 + kPanelMs));
-	CHECK(!pc.Toggle(6000) && !pc.Open(6000)); // F1 again closes
+	CHECK(!pc.Toggle(6000) && !pc.Open(6000)); // 4 again closes
 	pc.Extend(7000);
 	CHECK(!pc.Open(7000)); // a key press while closed does not open it
 	CHECK(pc.Toggle(8000) && pc.Open(8000));
@@ -333,6 +348,7 @@ int main() {
 	TestCycle();
 	TestToggles();
 	TestKeyMap();
+	TestDigitKeys();
 	TestTexts();
 	TestToast();
 	TestPanel();

@@ -1886,7 +1886,7 @@ struct SystemOverlay::Impl {
 		}
 	}
 
-	// nps5 perfmode: the F1 help panel (top left, auto-hides, fades). Same draw-list primitives as the toast; fixed stack buffers.
+	// nps5 perfmode: the 4 help panel (top left, auto-hides, fades). Same draw-list primitives as the toast; fixed stack buffers.
 	void DrawScenePanel(vk::Extent2D frame_extent) {
 		SceneSkip::PanelText lines[SceneSkip::kPanelMaxLines];
 		float                alpha = 0.0f;
