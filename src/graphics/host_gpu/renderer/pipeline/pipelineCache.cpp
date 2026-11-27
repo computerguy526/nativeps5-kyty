@@ -11253,8 +11253,8 @@ void PipelineCache::InitializeShaderPrecompile() {
 	};
 	// KYTY_REFUSED_PROGRAMS (refusedPrograms.h): a program the recompiler refused with a fatal
 	// error in an earlier start is skipped, counted and logged by hash; a fatal error in this start
-	// records the program being translated. Off with =0; the default file is
-	// `<KYTY_PROGRAM_CACHE_PATH>.refused` (none without a program cache path).
+	// records the program being translated. OFF unless the env is set (nps5: code=ue5 titles
+	// only); =1 uses `<KYTY_PROGRAM_CACHE_PATH>.refused`, another value is the file path.
 	{
 		static RefusedPrograms refused;
 		const auto path = RefusedPrograms::ChoosePath(std::getenv("KYTY_REFUSED_PROGRAMS"),

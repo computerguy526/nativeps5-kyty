@@ -14,8 +14,9 @@
 //   - The file is text: one `0x<16 hex digits>` per line, then a tab and the first line of the
 //   fatal text (cut to 120 characters).
 //     Lines that do not start with a hash are ignored. A program is removed by deleting its line.
-//   - Nothing is skipped without a file (KYTY_REFUSED_PROGRAMS=0 turns the whole thing off), and a
-//   clean list has no file at all.
+//   - OFF unless KYTY_REFUSED_PROGRAMS is set (=1: the file next to the program cache, else a
+//   path); nps5 sets it for code=ue5 titles only. Nothing is skipped without a file, and a clean
+//   list has no file at all.
 // Header only: tests/RefusedProgramsTests.cpp needs no emulator.
 
 #include "common/fatalHook.h"
@@ -145,18 +146,21 @@ public:
 		return true;
 	}
 
-	// Where the file lives: KYTY_REFUSED_PROGRAMS (a path; "0" or empty = off), else `<program
-	// cache path>.refused`, else none.
+	// Where the file lives. OFF BY DEFAULT (a fatal error unrelated to translation must not
+	// blacklist a program of a title that never asked for this): KYTY_REFUSED_PROGRAMS unset, "0"
+	// or empty = none; "1" = `<program cache path>.refused` (none without a program cache path);
+	// anything else = that path. nps5 passes "1" for code=ue5 titles only.
 	[[nodiscard]] static std::filesystem::path ChoosePath(const char* env_value,
 	                                                      const char* program_cache_path) {
-		if (env_value != nullptr) {
-			const std::string v = env_value;
-			if (v.empty() || v == "0") return {};
-			return v;
+		if (env_value == nullptr) return {};
+		const std::string v = env_value;
+		if (v.empty() || v == "0") return {};
+		if (v == "1") {
+			if (program_cache_path != nullptr && *program_cache_path != '\0')
+				return std::string(program_cache_path) + ".refused";
+			return {};
 		}
-		if (program_cache_path != nullptr && *program_cache_path != '\0')
-			return std::string(program_cache_path) + ".refused";
-		return {};
+		return v;
 	}
 
 private:

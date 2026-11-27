@@ -621,12 +621,15 @@ void TestRefusedProgramsRecording() {
 
 void TestRefusedProgramsPathChoice() {
   using R = RefusedPrograms;
-  Expect(R::ChoosePath(nullptr, nullptr).empty() &&
-             R::ChoosePath(nullptr, "").empty(),
-         "no program cache, no file: the feature is off");
-  Expect(R::ChoosePath(nullptr, "/c/T.programs.bin") ==
+  // Off by default: a title that never asked for it (ASTRO) has no file, no skip, no recording.
+  Expect(R::ChoosePath(nullptr, nullptr).empty() && R::ChoosePath(nullptr, "").empty() &&
+             R::ChoosePath(nullptr, "/c/T.programs.bin").empty(),
+         "env unset: off, even with a program cache path");
+  Expect(R::ChoosePath("1", "/c/T.programs.bin") ==
              std::filesystem::path("/c/T.programs.bin.refused"),
-         "default: next to the program cache");
+         "=1: next to the program cache");
+  Expect(R::ChoosePath("1", nullptr).empty() && R::ChoosePath("1", "").empty(),
+         "=1 without a program cache path: off");
   Expect(R::ChoosePath("/x/r.txt", "/c/T.programs.bin") ==
              std::filesystem::path("/x/r.txt"),
          "an explicit path wins");
