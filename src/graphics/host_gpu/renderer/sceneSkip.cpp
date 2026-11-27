@@ -9,6 +9,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -43,6 +44,8 @@ bool EnvOn(const char* name) {
 	return v != nullptr && v[0] == '1' && v[1] == '\0';
 }
 
+void StartKeyScript(const Runtime& r);
+
 Runtime& R() {
 	static Runtime* rt = [] {
 		auto* r   = new Runtime;
@@ -62,6 +65,7 @@ Runtime& R() {
 		}
 		if (const char* s = std::getenv("KYTY_SCENE_STATE_FILE"); s != nullptr) r->state_path = s;
 		r->ctl.Init(r->table);
+		StartKeyScript(*r);
 		return r;
 	}();
 	return *rt;
@@ -212,5 +216,28 @@ std::string OverlayRow() {
 	std::lock_guard<std::mutex> lock(r.mu);
 	return r.ctl.RowText();
 }
+
+namespace {
+
+// KYTY_SCENE_KEYS_SCRIPT (automated checks only, default off): a detached thread presses the scripted keys through the same HandleKey
+// path a real key takes (so the state file, the log line and the toast are the real ones). Needs KYTY_SCENE_KEYS=1.
+void StartKeyScript(const Runtime& r) {
+	const char* v = std::getenv("KYTY_SCENE_KEYS_SCRIPT");
+	if (!r.keys || v == nullptr || v[0] == '\0') return;
+	const auto script = ParseKeyScript(v);
+	std::fprintf(stderr, "[scenery] key script: %zu presses, %u bad entries\n", script.keys.size(), script.bad);
+	if (script.keys.empty()) return;
+	std::thread([script] {
+		const auto t0 = std::chrono::steady_clock::now();
+		for (const auto& k: script.keys) {
+			std::this_thread::sleep_until(t0 + std::chrono::milliseconds(k.at_ms));
+			std::fprintf(stderr, "[scenery] key script: press %d at %.1f s\n", static_cast<int>(k.key), static_cast<double>(k.at_ms) / 1000.0);
+			HandleKey(k.key, k.shift, true);
+			HandleKey(k.key, k.shift, false);
+		}
+	}).detach();
+}
+
+} // namespace
 
 } // namespace Libs::Graphics::SceneSkip

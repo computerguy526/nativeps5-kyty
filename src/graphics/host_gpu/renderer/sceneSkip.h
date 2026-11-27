@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Libs::Graphics::SceneSkip {
@@ -331,6 +332,58 @@ inline constexpr Key KeyFromDigit(int digit) noexcept {
 		case 9: return Key::Other;
 		default: return Key::None;
 	}
+}
+
+// Scripted key presses for automated checks (KYTY_SCENE_KEYS_SCRIPT, default off; needs KYTY_SCENE_KEYS=1): "<seconds>:<digit>[,...]",
+// e.g. "20:6,50:6" = press 6 at +20 s, again at +50 s (seconds after the scenery runtime started = the first presented frame; decimals ok).
+// A digit may carry a leading S for Shift ("30:S5"). Digits are the number-row keys 4..9. Entries are sorted by time; bad entries are counted.
+struct ScriptKey {
+	uint64_t at_ms  = 0;
+	Key      key    = Key::None;
+	bool     shift  = false;
+};
+struct KeyScript {
+	std::vector<ScriptKey> keys;
+	uint32_t               bad = 0;
+};
+inline KeyScript ParseKeyScript(std::string_view text) {
+	KeyScript out;
+	for (auto item: Detail::Split(text, ',')) {
+		while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
+		while (!item.empty() && item.back() == ' ') item.remove_suffix(1);
+		if (item.empty()) continue;
+		const auto colon = item.find(':');
+		if (colon == std::string_view::npos || out.keys.size() >= 64) {
+			out.bad++;
+			continue;
+		}
+		const auto when = item.substr(0, colon);
+		auto       what = item.substr(colon + 1);
+		bool       shift = false;
+		if (!what.empty() && (what.front() == 'S' || what.front() == 's')) {
+			shift = true;
+			what.remove_prefix(1);
+		}
+		double ms = -1;
+		bool   ok = !when.empty() && when.size() <= 8;
+		size_t dots = 0;
+		for (const char c: when) {
+			if (c == '.') dots++;
+			else if (c < '0' || c > '9') ok = false;
+		}
+		if (ok && dots <= 1 && when.front() != '.') ms = std::atof(std::string(when).c_str()) * 1000.0;
+		else ok = false;
+		const Key k = what.size() == 1 && what[0] >= '0' && what[0] <= '9' ? KeyFromDigit(what[0] - '0') : Key::None;
+		if (!ok || ms < 0 || k == Key::None) {
+			out.bad++;
+			continue;
+		}
+		out.keys.push_back({static_cast<uint64_t>(ms + 0.5), k, shift});
+	}
+	for (size_t i = 1; i < out.keys.size(); i++) {  // stable insertion sort by time (at most 64)
+		for (size_t j = i; j > 0 && out.keys[j].at_ms < out.keys[j - 1].at_ms; j--) std::swap(out.keys[j], out.keys[j - 1]);
+	}
+	return out;
 }
 
 struct Toast {

@@ -4,6 +4,8 @@
 #include "graphics/host_gpu/renderer/sceneSkip.h"
 
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 using namespace Libs::Graphics::SceneSkip;
@@ -237,6 +239,71 @@ static void TestTexts() {
 	CHECK(!ParseMask("", m) && !ParseMask("flowers=", m) && !ParseMask("flowers=-1", m) && !ParseMask("tree=1", m) && !ParseMask("flowers=1000", m));
 }
 
+// ---- the contract with `nps5 run` (scripts/nps5lib/scenery.py + run.py). The SAME golden texts are pinned in nps5 tests/test_scenery_chain.py:
+// a change of either side's format fails a test on that side.
+static const char* kGoldenState = "seq=2\npreset=performance\nflowers=0\ngrass=0\nmoss=0\nother=0\n";
+// what scenery.write_skip_table writes (tab separated)
+static const char* kGoldenTable =
+    "# nps5 scenery table: read by Kyty (KYTY_SCENE_SKIP_FILE)\n"
+    "preset\tbalanced\tflowers=50,grass=50,moss=100,other=100\n"
+    "preset\tperformance\tflowers=0,grass=0,moss=0,other=0\n"
+    "start\tflowers=0,grass=0,moss=0,other=0\n"
+    "skip\tlv\tflowers\taaaaaaaaaaaaaaaa\t-\n"
+    "level\tlv\tflowers=both,grass=entry\n";
+static const char* kGoldenEnv[] = {"KYTY_SCENE_KEYS", "KYTY_SCENE_SKIP_FILE", "KYTY_SCENE_STATE_FILE"};
+
+static std::string ReadFile(const char* rel) {
+	for (const char* prefix: {"", "../", "../../"}) {
+		std::ifstream in(std::string(prefix) + rel);
+		if (in) {
+			std::stringstream ss;
+			ss << in.rdbuf();
+			return ss.str();
+		}
+	}
+	return {};
+}
+
+static void TestContractWithLauncher() {
+	// state file: exactly what the launcher's parse_state reads
+	Controller c;
+	c.Init(ParseTable(kTable));
+	c.OnKey(true, Key::Preset, false, true);
+	c.OnKey(true, Key::Preset, false, true);
+	CHECK(c.StateText() == kGoldenState);
+	// table: what the launcher writes parses with no bad line, to the same presets / start / skip / level
+	const auto t = ParseTable(kGoldenTable);
+	CHECK(t.bad_lines == 0 && t.dropped == 0);
+	CHECK(t.presets.size() == 2 && t.presets[0].name == "balanced" && t.presets[0].mask == M(50, 50, 100, 100));
+	CHECK(t.presets[1].name == "performance" && t.presets[1].mask == M(0, 0, 0, 0));
+	CHECK(t.start == M(0, 0, 0, 0));
+	CHECK(t.skips.size() == 1 && t.skips[0].scene == "lv" && t.skips[0].cats == 1 && t.skips[0].vs == 0xaaaaaaaaaaaaaaaaULL && !t.skips[0].has_ps);
+	CHECK(t.levels.size() == 1 && t.levels[0].scene == "lv");
+	const auto h = HowFor(t, "lv");
+	CHECK(h.how[Flowers] == (kHowInstant | kHowEntry) && h.how[Grass] == kHowEntry && h.how[Moss] == 0 && h.how[Other] == 0);
+	// the environment names the launcher sets are the ones this runtime reads (checked against the source when the tests run from the repo)
+	const std::string src = ReadFile("src/graphics/host_gpu/renderer/sceneSkip.cpp");
+	if (src.empty()) std::printf("note: sceneSkip.cpp not found from the working directory: env-name check skipped\n");
+	else
+		for (const char* name: kGoldenEnv) CHECK(src.find(std::string("\"") + name + "\"") != std::string::npos);
+}
+
+static void TestKeyScript() {
+	auto s = ParseKeyScript("20:6,50:6");
+	CHECK(s.bad == 0 && s.keys.size() == 2 && s.keys[0].at_ms == 20000 && s.keys[0].key == Key::Flowers && !s.keys[0].shift && s.keys[1].at_ms == 50000);
+	s = ParseKeyScript(" 30:S5 , 1.5:9,2:4 ");
+	CHECK(s.bad == 0 && s.keys.size() == 3);
+	CHECK(s.keys[0].at_ms == 1500 && s.keys[0].key == Key::Other && s.keys[1].at_ms == 2000 && s.keys[1].key == Key::Help);
+	CHECK(s.keys[2].at_ms == 30000 && s.keys[2].key == Key::Preset && s.keys[2].shift);
+	// bad entries are counted, good ones kept; digits 0-3 are not scenery keys
+	s = ParseKeyScript("x:6,10:3,10:0,10:66,:6,10,-5:6,5:7,1e3:6,..5:6");
+	CHECK(s.keys.size() == 1 && s.keys[0].key == Key::Grass && s.bad == 9);
+	CHECK(ParseKeyScript("").keys.empty() && ParseKeyScript("").bad == 0);
+	std::string many;
+	for (int i = 0; i < 70; i++) many += "1:6,";
+	CHECK(ParseKeyScript(many).keys.size() == 64 && ParseKeyScript(many).bad == 6);
+}
+
 static void TestToast() {
 	Controller c;
 	c.Init(ParseTable(kTable));
@@ -350,6 +417,8 @@ int main() {
 	TestKeyMap();
 	TestDigitKeys();
 	TestTexts();
+	TestContractWithLauncher();
+	TestKeyScript();
 	TestToast();
 	TestPanel();
 	std::printf("SceneSkipTests: %d checks, %d failed\n", g_checks, g_failed);
