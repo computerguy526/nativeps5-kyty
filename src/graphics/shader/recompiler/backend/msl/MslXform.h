@@ -127,6 +127,16 @@ enum Id : uint32_t {
 	// loop alive around it (AGX g16, fullscreen lighting FS: spill loads 114 -> 84, 73 without any
 	// guard). Any stage. Not in `all`.
 	GuardExit,
+	// handopt / vregion (mode token `vregion`, env KYTY_MSL_VS_LOAD_REGION=1): the guarded 32-bit
+	// vector loads (x2..x4) of a vertex program that read read-only buffers under ONE exec value
+	// and whose addresses are integer-only (immediates, operands defined before the first load,
+	// or integer ALU chains over those) are printed as ONE region at the first of them: all
+	// addresses, one all-in-bounds test (one uniform per-buffer limit compare per load, `&`ed),
+	// then plain unconditional vector loads; else the very same guarded text per load as before
+	// (per-dword fallback). Same words are read under the same per-dword rules: exact. Skinned
+	// vertex programs (>= 16 such loads, KYTY_MSL_VS_LOAD_REGION_MIN) become one straight block
+	// instead of 12-33 exec-mask islands. Vertex stage only. Not in `all`.
+	VsLoadRegion,
 	Count
 };
 
@@ -165,10 +175,11 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   lcont         KYTY_MSL_XF_LCONT=1: adds loop_cont to the base set (any stage)
 //   blim          KYTY_MSL_XF_BLIM=1: adds bounds_lim to the base set (any stage)
 //   gexit         KYTY_MSL_XF_GEXIT=1: adds guard_exit to the base set (any stage)
+//   vregion       KYTY_MSL_VS_LOAD_REGION=1: adds vs_load_region to the base set (vertex stage only)
 //   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,
-// VS_PERF, GFX_*, XF, XF_*, XF_TABLE, LOADGROUP*): a mode never mixes with hand-set switches.
+// VS_PERF, GFX_*, XF, XF_*, XF_TABLE, LOADGROUP*, VS_LOAD_REGION*): a mode never mixes with hand-set switches.
 [[nodiscard]] bool ApplyMode(std::string_view mode, std::string& error);
 // The one truthiness rule of the emitter switches (review L3): set, non-empty and not "0".
 [[nodiscard]] bool EnvOn(const char* name);

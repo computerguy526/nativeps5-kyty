@@ -553,6 +553,21 @@ std::string ReadConstBuffer(MemOut& o, const BufferBinding& b, const std::string
 	return o.Def("uint", InBounds(b, byte_offset, 4) + " ? " + load + " : 0u");
 }
 
+bool RegionChecked(const BufferBinding& b) {
+	return Checked(b, BufferOpts {});
+}
+std::string RegionLimit(const BufferBinding& b, uint32_t bytes) {
+	const std::string size = BufSizeName(b.id);
+	return "(" + size + " >= " + std::to_string(bytes) + "u ? " + size + " - " +
+	       std::to_string(bytes - 1u) + "u : 0u)";
+}
+std::string RegionFastLoad(const BufferBinding& b, const std::string& addr, uint32_t comps,
+                           bool mutant) {
+	const std::string at = mutant ? "(" + addr + " + 4u)" : addr;
+	return "uint" + std::to_string(comps) + "(" +
+	       Mem(b, at, "packed_uint" + std::to_string(comps), false) + ")";
+}
+
 void GroupLoadWords(MemOut& o, const BufferBinding& b, const std::string& lo, const std::string& hi,
                     const std::string& pre, uint32_t ndw, const std::string& W,
                     const std::string& F, bool mutant) {

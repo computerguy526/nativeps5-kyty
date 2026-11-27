@@ -915,7 +915,7 @@ void TestFoltrans() {
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD"}) unsetenv(v);
   Check(Xf::ApplyMode("fix6+xf=c00", err) && std::string(std::getenv("KYTY_MSL_XF")) == "vs_load_group,vs_const_load", "mode: xf=c00 names the two transforms");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
-  Check(!Xf::ApplyMode("fix6+xf=8000", err), "mode: xf bit beyond the registry refused");
+  Check(!Xf::ApplyMode("fix6+xf=10000", err), "mode: xf bit beyond the registry refused");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
   setenv("KYTY_MSL_XF_CLOAD", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_CLOAD");
@@ -1112,7 +1112,7 @@ void TestGuardExit() {
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_LCONT", "KYTY_MSL_XF_GEXIT"}) unsetenv(v);
   Check(Xf::ApplyMode("fix6+xf=4000", err) && std::string(std::getenv("KYTY_MSL_XF")) == "guard_exit", "mode: xf=4000 = guard_exit");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
-  Check(!Xf::ApplyMode("fix6+xf=8000", err), "mode: xf bit beyond the registry refused (15 transforms)");
+  Check(!Xf::ApplyMode("fix6+xf=10000", err), "mode: xf bit beyond the registry refused (16 transforms)");
   for (const char *v : {"KYTY_MSL_FIX6", "KYTY_MSL_XF"}) unsetenv(v);
   setenv("KYTY_MSL_XF_GEXIT", "1", 1);
   Check(!Xf::ApplyMode("fix6", err), "mode: refuses a leftover KYTY_MSL_XF_GEXIT");
@@ -1671,7 +1671,200 @@ void TestDppAlwaysUpdatePin() {
   Check(updates[1] == 1, "dpp pin on: the write is a DppUpdateU32 (" + std::to_string(updates[1]) + ")");
 }
 
+// handopt vregion: transform vs_load_region (mode token vregion). Vertex stage only, default off, not in `all`. Synthetic vertex
+// programs: N guarded x4 loads of a read-only buffer under one exec value.
+struct VrSpec {
+  uint32_t n = 16;               // loads
+  bool late_addr = false;        // member k's index (IAdd32) is defined right before member k (after the first member)
+  int float_addr_at = -1;        // member whose index goes through a float conversion (not integer-only)
+  int loaded_addr_at = -1;       // member whose index is a component of the previous load (a loaded value)
+  bool written = false;          // buffer 0 is written by the program
+  uint32_t second_active_from = 0xffffffffu; // members >= this use another exec value
+};
+std::string VrEmit(const VrSpec &sp, bool want_vs = true) {
+  namespace IR = SR::IR;
+  namespace CFG = SR::CFG;
+  using O = ValueOpcode;
+  const auto U = [](uint32_t v) { return IR::Value(v); };
+  IR::Program p;
+  p.stage = want_vs ? ShaderType::Vertex : ShaderType::Pixel;
+  p.shader_hash = 0x7777u;
+  p.block_storage.push_back(std::make_unique<IR::Block>());
+  p.blocks.push_back(p.block_storage.back().get());
+  auto *b0 = p.blocks[0];
+  IR::BufferResource br;
+  br.read = true; br.written = sp.written; br.packed_stride = 16; br.max_byte_extent = 4096;
+  p.info.buffers.push_back(br);
+  IR::MemoryInfo mi;
+  mi.kind = IR::ResourceKind::Buffer; mi.resource = 0; mi.idxen = true; mi.offen = true; mi.data_bits = 32;
+  auto &a0 = b0->AppendNewInst(O::GetAttribute, {U(0), U(0)});
+  auto &a1 = b0->AppendNewInst(O::GetAttribute, {U(1), U(0)});
+  auto &act = b0->AppendNewInst(O::INotEqual32, {IR::Value(&a0), U(0)});
+  auto &act2 = b0->AppendNewInst(O::INotEqual32, {IR::Value(&a0), U(1)});
+  IR::Inst *prev = nullptr;
+  std::vector<IR::Inst *> loads;
+  for (uint32_t k = 0; k < sp.n; k++) {
+    IR::Value idx = IR::Value(&a1);
+    if (sp.late_addr && k > 0) idx = IR::Value(&b0->AppendNewInst(O::IAdd32, {IR::Value(&a1), U(k)}));
+    if (int(k) == sp.float_addr_at) {
+      auto &f = b0->AppendNewInst(O::ConvertF32U32, {IR::Value(&a1)});
+      idx = IR::Value(&b0->AppendNewInst(O::ConvertU32F32, {IR::Value(&f)}));
+    }
+    if (int(k) == sp.loaded_addr_at && prev != nullptr)
+      idx = IR::Value(&b0->AppendNewInst(O::CompositeExtractU32x4, {IR::Value(prev), U(0)}));
+    mi.offset = 16u * (k % 3);
+    p.memory_info.push_back(mi);
+    auto &ld = b0->AppendNewInst(O::LoadBufferU32x4, {U(0), idx, U(0), U(0), IR::Value(k >= sp.second_active_from ? &act2 : &act)});
+    ld.SetFlags(IR::MemoryFlags{.index = uint32_t(p.memory_info.size() - 1), .pc = 0x40 + 4 * k});
+    prev = &ld;
+    loads.push_back(&ld);
+  }
+  for (auto *ld : loads) {
+    auto &x = b0->AppendNewInst(O::CompositeExtractU32x4, {IR::Value(ld), U(1)});
+    b0->AppendNewInst(O::ReferenceU32, {IR::Value(&x)}); // keeps the load live
+  }
+  p.block_info.resize(1);
+  p.block_info[0].id = 10;
+  p.block_info[0].terminator.kind = CFG::TerminatorKind::Return;
+  static ShaderVertexInputInfo vi;
+  static ShaderPixelInputInfo pi;
+  ShaderStageInputInfo input;
+  if (want_vs) input.vertex = &vi; else input.pixel = &pi;
+  return Msl::EmitProgram(p, input).source;
+}
+size_t VrCount(const std::string &t, const std::string &needle) {
+  size_t n = 0;
+  for (size_t at = t.find(needle); at != std::string::npos; at = t.find(needle, at + needle.size())) n++;
+  return n;
+}
+void TestVsLoadRegion() {
+  namespace Xf = Msl::Xf;
+  for (const char *v : {"KYTY_MSL_XF", "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_VS_PERF", "KYTY_MSL_VS_LOAD_REGION",
+                        "KYTY_MSL_VS_LOAD_REGION_MIN", "KYTY_MSL_LOADGROUP_MUTANT", "KYTY_MSL_XF_TABLE"})
+    unsetenv(v);
+  const std::string bound16 = "+ 16ul <= ulong(r.b0_size)";
+  VrSpec s16; s16.n = 16;
+  const std::string off16 = VrEmit(s16);
+  Check(!off16.empty() && off16.find("vregion") == std::string::npos, "vregion off: emitted, no region text");
+  Check(VrCount(off16, bound16) >= 16, "vregion off: 16 guarded loads in place (" + std::to_string(VrCount(off16, bound16)) + ")");
+  setenv("KYTY_MSL_VS_LOAD_REGION", "1", 1);
+  // (a) 16 loads under one condition -> one block, 16 plain loads, 16 fallbacks, sites reduced to copies
+  const std::string on16 = VrEmit(s16);
+  if (std::getenv("VR_DUMP") != nullptr) std::printf("=== on16\n%s\n=== end\n", on16.c_str());
+  Check(VrCount(on16, "// vregion: 16 guarded vector loads, one test") == 1, "vregion (a): one region of 16");
+  Check(VrCount(on16, "= uint4(*(const device packed_uint4*)(r.b0 + ") == 16, "vregion (a): 16 plain vector loads: " + std::to_string(VrCount(on16, "= uint4(*(const device packed_uint4*)(r.b0 + ")));
+  Check(VrCount(on16, bound16) == VrCount(off16, bound16), "vregion (a): the 16 guarded expressions kept as the else arm (same count as off): " + std::to_string(VrCount(on16, bound16)));
+  Check(VrCount(on16, "uint4(kkr0_") == 16, "vregion (a): the 16 sites are copies: " + std::to_string(VrCount(on16, "uint4(kkr0_")));
+  Check(VrCount(on16, "< kkr0_lim0_16)") == 16, "vregion (a): one limit compare per member in one test");
+  // (b) 15 members: text unchanged
+  VrSpec s15; s15.n = 15;
+  setenv("KYTY_MSL_VS_LOAD_REGION", "1", 1);
+  const std::string on15 = VrEmit(s15);
+  unsetenv("KYTY_MSL_VS_LOAD_REGION");
+  const std::string off15 = VrEmit(s15);
+  setenv("KYTY_MSL_VS_LOAD_REGION", "1", 1);
+  Check(on15 == off15 && on15.find("vregion") == std::string::npos, "vregion (b): 15 members -> text byte-identical to off");
+  setenv("KYTY_MSL_VS_LOAD_REGION_MIN", "8", 1);
+  Check(VrCount(VrEmit(s15), "// vregion: 15 guarded") == 1, "vregion (b): KYTY_MSL_VS_LOAD_REGION_MIN=8 lowers the minimum");
+  unsetenv("KYTY_MSL_VS_LOAD_REGION_MIN");
+  // (c) float / loaded address excluded; the rest merges while >= minimum
+  VrSpec sf; sf.n = 17; sf.float_addr_at = 5;
+  const std::string tf = VrEmit(sf);
+  Check(VrCount(tf, "// vregion: 16 guarded") == 1, "vregion (c): the float-address member stays in place, 16 merge");
+  VrSpec sl; sl.n = 17; sl.loaded_addr_at = 9;
+  Check(VrCount(VrEmit(sl), "// vregion: 16 guarded") == 1, "vregion (c): a loaded-address member stays in place, 16 merge");
+  VrSpec sf2; sf2.n = 16; sf2.float_addr_at = 3;
+  Check(VrEmit(sf2).find("vregion") == std::string::npos, "vregion (c): 15 eligible of 16 -> no region");
+  // (d) written buffer: never a member
+  VrSpec sw; sw.n = 20; sw.written = true;
+  Check(VrEmit(sw).find("vregion") == std::string::npos, "vregion (d): written buffer is never a member");
+  // (e) two exec values: two regions, each under its own minimum
+  VrSpec s2; s2.n = 32; s2.second_active_from = 16;
+  const std::string t2 = VrEmit(s2);
+  Check(VrCount(t2, "// vregion: 16 guarded") == 2, "vregion (e): two exec values -> two regions");
+  VrSpec s2b; s2b.n = 30; s2b.second_active_from = 15;
+  Check(VrEmit(s2b).find("vregion") == std::string::npos, "vregion (e): 15 + 15 -> none");
+  // (f) addresses defined after the first member are re-printed before the test
+  VrSpec sd; sd.n = 16; sd.late_addr = true;
+  const std::string td = VrEmit(sd);
+  if (std::getenv("VR_DUMP") != nullptr) std::printf("=== late\n%s\n=== end\n", td.c_str());
+  const auto test_at = td.find("if ((kkr0a_");
+  const auto def_at = td.find("const uint kkr0_v");
+  Check(VrCount(td, "// vregion: 16 guarded") == 1 && def_at != std::string::npos && test_at != std::string::npos && def_at < test_at,
+        "vregion (f): late address operands re-printed before the one test");
+  Check(VrCount(td, "const uint kkr0_v") == 15, "vregion (f): 15 late operands re-printed: " + std::to_string(VrCount(td, "const uint kkr0_v")));
+  // (g) off = byte-identical: token on but no region qualifies (min above any count) == token off, over 400 random programs
+  uint32_t rng = 12345u;
+  auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+  int same = 0, merged = 0;
+  for (int i = 0; i < 400; i++) {
+    VrSpec r;
+    r.n = next() % 40; r.late_addr = next() & 1; r.written = (next() % 7) == 0;
+    if (next() & 1) r.float_addr_at = int(next() % 20);
+    if (next() & 1) r.loaded_addr_at = int(next() % 20);
+    if (next() % 3 == 0) r.second_active_from = next() % 40;
+    unsetenv("KYTY_MSL_VS_LOAD_REGION");
+    const auto base = VrEmit(r);
+    setenv("KYTY_MSL_VS_LOAD_REGION", "1", 1);
+    setenv("KYTY_MSL_VS_LOAD_REGION_MIN", "1000", 1);
+    same += VrEmit(r) == base;
+    unsetenv("KYTY_MSL_VS_LOAD_REGION_MIN");
+    merged += VrEmit(r) != base;
+  }
+  Check(same == 400, "vregion (g): token on, nothing qualifies -> 400 vertex texts byte-identical to off (" + std::to_string(same) + ")");
+  Check(merged > 20, "vregion (g): the random programs do exercise regions (" + std::to_string(merged) + ")");
+  // pixel stage: transform off even with the env set
+  Check(VrEmit(s16, false).find("vregion") == std::string::npos, "vregion: vertex stage only");
+  // (h) mode token + catalogue
+  const std::string cat = Xf::Catalogue();
+  Check(cat.find("vs_load_region@1 vs semantic-exact") != std::string::npos, "vregion (h): transform registered (vertex)");
+  Check(Xf::ModeCatalogue().find("vregion\t") != std::string::npos, "vregion (h): mode token listed");
+  unsetenv("KYTY_MSL_VS_LOAD_REGION");
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(!Xf::On(Xf::VsLoadRegion), "vregion (h): off by default");
+  setenv("KYTY_MSL_XF", "all", 1);
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(!Xf::On(Xf::VsLoadRegion), "vregion (h): not in `all`");
+  unsetenv("KYTY_MSL_XF");
+  std::string err;
+  Check(Xf::ApplyMode("fix6+vregion", err) && std::string(std::getenv("KYTY_MSL_VS_LOAD_REGION")) == "1", "vregion (h): ApplyMode(fix6+vregion) sets the env: " + err);
+  Xf::Begin(ShaderType::Vertex, 0);
+  Check(Xf::On(Xf::VsLoadRegion), "vregion (h): mode token switches the transform on");
+  Xf::Begin(ShaderType::Pixel, 0);
+  Check(!Xf::On(Xf::VsLoadRegion), "vregion (h): pixel stage off");
+  Check(!Xf::ApplyMode("fix6+vregion", err), "vregion (h): mode refuses an already-set KYTY_MSL_VS_LOAD_REGION");
+  unsetenv("KYTY_MSL_VS_LOAD_REGION");
+  unsetenv("KYTY_MSL_FIX6");
+  setenv("KYTY_MSL_VS_LOAD_REGION_MIN", "4", 1);
+  Check(!Xf::ApplyMode("fix6", err), "vregion (h): mode refuses a hand-set KYTY_MSL_VS_LOAD_REGION_MIN");
+  unsetenv("KYTY_MSL_VS_LOAD_REGION_MIN");
+  // (i) mutant switch changes the fast path only
+  setenv("KYTY_MSL_VS_LOAD_REGION", "1", 1);
+  const std::string base = VrEmit(s16);
+  setenv("KYTY_MSL_LOADGROUP_MUTANT", "1", 1);
+  const std::string mut = VrEmit(s16);
+  unsetenv("KYTY_MSL_LOADGROUP_MUTANT");
+  Check(mut != base && VrCount(mut, "packed_uint4*)(r.b0 + (kkr0a_") == 16 && VrCount(base, "packed_uint4*)(r.b0 + (kkr0a_") == 0, "vregion (i): mutant shifts the 16 fast-path loads by +4 bytes");
+  auto strip = [](const std::string &t) {
+    std::string o, line;
+    for (size_t i = 0; i <= t.size(); i++) {
+      if (i == t.size() || t[i] == '\n') {
+        if (line.find("= uint4(*(const device packed_uint4*)(r.b0 + ") == std::string::npos) o += line + "\n";
+        line.clear();
+      } else line += t[i];
+    }
+    return o;
+  };
+  Check(strip(mut) == strip(base), "vregion (i): everything except the fast-path loads is identical");
+  unsetenv("KYTY_MSL_VS_LOAD_REGION");
+}
+
 int main() {
+  if (std::getenv("MSL_TESTS_ONLY_VREGION") != nullptr) { // run just the vregion checks (fast iteration)
+    TestVsLoadRegion();
+    std::printf("%d checks, %d failed\n", g_checks, g_failed);
+    return g_failed == 0 ? 0 : 1;
+  }
   TestBuilder();
   TestAluGolden();
   TestAluCompiles();
@@ -1701,6 +1894,7 @@ int main() {
   TestKkLayoutText();
   TestOrderedCompareReadsOperandsFirst();
   TestDppAlwaysUpdatePin();
+  TestVsLoadRegion();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }
