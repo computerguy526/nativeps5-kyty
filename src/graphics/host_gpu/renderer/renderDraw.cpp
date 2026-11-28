@@ -48,13 +48,13 @@
 #include "graphics/host_gpu/renderer/metalfx.h"
 #include "graphics/host_gpu/renderer/nanProbe.h"
 #include "graphics/host_gpu/renderer/occlusionDrawSkip.h"
-#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptors.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/host_gpu/renderer/pipeline/pixelRateVariant.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderResourceBarrier.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/host_gpu/watchRange.h"
 #include "graphics/shader/recompiler/BufferFormat.h"
@@ -7714,13 +7714,16 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		return;
 	}
-	// nps5 perfmode (KYTY_SCENE_SKIP_FILE, default off): the vertex/pixel program pair is one the player switched off with the scenery
-	// keys in the current scene (sceneSkip.h). One relaxed load per draw when nothing is active.
+	// nps5 perfmode (KYTY_SCENE_SKIP_FILE, default off): the vertex/pixel program pair is one the
+	// player switched off with the scenery keys in the current scene (sceneSkip.h). One relaxed
+	// load per draw when nothing is active.
 	if (SceneSkip::Active()) [[unlikely]] {
 		const auto* vs_program = state.vertex_info[0].stage.program;
 		const auto* ps_program = state.ps_active ? state.ps_input_info.stage.program : nullptr;
 		if (vs_program != nullptr &&
-		    SceneSkip::Skips(vs_program->shader_hash, ps_program != nullptr ? ps_program->shader_hash : 0, ps_program != nullptr)) {
+		    SceneSkip::Skips(vs_program->shader_hash,
+		                     ps_program != nullptr ? ps_program->shader_hash : 0,
+		                     ps_program != nullptr)) {
 			m_run.valid        = false;
 			m_run_active       = false;
 			m_run_targets_kept = false;

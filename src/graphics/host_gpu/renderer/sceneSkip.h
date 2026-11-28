@@ -1,26 +1,38 @@
 #pragma once
 
-// nps5 perfmode: scene-gated draw skip + the scenery hotkeys (flowers / grass / moss / other decoration).
+// nps5 perfmode: scene-gated draw skip + the scenery hotkeys (flowers / grass / moss / other
+// decoration).
 //
-// Two switches, both default off (nothing is read, nothing runs, the keys reach the game as before):
-//   KYTY_SCENE_SKIP_FILE=<table>   the instant draw skip: vertex/pixel program pairs of the CURRENT scene (the level the runtime's VFS names,
-//                                  nps5_vfs_current_scene) whose scenery categories are all switched off are not recorded. Pairs, not single
-//                                  programs: a program alone is shared with other objects. One relaxed atomic load per draw when nothing is active.
-//   KYTY_SCENE_KEYS=1              number row 4-9 (physical keys, numpad digits too): 5 cycles the preset (full -> the table's presets -> full),
-//                                  6 flowers, 7 grass, 8 small moss, 9 other decoration; Shift+5 shows the state again. Each press writes KYTY_SCENE_STATE_FILE (atomically) for the launcher,
-//                                  which stages the level-data part (the overlay links the runtime reads at the next level load), and shows a toast.
-//                                  4 toggles the help panel (what each key does in the current level; auto-hides). The digits are ours only with this switch.
+// Two switches, both default off (nothing is read, nothing runs, the keys reach the game as
+// before):
+//   KYTY_SCENE_SKIP_FILE=<table>   the instant draw skip: vertex/pixel program pairs of the CURRENT
+//   scene (the level the runtime's VFS names,
+//                                  nps5_vfs_current_scene) whose scenery categories are all
+//                                  switched off are not recorded. Pairs, not single programs: a
+//                                  program alone is shared with other objects. One relaxed atomic
+//                                  load per draw when nothing is active.
+//   KYTY_SCENE_KEYS=1              number row 4-9 (physical keys, numpad digits too): 5 cycles the
+//   preset (full -> the table's presets -> full),
+//                                  6 flowers, 7 grass, 8 small moss, 9 other decoration; Shift+5
+//                                  shows the state again. Each press writes KYTY_SCENE_STATE_FILE
+//                                  (atomically) for the launcher, which stages the level-data part
+//                                  (the overlay links the runtime reads at the next level load),
+//                                  and shows a toast. 4 toggles the help panel (what each key does
+//                                  in the current level; auto-hides). The digits are ours only with
+//                                  this switch.
 //
 // Table (KYTY_SCENE_SKIP_FILE; written by `nps5 run`, tab separated, # comments):
-//   preset <name> <cat=keep,...>        a preset of the 5 cycle (keep = percent of the category's objects that stay; 100 = untouched)
-//   start  <cat=keep,...>               the mask the launch starts with
-//   skip   <scene> <cat+cat> <vs hex> <ps hex or ->   one program pair that draws only objects of those categories in that scene
-//   level  <scene> <cat=how,...>        (4 help panel) how each category applies in that level: instant | entry | both (entry = the level
-//                                       data of the next level load); a category not named is not in that level. A `skip` row also makes its
-//                                       categories instant for its scene.
+//   preset <name> <cat=keep,...>        a preset of the 5 cycle (keep = percent of the category's
+//   objects that stay; 100 = untouched) start  <cat=keep,...>               the mask the launch
+//   starts with skip   <scene> <cat+cat> <vs hex> <ps hex or ->   one program pair that draws only
+//   objects of those categories in that scene level  <scene> <cat=how,...>        (4 help panel)
+//   how each category applies in that level: instant | entry | both (entry = the level
+//                                       data of the next level load); a category not named is not
+//                                       in that level. A `skip` row also makes its categories
+//                                       instant for its scene.
 //
-// This header is pure (no emulator, no GPU, no SDL) so tests/SceneSkipTests.cpp is a plain executable. The runtime half (environment, files,
-// scene polling, toast) is sceneSkip.cpp.
+// This header is pure (no emulator, no GPU, no SDL) so tests/SceneSkipTests.cpp is a plain
+// executable. The runtime half (environment, files, scene polling, toast) is sceneSkip.cpp.
 
 #include <array>
 #include <atomic>
@@ -36,20 +48,21 @@
 namespace Libs::Graphics::SceneSkip {
 
 enum Cat : uint8_t { Flowers = 0, Grass = 1, Moss = 2, Other = 3 };
-inline constexpr size_t      kCatCount         = 4;
-inline constexpr const char* kCatNames[]       = {"flowers", "grass", "moss", "other"};
-inline constexpr char        kCatLetters[]     = {'F', 'G', 'M', 'O'};
-inline constexpr size_t      kMaxPairs         = 64; // per scene (the shape of the diagnostic DrawSkipSet)
-inline constexpr size_t      kMaxPresets       = 8;
-inline constexpr uint64_t    kToastMs          = 4000;
-inline constexpr uint64_t    kToastFadeMs      = 500;
-inline constexpr uint64_t    kPanelMs          = 15000; // the 4 panel hides itself after this long
-inline constexpr uint64_t    kPanelFadeMs      = 500;
-inline constexpr size_t      kMaxLevels        = 64;
-inline constexpr uint8_t     kHowInstant       = 1;
-inline constexpr uint8_t     kHowEntry         = 2;
+inline constexpr size_t      kCatCount     = 4;
+inline constexpr const char* kCatNames[]   = {"flowers", "grass", "moss", "other"};
+inline constexpr char        kCatLetters[] = {'F', 'G', 'M', 'O'};
+inline constexpr size_t      kMaxPairs = 64; // per scene (the shape of the diagnostic DrawSkipSet)
+inline constexpr size_t      kMaxPresets  = 8;
+inline constexpr uint64_t    kToastMs     = 4000;
+inline constexpr uint64_t    kToastFadeMs = 500;
+inline constexpr uint64_t    kPanelMs     = 15000; // the 4 panel hides itself after this long
+inline constexpr uint64_t    kPanelFadeMs = 500;
+inline constexpr size_t      kMaxLevels   = 64;
+inline constexpr uint8_t     kHowInstant  = 1;
+inline constexpr uint8_t     kHowEntry    = 2;
 
-// Percent of each category's objects that stay: 100 = untouched, 0 = all removed, in between = thinned.
+// Percent of each category's objects that stay: 100 = untouched, 0 = all removed, in between =
+// thinned.
 using Mask = std::array<uint8_t, kCatCount>;
 inline constexpr Mask kAllOn {100, 100, 100, 100};
 
@@ -76,19 +89,20 @@ struct SkipRow {
 	bool        has_ps = false;
 };
 
-// How each category applies in one level (bits kHowInstant | kHowEntry per category; 0 = not in that level).
+// How each category applies in one level (bits kHowInstant | kHowEntry per category; 0 = not in
+// that level).
 struct LevelInfo {
-	std::string                 scene;
+	std::string                    scene;
 	std::array<uint8_t, kCatCount> how {};
 };
 
 struct Table {
-	std::vector<Preset>  presets;
+	std::vector<Preset>    presets;
 	std::vector<LevelInfo> levels;
-	Mask                 start = kAllOn;
-	std::vector<SkipRow> skips;
-	uint32_t             bad_lines = 0; // lines that did not parse (ignored)
-	uint32_t             dropped   = 0; // rows over kMaxPairs for their scene (ignored)
+	Mask                   start = kAllOn;
+	std::vector<SkipRow>   skips;
+	uint32_t               bad_lines = 0; // lines that did not parse (ignored)
+	uint32_t               dropped   = 0; // rows over kMaxPairs for their scene (ignored)
 };
 
 namespace Detail {
@@ -112,10 +126,14 @@ inline bool ParseHex(std::string_view s, uint64_t& out) {
 	uint64_t v = 0;
 	for (const char c: s) {
 		unsigned d;
-		if (c >= '0' && c <= '9') d = static_cast<unsigned>(c - '0');
-		else if (c >= 'a' && c <= 'f') d = static_cast<unsigned>(c - 'a') + 10u;
-		else if (c >= 'A' && c <= 'F') d = static_cast<unsigned>(c - 'A') + 10u;
-		else return false;
+		if (c >= '0' && c <= '9')
+			d = static_cast<unsigned>(c - '0');
+		else if (c >= 'a' && c <= 'f')
+			d = static_cast<unsigned>(c - 'a') + 10u;
+		else if (c >= 'A' && c <= 'F')
+			d = static_cast<unsigned>(c - 'A') + 10u;
+		else
+			return false;
 		v = (v << 4) | d;
 	}
 	out = v;
@@ -125,7 +143,8 @@ inline bool ParseHex(std::string_view s, uint64_t& out) {
 inline bool PlainName(std::string_view s) {
 	if (s.empty() || s.size() > 63) return false;
 	for (const char c: s) {
-		const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+		const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+		                (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
 		if (!ok) return false;
 	}
 	return s[0] != '.';
@@ -169,12 +188,14 @@ inline std::string MaskText(const Mask& m) {
 inline Table ParseTable(std::string_view text) {
 	Table t;
 	for (auto line: Detail::Split(text, '\n')) {
-		while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+		while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+			line.remove_suffix(1);
 		if (line.empty() || line.front() == '#') continue;
 		const auto f = Detail::Split(line, '\t');
 		if (f[0] == "preset" && f.size() == 3) {
 			Mask m;
-			if (!Detail::PlainName(f[1]) || f[1] == "full" || f[1] == "custom" || !ParseMask(f[2], m) || t.presets.size() >= kMaxPresets) {
+			if (!Detail::PlainName(f[1]) || f[1] == "full" || f[1] == "custom" ||
+			    !ParseMask(f[2], m) || t.presets.size() >= kMaxPresets) {
 				t.bad_lines++;
 				continue;
 			}
@@ -192,11 +213,14 @@ inline Table ParseTable(std::string_view text) {
 			r.scene    = std::string(f[1]);
 			for (const auto c: Detail::Split(f[2], '+')) {
 				Cat cat;
-				if (!CatFromName(c, cat)) ok = false;
-				else r.cats |= static_cast<uint8_t>(1u << cat);
+				if (!CatFromName(c, cat))
+					ok = false;
+				else
+					r.cats |= static_cast<uint8_t>(1u << cat);
 			}
 			ok = ok && r.cats != 0 && Detail::ParseHex(f[3], r.vs) && r.vs != 0;
-			if (f[4] == "-") r.has_ps = false;
+			if (f[4] == "-")
+				r.has_ps = false;
 			else {
 				r.has_ps = true;
 				ok       = ok && Detail::ParseHex(f[4], r.ps) && r.ps != 0;
@@ -206,7 +230,8 @@ inline Table ParseTable(std::string_view text) {
 				continue;
 			}
 			size_t in_scene = 0;
-			for (const auto& s: t.skips) in_scene += s.scene == r.scene ? 1u : 0u;
+			for (const auto& s: t.skips)
+				in_scene += s.scene == r.scene ? 1u : 0u;
 			if (in_scene >= kMaxPairs) {
 				t.dropped++;
 				continue;
@@ -224,10 +249,14 @@ inline Table ParseTable(std::string_view text) {
 					continue;
 				}
 				const auto h = item.substr(eq + 1);
-				if (h == "instant") li.how[c] = kHowInstant;
-				else if (h == "entry") li.how[c] = kHowEntry;
-				else if (h == "both") li.how[c] = kHowInstant | kHowEntry;
-				else ok = false;
+				if (h == "instant")
+					li.how[c] = kHowInstant;
+				else if (h == "entry")
+					li.how[c] = kHowEntry;
+				else if (h == "both")
+					li.how[c] = kHowInstant | kHowEntry;
+				else
+					ok = false;
 			}
 			if (!ok) {
 				t.bad_lines++;
@@ -236,7 +265,8 @@ inline Table ParseTable(std::string_view text) {
 			bool merged = false;
 			for (auto& l: t.levels) {
 				if (l.scene != li.scene) continue;
-				for (size_t i = 0; i < kCatCount; i++) l.how[i] |= li.how[i];
+				for (size_t i = 0; i < kCatCount; i++)
+					l.how[i] |= li.how[i];
 				merged = true;
 			}
 			if (!merged) t.levels.push_back(std::move(li));
@@ -247,7 +277,8 @@ inline Table ParseTable(std::string_view text) {
 	return t;
 }
 
-// How each category applies in `scene`: the `level` lines, plus instant for every category a `skip` row of the scene names.
+// How each category applies in `scene`: the `level` lines, plus instant for every category a `skip`
+// row of the scene names.
 struct SceneHow {
 	std::array<uint8_t, kCatCount>  how {};
 	std::array<uint32_t, kCatCount> pairs {}; // `skip` rows of the scene that name the category
@@ -270,9 +301,11 @@ inline SceneHow HowFor(const Table& table, std::string_view scene) {
 	return out;
 }
 
-// The rows of `scene` whose categories are ALL off (keep 0) under `mask`: a pair that draws grass and another category stays while any of
-// them is on. Thinned categories (keep 1..99) are not off: no draw skip can keep "half".
-inline std::vector<SkipRow> SelectActive(const Table& table, std::string_view scene, const Mask& mask) {
+// The rows of `scene` whose categories are ALL off (keep 0) under `mask`: a pair that draws grass
+// and another category stays while any of them is on. Thinned categories (keep 1..99) are not off:
+// no draw skip can keep "half".
+inline std::vector<SkipRow> SelectActive(const Table& table, std::string_view scene,
+                                         const Mask& mask) {
 	std::vector<SkipRow> out;
 	if (scene.empty()) return out;
 	for (const auto& r: table.skips) {
@@ -286,8 +319,9 @@ inline std::vector<SkipRow> SelectActive(const Table& table, std::string_view sc
 	return out;
 }
 
-// The pairs the draw path checks: a fixed lock-free array, published by one thread at a time (a flip, a key press). A draw that races a
-// publish sees the old or the new list or a mix for one draw: harmless (one draw more or less skipped for a frame).
+// The pairs the draw path checks: a fixed lock-free array, published by one thread at a time (a
+// flip, a key press). A draw that races a publish sees the old or the new list or a mix for one
+// draw: harmless (one draw more or less skipped for a frame).
 struct ActiveSet {
 	std::array<std::atomic<uint64_t>, kMaxPairs> vs {};
 	std::array<std::atomic<uint64_t>, kMaxPairs> ps {};
@@ -307,7 +341,8 @@ struct ActiveSet {
 		count.store(n, std::memory_order_release);
 	}
 	[[nodiscard]] uint32_t Count() const { return count.load(std::memory_order_relaxed); }
-	// ps_known: the draw has a pixel program (ps_hash valid). A row with a pixel program never matches a draw without one.
+	// ps_known: the draw has a pixel program (ps_hash valid). A row with a pixel program never
+	// matches a draw without one.
 	[[nodiscard]] bool Contains(uint64_t vs_hash, uint64_t ps_hash, bool ps_known) const {
 		const auto n = count.load(std::memory_order_acquire);
 		for (uint32_t i = 0; i < n; i++) {
@@ -319,9 +354,11 @@ struct ActiveSet {
 	}
 };
 
-// The scenery keys are the number row (4-9) on purpose: macOS intercepts the F keys, and 1-3 are the keyboard-pad's setting cycles.
+// The scenery keys are the number row (4-9) on purpose: macOS intercepts the F keys, and 1-3 are
+// the keyboard-pad's setting cycles.
 enum class Key : uint8_t { None, Help, Preset, Flowers, Grass, Moss, Other };
-// Physical number-row / numpad digit -> key (layout independent: the caller passes the SDL scancode digit 4..9, or -1).
+// Physical number-row / numpad digit -> key (layout independent: the caller passes the SDL scancode
+// digit 4..9, or -1).
 inline constexpr Key KeyFromDigit(int digit) noexcept {
 	switch (digit) {
 		case 4: return Key::Help;
@@ -334,13 +371,15 @@ inline constexpr Key KeyFromDigit(int digit) noexcept {
 	}
 }
 
-// Scripted key presses for automated checks (KYTY_SCENE_KEYS_SCRIPT, default off; needs KYTY_SCENE_KEYS=1): "<seconds>:<digit>[,...]",
-// e.g. "20:6,50:6" = press 6 at +20 s, again at +50 s (seconds after the scenery runtime started = the first presented frame; decimals ok).
-// A digit may carry a leading S for Shift ("30:S5"). Digits are the number-row keys 4..9. Entries are sorted by time; bad entries are counted.
+// Scripted key presses for automated checks (KYTY_SCENE_KEYS_SCRIPT, default off; needs
+// KYTY_SCENE_KEYS=1): "<seconds>:<digit>[,...]", e.g. "20:6,50:6" = press 6 at +20 s, again at +50
+// s (seconds after the scenery runtime started = the first presented frame; decimals ok). A digit
+// may carry a leading S for Shift ("30:S5"). Digits are the number-row keys 4..9. Entries are
+// sorted by time; bad entries are counted.
 struct ScriptKey {
-	uint64_t at_ms  = 0;
-	Key      key    = Key::None;
-	bool     shift  = false;
+	uint64_t at_ms = 0;
+	Key      key   = Key::None;
+	bool     shift = false;
 };
 struct KeyScript {
 	std::vector<ScriptKey> keys;
@@ -349,39 +388,48 @@ struct KeyScript {
 inline KeyScript ParseKeyScript(std::string_view text) {
 	KeyScript out;
 	for (auto item: Detail::Split(text, ',')) {
-		while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
-		while (!item.empty() && item.back() == ' ') item.remove_suffix(1);
+		while (!item.empty() && item.front() == ' ')
+			item.remove_prefix(1);
+		while (!item.empty() && item.back() == ' ')
+			item.remove_suffix(1);
 		if (item.empty()) continue;
 		const auto colon = item.find(':');
 		if (colon == std::string_view::npos || out.keys.size() >= 64) {
 			out.bad++;
 			continue;
 		}
-		const auto when = item.substr(0, colon);
-		auto       what = item.substr(colon + 1);
+		const auto when  = item.substr(0, colon);
+		auto       what  = item.substr(colon + 1);
 		bool       shift = false;
 		if (!what.empty() && (what.front() == 'S' || what.front() == 's')) {
 			shift = true;
 			what.remove_prefix(1);
 		}
-		double ms = -1;
-		bool   ok = !when.empty() && when.size() <= 8;
+		double ms   = -1;
+		bool   ok   = !when.empty() && when.size() <= 8;
 		size_t dots = 0;
 		for (const char c: when) {
-			if (c == '.') dots++;
-			else if (c < '0' || c > '9') ok = false;
+			if (c == '.')
+				dots++;
+			else if (c < '0' || c > '9')
+				ok = false;
 		}
-		if (ok && dots <= 1 && when.front() != '.') ms = std::atof(std::string(when).c_str()) * 1000.0;
-		else ok = false;
-		const Key k = what.size() == 1 && what[0] >= '0' && what[0] <= '9' ? KeyFromDigit(what[0] - '0') : Key::None;
+		if (ok && dots <= 1 && when.front() != '.')
+			ms = std::atof(std::string(when).c_str()) * 1000.0;
+		else
+			ok = false;
+		const Key k = what.size() == 1 && what[0] >= '0' && what[0] <= '9'
+		                  ? KeyFromDigit(what[0] - '0')
+		                  : Key::None;
 		if (!ok || ms < 0 || k == Key::None) {
 			out.bad++;
 			continue;
 		}
 		out.keys.push_back({static_cast<uint64_t>(ms + 0.5), k, shift});
 	}
-	for (size_t i = 1; i < out.keys.size(); i++) {  // stable insertion sort by time (at most 64)
-		for (size_t j = i; j > 0 && out.keys[j].at_ms < out.keys[j - 1].at_ms; j--) std::swap(out.keys[j], out.keys[j - 1]);
+	for (size_t i = 1; i < out.keys.size(); i++) { // stable insertion sort by time (at most 64)
+		for (size_t j = i; j > 0 && out.keys[j].at_ms < out.keys[j - 1].at_ms; j--)
+			std::swap(out.keys[j], out.keys[j - 1]);
 	}
 	return out;
 }
@@ -400,7 +448,7 @@ struct PanelLine {
 
 // The 4 panel's open/close state with its auto-hide deadline (pure: the caller supplies the clock).
 struct PanelClock {
-	uint64_t until_ms = 0;
+	uint64_t           until_ms = 0;
 	[[nodiscard]] bool Open(uint64_t now) const { return now < until_ms; }
 	// 4 pressed: closes an open panel, opens a closed one for kPanelMs. -> open now.
 	bool Toggle(uint64_t now) {
@@ -413,11 +461,14 @@ struct PanelClock {
 	}
 	[[nodiscard]] float Alpha(uint64_t now) const {
 		if (!Open(now)) return 0.0f;
-		return until_ms - now >= kPanelFadeMs ? 1.0f : static_cast<float>(until_ms - now) / static_cast<float>(kPanelFadeMs);
+		return until_ms - now >= kPanelFadeMs
+		           ? 1.0f
+		           : static_cast<float>(until_ms - now) / static_cast<float>(kPanelFadeMs);
 	}
 };
 
-// The scenery state machine: pure; the runtime feeds it key presses. Not thread safe (the runtime holds a mutex).
+// The scenery state machine: pure; the runtime feeds it key presses. Not thread safe (the runtime
+// holds a mutex).
 class Controller {
 public:
 	void Init(const Table& table) {
@@ -430,8 +481,9 @@ public:
 	[[nodiscard]] const Mask& Current() const { return m_mask; }
 	[[nodiscard]] const Mask& Loaded() const { return m_loaded; }
 	[[nodiscard]] uint32_t    Seq() const { return m_seq; }
-	// The level data now on screen is the one the launcher staged before the level was entered: a scene change makes `loaded` the mask.
-	void MarkLoaded() { m_loaded = m_mask; }
+	// The level data now on screen is the one the launcher staged before the level was entered: a
+	// scene change makes `loaded` the mask.
+	void               MarkLoaded() { m_loaded = m_mask; }
 	[[nodiscard]] bool DiffersFromLoaded() const { return m_mask != m_loaded; }
 
 	[[nodiscard]] std::string PresetName() const { return PresetNameOf(m_mask); }
@@ -448,7 +500,8 @@ public:
 		if (cur == "custom") return "full";
 		if (cur == "full") return m_presets.empty() ? std::string("full") : m_presets.front().name;
 		for (size_t i = 0; i < m_presets.size(); i++) {
-			if (m_presets[i].name == cur) return i + 1 < m_presets.size() ? m_presets[i + 1].name : std::string("full");
+			if (m_presets[i].name == cur)
+				return i + 1 < m_presets.size() ? m_presets[i + 1].name : std::string("full");
 		}
 		return "full";
 	}
@@ -460,15 +513,16 @@ public:
 	}
 
 	struct Result {
-		bool        consumed = false; // the key is ours (down, up and repeat of it never reach the game)
-		bool        changed  = false; // the mask changed (stage, publish, toast)
-		bool        show     = false; // show the state without a change (Shift+5)
-		bool        panel    = false; // 4: toggle the help panel
-		int         cat      = -1;    // the one category a toggle changed
-		std::string headline;         // toast line 1
+		bool consumed = false; // the key is ours (down, up and repeat of it never reach the game)
+		bool changed  = false; // the mask changed (stage, publish, toast)
+		bool show     = false; // show the state without a change (Shift+5)
+		bool panel    = false; // 4: toggle the help panel
+		int  cat      = -1;    // the one category a toggle changed
+		std::string headline;  // toast line 1
 	};
 
-	// A key event. `enabled`: KYTY_SCENE_KEYS=1; when false nothing is consumed (the keys reach the game exactly as before).
+	// A key event. `enabled`: KYTY_SCENE_KEYS=1; when false nothing is consumed (the keys reach the
+	// game exactly as before).
 	Result OnKey(bool enabled, Key key, bool shift, bool pressed) {
 		Result r;
 		if (!enabled || key == Key::None) return r;
@@ -484,17 +538,21 @@ public:
 				r.headline = "Scenery: " + PresetName();
 				return r;
 			}
-			const auto next = NextPresetName();
+			const auto next   = NextPresetName();
 			const Mask target = next == "full" ? kAllOn : MaskOfPreset(next);
 			r.changed         = target != m_mask;
 			m_mask            = target;
 			r.headline        = "Scenery: " + next;
 		} else {
-			const Cat c = key == Key::Flowers ? Flowers : key == Key::Grass ? Grass : key == Key::Moss ? Moss : Other;
+			const Cat c = key == Key::Flowers ? Flowers
+			              : key == Key::Grass ? Grass
+			              : key == Key::Moss  ? Moss
+			                                  : Other;
 			m_mask[c]   = m_mask[c] == 0 ? 100 : 0; // off <-> on; a thinned category goes off
 			r.changed   = true;
 			r.cat       = c;
-			r.headline  = std::string("Scenery: ") + kCatNames[c] + (m_mask[c] == 0 ? " OFF" : " ON");
+			r.headline =
+			    std::string("Scenery: ") + kCatNames[c] + (m_mask[c] == 0 ? " OFF" : " ON");
 		}
 		if (r.changed) m_seq++;
 		return r;
@@ -503,7 +561,8 @@ public:
 	// "seq=4\npreset=balanced\nflowers=50\n..." (what the launcher's watcher reads).
 	[[nodiscard]] std::string StateText() const {
 		std::string s = "seq=" + std::to_string(m_seq) + "\npreset=" + PresetName() + "\n";
-		for (size_t i = 0; i < kCatCount; i++) s += std::string(kCatNames[i]) + "=" + std::to_string(m_mask[i]) + "\n";
+		for (size_t i = 0; i < kCatCount; i++)
+			s += std::string(kCatNames[i]) + "=" + std::to_string(m_mask[i]) + "\n";
 		return s;
 	}
 
@@ -518,32 +577,45 @@ public:
 		return s + " (" + PresetName() + ")";
 	}
 
-	// "[scenery] seq 4: flowers OFF (instant: 2 shader pairs in hero_ape_escape), grass on, moss on, other on"
-	[[nodiscard]] std::string LogLine(int changed_cat, uint32_t pairs, std::string_view scene) const {
-		std::string s = "[scenery] seq " + std::to_string(m_seq) + ": ";
-		const std::string note = "(instant: " + std::to_string(pairs) + " shader pair" + (pairs == 1 ? "" : "s") + " in " + (scene.empty() ? std::string("no scene") : std::string(scene)) + ")";
+	// "[scenery] seq 4: flowers OFF (instant: 2 shader pairs in hero_ape_escape), grass on, moss
+	// on, other on"
+	[[nodiscard]] std::string LogLine(int changed_cat, uint32_t pairs,
+	                                  std::string_view scene) const {
+		std::string       s = "[scenery] seq " + std::to_string(m_seq) + ": ";
+		const std::string note =
+		    "(instant: " + std::to_string(pairs) + " shader pair" + (pairs == 1 ? "" : "s") +
+		    " in " + (scene.empty() ? std::string("no scene") : std::string(scene)) + ")";
 		for (size_t i = 0; i < kCatCount; i++) {
 			if (i != 0) s += ", ";
 			s += kCatNames[i];
-			s += m_mask[i] == 100 ? " on" : m_mask[i] == 0 ? " OFF" : " " + std::to_string(m_mask[i]) + "%";
+			s += m_mask[i] == 100 ? " on"
+			     : m_mask[i] == 0 ? " OFF"
+			                      : " " + std::to_string(m_mask[i]) + "%";
 			if (changed_cat == static_cast<int>(i)) s += " " + note;
 		}
 		if (changed_cat < 0) s += " " + note + " preset " + PresetName();
 		return s;
 	}
 
-	// The 4 panel for `scene` under the current mask: what each key does in this level and how it applies. `scene` empty = no level yet.
-	[[nodiscard]] std::vector<PanelLine> MakePanel(const Table& table, std::string_view scene) const {
+	// The 4 panel for `scene` under the current mask: what each key does in this level and how it
+	// applies. `scene` empty = no level yet.
+	[[nodiscard]] std::vector<PanelLine> MakePanel(const Table&     table,
+	                                               std::string_view scene) const {
 		std::vector<PanelLine> out;
 		out.push_back({"Scenery options  (4 closes)", PanelKind::Title});
-		out.push_back({"Level: " + (scene.empty() ? std::string("not in a level yet") : std::string(scene)), PanelKind::Heading});
-		out.push_back({"Preset: " + PresetName() + "   5 cycles " + CycleText() + "   Shift+5 shows state", PanelKind::Heading});
-		const auto  h    = HowFor(table, scene);
-		const char* keys[] = {"6", "7", "8", "9"};
+		out.push_back(
+		    {"Level: " + (scene.empty() ? std::string("not in a level yet") : std::string(scene)),
+		     PanelKind::Heading});
+		out.push_back(
+		    {"Preset: " + PresetName() + "   5 cycles " + CycleText() + "   Shift+5 shows state",
+		     PanelKind::Heading});
+		const auto  h         = HowFor(table, scene);
+		const char* keys[]    = {"6", "7", "8", "9"};
 		bool        any_entry = false, any_instant = false;
 		for (size_t i = 0; i < kCatCount; i++) {
 			std::string line = std::string(keys[i]) + "  " + kCatNames[i];
-			while (line.size() < 14) line += ' ';
+			while (line.size() < 14)
+				line += ' ';
 			if (h.how[i] == 0) {
 				line += "n/a   not in this level";
 				out.push_back({line, PanelKind::Dim});
@@ -551,29 +623,41 @@ public:
 			}
 			const uint8_t v = m_mask[i];
 			line += v == 100 ? "ON    " : v == 0 ? "OFF   " : (std::to_string(v) + "%   ");
-			if ((h.how[i] & kHowInstant) != 0 && (h.how[i] & kHowEntry) != 0) line += "instant + fully on re-entry";
-			else if ((h.how[i] & kHowInstant) != 0) line += "instant";
-			else line += "on re-entry";
-			if (h.pairs[i] != 0) line += "  (" + std::to_string(h.pairs[i]) + " shader pair" + (h.pairs[i] == 1 ? "" : "s") + ")";
+			if ((h.how[i] & kHowInstant) != 0 && (h.how[i] & kHowEntry) != 0)
+				line += "instant + fully on re-entry";
+			else if ((h.how[i] & kHowInstant) != 0)
+				line += "instant";
+			else
+				line += "on re-entry";
+			if (h.pairs[i] != 0)
+				line += "  (" + std::to_string(h.pairs[i]) + " shader pair" +
+				        (h.pairs[i] == 1 ? "" : "s") + ")";
 			any_entry   = any_entry || (h.how[i] & kHowEntry) != 0;
 			any_instant = any_instant || (h.how[i] & kHowInstant) != 0;
 			out.push_back({line, v == 100 ? PanelKind::On : PanelKind::Off});
 		}
-		if (!any_entry && !any_instant) out.push_back({"Nothing to switch here.", PanelKind::Note});
-		else if (any_entry) out.push_back({"Re-enter the level to apply the on re-entry changes.", PanelKind::Note});
-		if (DiffersFromLoaded()) out.push_back({"Changed since this level loaded.", PanelKind::Note});
+		if (!any_entry && !any_instant)
+			out.push_back({"Nothing to switch here.", PanelKind::Note});
+		else if (any_entry)
+			out.push_back(
+			    {"Re-enter the level to apply the on re-entry changes.", PanelKind::Note});
+		if (DiffersFromLoaded())
+			out.push_back({"Changed since this level loaded.", PanelKind::Note});
 		return out;
 	}
 
 	// "full > balanced > performance > full"
 	[[nodiscard]] std::string CycleText() const {
 		std::string s = "full";
-		for (const auto& p: m_presets) s += " > " + p.name;
+		for (const auto& p: m_presets)
+			s += " > " + p.name;
 		return s + " > full";
 	}
 
-	// The toast: line 1 the headline, line 2 what applies when. `pairs` = the draw skip pairs active in the current scene.
-	[[nodiscard]] Toast MakeToast(const std::string& headline, uint32_t pairs, bool show_only) const {
+	// The toast: line 1 the headline, line 2 what applies when. `pairs` = the draw skip pairs
+	// active in the current scene.
+	[[nodiscard]] Toast MakeToast(const std::string& headline, uint32_t pairs,
+	                              bool show_only) const {
 		Toast t {headline, {}};
 		if (show_only) {
 			for (size_t i = 0; i < kCatCount; i++) {
@@ -610,9 +694,11 @@ inline ActiveSet g_active; // read by the draw path
 }
 
 [[nodiscard]] bool KeysEnabled() noexcept; // KYTY_SCENE_KEYS=1 (read once)
-// Window thread: a key event. true = consumed (keys on and a scenery key); false = the game sees it as before.
+// Window thread: a key event. true = consumed (keys on and a scenery key); false = the game sees it
+// as before.
 bool HandleKey(Key key, bool shift, bool pressed);
-// Command-processor thread, every guest flip: reads the scene, publishes the pairs, counts. Cheap when the feature is off.
+// Command-processor thread, every guest flip: reads the scene, publishes the pairs, counts. Cheap
+// when the feature is off.
 void OnCpFlip();
 // The toast (systemOverlay): active until it fades; the text is copied under a lock.
 [[nodiscard]] bool     ToastWanted() noexcept;
@@ -620,13 +706,14 @@ void OnCpFlip();
 bool                   ToastView(char* line1, size_t cap1, char* line2, size_t cap2, float& alpha);
 // The F2 overlay row text ("F- G+ M+ O+ (balanced)"); empty when the keys are off.
 [[nodiscard]] std::string OverlayRow();
-// The 4 panel (systemOverlay): open until it hides itself (kPanelMs) or 4 again. Lines are copied into the caller's fixed buffer.
+// The 4 panel (systemOverlay): open until it hides itself (kPanelMs) or 4 again. Lines are copied
+// into the caller's fixed buffer.
 struct PanelText {
 	char    text[120];
 	uint8_t kind; // PanelKind
 };
 inline constexpr size_t kPanelMaxLines = 16;
-[[nodiscard]] bool PanelWanted() noexcept;
-size_t             PanelView(PanelText* out, size_t cap, float& alpha); // lines written; 0 = closed
+[[nodiscard]] bool      PanelWanted() noexcept;
+size_t PanelView(PanelText* out, size_t cap, float& alpha); // lines written; 0 = closed
 
 } // namespace Libs::Graphics::SceneSkip

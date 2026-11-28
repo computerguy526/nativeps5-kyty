@@ -51,6 +51,7 @@
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
+#include "graphics/host_gpu/renderer/sceneSkip.h"
 #include "graphics/host_gpu/renderer/sync.h"
 #include "graphics/host_gpu/renderer/threadSampler.h"
 #include "graphics/host_gpu/syncEpoch.h"
@@ -85,7 +86,6 @@
 #include <unordered_set>
 #include <vector>
 #include <xxhash.h>
-#include "graphics/host_gpu/renderer/sceneSkip.h"
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -95,8 +95,9 @@
 
 namespace Libs::Graphics {
 
-// The guest flip's frame-boundary hooks of the command processor: live switches, then nps5 perfmode's scene poll (sceneSkip.h; one static
-// bool when KYTY_SCENE_KEYS / KYTY_SCENE_SKIP_FILE are unset).
+// The guest flip's frame-boundary hooks of the command processor: live switches, then nps5
+// perfmode's scene poll (sceneSkip.h; one static bool when KYTY_SCENE_KEYS / KYTY_SCENE_SKIP_FILE
+// are unset).
 static inline void CpFlipHooks() {
 	Live::OnCpFlip();
 	SceneSkip::OnCpFlip();
@@ -4334,7 +4335,8 @@ void CommandProcessor::ExecDrawIndirectMulti(const CpSeq::DrawIndirectOp& op) {
 	const auto args_base = op.args_base + op.data_offset;
 	if (IndirectArgsSkipped("multi-draw", args_base,
 	                        static_cast<uint64_t>(max_count_or_count) * stride_in_bytes) ||
-	    (count_addr != 0 && IndirectArgsSkipped("multi-draw count", count_addr, sizeof(uint32_t)))) {
+	    (count_addr != 0 &&
+	     IndirectArgsSkipped("multi-draw count", count_addr, sizeof(uint32_t)))) {
 		return;
 	}
 	if ((draw_index_shaders == nullptr || max_count_or_count == 1) &&

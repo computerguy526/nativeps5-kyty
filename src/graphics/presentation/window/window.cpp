@@ -572,10 +572,12 @@ void WindowContext::ProcessEvent(double time_s) {
 	auto* event = &game.event;
 	if (event->type == SDL_EVENT_KEY_DOWN || event->type == SDL_EVENT_KEY_UP) {
 		const bool pressed = event->type == SDL_EVENT_KEY_DOWN && event->key.repeat == 0;
-		// nps5 perfmode (KYTY_SCENE_KEYS=1, default off: the keys then reach the game as before): scenery keys (digits 4-9; 1-3 stay the keyboard-pad setting cycles).
+		// nps5 perfmode (KYTY_SCENE_KEYS=1, default off: the keys then reach the game as before):
+		// scenery keys (digits 4-9; 1-3 stay the keyboard-pad setting cycles).
 		if (SceneSkip::KeysEnabled()) {
 			using SceneSkip::Key;
-			// Physical number row / numpad digits 4..9 (scancodes: layout independent; Shift only modifies, e.g. Shift+5).
+			// Physical number row / numpad digits 4..9 (scancodes: layout independent; Shift only
+			// modifies, e.g. Shift+5).
 			const SDL_Scancode sc    = event->key.scancode;
 			int                digit = -1;
 			if (sc >= SDL_SCANCODE_1 && sc <= SDL_SCANCODE_9) {

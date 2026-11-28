@@ -20,7 +20,7 @@ namespace Libs::Graphics::SceneSkip {
 namespace {
 
 struct Runtime {
-	bool                  keys = false;
+	bool                  keys         = false;
 	bool                  table_loaded = false;
 	Table                 table;
 	Controller            ctl;
@@ -31,12 +31,14 @@ struct Runtime {
 	Toast                 toast;
 	std::atomic<uint64_t> toast_until_ms {0};
 	std::atomic<uint32_t> toast_revision {0};
-	std::atomic<uint64_t> panel_until_ms {0}; // 4 panel deadline (PanelClock, atomic so the overlay thread reads it without the lock)
+	std::atomic<uint64_t> panel_until_ms {
+	    0}; // 4 panel deadline (PanelClock, atomic so the overlay thread reads it without the lock)
 };
 
 uint64_t NowMs() {
-	return static_cast<uint64_t>(
-	    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+	                                 std::chrono::steady_clock::now().time_since_epoch())
+	                                 .count());
 }
 
 bool EnvOn(const char* name) {
@@ -48,8 +50,8 @@ void StartKeyScript(const Runtime& r);
 
 Runtime& R() {
 	static Runtime* rt = [] {
-		auto* r   = new Runtime;
-		r->keys   = EnvOn("KYTY_SCENE_KEYS");
+		auto* r = new Runtime;
+		r->keys = EnvOn("KYTY_SCENE_KEYS");
 		if (const char* f = std::getenv("KYTY_SCENE_SKIP_FILE"); f != nullptr && f[0] != '\0') {
 			std::ifstream in(f);
 			if (in) {
@@ -57,8 +59,11 @@ Runtime& R() {
 				ss << in.rdbuf();
 				r->table        = ParseTable(ss.str());
 				r->table_loaded = true;
-				std::fprintf(stderr, "[scenery] table %s: %zu presets, %zu skip rows, %u bad lines, %u over the limit\n", f,
-				             r->table.presets.size(), r->table.skips.size(), r->table.bad_lines, r->table.dropped);
+				std::fprintf(stderr,
+				             "[scenery] table %s: %zu presets, %zu skip rows, %u bad lines, %u "
+				             "over the limit\n",
+				             f, r->table.presets.size(), r->table.skips.size(), r->table.bad_lines,
+				             r->table.dropped);
 			} else {
 				std::fprintf(stderr, "[scenery] table %s not readable: instant skip off\n", f);
 			}
@@ -73,7 +78,8 @@ Runtime& R() {
 
 // Whether anything of this feature is on (decided once; the flip hook returns at once when not).
 bool FeatureOn() {
-	static const bool on = std::getenv("KYTY_SCENE_KEYS") != nullptr || std::getenv("KYTY_SCENE_SKIP_FILE") != nullptr;
+	static const bool on =
+	    std::getenv("KYTY_SCENE_KEYS") != nullptr || std::getenv("KYTY_SCENE_SKIP_FILE") != nullptr;
 	return on;
 }
 
@@ -122,8 +128,10 @@ bool HandleKey(Key key, bool shift, bool pressed) {
 	{
 		PanelClock pc {r.panel_until_ms.load(std::memory_order_acquire)};
 		const auto now = NowMs();
-		if (res.panel) pc.Toggle(now);
-		else pc.Extend(now);
+		if (res.panel)
+			pc.Toggle(now);
+		else
+			pc.Extend(now);
 		r.panel_until_ms.store(pc.until_ms, std::memory_order_release);
 		r.toast_revision.fetch_add(1, std::memory_order_relaxed);
 	}
@@ -147,7 +155,7 @@ bool HandleKey(Key key, bool shift, bool pressed) {
 
 void OnCpFlip() {
 	if (!FeatureOn()) return;
-	auto&                       r = R();
+	auto&                       r     = R();
 	auto                        scene = CurrentScene();
 	std::lock_guard<std::mutex> lock(r.mu);
 	if (scene != r.scene) {
@@ -155,8 +163,8 @@ void OnCpFlip() {
 		r.toast_revision.fetch_add(1, std::memory_order_relaxed); // an open 4 panel names the level
 		r.ctl.MarkLoaded(); // a level was entered: its data is the one the launcher staged
 		const auto pairs = Republish(r);
-		std::fprintf(stderr, "[scenery] scene %s: %u shader pairs active (%s)\n", r.scene.empty() ? "-" : r.scene.c_str(), pairs,
-		             r.ctl.RowText().c_str());
+		std::fprintf(stderr, "[scenery] scene %s: %u shader pairs active (%s)\n",
+		             r.scene.empty() ? "-" : r.scene.c_str(), pairs, r.ctl.RowText().c_str());
 	}
 }
 
@@ -176,7 +184,9 @@ bool ToastView(char* line1, size_t cap1, char* line2, size_t cap2, float& alpha)
 	const auto now   = NowMs();
 	const auto until = r.toast_until_ms.load(std::memory_order_acquire);
 	if (now >= until) return false;
-	alpha = until - now >= kToastFadeMs ? 1.0f : static_cast<float>(until - now) / static_cast<float>(kToastFadeMs);
+	alpha = until - now >= kToastFadeMs
+	            ? 1.0f
+	            : static_cast<float>(until - now) / static_cast<float>(kToastFadeMs);
 	std::lock_guard<std::mutex> t(r.toast_mu);
 	std::snprintf(line1, cap1, "%s", r.toast.line1.c_str());
 	std::snprintf(line2, cap2, "%s", r.toast.line2.c_str());
@@ -190,8 +200,8 @@ bool PanelWanted() noexcept {
 
 size_t PanelView(PanelText* out, size_t cap, float& alpha) {
 	if (!KeysEnabled()) return 0;
-	auto&      r   = R();
-	const auto now = NowMs();
+	auto&            r   = R();
+	const auto       now = NowMs();
 	const PanelClock pc {r.panel_until_ms.load(std::memory_order_acquire)};
 	if (!pc.Open(now)) return 0;
 	alpha = pc.Alpha(now);
@@ -219,19 +229,22 @@ std::string OverlayRow() {
 
 namespace {
 
-// KYTY_SCENE_KEYS_SCRIPT (automated checks only, default off): a detached thread presses the scripted keys through the same HandleKey
-// path a real key takes (so the state file, the log line and the toast are the real ones). Needs KYTY_SCENE_KEYS=1.
+// KYTY_SCENE_KEYS_SCRIPT (automated checks only, default off): a detached thread presses the
+// scripted keys through the same HandleKey path a real key takes (so the state file, the log line
+// and the toast are the real ones). Needs KYTY_SCENE_KEYS=1.
 void StartKeyScript(const Runtime& r) {
 	const char* v = std::getenv("KYTY_SCENE_KEYS_SCRIPT");
 	if (!r.keys || v == nullptr || v[0] == '\0') return;
 	const auto script = ParseKeyScript(v);
-	std::fprintf(stderr, "[scenery] key script: %zu presses, %u bad entries\n", script.keys.size(), script.bad);
+	std::fprintf(stderr, "[scenery] key script: %zu presses, %u bad entries\n", script.keys.size(),
+	             script.bad);
 	if (script.keys.empty()) return;
 	std::thread([script] {
 		const auto t0 = std::chrono::steady_clock::now();
 		for (const auto& k: script.keys) {
 			std::this_thread::sleep_until(t0 + std::chrono::milliseconds(k.at_ms));
-			std::fprintf(stderr, "[scenery] key script: press %d at %.1f s\n", static_cast<int>(k.key), static_cast<double>(k.at_ms) / 1000.0);
+			std::fprintf(stderr, "[scenery] key script: press %d at %.1f s\n",
+			             static_cast<int>(k.key), static_cast<double>(k.at_ms) / 1000.0);
 			HandleKey(k.key, k.shift, true);
 			HandleKey(k.key, k.shift, false);
 		}

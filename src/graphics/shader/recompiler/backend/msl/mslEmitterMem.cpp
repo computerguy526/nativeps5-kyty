@@ -209,18 +209,19 @@ bool LgCandidate(const MslCtx& ctx, const BindingModel& model, const IR::Inst& i
 	       inst.Arg(inst.NumArgs() - 1)};
 	return true;
 }
-// ---- handopt vs_load_region (MslXform.h; mode token vregion): the guarded 32-bit vector loads (x2..x4) of
-// a vertex program that read read-only buffers under ONE exec value are printed as one region at the first
-// of them. Members: raw (not formatted) x2..x4 reads, linear addressing, a descriptor-size guard, a binding
-// the program never writes, in ONE IR block, with the same exec Value, whose address operands (index,
-// offset, soffset) are immediates, values defined before the first member, or chains of integer ALU
-// instructions over those (no float, no load, no select: re-printed from their definitions before the test
-// when they come later in the text). A region needs >= KYTY_MSL_VS_LOAD_REGION_MIN members (default 16).
-// Text: zeroed result temporaries, `if (active) {` the re-printed operands, the addresses, one
-// `if ((a_1 < lim_1) & ... )` over the members' own limits (addr < limit <=> ulong(addr) + bytes <= size),
-// the plain vector loads, `} else {` each member's ordinary guarded expression (per-dword fallback), `}`.
-// Each member's own site prints the copy of its temporary. Every word is read under the same per-dword
-// rules as before: only where and how the test is evaluated changes. KYTY_MSL_LOADGROUP_MUTANT=1 shifts the
+// ---- handopt vs_load_region (MslXform.h; mode token vregion): the guarded 32-bit vector loads
+// (x2..x4) of a vertex program that read read-only buffers under ONE exec value are printed as one
+// region at the first of them. Members: raw (not formatted) x2..x4 reads, linear addressing, a
+// descriptor-size guard, a binding the program never writes, in ONE IR block, with the same exec
+// Value, whose address operands (index, offset, soffset) are immediates, values defined before the
+// first member, or chains of integer ALU instructions over those (no float, no load, no select:
+// re-printed from their definitions before the test when they come later in the text). A region
+// needs >= KYTY_MSL_VS_LOAD_REGION_MIN members (default 16). Text: zeroed result temporaries, `if
+// (active) {` the re-printed operands, the addresses, one `if ((a_1 < lim_1) & ... )` over the
+// members' own limits (addr < limit <=> ulong(addr) + bytes <= size), the plain vector loads, `}
+// else {` each member's ordinary guarded expression (per-dword fallback), `}`. Each member's own
+// site prints the copy of its temporary. Every word is read under the same per-dword rules as
+// before: only where and how the test is evaluated changes. KYTY_MSL_LOADGROUP_MUTANT=1 shifts the
 // fast-path loads by +4 bytes (validation: must change results).
 bool VrMutant() { // read per call (the unit tests switch it)
 	const char* e = std::getenv("KYTY_MSL_LOADGROUP_MUTANT");
@@ -237,11 +238,12 @@ struct VrMember {
 	uint32_t        res   = 0;
 };
 struct VrRegion {
-	uint32_t                      id    = 0;
-	const IR::Inst*               first = nullptr;
-	std::vector<VrMember>         members;
-	std::vector<const IR::Inst*>  late;   // operand instructions defined after `first`, in program order
-	IR::Value                     active; // the common exec Value
+	uint32_t              id    = 0;
+	const IR::Inst*       first = nullptr;
+	std::vector<VrMember> members;
+	std::vector<const IR::Inst*>
+	          late;   // operand instructions defined after `first`, in program order
+	IR::Value active; // the common exec Value
 };
 struct VrInfo {
 	std::vector<VrRegion>                         regions;
@@ -269,17 +271,19 @@ bool VrPureOp(ValueOpcode op) {
 		default: return false;
 	}
 }
-// `v` can be evaluated at the first member: immediate, defined before it (earlier block / earlier in this
-// block), or an integer-only ALU chain that bottoms out in such values. `late` collects the chain's
-// instructions defined at or after the first member.
-bool VrAddrOk(const IR::Value& v, const std::unordered_map<const IR::Inst*, size_t>& pos, size_t first_pos,
-              const IR::Block* blk, std::vector<const IR::Inst*>& late, int depth) {
+// `v` can be evaluated at the first member: immediate, defined before it (earlier block / earlier
+// in this block), or an integer-only ALU chain that bottoms out in such values. `late` collects the
+// chain's instructions defined at or after the first member.
+bool VrAddrOk(const IR::Value& v, const std::unordered_map<const IR::Inst*, size_t>& pos,
+              size_t first_pos, const IR::Block* blk, std::vector<const IR::Inst*>& late,
+              int depth) {
 	const IR::Value r = v.Resolve();
 	if (r.IsEmpty() || r.IsImmediate()) return true;
 	const IR::Inst* i = r.TryInstruction();
 	if (i == nullptr) return false;
 	const auto it = pos.find(i);
-	if (it == pos.end() || it->second < first_pos) return true; // another block (dominates) or earlier
+	if (it == pos.end() || it->second < first_pos)
+		return true; // another block (dominates) or earlier
 	if (depth > 8 || !VrPureOp(i->GetOpcode()) || i->GetType() != IR::Type::U32) return false;
 	for (size_t k = 0; k < i->NumArgs(); k++)
 		if (!VrAddrOk(i->Arg(k), pos, first_pos, blk, late, depth + 1)) return false;
@@ -298,7 +302,8 @@ bool VrCandidate(const MslCtx& ctx, const BindingModel& model, const IR::Inst& i
 	const auto& b = model.buffers[mem.resource];
 	if (b.written || b.atomic || !RegionChecked(b)) return false;
 	const uint32_t stride = b.packed_stride & 0x3fffu;
-	if ((stride != 0u && (b.packed_stride & (1u << 14u)) != 0u) || (b.packed_stride & (1u << 20u)) != 0u)
+	if ((stride != 0u && (b.packed_stride & (1u << 14u)) != 0u) ||
+	    (b.packed_stride & (1u << 20u)) != 0u)
 		return false; // swizzled / add_tid addressing
 	m.inst  = &inst;
 	m.comps = comps;
@@ -310,7 +315,8 @@ const VrInfo& VrOf(const MslCtx& ctx, const BindingModel& model) {
 	auto vp     = std::make_shared<VrInfo>();
 	ctx.vr_info = vp;
 	auto& g     = *vp;
-	if (!Xf::On(Xf::VsLoadRegion) || ctx.program.stage != ShaderType::Vertex || ctx.lanes != 1) return g;
+	if (!Xf::On(Xf::VsLoadRegion) || ctx.program.stage != ShaderType::Vertex || ctx.lanes != 1)
+		return g;
 	const uint32_t min_members = VrMin();
 	for (const auto* blk: ctx.program.blocks) {
 		std::unordered_map<const IR::Inst*, size_t> pos;
@@ -323,12 +329,13 @@ const VrInfo& VrOf(const MslCtx& ctx, const BindingModel& model) {
 			std::vector<VrMember> pend;
 		};
 		std::vector<Open> open;
-		auto close = [&](size_t i) {
+		auto              close = [&](size_t i) {
 			auto& r = open[i].reg;
 			if (r.members.size() >= min_members) {
 				r.id = static_cast<uint32_t>(g.regions.size());
-				std::sort(r.late.begin(), r.late.end(),
-				          [&](const IR::Inst* a, const IR::Inst* b) { return pos.at(a) < pos.at(b); });
+				std::sort(r.late.begin(), r.late.end(), [&](const IR::Inst* a, const IR::Inst* b) {
+					return pos.at(a) < pos.at(b);
+				});
 				for (auto& m: r.members)
 					g.at[m.inst] = r.id;
 				g.regions.push_back(r);
@@ -344,13 +351,13 @@ const VrInfo& VrOf(const MslCtx& ctx, const BindingModel& model) {
 					if (SameVal(open[i].active, act)) break;
 				if (i == open.size()) {
 					Open o;
-					o.active = act;
+					o.active     = act;
 					o.reg.first  = &inst;
 					o.reg.active = act;
 					open.push_back(std::move(o));
 				}
-				auto&                        r = open[i].reg;
-				const auto&                  mem = ctx.program.memory_info.at(inst.Flags<IR::MemoryFlags>().index);
+				auto&       r   = open[i].reg;
+				const auto& mem = ctx.program.memory_info.at(inst.Flags<IR::MemoryFlags>().index);
 				std::vector<const IR::Inst*> late;
 				const size_t                 fp = pos.at(r.first);
 				bool                         ok = VrAddrOk(act, pos, fp, blk, late, 0);
@@ -359,10 +366,12 @@ const VrInfo& VrOf(const MslCtx& ctx, const BindingModel& model) {
 				ok = ok && VrAddrOk(inst.Arg(3), pos, fp, blk, late, 0);
 				if (ok) {
 					for (const auto* l: late)
-						if (std::find(r.late.begin(), r.late.end(), l) == r.late.end()) r.late.push_back(l);
+						if (std::find(r.late.begin(), r.late.end(), l) == r.late.end())
+							r.late.push_back(l);
 					r.members.push_back(m);
 				}
-				if (r.members.empty()) open.erase(open.begin() + static_cast<long>(i)); // first member not eligible
+				if (r.members.empty())
+					open.erase(open.begin() + static_cast<long>(i)); // first member not eligible
 				continue;
 			}
 			if (inst.MayHaveSideEffects() && inst.GetOpcode() != ValueOpcode::SetAttribute &&
@@ -578,21 +587,21 @@ bool VrSite(Em& e, ValueOpcode op, const VrRegion& r) {
 	if (&e.inst == r.first) {
 		// operands defined after the first member: re-printed copies, renamed
 		std::unordered_map<const IR::Inst*, std::string> ren;
-		std::function<std::string(const IR::Value&)>     str = [&](const IR::Value& v) -> std::string {
-            const IR::Value x = v.Resolve();
-            if (const IR::Inst* i = x.TryInstruction(); i != nullptr)
-                if (const auto it = ren.find(i); it != ren.end()) return it->second;
-            return ctx.Val(v);
-        };
+		std::function<std::string(const IR::Value&)> str = [&](const IR::Value& v) -> std::string {
+			const IR::Value x = v.Resolve();
+			if (const IR::Inst* i = x.TryInstruction(); i != nullptr)
+				if (const auto it = ren.find(i); it != ren.end()) return it->second;
+			return ctx.Val(v);
+		};
 		MemOut ro;
 		ro.prefix = "kkr" + std::to_string(r.id) + "a_";
 		MemOut so; // fallback arm
 		so.prefix = "kkr" + std::to_string(r.id) + "b_";
 		BufferOpts raw_opts;
 		raw_opts.per_dword_bounds = true;
-		std::string decl, pre_lines;
-		std::vector<std::string> addr(r.members.size());
-		std::vector<const BufferBinding*> bufs(r.members.size());
+		std::string                                          decl, pre_lines;
+		std::vector<std::string>                             addr(r.members.size());
+		std::vector<const BufferBinding*>                    bufs(r.members.size());
 		std::map<std::pair<uint32_t, uint32_t>, std::string> lims;
 		for (const auto* l: r.late) {
 			std::vector<std::string> args;
@@ -609,14 +618,15 @@ bool VrSite(Em& e, ValueOpcode op, const VrRegion& r) {
 			const auto& b   = e.model.buffers[mem.resource];
 			bufs[k]         = &b;
 			BufferAddrIn in;
-			in.index   = mem.idxen ? str(m.inst->Arg(1)) : std::string();
-			in.offset  = mem.offen ? str(m.inst->Arg(2)) : std::string();
-			in.soffset = str(m.inst->Arg(3));
-			in.imm     = mem.offset;
-			addr[k]    = BufferByteAddress(ro, b, in);
+			in.index       = mem.idxen ? str(m.inst->Arg(1)) : std::string();
+			in.offset      = mem.offen ? str(m.inst->Arg(2)) : std::string();
+			in.soffset     = str(m.inst->Arg(3));
+			in.imm         = mem.offset;
+			addr[k]        = BufferByteAddress(ro, b, in);
 			const auto key = std::make_pair(mem.resource, 4u * m.comps);
 			if (!lims.contains(key)) {
-				const std::string ln = pre + "lim" + std::to_string(mem.resource) + "_" + std::to_string(4u * m.comps);
+				const std::string ln =
+				    pre + "lim" + std::to_string(mem.resource) + "_" + std::to_string(4u * m.comps);
 				ro.Line("const uint " + ln + " = " + RegionLimit(b, 4u * m.comps) + ";");
 				lims[key] = ln;
 			}
@@ -630,13 +640,15 @@ bool VrSite(Em& e, ValueOpcode op, const VrRegion& r) {
 		std::string fast, slow;
 		for (size_t k = 0; k < r.members.size(); k++) {
 			const std::string t = pre + std::to_string(k);
-			fast += "        " + t + " = " + RegionFastLoad(*bufs[k], addr[k], r.members[k].comps, mutant) + ";\n";
+			fast += "        " + t + " = " +
+			        RegionFastLoad(*bufs[k], addr[k], r.members[k].comps, mutant) + ";\n";
 			const auto v = LoadRaw(so, *bufs[k], addr[k], 32, r.members[k].comps, raw_opts);
 			so.Line(t + " = " + v + ";");
 		}
-		std::string text = "// vregion: " + std::to_string(r.members.size()) + " guarded vector loads, one test\n" + decl +
-		                   "if (" + e.A(e.inst.NumArgs() - 1) + ") {\n" + ro.code + "    if (" + test + ") {\n" + fast +
-		                   "    } else {\n" + so.code + "    }\n}\n";
+		std::string text = "// vregion: " + std::to_string(r.members.size()) +
+		                   " guarded vector loads, one test\n" + decl + "if (" +
+		                   e.A(e.inst.NumArgs() - 1) + ") {\n" + ro.code + "    if (" + test +
+		                   ") {\n" + fast + "    } else {\n" + so.code + "    }\n}\n";
 		e.ctx.b.Raw(text);
 	}
 	(void)op;

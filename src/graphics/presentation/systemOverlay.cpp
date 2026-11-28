@@ -736,7 +736,8 @@ SystemOverlayVisualState GetSystemOverlayVisualState() noexcept {
 	const bool splash        = g_splash_active.load(std::memory_order_acquire);
 	const auto cursor        = GetHostInputTouchPadVisualState();
 	return {core.active || dialog.active || system.active || trophy_active || splash ||
-	            cursor.enabled || ProgressWanted() || SceneSkip::ToastWanted() || SceneSkip::PanelWanted(),
+	            cursor.enabled || ProgressWanted() || SceneSkip::ToastWanted() ||
+	            SceneSkip::PanelWanted(),
 	        core.revision + dialog.revision + system.revision + (trophy_active ? 1u : 0u) +
 	            (splash ? 2u : 0u) + static_cast<decltype(core.revision)>(cursor.revision) +
 	            PerformanceOverlayRevision() + g_progress_revision.load(std::memory_order_relaxed) +
@@ -1858,7 +1859,8 @@ struct SystemOverlay::Impl {
 		draw->PopClipRect();
 	}
 
-	// nps5 perfmode: the scenery key toast (top centre, 4 s, fades). Stack buffers and draw-list primitives only.
+	// nps5 perfmode: the scenery key toast (top centre, 4 s, fades). Stack buffers and draw-list
+	// primitives only.
 	void DrawSceneToast(vk::Extent2D frame_extent) {
 		char  l1[96], l2[96];
 		float alpha = 0.0f;
@@ -1867,11 +1869,12 @@ struct SystemOverlay::Impl {
 		}
 		auto*        draw = ImGui::GetForegroundDrawList();
 		auto*        font = progress_font != nullptr ? progress_font : ImGui::GetFont();
-		const ImVec2 screen {static_cast<float>(frame_extent.width), static_cast<float>(frame_extent.height)};
-		const float  f    = std::max(0.5f, screen.y / 720.0f);
-		const float  big  = 22.0f * f, small = 15.0f * f, pad = 12.0f * f;
-		const auto   col  = [alpha](int r, int g, int b, int a = 255) {
-            return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(a) * alpha));
+		const ImVec2 screen {static_cast<float>(frame_extent.width),
+		                     static_cast<float>(frame_extent.height)};
+		const float  f   = std::max(0.5f, screen.y / 720.0f);
+		const float  big = 22.0f * f, small = 15.0f * f, pad = 12.0f * f;
+		const auto   col = [alpha](int r, int g, int b, int a = 255) {
+			return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(a) * alpha));
 		};
 		const auto width = [font](float size, const char* text) {
 			return font->CalcTextSizeA(size, std::numeric_limits<float>::max(), 0.0f, text).x;
@@ -1880,13 +1883,17 @@ struct SystemOverlay::Impl {
 		const float h  = pad * 2.0f + big + (l2[0] != '\0' ? small + pad * 0.4f : 0.0f);
 		const float x0 = (screen.x - w) * 0.5f, y0 = 16.0f * f;
 		draw->AddRectFilled({x0, y0}, {x0 + w, y0 + h}, col(15, 18, 23, 230), 8.0f * f);
-		draw->AddText(font, big, {(screen.x - width(big, l1)) * 0.5f, y0 + pad}, col(255, 255, 255), l1);
+		draw->AddText(font, big, {(screen.x - width(big, l1)) * 0.5f, y0 + pad}, col(255, 255, 255),
+		              l1);
 		if (l2[0] != '\0') {
-			draw->AddText(font, small, {(screen.x - width(small, l2)) * 0.5f, y0 + pad + big + pad * 0.4f}, col(255, 199, 51), l2);
+			draw->AddText(font, small,
+			              {(screen.x - width(small, l2)) * 0.5f, y0 + pad + big + pad * 0.4f},
+			              col(255, 199, 51), l2);
 		}
 	}
 
-	// nps5 perfmode: the 4 help panel (top left, auto-hides, fades). Same draw-list primitives as the toast; fixed stack buffers.
+	// nps5 perfmode: the 4 help panel (top left, auto-hides, fades). Same draw-list primitives as
+	// the toast; fixed stack buffers.
 	void DrawScenePanel(vk::Extent2D frame_extent) {
 		SceneSkip::PanelText lines[SceneSkip::kPanelMaxLines];
 		float                alpha = 0.0f;
@@ -1896,16 +1903,20 @@ struct SystemOverlay::Impl {
 		}
 		auto*        draw = ImGui::GetForegroundDrawList();
 		auto*        font = progress_font != nullptr ? progress_font : ImGui::GetFont();
-		const ImVec2 screen {static_cast<float>(frame_extent.width), static_cast<float>(frame_extent.height)};
+		const ImVec2 screen {static_cast<float>(frame_extent.width),
+		                     static_cast<float>(frame_extent.height)};
 		const float  f    = std::max(0.5f, screen.y / 720.0f);
 		const float  size = 16.0f * f, title = 20.0f * f, pad = 14.0f * f, gap = 5.0f * f;
-		const auto   col  = [alpha](int r, int g, int b, int a = 255) {
-            return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(a) * alpha));
+		const auto   col = [alpha](int r, int g, int b, int a = 255) {
+			return IM_COL32(r, g, b, static_cast<int>(static_cast<float>(a) * alpha));
 		};
 		float w = 0.0f, h = pad * 2.0f;
 		for (size_t i = 0; i < n; i++) {
-			const float sz = lines[i].kind == static_cast<uint8_t>(SceneSkip::PanelKind::Title) ? title : size;
-			w              = std::max(w, font->CalcTextSizeA(sz, std::numeric_limits<float>::max(), 0.0f, lines[i].text).x);
+			const float sz =
+			    lines[i].kind == static_cast<uint8_t>(SceneSkip::PanelKind::Title) ? title : size;
+			w = std::max(
+			    w,
+			    font->CalcTextSizeA(sz, std::numeric_limits<float>::max(), 0.0f, lines[i].text).x);
 			h += sz + gap;
 		}
 		w += pad * 2.0f;
@@ -1914,7 +1925,7 @@ struct SystemOverlay::Impl {
 		float y = y0 + pad;
 		for (size_t i = 0; i < n; i++) {
 			using K        = SceneSkip::PanelKind;
-			const auto k   = static_cast<K>(lines[i].kind);
+			const auto  k  = static_cast<K>(lines[i].kind);
 			const float sz = k == K::Title ? title : size;
 			const ImU32 c  = k == K::Title     ? col(255, 255, 255)
 			                 : k == K::Heading ? col(190, 200, 215)

@@ -175,11 +175,13 @@ void Begin(ShaderType stage, uint64_t shader_hash);
 //   lcont         KYTY_MSL_XF_LCONT=1: adds loop_cont to the base set (any stage)
 //   blim          KYTY_MSL_XF_BLIM=1: adds bounds_lim to the base set (any stage)
 //   gexit         KYTY_MSL_XF_GEXIT=1: adds guard_exit to the base set (any stage)
-//   vregion       KYTY_MSL_VS_LOAD_REGION=1: adds vs_load_region to the base set (vertex stage only)
-//   xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto paxHEX)
+//   vregion       KYTY_MSL_VS_LOAD_REGION=1: adds vs_load_region to the base set (vertex stage
+//   only) xf=HEX        KYTY_MSL_XF = the transforms of the registry-order bit mask (perfauto
+//   paxHEX)
 // false + error for an unknown or repeated token, a bad value, perfr without fix6 (it changes
 // nothing there), or ANY text switch of the emitter already set in the environment (KYTY_MSL_FIX6,
-// VS_PERF, GFX_*, XF, XF_*, XF_TABLE, LOADGROUP*, VS_LOAD_REGION*): a mode never mixes with hand-set switches.
+// VS_PERF, GFX_*, XF, XF_*, XF_TABLE, LOADGROUP*, VS_LOAD_REGION*): a mode never mixes with
+// hand-set switches.
 [[nodiscard]] bool ApplyMode(std::string_view mode, std::string& error);
 // The one truthiness rule of the emitter switches (review L3): set, non-empty and not "0".
 [[nodiscard]] bool EnvOn(const char* name);

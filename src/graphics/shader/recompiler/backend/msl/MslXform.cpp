@@ -231,13 +231,27 @@ bool EnvOn(const char* name) {
 
 bool ApplyMode(std::string_view mode, std::string& error) {
 	// review L1: every switch that changes the emitted text, whether this mode sets it or not
-	for (const char* v:
-	     {"KYTY_MSL_FIX6", "KYTY_MSL_VS_PERF", "KYTY_MSL_GFX_SPLIT", "KYTY_MSL_GFX_REASSOC",
-	      "KYTY_MSL_GFX_MINMAX", "KYTY_MSL_GFX_MATH", "KYTY_MSL_GFX_FTZ", "KYTY_MSL_XF",
-	      "KYTY_MSL_XF_LSEL", "KYTY_MSL_XF_VGROUP", "KYTY_MSL_XF_CLOAD", "KYTY_MSL_XF_LCONT",
-	      "KYTY_MSL_XF_BLIM", "KYTY_MSL_XF_GEXIT", "KYTY_MSL_VS_MODES", "KYTY_MSL_XF_TABLE",
-	      "KYTY_MSL_LOADGROUP", "KYTY_MSL_LOADGROUP_MUTANT", "KYTY_MSL_KK_VS_ADCE",
-	      "KYTY_MSL_VS_LOAD_REGION", "KYTY_MSL_VS_LOAD_REGION_MIN"}) {
+	for (const char* v: {"KYTY_MSL_FIX6",
+	                     "KYTY_MSL_VS_PERF",
+	                     "KYTY_MSL_GFX_SPLIT",
+	                     "KYTY_MSL_GFX_REASSOC",
+	                     "KYTY_MSL_GFX_MINMAX",
+	                     "KYTY_MSL_GFX_MATH",
+	                     "KYTY_MSL_GFX_FTZ",
+	                     "KYTY_MSL_XF",
+	                     "KYTY_MSL_XF_LSEL",
+	                     "KYTY_MSL_XF_VGROUP",
+	                     "KYTY_MSL_XF_CLOAD",
+	                     "KYTY_MSL_XF_LCONT",
+	                     "KYTY_MSL_XF_BLIM",
+	                     "KYTY_MSL_XF_GEXIT",
+	                     "KYTY_MSL_VS_MODES",
+	                     "KYTY_MSL_XF_TABLE",
+	                     "KYTY_MSL_LOADGROUP",
+	                     "KYTY_MSL_LOADGROUP_MUTANT",
+	                     "KYTY_MSL_KK_VS_ADCE",
+	                     "KYTY_MSL_VS_LOAD_REGION",
+	                     "KYTY_MSL_VS_LOAD_REGION_MIN"}) {
 		if (std::getenv(v) != nullptr) {
 			error = std::string(v) +
 			        " is set in the environment; --mode does not mix with hand-set switches";
