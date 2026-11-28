@@ -1391,8 +1391,9 @@ KYTY_CP_OP_PARSER(CpOpDispatchIndirect) {
 	}
 
 	const auto base_addr = cp.GetDispatchIndirectArgsBaseAddress();
-	if (base_addr == 0) {
-		// No SET_BASE seen (rc65 class): skip the dispatch, counted and logged, instead of an exit.
+	if (!IndirectBase::BaseUsable(base_addr)) {
+		// No SET_BASE seen (rc65 class) or a null-page base (indcrash): skip the dispatch, counted
+		// and logged, instead of an exit or a fault.
 		cp.NoteIndirectDispatchSkipped(buffer[0]);
 		return 2;
 	}
@@ -2129,7 +2130,7 @@ KYTY_CP_OP_PARSER(CpOpSetBase) {
 	EXIT_NOT_IMPLEMENTED(KYTY_PM4_LEN(cmd_id) != 4u);
 
 	auto base_index = buffer[0] & 0xfu;
-	auto base_addr  = (buffer[1] & ~0x7ull) | (static_cast<uint64_t>(buffer[2] & 0xffffu) << 32u);
+	auto base_addr  = IndirectBase::DecodeSetBaseAddr(buffer[1], buffer[2]);
 	// libSceAgc::setBaseIndirectArgs encodes Gnmp::ShaderType in PM4 header bit 1.
 	auto shader_type = (cmd_id >> 1u) & 0x3u;
 

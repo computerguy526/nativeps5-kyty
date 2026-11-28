@@ -16,7 +16,7 @@ fail=0; note() { echo "[one] $*"; }; bad() { echo "[one] FAIL: $*"; fail=$((fail
 
 TESTS="kyty_one_tests hybrid_seam_tests hosted_guard_tests hosted_ranges_tests cp_lead_bound_tests load_card_tests launch_phase_tests
  read_fault_frame_burst_tests occlusion_draw_skip_tests compile_progress_tests progress_overlay_tests live_switch_tests scene_skip_tests
- kk_lowering_tests gpu_safety_tests precision_spirv_tests"
+ kk_lowering_tests gpu_safety_tests precision_spirv_tests indirect_base_tests"
 # Not in the list: scalar_provenance_tests, resource_tracking_tests, resource_materialization_tests fail to link at the base
 # (159eba04: undefined Libs::LibKernel::Memory::GuestReadPtr), a pre-existing CMake gap, not a merge regression.
 avail=""; for t in $TESTS; do grep -q "build $t:" "$B/build.ninja" 2>/dev/null && avail="$avail $t" || note "skip $t (no target)"; done
@@ -73,6 +73,12 @@ sc=$SRC/src/graphics/presentation/window/swapchain.cpp
 awk '/Presenter::PrepareBlankFrame\(/{f=1} f&&/present_lock.emplace\(m_impl->present_mutex\)/{print "ok"; exit} f&&/^}/{exit}' "$sc" | grep -q ok \
   && note "PASS startcrash: PrepareBlankFrame takes present_mutex" \
   || { echo " $REQUIRE " | grep -q " startcrash " && bad "startcrash fix missing in PrepareBlankFrame" || note "info startcrash fix not present (not required)"; }
+
+# (e) indcrash (2026-11-28): the back never reads indirect records without the null-page check:
+# the single-record path (plain, run replays, DrawPrep commits), the run's native attempt, the multi-draw.
+gr=$SRC/src/graphics/guest_gpu/graphicsRun.cpp
+n=$(awk '/^void CommandProcessor::ExecDrawIndirect(Multi)?\(/{f=1} f&&/IndirectArgsSkipped\(|IndirectBase::ArgsReadable\(/{c++} f&&/^}/{f=0} END{print c+0}' "$gr")
+[ "$n" -ge 4 ] && note "PASS indcrash: indirect record reads guarded ($n sites)" || bad "indcrash guard missing in ExecDrawIndirect/Multi ($n sites)"
 
 if [ -n "$MSLREF" ] && [ -n "$PROGS" ]; then
   ninja -C "$B" kyty_msl_dump >/dev/null 2>&1 || bad "kyty_msl_dump did not build"

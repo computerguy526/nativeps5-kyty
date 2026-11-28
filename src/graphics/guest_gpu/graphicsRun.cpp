@@ -4042,6 +4042,25 @@ static void NoteIndirectRun(uint32_t records) {
 // A run drawn record by record re-enters ExecDrawIndirect per record: those calls are not packets.
 static thread_local bool t_indirect_run_replay = false;
 
+// nps5 indcrash: records the back would read in the guest null page (IndirectBase::ArgsReadable)
+// are not read and not drawn; counted, the log rate-limited like the front's skip lines.
+static bool IndirectArgsSkipped(const char* path, uint64_t args_addr, uint64_t bytes) {
+	if (IndirectBase::ArgsReadable(args_addr, bytes)) {
+		return false;
+	}
+	static std::atomic<uint64_t> skipped {0};
+	const auto                   n = skipped.fetch_add(1, std::memory_order_relaxed) + 1;
+	if (IndirectBase::ShouldLogSkip(n)) {
+		std::fprintf(stderr,
+		             "[indirect] %s SKIPPED (args in null page): args=0x%llx bytes=0x%llx "
+		             "skipped=%llu\n",
+		             path, static_cast<unsigned long long>(args_addr),
+		             static_cast<unsigned long long>(bytes), static_cast<unsigned long long>(n));
+	}
+	g_cp_op_outcome = "DrawIndirect skipped (args in null page)";
+	return true;
+}
+
 void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
 	// KYTY_INDIRECT_RUNS (CpOpDrawIndirect): `records` packets drawing consecutive records.
 	const uint32_t records = std::max(op.max_count_or_count, 1u);
@@ -4058,6 +4077,11 @@ void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
 			m_pending_num_instances.clear();
 		}
 		const bool indexed = (run.flags & CpSeq::IndirectFlagIndexed) != 0;
+		// A null-page run is declined here; run_records skips its records one by one.
+		if (!IndirectBase::ArgsReadable(run.args_base + run.data_offset,
+		                                static_cast<uint64_t>(records) * run.stride)) {
+			return false;
+		}
 		if (!TryDrawIndirectNative({.args_addr           = run.args_base + run.data_offset,
 		                            .stride              = run.stride,
 		                            .max_count           = records,
@@ -4132,6 +4156,11 @@ void CommandProcessor::ExecDrawIndirect(const CpSeq::DrawIndirectOp& op) {
 	const auto args_addr   = op.args_base + op.data_offset;
 	const auto record_size = static_cast<uint32_t>(indexed ? sizeof(DrawIndexedIndirectArgs)
 	                                                       : sizeof(DrawIndirectArgs));
+	// Every single record ends here (plain, run replays, the DrawPrep commit's inner call, whose
+	// slot ExecuteIndirect retires with the draw unused).
+	if (IndirectArgsSkipped(indexed ? "draw index" : "draw auto", args_addr, record_size)) {
+		return;
+	}
 	if (TryDrawIndirectNative({.args_addr           = args_addr,
 	                           .stride              = record_size,
 	                           .max_count           = 1,
@@ -4303,6 +4332,11 @@ void CommandProcessor::ExecDrawIndirectMulti(const CpSeq::DrawIndirectOp& op) {
 
 	// The renderer rejects strides shorter than a record; the CPU path below reports them.
 	const auto args_base = op.args_base + op.data_offset;
+	if (IndirectArgsSkipped("multi-draw", args_base,
+	                        static_cast<uint64_t>(max_count_or_count) * stride_in_bytes) ||
+	    (count_addr != 0 && IndirectArgsSkipped("multi-draw count", count_addr, sizeof(uint32_t)))) {
+		return;
+	}
 	if ((draw_index_shaders == nullptr || max_count_or_count == 1) &&
 	    TryDrawIndirectNative({.args_addr           = args_base,
 	                           .stride              = stride_in_bytes,

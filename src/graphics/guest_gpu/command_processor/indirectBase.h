@@ -36,13 +36,39 @@ struct State {
 
 enum class DrawVerdict { Draw, SkipNoBase, SkipBadInitiator };
 
+// nps5 indcrash (2026-11-28, a title's first visit of a new level): no guest mapping lives in the
+// first 64 KiB. A title that sets the base from a null object's member (SET_BASE 0x20: null + a
+// field offset) passed the old `base == 0` test, and the CPU read of the record at guest 0x20
+// faulted on the GPU thread (ExecDrawIndirect, ReadGuestForCp -> GuestReadPtr). A base or record
+// address in that page is "no base": skipped, counted, never read.
+inline constexpr uint64_t kGuestNullPageEnd = 0x10000;
+
+// A SET_BASE value that can address indirect records (draw or dispatch).
+[[nodiscard]] inline bool BaseUsable(uint64_t base) {
+	return base >= kGuestNullPageEnd;
+}
+
+// The `bytes` of indirect records at guest `addr` may be read: not in the null page, no
+// wrap-around. Checked where the command processor reads records on the CPU (every path:
+// plain, run replays, DrawPrep-prepared commits, multi-draws), so a base that reached the back
+// some other way still never faults.
+[[nodiscard]] inline bool ArgsReadable(uint64_t addr, uint64_t bytes) {
+	return addr >= kGuestNullPageEnd && addr + bytes >= addr;
+}
+
 [[nodiscard]] inline DrawVerdict ClassifyDraw(uint64_t base, uint32_t draw_initiator,
                                               bool indexed) {
 	// Indexed records select the DMA index source (0), auto-index records generated indices (2).
 	if ((draw_initiator & ~0x20u) != (indexed ? 0u : 2u)) {
 		return DrawVerdict::SkipBadInitiator;
 	}
-	return base == 0 ? DrawVerdict::SkipNoBase : DrawVerdict::Draw;
+	return BaseUsable(base) ? DrawVerdict::Draw : DrawVerdict::SkipNoBase;
+}
+
+// SET_BASE (base_index 1) body words as CpOpSetBase decodes them: the address (8-byte aligned,
+// 48 bits).
+[[nodiscard]] inline uint64_t DecodeSetBaseAddr(uint32_t word1, uint32_t word2) {
+	return (word1 & ~0x7ull) | (static_cast<uint64_t>(word2 & 0xffffu) << 32u);
 }
 
 // Rate limit for the skip log lines: the first 8, then every power of two.
